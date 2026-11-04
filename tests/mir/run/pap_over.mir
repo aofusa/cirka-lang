@@ -1,0 +1,70 @@
+// A partial application with 7 of 8 arguments, applied to 2 arguments:
+// the 8th saturates the function, whose result (a closure) takes the 9th.
+type Int { I = 0 { v: i64 } }
+extern fn cirka_write_i64(i64) -> void
+extern fn cirka_write_char(i64) -> void
+
+fn v(x: ptr @owned) -> i64 {
+entry:
+  let r = proj x Int.I.v
+  drop x
+  ret r
+}
+
+fn sum8(a: ptr @owned, b: ptr @owned, c: ptr @owned, d: ptr @owned, e: ptr @owned, f: ptr @owned, g: ptr @owned, h: ptr @owned) -> ptr {
+entry:
+  let x1 = call v(a)
+  let x2 = call v(b)
+  let x3 = call v(c)
+  let x4 = call v(d)
+  let x5 = call v(e)
+  let x6 = call v(f)
+  let x7 = call v(g)
+  let x8 = call v(h)
+  let s1 = prim add(x1, x2)
+  let s2 = prim add(s1, x3)
+  let s3 = prim add(s2, x4)
+  let s4 = prim add(s3, x5)
+  let s5 = prim add(s4, x6)
+  let s6 = prim add(s5, x7)
+  let s7 = prim add(s6, x8)
+  let k = mkclosure times(s7)
+  ret k
+}
+
+fn times(k: i64, y: ptr @owned) -> ptr {
+entry:
+  let w = call v(y)
+  let p = prim mul(k, w)
+  let r = alloc Int.I(p)
+  ret r
+}
+
+fn main() -> i64 {
+entry:
+  let one = alloc Int.I(1)
+  let ten = alloc Int.I(10)
+  let f = mkclosure sum8()
+  dup one
+  dup one
+  dup one
+  dup one
+  dup one
+  dup one
+  dup one
+  let p = apply f(one, one, one, one, one, one, one)
+  dup p
+  dup one
+  dup ten
+  let r = apply p(one, ten)
+  let x = call v(r)
+  let _ = extern cirka_write_i64(x)
+  let _ = extern cirka_write_char(10)
+  // the shared PAP again, applied one argument at a time
+  let q = apply p(one)
+  let r2 = apply q(ten)
+  let y = call v(r2)
+  let _ = extern cirka_write_i64(y)
+  let _ = extern cirka_write_char(10)
+  ret 0
+}

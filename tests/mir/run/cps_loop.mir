@@ -1,0 +1,33 @@
+// runtime-env: CIRKA_STACK_SIZE=1M
+// A loop whose iterations are unknown (closure) calls in tail position:
+// they must not consume stack either.
+type Int { I = 0 { v: i64 } }
+extern fn cirka_write_i64(i64) -> void
+extern fn cirka_write_char(i64) -> void
+
+fn count(n: ptr @owned) -> ptr {
+entry:
+  let v = proj n Int.I.v
+  switch v { 0 => done, default => more }
+done:
+  ret n
+more:
+  drop n
+  let v1 = prim sub(v, 1)
+  let n1 = alloc Int.I(v1)
+  let c = mkclosure count()
+  let r = apply c(n1)
+  ret r
+}
+
+fn main() -> i64 {
+entry:
+  let start = alloc Int.I(200000)
+  let c = mkclosure count()
+  let r = apply c(start)
+  let v = proj r Int.I.v
+  drop r
+  let _ = extern cirka_write_i64(v)
+  let _ = extern cirka_write_char(10)
+  ret 0
+}

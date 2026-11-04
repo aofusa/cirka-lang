@@ -40,6 +40,9 @@ fn mir_run_interpreter() {
     let cases = discover(&repo_root().join("tests/mir/run"), &["mir"]);
     assert!(!cases.is_empty());
     run_suite("mir-run-interp", &cases, |c| {
+        if c.header.get("skip-backend") == Some("interp") {
+            return Outcome::Skip("skip-backend: interp".into());
+        }
         let m = match cirka_mir::parse(FileId(0), &c.source()) {
             Ok(m) => m,
             Err(e) => return Outcome::Fail(format!("parse error: {}", e.message)),
@@ -102,9 +105,20 @@ fn mir_run_native() {
             Err(e) => return Outcome::Fail(format!("parse error: {}", e.message)),
         };
         let stdin = std::fs::read(c.sibling("stdin")).unwrap_or_default();
-        let reference = match cirka_mir::interp::run(&m, &stdin, u64::MAX) {
-            Ok(r) => r,
-            Err(e) => return Outcome::Fail(format!("interpreter: {e}")),
+        let interp_ok = c.header.get("skip-backend") != Some("interp");
+        let reference = if interp_ok {
+            match cirka_mir::interp::run(&m, &stdin, u64::MAX) {
+                Ok(r) => r,
+                Err(e) => return Outcome::Fail(format!("interpreter: {e}")),
+            }
+        } else {
+            cirka_mir::interp::RunResult {
+                stdout: std::fs::read_to_string(c.sibling("stdout")).unwrap_or_default(),
+                stderr: String::new(),
+                exit_code: expected_exit(c),
+                stats: Default::default(),
+                leaked: 0,
+            }
         };
         let work = cirka_testkit::work_dir("mir-native", &c.name);
         for (rt, name) in [
@@ -126,6 +140,9 @@ fn mir_run_native() {
             }
             let mut cmd = std::process::Command::new(&exe);
             cmd.env("CIRKA_STATS", "1").env("CIRKA_LEAK_CHECK", "1");
+            for (k, v) in c.header.runtime_env() {
+                cmd.env(k, v);
+            }
             let out = match cirka_testkit::run_with_stdin(cmd, Some(&stdin)) {
                 Ok(o) => o,
                 Err(e) => return Outcome::Fail(e.to_string()),
@@ -147,6 +164,7 @@ fn mir_run_native() {
                 return Outcome::Fail(format!("[{name}] runtime report:\n{}", out.stderr));
             }
             match parse_stats(&out.stderr) {
+                Some((a, f)) if !interp_ok && a == f => {}
                 Some((a, f)) if (a, f) == (reference.stats.allocs, reference.stats.frees) => {}
                 s => {
                     return Outcome::Fail(format!(

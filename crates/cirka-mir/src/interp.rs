@@ -331,12 +331,56 @@ impl<'m> Interp<'m> {
         let mut bb = 0usize;
         loop {
             let block = &f.blocks[bb];
-            for ins in &block.instrs {
+            let n = block.instrs.len();
+            let mut tail: Option<(usize, Vec<Val>)> = None;
+            for (ii, ins) in block.instrs.iter().enumerate() {
                 if self.fuel == 0 {
                     return Err(Exit::Panic("interpreter fuel exhausted".into()));
                 }
                 self.fuel -= 1;
+                // `let r = call/apply ...; ret r` is a tail call.
+                if ii + 1 == n
+                    && let (Instr::Let { var: Some(r), rhs }, Terminator::Ret(Operand::Var(rv))) =
+                        (ins, &block.term)
+                    && r == rv
+                {
+                    match rhs {
+                        Rhs::Call { func, args } => {
+                            let vals = self.operands(&frame, args);
+                            match self.funcs.get(func.as_str()) {
+                                Some(&gi) => tail = Some((gi, vals)),
+                                None => return fault(format!("unknown function {func}")),
+                            }
+                            break;
+                        }
+                        Rhs::Apply { clo, args } => {
+                            let c = frame[clo.0 as usize];
+                            let vals = self.operands(&frame, args);
+                            match self.apply_step(c, vals)? {
+                                Step::Value(v) => return Ok(v),
+                                Step::Call(gi, all, None) => tail = Some((gi, all)),
+                                Step::Call(gi, all, Some(p)) => {
+                                    let r = self.call(gi, all)?;
+                                    self.drop_val(Val::P(p))?;
+                                    return Ok(r);
+                                }
+                            }
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
                 self.instr(cur, f, &mut frame, ins)?;
+            }
+            if let Some((gi, vals)) = tail {
+                cur = gi;
+                f = &m.funcs[gi];
+                frame = vec![Val::I(0); f.var_names.len()];
+                for (p, a) in f.params.iter().zip(vals) {
+                    frame[p.var.0 as usize] = a;
+                }
+                bb = 0;
+                continue;
             }
             match &block.term {
                 Terminator::Ret(o) => return Ok(self.operand(&frame, o)),
@@ -636,6 +680,22 @@ impl<'m> Interp<'m> {
 
     /// Generic eval/apply (05-runtime.md §4). Consumes `f` and `args`.
     fn apply(&mut self, f: Val, args: Vec<Val>) -> R<Val> {
+        match self.apply_step(f, args)? {
+            Step::Value(v) => Ok(v),
+            Step::Call(gi, all, post) => {
+                let r = self.call(gi, all)?;
+                if let Some(p) = post {
+                    self.drop_val(Val::P(p))?;
+                }
+                Ok(r)
+            }
+        }
+    }
+
+    /// One step of eval/apply: either a value, or the final (tail) call of
+    /// a closure's code, so that callers in tail position can reuse their
+    /// frame (mirrors `musttail` in the native code).
+    fn apply_step(&mut self, f: Val, args: Vec<Val>) -> R<Step> {
         let Val::P(p) = f else {
             return fault("apply of a non-pointer");
         };
@@ -653,22 +713,46 @@ impl<'m> Interp<'m> {
                     fields.extend(args);
                     let size = 8 + 8 * fields.len();
                     let tag = n as u32;
-                    Ok(Val::P(self.alloc(
+                    Ok(Step::Value(Val::P(self.alloc(
                         kind::PAP,
                         tag,
                         fields,
                         Payload::Con,
                         size,
-                    )))
+                    ))))
                 } else {
                     let rest = args[arity..].to_vec();
                     let first = args[..arity].to_vec();
-                    let r = self.enter_closure(p, first)?;
-                    self.apply(r, rest)
+                    let r = match self.enter_closure(p, first)? {
+                        Step::Value(v) => v,
+                        Step::Call(gi, all, post) => {
+                            let r = self.call(gi, all)?;
+                            if let Some(p) = post {
+                                self.drop_val(Val::P(p))?;
+                            }
+                            r
+                        }
+                    };
+                    self.apply_step(r, rest)
                 }
             }
             kind::PAP => {
                 let fields = self.heap[p as usize].fields.clone();
+                let g = fields[0];
+                let m = fields.len() - 1;
+                let g_arity = match g {
+                    Val::P(q) => self.obj(q)?.tag as usize,
+                    _ => return fault("PAP without a function"),
+                };
+                let rem = g_arity.saturating_sub(m);
+                if rem >= 1 && args.len() > rem {
+                    // Over-application of a PAP: saturate first, then apply
+                    // the result to the remaining arguments.
+                    let first = args[..rem].to_vec();
+                    let rest = args[rem..].to_vec();
+                    let r = self.apply(f, first)?;
+                    return self.apply_step(r, rest);
+                }
                 if self.heap[p as usize].rc == 1 {
                     self.free_raw(p);
                 } else {
@@ -677,14 +761,13 @@ impl<'m> Interp<'m> {
                     }
                     self.drop_val(Val::P(p))?;
                 }
-                let g = fields[0];
                 let mut all = fields[1..].to_vec();
                 all.extend(args);
-                self.apply(g, all)
+                self.apply_step(g, all)
             }
             kind::THUNK | kind::IND => {
                 let v = self.force(f)?;
-                self.apply(v, args)
+                self.apply_step(v, args)
             }
             _ => fault(format!("apply of a non-function object (kind {k})")),
         }
@@ -692,7 +775,7 @@ impl<'m> Interp<'m> {
 
     /// The closure entry stub: moves (or dups) captured values out of the
     /// closure and calls the code with captured ++ args.
-    fn enter_closure(&mut self, p: u32, args: Vec<Val>) -> R<Val> {
+    fn enter_closure(&mut self, p: u32, args: Vec<Val>) -> R<Step> {
         let Payload::Code(gi) = self.heap[p as usize].payload else {
             return fault("closure without code");
         };
@@ -717,11 +800,11 @@ impl<'m> Interp<'m> {
         }
         let mut all = captured;
         all.extend(args);
-        let r = self.call(gi, all)?;
-        if any_borrowed {
-            self.drop_val(Val::P(p))?;
-        }
-        Ok(r)
+        Ok(Step::Call(
+            gi,
+            all,
+            if any_borrowed { Some(p) } else { None },
+        ))
     }
 
     fn bytes(&self, v: Val) -> R<&Vec<u8>> {
@@ -923,6 +1006,12 @@ impl<'m> Interp<'m> {
             )),
         }
     }
+}
+
+enum Step {
+    Value(Val),
+    /// Call function `.0` with `.1`; drop object `.2` afterwards.
+    Call(usize, Vec<Val>, Option<u32>),
 }
 
 fn fault<T>(msg: impl Into<String>) -> R<T> {
