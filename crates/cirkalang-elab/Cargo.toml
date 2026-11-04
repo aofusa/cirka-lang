@@ -1,0 +1,12 @@
+[package]
+name = "cirkalang-elab"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+cirka-diagnostics.workspace = true
+cirkalang-resolve.workspace = true

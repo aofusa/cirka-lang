@@ -1,0 +1,16 @@
+[package]
+name = "achc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+cirka-diagnostics.workspace = true
+achc-syntax.workspace = true
+achc-rename.workspace = true
+achc-typeck.workspace = true
+achc-desugar.workspace = true
+cirka-driver.workspace = true

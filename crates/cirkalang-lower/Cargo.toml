@@ -1,0 +1,13 @@
+[package]
+name = "cirkalang-lower"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+cirka-diagnostics.workspace = true
+cirkalang-elab.workspace = true
+cirka-core.workspace = true

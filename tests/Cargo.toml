@@ -1,0 +1,20 @@
+[package]
+name = "cirka-integration"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+autotests = false
+
+[lints]
+workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+cirka-testkit.workspace = true
+
+[[test]]
+name = "workspace"
+path = "workspace.rs"

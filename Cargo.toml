@@ -1,0 +1,49 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "tests"]
+
+[workspace.package]
+version = "0.0.1-dev"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/aofusa/cirka-lang"
+rust-version = "1.99"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+too_many_arguments = "allow"
+type_complexity = "allow"
+large_enum_variant = "allow"
+new_without_default = "allow"
+module_inception = "allow"
+
+[workspace.dependencies]
+cirka-diagnostics = { path = "crates/cirka-diagnostics" }
+cirka-core = { path = "crates/cirka-core" }
+cirka-mir = { path = "crates/cirka-mir" }
+cirka-codegen-llvm = { path = "crates/cirka-codegen-llvm" }
+cirka-smt = { path = "crates/cirka-smt" }
+cirka-bindgen = { path = "crates/cirka-bindgen" }
+cirka-driver = { path = "crates/cirka-driver" }
+cirka-testkit = { path = "crates/cirka-testkit" }
+achc-syntax = { path = "crates/achc-syntax" }
+achc-rename = { path = "crates/achc-rename" }
+achc-typeck = { path = "crates/achc-typeck" }
+achc-desugar = { path = "crates/achc-desugar" }
+cirkalang-syntax = { path = "crates/cirkalang-syntax" }
+cirkalang-resolve = { path = "crates/cirkalang-resolve" }
+cirkalang-elab = { path = "crates/cirkalang-elab" }
+cirkalang-check = { path = "crates/cirkalang-check" }
+cirkalang-lower = { path = "crates/cirkalang-lower" }
+
+# The runtime is a no_std staticlib; it needs panic=abort outside of tests
+# (cargo always uses unwinding for the test harness itself).
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+debug = 1

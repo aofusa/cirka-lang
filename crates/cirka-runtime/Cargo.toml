@@ -1,0 +1,17 @@
+[package]
+name = "cirka-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "cirka_rt"
+crate-type = ["staticlib", "rlib"]
+doctest = false
+
+[features]
+# Debug runtime: magic values, poisoning, RC checks and leak reports.
+debug-rt = []
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"

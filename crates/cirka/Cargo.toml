@@ -1,0 +1,18 @@
+[package]
+name = "cirka"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+cirka-diagnostics.workspace = true
+cirkalang-syntax.workspace = true
+cirkalang-resolve.workspace = true
+cirkalang-elab.workspace = true
+cirkalang-check.workspace = true
+cirkalang-lower.workspace = true
+cirka-driver.workspace = true
+cirka-bindgen.workspace = true
