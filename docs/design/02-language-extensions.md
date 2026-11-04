@@ -29,6 +29,17 @@
 
 個別に有効化することもできる。型・関数は `Cirka.*` モジュールに定義され、構文糖はそれらへの脱糖にすぎない。
 
+### 1.1.1 `CirkaVerify` (検証機能。別軸・opt-in)
+
+`CirkaOwnership` には含めない。詳細は [13-verification.md](13-verification.md)。
+
+| 拡張名 | 内容 |
+|--------|------|
+| `CirkaRefinement` | 洗練型のネイティブ構文 `{v : τ \| p}`、名前付き引数 `(x : τ) ->` |
+| `CirkaContracts` | `requires` / `ensures` / `invariant` 節 |
+
+Liquid Haskell 互換の `{-@ ... @-}` 注釈は拡張の指定なしで、`.hs` にも書ける(Haskell としてはコメント)。
+
 ### 1.2 サポートする GHC 拡張(第一段階の目標)
 
 優先度順: `BangPatterns`, `ScopedTypeVariables`, `LambdaCase`, `TupleSections`, `MultiWayIf`,
@@ -221,7 +232,21 @@ import "C" "math.h" (sin, cos)                     -- ヘッダから型を取�
 - この規則は `CirkaOwnership` 由来の型を使うコードにしか影響せず、既存 Haskell コードの意味は変わらない。
   ただし GHC の `LinearTypes` を使った既存コードでは、遅延だった `let` が正格になる場合がある(互換性注記に記載)。
 
-## 9. GHC との既知の非互換 (第一段階)
+## 9. 検証用の注釈 (概要)
+
+```haskell
+{-@ safeDiv :: Int -> {d:Int | d /= 0} -> Int @-}       -- .hs でも可 (Liquid Haskell 互換)
+
+take :: (n : Nat) -> (xs : [a]) -> {ys : [a] | len ys == min n (len xs)}   -- .chs ネイティブ構文
+
+binarySearch :: (arr : Ref r (Array Int)) -> (key : Int) -> Borrow r (Maybe Int)
+  requires sorted arr
+  ensures  \res -> maybe True (\i -> arr ! i == key) res
+```
+
+これらはすべて消去され、実行時の意味を変えない。検証は `achc verify` で行う。
+
+## 10. GHC との既知の非互換 (第一段階)
 
 | 項目 | aCHC の挙動 |
 |------|-------------|

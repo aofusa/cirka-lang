@@ -1,5 +1,7 @@
 # 09. ライブラリ戦略
 
+入力: [docs/specs/02-library.md](../specs/02-library.md)
+
 ## 1. 第一段階 (aCHC)
 
 ### 1.1 前提: GHC のコンパイル済みライブラリは使えない
@@ -52,16 +54,40 @@ GMP は使わない(静的リンク時の LGPL の扱いを避ける・依存を
 - aCHC で通らない部分はパッチ (`lib/patches/<pkg>-<ver>.patch`) で対応し、パッチの量を互換性の指標として記録する。
 - `bytestring`/`text`/`vector` の内部実装は GHC primop 依存が強いため、公開 API 互換の再実装を検討(Unique 配列で in-place 実装できる好例)。
 
+### 1.5 数学・数値計算ラッパー (specs 02 の第一段階での実現)
+
+specs 02 の「C の成熟した資産を安全な薄いラッパーで使う(再実装しない)」方針を、第一段階でも `extern` (FEAT-0060) の上で試作する (FEAT-0063)。
+
+| パッケージ | 内容 | 実装 |
+|------------|------|------|
+| `cirka-math` | 基本数学関数 | libm の FFI。利用者からは純粋関数に見える |
+| `cirka-linalg` | 行列・ベクトル | OpenBLAS / LAPACKE の安全ラッパー |
+| `cirka-array` | 高性能配列 | `Cirka.Array` (一意配列) + 行優先/列優先の明示 |
+
+```haskell
+-- 所有権を移して出力行列を in-place 更新 (高速)。specs の gemm! に相当 (Haskell では ! を名前に使えないため In 接尾辞)
+gemmIn :: Matrix a -> Matrix a -> Unique (Matrix a) %1 -> Unique (Matrix a)
+-- 純粋版 (内部で新しい行列を確保)
+gemm   :: Matrix a -> Matrix a -> Matrix a
+```
+
+検証機能 (M9) が入れば、行列の次元を洗練型や型レベル Nat で表し (`Matrix m n a`)、次元不一致をコンパイル時に検出できる。
+
 ## 2. 第二段階 (CirkaLang) の推奨構成
 
-前提として「まずは言語仕様・言語機能を作り、標準ライブラリや数学系は glibc を使う」で十分実用になる。
-そのうえで、Rust の `core`/`alloc`/`std` 分割に倣った **3層構成** を推奨する。
+specs 02 の層構成 (core / base / std / 外部パッケージ) を採用する。前提として「まずは言語仕様・言語機能を作り、
+標準ライブラリや数学系は glibc を使う」で十分実用になる。
 
-| 層 | 内容 | 依存 | 実装言語 |
-|----|------|------|----------|
-| `cirka-core` | プリミティブ型、Option/Result、型クラス (Eq/Ord/Num/…)、イテレータ、スライス、文字列処理、基本数学 | なし (OS もアロケータも不要) | CirkaLang + LLVM 組み込み |
-| `cirka-alloc` | ヒープを使うデータ構造 (Vec, Map, String) | アロケータ (ランタイム) | CirkaLang |
-| `cirka-std` | ファイル・ネットワーク・スレッド・時間・プロセス・環境 | **libc (glibc)** | CirkaLang + FFI |
+| 層 | 内容 | 依存 | 方針 |
+|----|------|------|------|
+| `core` | Prelude (map/fold 等の純粋関数)、`Linear` (Owned/Borrow/Drop)、`IO`、`FFI` の基本プリミティブ | コンパイラ・ランタイムと一体 | 純粋で線形性を意識した API |
+| `base` | `Data` (Maybe, Either, List, Array, Map, Set)、`Control` (Monad 等)、`Text` (UTF-8)、`System` (ファイル・プロセスを線形資源として) | core | 標準同梱。ほぼ純粋 |
+| `std` | `Math`、`Numeric`、`Foreign` (よく使う C ライブラリの安全ラッパー) | base + libc/libm | 標準同梱推奨。内部で C FFI を使う |
+| 外部パッケージ | `cirka-linalg` (BLAS/LAPACK)、`cirka-numeric` (GSL 等)、FFT (FFTW)、統計 | std | エコシステムで育てる |
+
+- `core` のうち OS・アロケータに依存しない部分は `core` の **freestanding プロファイル** としてビルドできるようにする(Rust の `core` 相当。組み込み・カーネル向け。必須ではない)。
+- リストは純粋・不変、配列は所有/借用を区別して in-place 更新可能、文字列は Rust の `String`/`&str` に近い所有権モデル (所有 `String` と借用 `Str r`)。
+- パッケージマネージャは早期に用意する(`cirka.toml`。第一段階の `achc.toml` の依存解決を発展させる)。C ライブラリの安全ラッパーを書くためのテンプレートと `bindgen` を同梱する。
 
 ### 推奨と理由
 
@@ -73,9 +99,10 @@ GMP は使わない(静的リンク時の LGPL の扱いを避ける・依存を
 3. **超越関数 (`sin`, `exp`, `log`, …) は当初 glibc libm。** 将来、結果を全プラットフォームで一致させたい場合は、
    MIT ライセンスの **musl libm** や **CORE-MATH** (正しく丸められた実装) を CirkaLang に移植する。純粋な数値計算なので移植は機械的で、良いテストケースにもなる。
 4. **SIMD** は LLVM のベクトル型と組み込み関数で提供する(インラインアセンブラは最後の手段)。
-5. **数学ライブラリ(線形代数・乱数・統計)** は `cirka-std` の外に別パッケージとして置き、必要なら BLAS/LAPACK を FFI で使う。
+5. **線形代数・数値計算は BLAS/LAPACK・GSL・FFTW の安全ラッパー** とし、再実装しない。線形型で「出力バッファの所有権を渡して in-place」版と純粋版の両方を用意する。
+6. 数学ライブラリには検証機能 (洗練型・依存型) を積極的に使う(次元・定義域の保証。specs 03 の「数学的な性質が重要なライブラリ」)。
 
 ### 第一段階との接続
 
-第一段階で書いた `cirka-base` のうち、純粋な部分(リスト・Maybe・数値の Haskell 実装)は第二段階の `cirka-core` の原型になる。
-`Cirka.Ownership`/`Cirka.Array` の設計結果は `cirka-alloc` の API 設計に反映する。
+第一段階で書いた `cirka-base` のうち、純粋な部分(リスト・Maybe・数値の Haskell 実装)は第二段階の `core`/`base` の原型になる。
+`Cirka.Ownership`/`Cirka.Array` の設計結果は `core.Linear`・`base.Data.Array` に、`cirka-math`/`cirka-linalg` の試作は `std.Math` と外部パッケージに反映する。

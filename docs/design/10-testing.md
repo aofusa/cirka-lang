@@ -17,6 +17,8 @@
 | メモリ | 実行テスト全体 | `scripts/memcheck.sh` | `CIRKA_ALLOC=system` + valgrind でエラー 0 |
 | 性能 | `bench/` | `scripts/bench.sh` | hyperfine で aCHC / GHC -O2 / Rust を比較、結果を記録 |
 | ファズ | `fuzz/` (cargo-fuzz、後半) | 手動/定期 | パーサ・型検査がパニックしない |
+| 検証 (verify) | `tests/verify/{pass,fail}/**/*.{hs,chs}` (+ `.stderr`) | `cargo test --test verify` (`CIRKA_Z3` 未設定ならスキップ) | 検証が通る/期待どおりの反例付きエラーになる。Liquid Haskell の公開ベンチの一部も取り込む |
+| 契約の実行時検査 | `tests/run/contracts/` | `--contracts=check` で実行 | 違反時に期待どおりのメッセージで停止 |
 
 ## 2. テストハーネス (`tests/harness`)
 
@@ -71,6 +73,7 @@ cargo clippy --all-targets -- -D warnings
 cargo build -p cirka-runtime --profile release   (+ debug runtime)
 cargo test --workspace                           (ユニット・スナップショット・run・fail・mir)
 cargo test --test diff                           (CIRKA_GHC があれば)
+cargo test --test verify                         (CIRKA_Z3 があれば)
 ```
 
 `scripts/memcheck.sh`、`scripts/compat.sh`、`scripts/bench.sh` は時間がかかるため任意実行(マイルストーン完了時は必須)。

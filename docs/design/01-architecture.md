@@ -17,6 +17,8 @@ Typed AST (型・辞書・多重度注釈付き)
   │ cirka-desugar    do / リスト内包 / ガード / where / パターンマッチのコンパイル (決定木)
   ▼
 Core (明示的に型付けされた System F + 多重度 + ADT)       ← Core Lint で常に検証
+  │ (opt-in) cirka-verify  洗練型・契約・終了性の検証条件を生成し Z3 で検証 (13-verification.md)
+  │                         証明できた事実を Core に注釈 (境界検査の除去などに使う)
   │ cirka-core       Core→Core 最適化: 簡約・インライン・型クラス特殊化・
   │                  正格性解析・worker/wrapper・unboxing・case-of-case・デッドコード除去
   ▼
@@ -58,6 +60,7 @@ MIR には **インタプリタ** (`cirka-mir::interp`) を用意し、コード
 | `cirka-core` | lib | Core IR 定義・Lint・プリティプリンタ・最適化パス | |
 | `cirka-desugar` | lib | Typed AST → Core | typeck, core |
 | `cirka-mir` | lib | MIR 定義・テキスト形式パーサ・Core→MIR・Perceus・検証器・インタプリタ | core |
+| `cirka-verify` | lib | 洗練型の解析・Liquid 推論・VC 生成・SMT-LIB2 出力・Z3 呼び出しとキャッシュ・終了性検査 | core, typeck(注釈の型) |
 | `cirka-codegen-llvm` | lib | MIR → LLVM IR テキスト | mir |
 | `cirka-runtime` | staticlib (`#![no_std]`) | オブジェクト表現・RC・アロケータ・サンク評価・I/O・起動 | `libc` のみ |
 | `cirka-driver` | lib | パッケージ/モジュール探索・`achc.toml`・パイプライン実行・外部ツール起動 | 全部 |
@@ -80,12 +83,14 @@ achc build [--release] [-o out] [Main.hs]   # achc.toml があればそれに従
 achc run Main.hs [-- args...]               # ビルドして実行
 achc check Main.hs                          # 型・所有権検査のみ (コード生成しない)
 achc bindgen header.h -o Foo.chs            # C ヘッダから extern 宣言を生成 (FEAT-0061)
+achc verify [--report] Main.hs              # 洗練型・契約・終了性を検証 (FEAT-0090〜)
 achc --dump=<stages> ...                    # IR ダンプ
 achc --version
 ```
 
 主要フラグ: `-O0|-O1|-O2`、`--ownership=off|warn|strict`、`--cycles=warn|error|collect`、
-`--runtime=release|debug`(debug ランタイムはリークチェック・RC整合性チェック付き)、`--emit=llvm|obj|exe`。
+`--runtime=release|debug`(debug ランタイムはリークチェック・RC整合性チェック付き)、`--emit=llvm|obj|exe`、
+`--verify`(ビルド時に検証も行う)、`--contracts=off|check|verify`。
 
 ### `achc.toml`(プロジェクト設定; tsconfig に相当)
 
@@ -103,6 +108,11 @@ cirka-base = { path = "../lib/cirka-base" }
 ownership = "warn"        # off | warn | strict : .hs に対する所有権関連の診断レベル
 cycles = "warn"           # warn | error | collect
 default-extensions = []   # 例: ["Strict", "LinearTypes"]
+
+[verify]                  # 検証機能 (opt-in)
+enabled = false           # true でビルド時にも検証
+contracts = "off"         # off | check | verify
+level = "error"           # 検証失敗を warn / error のどちらにするか
 ```
 
 外部ツールのパス(`clang` 等)は `achc.toml` ではなく環境変数(`.env`)から読む。

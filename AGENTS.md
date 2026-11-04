@@ -24,6 +24,7 @@
 2. **Haskellの純粋性と型システムを壊さない。** 副作用は `IO` に閉じ込める。拡張は既存プログラムの意味を変えない(「`.hs` は `.js`、`.chs` は `.ts`」)。
 3. **メモリ安全。** `unsafe` 相当の操作はランタイム/FFI境界に限定する。リークは安全性違反ではないが(Rustと同じ)、検出・警告する。
 4. **ネイティブ速度。** LLVMで機械語を生成し、Rust相当の性能を目標とする。
+5. **検証機能は別軸・実行時コストゼロ。** 洗練型・契約・依存型などの仕様検証機能 (specs 03/04) は opt-in で、生成コードの性能を落とさない。優先度は 1〜4 の軸より低い。
 
 ## 2. 必読ドキュメント
 
@@ -43,6 +44,7 @@
 | `docs/design/10-testing.md` | テスト戦略・互換性・性能計測 |
 | `docs/design/11-roadmap.md` | マイルストーンとチケットの対応 |
 | `docs/design/12-cirkalang.md` | 第二段階 CirkaLang の方向性 |
+| `docs/design/13-verification.md` | 検証機能 (洗練型・契約・依存型・ケイパビリティ・セッション型) |
 | `docs/tasks/tasks.md` | チケット一覧(作業の起点) |
 
 ## 3. ディレクトリ構成
@@ -62,6 +64,7 @@
 │   ├── cirka-core/         #   Core IR・Core Lint・Core最適化
 │   ├── cirka-desugar/      #   AST → Core
 │   ├── cirka-mir/          #   MIR・所有権(dup/drop)挿入・検証・インタプリタ
+│   ├── cirka-verify/       #   検証 (洗練型・契約・終了性、Z3 連携)
 │   ├── cirka-codegen-llvm/ #   MIR → LLVM IR
 │   ├── cirka-runtime/      #   ランタイム (staticlib, no_std)
 │   └── cirka-diagnostics/  #   エラー表示・ソース位置
@@ -90,7 +93,7 @@
 
 ```sh
 cp .env.sample .env            # 初回のみ。必要に応じて CIRKA_UID などを編集
-docker compose build           # イメージ作成 (LLVM 18, GHC, Rust, valgrind, hyperfine)
+docker compose build           # イメージ作成 (LLVM 18, GHC, Rust, Z3, valgrind, hyperfine)
 docker compose run --rm dev    # コンテナ内シェル
 # コンテナ内で
 cargo build
@@ -149,6 +152,7 @@ scripts/ci.sh                  # fmt / clippy / 全テスト (FEAT-0003 で作�
 | 実行テスト | `tests/run/**/*.hs|.chs` + `.stdout` (+ `.stdin`, `.exitcode`) | コンパイル→実行→出力比較 |
 | エラーテスト | `tests/fail/**/*.hs|.chs` + `.stderr` | 型エラー・所有権エラーの診断メッセージ |
 | 差分テスト | `tests/diff/**/*.hs` | 同じプログラムを GHC と aCHC で実行して比較 |
+| 検証テスト | `tests/verify/{pass,fail}/` | 洗練型・契約の検証結果 (Z3 が必要) |
 | 互換性 | `tests/compat/` | GHC testsuite / nofib の一部を取り込み、合格率を記録 |
 | メモリ | 実行テスト全体 | `CIRKA_LEAK_CHECK=1` でリーク0、`CIRKA_ALLOC=system` + valgrind でエラー0 |
 | 性能 | `bench/` | GHC -O2 / Rust との比較 (hyperfine) |
