@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "achc"
-version = "0.0.1-dev"
+version = "0.0.1"
 dependencies = [
  "achc-desugar",
  "achc-rename",
@@ -16,7 +16,7 @@ dependencies = [
 
 [[package]]
 name = "achc-desugar"
-version = "0.0.1-dev"
+version = "0.0.1"
 dependencies = [
  "achc-typeck",
  "cirka-core",
@@ -25,7 +25,7 @@ dependencies = [
 
 [[package]]
 name = "achc-rename"
-version = "0.0.1-dev"
+version = "0.0.1"
 dependencies = [
  "achc-syntax",
  "cirka-diagnostics",
@@ -33,14 +33,14 @@ dependencies = [
 
 [[package]]
 name = "achc-syntax"
-version = "0.0.1-dev"
+version = "0.0.1"
 dependencies = [
  "cirka-diagnostics",
 ]
 
 [[package]]
 name = "achc-typeck"
-version = "0.0.1-dev"
+version = "0.0.1"
 dependencies = [
  "achc-rename",
  "cirka-core",
@@ -49,7 +49,7 @@ dependencies = [
 
 [[package]]
 name = "cirka"
-version = "0.0.1-dev"
+version = "0.0.1"
 dependencies = [
  "cirka-bindgen",
  "cirka-core",
@@ -64,32 +64,32 @@ dependencies = [
 
 [[package]]
 name = "cirka-bindgen"
-version = "0.0.1-dev"
+version = "0.0.1"
 dependencies = [
  "cirka-diagnostics",
 ]
 
 [[package]]
 name = "cirka-codegen-llvm"
-version = "0.0.1-dev"
+version = "0.0.1"
 dependencies = [
  "cirka-mir",
 ]
 
 [[package]]
 name = "cirka-core"
-version = "0.0.1-dev"
+version = "0.0.1"
 dependencies = [
  "cirka-diagnostics",
 ]
 
 [[package]]
 name = "cirka-diagnostics"
-version = "0.0.1-dev"
+version = "0.0.1"
 
 [[package]]
 name = "cirka-driver"
-version = "0.0.1-dev"
+version = "0.0.1"
 dependencies = [
  "cirka-codegen-llvm",
  "cirka-core",
@@ -99,7 +99,7 @@ dependencies = [
 
 [[package]]
 name = "cirka-integration"
-version = "0.0.1-dev"
+version = "0.0.1"
 dependencies = [
  "cirka",
  "cirka-codegen-llvm",
@@ -114,7 +114,7 @@ dependencies = [
 
 [[package]]
 name = "cirka-mir"
-version = "0.0.1-dev"
+version = "0.0.1"
 dependencies = [
  "cirka-core",
  "cirka-diagnostics",
@@ -122,22 +122,22 @@ dependencies = [
 
 [[package]]
 name = "cirka-runtime"
-version = "0.0.1-dev"
+version = "0.0.1"
 
 [[package]]
 name = "cirka-smt"
-version = "0.0.1-dev"
+version = "0.0.1"
 dependencies = [
  "cirka-diagnostics",
 ]
 
 [[package]]
 name = "cirka-testkit"
-version = "0.0.1-dev"
+version = "0.0.1"
 
 [[package]]
 name = "cirkalang-check"
-version = "0.0.1-dev"
+version = "0.0.1"
 dependencies = [
  "cirka-diagnostics",
  "cirka-smt",
@@ -146,7 +146,7 @@ dependencies = [
 
 [[package]]
 name = "cirkalang-elab"
-version = "0.0.1-dev"
+version = "0.0.1"
 dependencies = [
  "cirka-diagnostics",
  "cirkalang-resolve",
@@ -154,7 +154,7 @@ dependencies = [
 
 [[package]]
 name = "cirkalang-lower"
-version = "0.0.1-dev"
+version = "0.0.1"
 dependencies = [
  "cirka-core",
  "cirka-diagnostics",
@@ -164,7 +164,7 @@ dependencies = [
 
 [[package]]
 name = "cirkalang-resolve"
-version = "0.0.1-dev"
+version = "0.0.1"
 dependencies = [
  "cirka-diagnostics",
  "cirkalang-syntax",
@@ -172,7 +172,7 @@ dependencies = [
 
 [[package]]
 name = "cirkalang-syntax"
-version = "0.0.1-dev"
+version = "0.0.1"
 dependencies = [
  "cirka-diagnostics",
 ]

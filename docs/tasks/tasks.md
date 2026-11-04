@@ -189,7 +189,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0204](features/FEAT-0204-cl-erase-lower.md) | 消去と共通 Core への変換 | done | P0 | 0203, 0030 |
 | [FEAT-0205](features/FEAT-0205-cl-cli.md) | cirka CLI と cirka.toml | done | P0 | 0204, 0031, 0032 |
 | [FEAT-0206](features/FEAT-0206-cl-prim-min.md) | プリミティブ型と最小ライブラリ | done | P0 | 0205 |
-| [FEAT-0207](features/FEAT-0207-cl-release-v001.md) | CirkaLang v0.0.1 リリース | todo | P0 | 0206, 0016, 0022 |
+| [FEAT-0207](features/FEAT-0207-cl-release-v001.md) | CirkaLang v0.0.1 リリース | done | P0 | 0206, 0016, 0022 |
 
 ### CirkaLang v0.0.2 実用 CUI
 

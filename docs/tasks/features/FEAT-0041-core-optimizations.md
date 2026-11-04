@@ -24,3 +24,5 @@
 
 ## メモ
 
+- CirkaLang v0.0.1 の計測 (FEAT-0207): binary-trees が Rust の 1.60 倍、n-body が 52.9 倍で、主因は `I#`/`F#` の割り当て。
+  CirkaLang の Core は正格 (`let!`・正格フィールド) なので、`Int`/`Float` の引数・戻り値の worker/wrapper は正格性解析なしで行える。

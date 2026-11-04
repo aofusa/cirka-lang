@@ -1,6 +1,6 @@
 # FEAT-0207: CirkaLang v0.0.1 リリース
 
-- 状態: todo
+- 状態: done
 - トラック: CirkaLang
 - マイルストーン: CirkaLang v0.0.1 最小の正格言語・所有権・ネイティブ
 - 優先度: P0
@@ -13,15 +13,23 @@ v0.0.1 の評価とリリース。
 
 ## 作業内容
 
-- [ ] binary-trees / n-body の CirkaLang 版と Rust との比較
-- [ ] CHANGELOG と既知の制限
-- [ ] タグ `cirkalang-v0.0.1`
+- [x] binary-trees / n-body の CirkaLang 版と Rust との比較
+- [x] CHANGELOG と既知の制限
+- [ ] タグ `cirkalang-v0.0.1` (AGENTS.md に従い、タグとリリースの公開は利用者の確認待ち)
 
 ## 受け入れ条件
 
-- [ ] 性能結果が `bench-report.md` に記録
-- [ ] 評価メモが次版の設計に反映されている
-- [ ] テストを追加し `scripts/ci.sh` が通る
+- [x] 性能結果が `bench-report.md` に記録
+- [x] 評価メモが次版の設計に反映されている
+- [x] テストを追加し `scripts/ci.sh` が通る
 
 ## メモ
 
+- ベンチ: `bench/binary-trees/main.cirka`、`bench/n-body/main.cirka` (+ `bench/n-body/rust/main.rs`)。引数のために
+  Prelude に `argCount` / `getArg` / `parseInt` を追加 (ランタイムの `cirka_argc` / `cirka_arg`)。
+  `tests/cirkalang.rs` の `cirkalang_bench_programs` が小さい引数で Rust 版と同じ出力・リーク 0 を確認する。
+- 結果 (`docs/design/bench-report.md`): binary-trees は Rust の 1.60 倍 (手書き MIR は 0.68 倍)、n-body は 52.9 倍。
+  原因は数値のボックス化と配列の欠如。対策は FEAT-0041 (unboxing、v0.0.3) と FEAT-0211 (配列、v0.0.2) に記録した。
+- 評価メモは `12-cirkalang.md` §8「v0.0.1 の評価」に記録。
+- 版: ワークスペースの版を `0.0.1` にした (`cirka --version` は `CirkaLang v0.0.1`)。`CHANGELOG.md` を作成。
+- タグ `cirkalang-v0.0.1` は、このリリースのコミットに対して利用者の確認を得てから打つ。
