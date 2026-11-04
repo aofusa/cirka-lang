@@ -1,0 +1,272 @@
+; Primitives of aCHC (`foreign import prim "name"` in Cirka.Prim).
+; Merged into every desugared program; unused ones are removed by DCE.
+; `IO a` is `Unit# -> a`.
+
+(data Int () (I# (! Int#)))
+(data Char () (C# (! Int#)))
+(data Double () (D# (! Double#)))
+(data Bool () (False) (True))
+(data List (a) (Nil) (Cons a (List a)))
+(data Unit () (Unit))
+
+(extern cirka_write_char (Int#) Unit#)
+(extern cirka_write_bytes (Bytes) Unit#)
+(extern cirka_panic_bytes (Bytes) Unit#)
+(extern cirka_exit (Int#) Unit#)
+(extern cirka_read_byte () Int#)
+(extern cirka_argc () Int#)
+(extern cirka_arg (Int#) Bytes)
+(extern cirka_f64_to_bytes (Double#) Bytes)
+(extern sqrt (Double#) Double#)
+
+; ---- Int ----
+
+(def prim$int_add (-> Int Int Int)
+  (lam ((a Int) (b Int))
+    (case a (a1 Int) Int ((I# x) (case b (b1 Int) Int ((I# y) (con I# () (prim add x y))))))))
+(def prim$int_sub (-> Int Int Int)
+  (lam ((a Int) (b Int))
+    (case a (a1 Int) Int ((I# x) (case b (b1 Int) Int ((I# y) (con I# () (prim sub x y))))))))
+(def prim$int_mul (-> Int Int Int)
+  (lam ((a Int) (b Int))
+    (case a (a1 Int) Int ((I# x) (case b (b1 Int) Int ((I# y) (con I# () (prim mul x y))))))))
+(def prim$int_quot (-> Int Int Int)
+  (lam ((a Int) (b Int))
+    (case a (a1 Int) Int ((I# x) (case b (b1 Int) Int ((I# y)
+      (case y (z Int#) Int
+        (0 (prim$div_zero unit))
+        (_ (con I# () (prim quot x y))))))))))
+(def prim$int_rem (-> Int Int Int)
+  (lam ((a Int) (b Int))
+    (case a (a1 Int) Int ((I# x) (case b (b1 Int) Int ((I# y)
+      (case y (z Int#) Int
+        (0 (prim$div_zero unit))
+        (_ (con I# () (prim rem x y))))))))))
+(def prim$int_neg (-> Int Int)
+  (lam ((a Int)) (case a (a1 Int) Int ((I# x) (con I# () (prim neg x))))))
+
+(def prim$div_zero (-> Unit# Int)
+  (lam ((u Unit#))
+    (let! (v Unit# (extern cirka_panic_bytes "divide by zero"))
+      (panic "unreachable" Int))))
+
+(def prim$bool (-> Int# Bool)
+  (lam ((c Int#)) (case c (k Int#) Bool (0 (con False ())) (_ (con True ())))))
+
+(def prim$int_eq (-> Int Int Bool)
+  (lam ((a Int) (b Int))
+    (case a (a1 Int) Bool ((I# x) (case b (b1 Int) Bool ((I# y) (prim$bool (prim eq x y))))))))
+(def prim$int_ne (-> Int Int Bool)
+  (lam ((a Int) (b Int))
+    (case a (a1 Int) Bool ((I# x) (case b (b1 Int) Bool ((I# y) (prim$bool (prim ne x y))))))))
+(def prim$int_lt (-> Int Int Bool)
+  (lam ((a Int) (b Int))
+    (case a (a1 Int) Bool ((I# x) (case b (b1 Int) Bool ((I# y) (prim$bool (prim lt x y))))))))
+(def prim$int_le (-> Int Int Bool)
+  (lam ((a Int) (b Int))
+    (case a (a1 Int) Bool ((I# x) (case b (b1 Int) Bool ((I# y) (prim$bool (prim le x y))))))))
+(def prim$int_gt (-> Int Int Bool)
+  (lam ((a Int) (b Int))
+    (case a (a1 Int) Bool ((I# x) (case b (b1 Int) Bool ((I# y) (prim$bool (prim gt x y))))))))
+(def prim$int_ge (-> Int Int Bool)
+  (lam ((a Int) (b Int))
+    (case a (a1 Int) Bool ((I# x) (case b (b1 Int) Bool ((I# y) (prim$bool (prim ge x y))))))))
+
+; ---- Double ----
+
+(def prim$dbl_add (-> Double Double Double)
+  (lam ((a Double) (b Double))
+    (case a (a1 Double) Double ((D# x) (case b (b1 Double) Double ((D# y) (con D# () (prim fadd x y))))))))
+(def prim$dbl_sub (-> Double Double Double)
+  (lam ((a Double) (b Double))
+    (case a (a1 Double) Double ((D# x) (case b (b1 Double) Double ((D# y) (con D# () (prim fsub x y))))))))
+(def prim$dbl_mul (-> Double Double Double)
+  (lam ((a Double) (b Double))
+    (case a (a1 Double) Double ((D# x) (case b (b1 Double) Double ((D# y) (con D# () (prim fmul x y))))))))
+(def prim$dbl_div (-> Double Double Double)
+  (lam ((a Double) (b Double))
+    (case a (a1 Double) Double ((D# x) (case b (b1 Double) Double ((D# y) (con D# () (prim fdiv x y))))))))
+(def prim$dbl_neg (-> Double Double)
+  (lam ((a Double)) (case a (a1 Double) Double ((D# x) (con D# () (prim fneg x))))))
+(def prim$dbl_sqrt (-> Double Double)
+  (lam ((a Double)) (case a (a1 Double) Double ((D# x) (con D# () (extern sqrt x))))))
+(def prim$dbl_eq (-> Double Double Bool)
+  (lam ((a Double) (b Double))
+    (case a (a1 Double) Bool ((D# x) (case b (b1 Double) Bool ((D# y) (prim$bool (prim feq x y))))))))
+(def prim$dbl_lt (-> Double Double Bool)
+  (lam ((a Double) (b Double))
+    (case a (a1 Double) Bool ((D# x) (case b (b1 Double) Bool ((D# y) (prim$bool (prim flt x y))))))))
+(def prim$dbl_le (-> Double Double Bool)
+  (lam ((a Double) (b Double))
+    (case a (a1 Double) Bool ((D# x) (case b (b1 Double) Bool ((D# y) (prim$bool (prim fle x y))))))))
+(def prim$int_to_double (-> Int Double)
+  (lam ((a Int)) (case a (a1 Int) Double ((I# x) (con D# () (prim int_to_double x))))))
+(def prim$double_to_int (-> Double Int)
+  (lam ((a Double)) (case a (a1 Double) Int ((D# x) (con I# () (prim double_to_int x))))))
+
+; ---- Char ----
+
+(def prim$char_ord (-> Char Int)
+  (lam ((a Char)) (case a (a1 Char) Int ((C# x) (con I# () x)))))
+(def prim$char_chr (-> Int Char)
+  (lam ((a Int)) (case a (a1 Int) Char ((I# x) (con C# () x)))))
+
+; ---- strings ----
+
+; Decodes the UTF-8 code point at `i` (well-formed input) into a lazy
+; list of characters.
+(def prim$unpack_from (-> Bytes Int# Int# (List Char))
+  (lam ((s Bytes) (i Int#) (n Int#))
+    (case (prim lt i n) (k Int#) (List Char)
+      (0 (con Nil (Char)))
+      (_ (let! (b0 Int# (prim bytes_get s i))
+          (case (prim lt b0 128) (k1 Int#) (List Char)
+            (1 (con Cons (Char) (con C# () b0) (prim$unpack_from s (prim add i 1) n)))
+            (_ (case (prim lt b0 224) (k2 Int#) (List Char)
+              (1 (con Cons (Char)
+                   (con C# () (prim or (prim shl (prim and b0 31) 6)
+                                       (prim and (prim bytes_get s (prim add i 1)) 63)))
+                   (prim$unpack_from s (prim add i 2) n)))
+              (_ (case (prim lt b0 240) (k3 Int#) (List Char)
+                (1 (con Cons (Char)
+                     (con C# () (prim or (prim shl (prim and b0 15) 12)
+                                 (prim or (prim shl (prim and (prim bytes_get s (prim add i 1)) 63) 6)
+                                          (prim and (prim bytes_get s (prim add i 2)) 63))))
+                     (prim$unpack_from s (prim add i 3) n)))
+                (_ (con Cons (Char)
+                     (con C# () (prim or (prim shl (prim and b0 7) 18)
+                                 (prim or (prim shl (prim and (prim bytes_get s (prim add i 1)) 63) 12)
+                                 (prim or (prim shl (prim and (prim bytes_get s (prim add i 2)) 63) 6)
+                                          (prim and (prim bytes_get s (prim add i 3)) 63)))))
+                     (prim$unpack_from s (prim add i 4) n)))))))))))))
+
+(def prim$unpack (-> Bytes (List Char))
+  (lam ((s Bytes)) (prim$unpack_from s 0 (prim bytes_len s))))
+
+; UTF-8 length of a code point.
+(def prim$utf8_len (-> Int# Int#)
+  (lam ((c Int#))
+    (case (prim lt c 128) (k1 Int#) Int#
+      (1 1)
+      (_ (case (prim lt c 2048) (k2 Int#) Int#
+        (1 2)
+        (_ (case (prim lt c 65536) (k3 Int#) Int# (1 3) (_ 4))))))))
+
+(def prim$chars_len (-> (List Char) Int# Int#)
+  (lam ((l (List Char)) (acc Int#))
+    (case l (l1 (List Char)) Int#
+      ((Nil) acc)
+      ((Cons c r) (case c (c1 Char) Int#
+        ((C# x) (prim$chars_len r (prim add acc (prim$utf8_len x)))))))))
+
+; Writes the characters of `l` into `r` from `i`; returns `r` (threaded
+; so that the buffer stays unique for `bytes_set`).
+(def prim$fill_chars (-> Bytes Int# (List Char) Bytes)
+  (lam ((r Bytes) (i Int#) (l (List Char)))
+    (case l (l1 (List Char)) Bytes
+      ((Nil) r)
+      ((Cons c rest) (case c (c1 Char) Bytes
+        ((C# x)
+          (case (prim lt x 128) (k1 Int#) Bytes
+            (1 (let! (u Unit# (prim bytes_set r i x))
+                (prim$fill_chars r (prim add i 1) rest)))
+            (_ (case (prim lt x 2048) (k2 Int#) Bytes
+              (1 (let! (u Unit# (prim bytes_set r i (prim or 192 (prim shr x 6))))
+                  (let! (u2 Unit# (prim bytes_set r (prim add i 1) (prim or 128 (prim and x 63))))
+                    (prim$fill_chars r (prim add i 2) rest))))
+              (_ (case (prim lt x 65536) (k3 Int#) Bytes
+                (1 (let! (u Unit# (prim bytes_set r i (prim or 224 (prim shr x 12))))
+                    (let! (u2 Unit# (prim bytes_set r (prim add i 1) (prim or 128 (prim and (prim shr x 6) 63))))
+                      (let! (u3 Unit# (prim bytes_set r (prim add i 2) (prim or 128 (prim and x 63))))
+                        (prim$fill_chars r (prim add i 3) rest)))))
+                (_ (let! (u Unit# (prim bytes_set r i (prim or 240 (prim shr x 18))))
+                    (let! (u2 Unit# (prim bytes_set r (prim add i 1) (prim or 128 (prim and (prim shr x 12) 63))))
+                      (let! (u3 Unit# (prim bytes_set r (prim add i 2) (prim or 128 (prim and (prim shr x 6) 63))))
+                        (let! (u4 Unit# (prim bytes_set r (prim add i 3) (prim or 128 (prim and x 63))))
+                          (prim$fill_chars r (prim add i 4) rest)))))))))))))))))
+
+(def prim$pack (-> (List Char) Bytes)
+  (lam ((l (List Char)))
+    (prim$fill_chars (prim bytes_new (prim$chars_len l 0)) 0 l)))
+
+(def prim$show_int (-> Int (List Char))
+  (lam ((a Int)) (case a (a1 Int) (List Char) ((I# x) (prim$unpack (prim$int_to_bytes x))))))
+
+(def prim$show_double (-> Double (List Char))
+  (lam ((a Double)) (case a (a1 Double) (List Char) ((D# x) (prim$unpack (extern cirka_f64_to_bytes x))))))
+
+(def prim$ndigits (-> Int# Int# Int#)
+  (lam ((v Int#) (acc Int#))
+    (case v (c Int#) Int#
+      (0 acc)
+      (_ (prim$ndigits (prim quot v 10) (prim add acc 1))))))
+
+(def prim$fill_digits (-> Bytes Int# Int# Bytes)
+  (lam ((r Bytes) (i Int#) (v Int#))
+    (case v (c Int#) Bytes
+      (0 r)
+      (_ (let! (d Int# (prim rem v 10))
+          (let! (d2 Int# (case (prim lt d 0) (e Int#) Int# (0 d) (_ (prim neg d))))
+            (let! (u Unit# (prim bytes_set r i (prim add 48 d2)))
+              (prim$fill_digits r (prim sub i 1) (prim quot v 10)))))))))
+
+(def prim$int_to_bytes (-> Int# Bytes)
+  (lam ((n Int#))
+    (case n (c Int#) Bytes
+      (0 "0")
+      (_ (let! (neg Int# (prim lt n 0))
+          (let! (len Int# (prim add (prim$ndigits n 0) neg))
+            (let! (r Bytes (prim$fill_digits (prim bytes_new len) (prim sub len 1) n))
+              (case neg (e Int#) Bytes
+                (0 r)
+                (_ (let! (u Unit# (prim bytes_set r 0 45)) r))))))))))
+
+; ---- IO ----
+
+(def prim$io_return (forall (a) (-> a Unit# a))
+  (tlam (a) (lam ((x a) (w Unit#)) x)))
+
+(def prim$io_bind (forall (a b) (-> (-> Unit# a) (-> a Unit# b) Unit# b))
+  (tlam (a b)
+    (lam ((m (-> Unit# a)) (k (-> a Unit# b)) (w Unit#))
+      (let! (x a (m w)) (k x w)))))
+
+(def prim$put_char (-> Char Unit# Unit)
+  (lam ((c Char) (w Unit#))
+    (case c (c1 Char) Unit
+      ((C# x) (let! (u Unit# (extern cirka_write_char x)) (con Unit ()))))))
+
+; Writes the characters one at a time, so a lazily produced string is
+; output as it is evaluated.
+(def prim$put_str (-> (List Char) Unit# Unit)
+  (lam ((s (List Char)) (w Unit#))
+    (case s (s1 (List Char)) Unit
+      ((Nil) (con Unit ()))
+      ((Cons c r) (case c (c1 Char) Unit
+        ((C# x) (let! (u Unit# (extern cirka_write_char x)) (prim$put_str r w))))))))
+
+(def prim$get_char (-> Unit# Int)
+  (lam ((w Unit#)) (con I# () (extern cirka_read_byte))))
+
+(def prim$exit (forall (a) (-> Int Unit# a))
+  (tlam (a)
+    (lam ((c Int) (w Unit#))
+      (case c (c1 Int) a
+        ((I# x) (let! (u Unit# (extern cirka_exit x)) (panic "unreachable" a)))))))
+
+(def prim$arg_count (-> Unit# Int)
+  (lam ((w Unit#)) (con I# () (extern cirka_argc))))
+
+(def prim$get_arg (-> Int Unit# (List Char))
+  (lam ((i Int) (w Unit#))
+    (case i (i1 Int) (List Char) ((I# x) (prim$unpack (extern cirka_arg x))))))
+
+; ---- misc ----
+
+(def prim$error (forall (a) (-> (List Char) a))
+  (tlam (a)
+    (lam ((s (List Char)))
+      (let! (u Unit# (extern cirka_panic_bytes (prim$pack s))) (panic "unreachable" a)))))
+
+(def prim$seq (forall (a b) (-> a b b))
+  (tlam (a b) (lam ((x a) (y b)) (case x (x1 a) b (_ y)))))

@@ -18,9 +18,11 @@ dependencies = [
 name = "achc-desugar"
 version = "0.0.1"
 dependencies = [
+ "achc-rename",
  "achc-typeck",
  "cirka-core",
  "cirka-diagnostics",
+ "cirka-mir",
 ]
 
 [[package]]
@@ -102,6 +104,7 @@ dependencies = [
 name = "cirka-integration"
 version = "0.0.1"
 dependencies = [
+ "achc-desugar",
  "achc-rename",
  "achc-syntax",
  "achc-typeck",

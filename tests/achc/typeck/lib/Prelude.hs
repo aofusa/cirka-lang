@@ -57,3 +57,6 @@ foldr f z (x:xs) = f x (foldr f z xs)
 
 enumFromTo :: Int -> Int -> [Int]
 enumFromTo a b = if a == b then [b] else a : enumFromTo (a + 1) b
+
+otherwise :: Bool
+otherwise = True

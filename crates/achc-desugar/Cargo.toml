@@ -10,4 +10,8 @@ workspace = true
 [dependencies]
 cirka-diagnostics.workspace = true
 achc-typeck.workspace = true
+achc-rename.workspace = true
 cirka-core.workspace = true
+
+[dev-dependencies]
+cirka-mir.workspace = true

@@ -1,0 +1,18 @@
+warning[W0610]: non-exhaustive patterns
+ --> tests/achc/desugar/warnings.hs:6:1
+  |
+6 | isRed Red = True
+  | ^^^^^^^^^^^^^^^^
+  = note: a value not matched by any equation is a runtime error
+warning[W0610]: non-exhaustive patterns
+  --> tests/achc/desugar/warnings.hs:10:1
+   |
+10 | first (x:_) = x
+   | ^^^^^^^^^^^^^^^
+   = note: a value not matched by any equation is a runtime error
+warning[W0611]: this equation is redundant
+  --> tests/achc/desugar/warnings.hs:14:1
+   |
+14 | dup True = 2
+   | ^^^^^^^^^^^^
+   = note: earlier equations match every value it matches

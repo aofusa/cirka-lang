@@ -1,0 +1,20 @@
+(def Main.isRed (-> Main.Color Bool)
+  (lam ((a Main.Color))
+    (case a (s Main.Color) Bool
+      ((Main.Red) (con True ()))
+      ((Main.Green) (con False ()))
+      (_ (panic "non-exhaustive patterns" Bool)))))
+
+(def Main.first (forall (a) (-> (List a) a))
+  (tlam (a)
+    (lam ((a (List a)))
+      (case a (s (List a)) a
+        ((Cons f~392 f~393) f~392)
+        (_ (panic "non-exhaustive patterns" a))))))
+
+(def Main.dup (-> Bool Int)
+  (lam ((a Bool))
+    (con I# () 1)))
+
+(def Main.main (-> Unit# Unit)
+  ((@ Prelude.return Unit) (con Unit ())))

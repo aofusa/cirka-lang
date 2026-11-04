@@ -870,10 +870,12 @@ impl Tc {
                     span: b.span,
                 });
             }
-            if recursive || results.len() > 1 {
+            if recursive {
                 out.push(BindGroup::Rec(results));
-            } else if let Some(b) = results.pop() {
-                out.push(BindGroup::NonRec(b));
+            } else {
+                // A non-recursive pattern binding: the shared right-hand
+                // side first, then the selectors.
+                out.extend(results.into_iter().map(BindGroup::NonRec));
             }
         }
         // Pattern-bound variables with a signature: check the annotation.

@@ -1,0 +1,32 @@
+(def Main.name (-> Main.Color (List Char))
+  (lam ((a Main.Color))
+    (case a (s Main.Color) (List Char)
+      ((Main.Red) (prim$unpack "red"))
+      ((Main.Green) (prim$unpack "green"))
+      ((Main.Blue) (prim$unpack "blue")))))
+
+(def Main.zipW (forall (a b c) (-> (-> a b c) (List a) (List b) (List c)))
+  (tlam (a b c)
+    (lam ((a~393 (-> a b c)) (a~394 (List a)) (a~395 (List b)))
+      (case a~394 (s~411 (List a)) (List c)
+        ((Cons f~399 f~400) (case a~395 (s~410 (List b)) (List c)
+            ((Cons f~404 f~405) (con Cons (c) (a~393 f~399 f~404) ((@ Main.zipW a b c) a~393 f~400 f~405)))
+            (_ (con Nil (c)))))
+        (_ (con Nil (c)))))))
+
+(def Main.digit (-> Int Char)
+  (lam ((a Int))
+    (case a (s Int) Char
+      ((I# u) (case u (k Int#) Char
+          (0 (con C# () 48))
+          (1 (con C# () 49))
+          (_ (con C# () 63)))))))
+
+(def Main.clamp (-> Int Int)
+  (lam ((a Int))
+    (case (Prelude.== a (con I# () 0)) (g Bool) Int
+      ((True) (con I# () 0))
+      (_ (Prelude.+ a (con I# () 1))))))
+
+(def Main.main (-> Unit# Unit)
+  (Cirka.Prim.putStr (Main.name (con Main.Red ()))))

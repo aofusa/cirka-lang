@@ -25,6 +25,7 @@ cirka.workspace = true
 achc-syntax.workspace = true
 achc-rename.workspace = true
 achc-typeck.workspace = true
+achc-desugar.workspace = true
 
 [[test]]
 name = "workspace"

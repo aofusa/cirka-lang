@@ -136,3 +136,54 @@ fn achc_typeck() {
     }
     assert!(failed.is_empty(), "{}", failed.join("\n"));
 }
+
+/// Desugaring to Core (FEAT-0104): the Core of the `Main` bindings
+/// matches `.core` and the warnings match `.warn`.
+#[test]
+fn achc_desugar() {
+    let dir = repo_root().join("tests/achc/desugar");
+    let root = format!("{}/", repo_root().display());
+    let cases = discover(&dir, &["hs"]);
+    assert!(!cases.is_empty());
+    let mut failed = Vec::new();
+    for c in cases {
+        let src = c.source();
+        let mut sm = SourceMap::new();
+        let id = sm.add(c.path.display().to_string(), src.clone());
+        let mut loader = achc_rename::FsLoader {
+            roots: vec![repo_root().join("tests/achc/typeck/lib")],
+        };
+        let opts = achc_rename::Options::default();
+        let r = achc_rename::rename_program(&mut sm, id, &src, false, &mut loader, &opts)
+            .and_then(|p| achc_typeck::typecheck(&p))
+            .and_then(|t| achc_desugar::desugar(&t));
+        let out = match r {
+            Ok(o) => o,
+            Err(errs) => {
+                let text: String = errs.iter().map(|d| render(d, &sm, Style::Plain)).collect();
+                failed.push(format!("{}: {text}", c.name));
+                continue;
+            }
+        };
+        let core: String = out
+            .program
+            .binds
+            .iter()
+            .filter(|b| b.name.starts_with("Main."))
+            .map(cirka_core::print::print_bind)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let warn: String = out
+            .warnings
+            .iter()
+            .map(|d| render(d, &sm, Style::Plain))
+            .collect::<String>()
+            .replace(&root, "");
+        for (ext, text) in [("core", core), ("warn", warn)] {
+            if let Err(e) = check_expect(&c.sibling(ext), &text) {
+                failed.push(format!("{}: {e}", c.name));
+            }
+        }
+    }
+    assert!(failed.is_empty(), "{}", failed.join("\n"));
+}
