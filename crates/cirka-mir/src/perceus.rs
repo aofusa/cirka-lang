@@ -156,10 +156,11 @@ pub fn has_rc(f: &Function) -> bool {
 }
 
 /// The whole Perceus pipeline on MIR without reference counting:
-/// borrow inference, then dup/drop insertion.
+/// borrow inference, dup/drop insertion, reuse analysis and fusion.
 pub fn run(m: &mut Module) {
     crate::borrow::infer_borrow(m);
     insert_rc(m);
+    crate::reuse::optimize(m);
 }
 
 /// Inserts dup/drop into every function of `m` that has none.
@@ -183,6 +184,9 @@ pub enum Kind {
 pub struct VarInfo {
     pub kind: Vec<Kind>,
     pub parent: Vec<Option<Var>>,
+    /// Projections that are dup'ed right after their definition and then
+    /// treated as owned (see [`VarInfo::make_eager`]).
+    pub eager: Vec<bool>,
 }
 
 impl VarInfo {
@@ -224,7 +228,36 @@ impl VarInfo {
                 }
             }
         }
-        VarInfo { kind, parent }
+        VarInfo {
+            kind,
+            parent,
+            eager: vec![false; n],
+        }
+    }
+
+    /// Projections that are consumed somewhere are dup'ed immediately
+    /// (Koka's order): they become independent owned values, so their
+    /// source can die (or be reused) right after the match.
+    pub fn make_eager(&mut self, sigs: &Sigs, f: &Function) {
+        let mut consumed = vec![false; self.kind.len()];
+        for b in &f.blocks {
+            let mut uses: Vec<(Var, Mode)> = term_uses(sigs, &b.term);
+            for i in &b.instrs {
+                uses.extend(instr_uses(sigs, i));
+            }
+            for (v, m) in uses {
+                if m == Mode::Consume {
+                    consumed[v.0 as usize] = true;
+                }
+            }
+        }
+        for v in 0..self.kind.len() {
+            if consumed[v] && self.parent[v].is_some() {
+                self.kind[v] = Kind::Owned;
+                self.parent[v] = None;
+                self.eager[v] = true;
+            }
+        }
     }
 
     fn kind(&self, v: Var) -> Kind {
@@ -362,7 +395,8 @@ fn owned_dead(info: &VarInfo, vars: &[Var], live: &Set) -> Vec<Var> {
 
 /// Inserts dup/drop into one function.
 pub fn insert_fn(sigs: &Sigs, f: &mut Function) {
-    let info = VarInfo::new(f);
+    let mut info = VarInfo::new(f);
+    info.make_eager(sigs, f);
     let lv = liveness(sigs, f, &info);
     let n = f.blocks.len();
     let preds = f.predecessors();
@@ -404,6 +438,11 @@ pub fn insert_fn(sigs: &Sigs, f: &mut Function) {
             let def = instr_def(&ins);
             out.extend(dups.into_iter().map(Instr::Dup));
             out.push(ins);
+            if let Some(d) = def
+                && info.eager[d.0 as usize]
+            {
+                out.push(Instr::Dup(d));
+            }
             if let Some(d) = def
                 && f.ty(d).is_ptr()
             {

@@ -1,0 +1,126 @@
+// binary-trees (Benchmarks Game) in MIR without dup/drop: reference counting
+// is inserted by the Perceus pipeline (cirka-mir --perceus). usage: main <depth>
+type Tree { Nil = 0 {}, Node = 1 { l: ptr, r: ptr } }
+extern fn cirka_write_i64(i64) -> void
+extern fn cirka_write_bytes(ptr) -> void
+extern fn cirka_write_char(i64) -> void
+extern fn cirka_argc() -> i64
+extern fn cirka_arg(i64) -> ptr
+
+fn make(d: i64) -> ptr {
+entry:
+  switch d { 0 => leaf, default => node }
+leaf:
+  let n = alloc Tree.Nil()
+  let t0 = alloc Tree.Node(n, n)
+  ret t0
+node:
+  let d1 = prim sub(d, 1)
+  let l = call make(d1)
+  let r = call make(d1)
+  let t = alloc Tree.Node(l, r)
+  ret t
+}
+
+fn check(t: ptr) -> i64 {
+entry:
+  switch t { Tree.Nil => nil, Tree.Node => node }
+nil:
+  ret 0
+node:
+  let l = proj t Tree.Node.l
+  let r = proj t Tree.Node.r
+  let a = call check(l)
+  let b = call check(r)
+  let s = prim add(a, b)
+  let s1 = prim add(s, 1)
+  ret s1
+}
+
+fn parse(s: ptr, i: i64, acc: i64) -> i64 {
+entry:
+  let n = prim bytes_len(s)
+  let end = prim ge(i, n)
+  switch end { 1 => done, default => digit }
+done:
+  ret acc
+digit:
+  let c = prim bytes_get(s, i)
+  let v = prim sub(c, 48)
+  let a10 = prim mul(acc, 10)
+  let a = prim add(a10, v)
+  let i1 = prim add(i, 1)
+  tailcall parse(s, i1, a)
+}
+
+fn iterate(k: i64, iters: i64, d: i64, acc: i64) -> i64 {
+entry:
+  let fin = prim ge(k, iters)
+  switch fin { 1 => done, default => more }
+done:
+  ret acc
+more:
+  let t = call make(d)
+  let c = call check(t)
+  let acc1 = prim add(acc, c)
+  let k1 = prim add(k, 1)
+  tailcall iterate(k1, iters, d, acc1)
+}
+
+fn depths(d: i64, maxd: i64) -> i64 {
+entry:
+  let fin = prim gt(d, maxd)
+  switch fin { 1 => done, default => more }
+done:
+  ret 0
+more:
+  let e = prim sub(maxd, d)
+  let e4 = prim add(e, 4)
+  let iters = prim shl(1, e4)
+  let c = call iterate(0, iters, d, 0)
+  let _ = extern cirka_write_i64(iters)
+  let _ = extern cirka_write_bytes("\t trees of depth ")
+  let _ = extern cirka_write_i64(d)
+  let _ = extern cirka_write_bytes("\t check: ")
+  let _ = extern cirka_write_i64(c)
+  let _ = extern cirka_write_char(10)
+  let d2 = prim add(d, 2)
+  tailcall depths(d2, maxd)
+}
+
+fn main() -> i64 {
+entry:
+  let argc = extern cirka_argc()
+  switch argc { 0 => noarg, default => arg }
+noarg:
+  jump go(10)
+arg:
+  let a = extern cirka_arg(0)
+  let n = call parse(a, 0, 0)
+  jump go(n)
+go(n0: i64):
+  let small = prim lt(n0, 6)
+  switch small { 1 => six, default => keep }
+six:
+  jump run(6)
+keep:
+  jump run(n0)
+run(maxd: i64):
+  let sd = prim add(maxd, 1)
+  let st = call make(sd)
+  let sc = call check(st)
+  let _ = extern cirka_write_bytes("stretch tree of depth ")
+  let _ = extern cirka_write_i64(sd)
+  let _ = extern cirka_write_bytes("\t check: ")
+  let _ = extern cirka_write_i64(sc)
+  let _ = extern cirka_write_char(10)
+  let ll = call make(maxd)
+  let _ = call depths(4, maxd)
+  let lc = call check(ll)
+  let _ = extern cirka_write_bytes("long lived tree of depth ")
+  let _ = extern cirka_write_i64(maxd)
+  let _ = extern cirka_write_bytes("\t check: ")
+  let _ = extern cirka_write_i64(lc)
+  let _ = extern cirka_write_char(10)
+  ret 0
+}

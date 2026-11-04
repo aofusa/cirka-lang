@@ -20,6 +20,7 @@ large_enum_variant = "allow"
 new_without_default = "allow"
 module_inception = "allow"
 result_large_err = "allow"
+needless_range_loop = "allow"
 
 [workspace.dependencies]
 cirka-diagnostics = { path = "crates/cirka-diagnostics" }

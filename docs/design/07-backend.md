@@ -17,6 +17,7 @@
 | `extern f(...)` | `call ccc` (C ABI。構造体の値渡しは `clang` の ABI 規則に従って展開) |
 | `dup x` | インライン: `rc = load i32; if rc > 0 { store rc+1 } else if rc < 0 { atomicrmw sub } ` (0 は不死で何もしない) |
 | `drop x` | インライン: `rc > 1 → store rc-1`、`rc == 1 → call @cirka_free_object`、`rc < 0 → call @cirka_dec_ref_slow` |
+| `dup y₁..yₖ; drop x` / `dup y₁..yₖ; let t = drop_reuse x` (yᵢ は x のフィールドの射影) | **drop 特殊化**: `rc(x) == 1` なら dup と対応するフィールドの drop を打ち消し、残りのポインタフィールドだけ drop して `x` のセルを解放 (または再利用トークンにする)。そうでなければ yᵢ を dup して x を drop |
 | `alloc` | インライン: スレッドローカルなフリーリストから pop、空なら `call @cirka_alloc`。ヘッダを store |
 | `switch` | `switch i16 tag` (ヘッダの tag を load) |
 | `force` | `kind == THUNK/IND` の判定をインライン、評価が必要な場合のみ `call @cirka_force` |

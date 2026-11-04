@@ -98,12 +98,16 @@ fn mir_run_native() {
     cirka_testkit::init();
     cirka_driver::native::ensure_runtime_built().unwrap();
     let cfg = cirka_driver::Config::from_env();
-    let cases = discover(&repo_root().join("tests/mir/run"), &["mir"]);
+    let mut cases = discover(&repo_root().join("tests/mir/run"), &["mir"]);
+    cases.extend(discover(&repo_root().join("tests/mir/perceus"), &["mir"]));
     run_suite("mir-run-native", &cases, |c| {
-        let m = match cirka_mir::parse(FileId(0), &c.source()) {
+        let mut m = match cirka_mir::parse(FileId(0), &c.source()) {
             Ok(m) => m,
             Err(e) => return Outcome::Fail(format!("parse error: {}", e.message)),
         };
+        if c.path.parent().is_some_and(|d| d.ends_with("perceus")) {
+            perceus_pipeline(c, &mut m);
+        }
         let stdin = std::fs::read(c.sibling("stdin")).unwrap_or_default();
         let interp_ok = c.header.get("skip-backend") != Some("interp");
         let reference = if interp_ok {
@@ -184,8 +188,19 @@ fn mir_run_native() {
 #[test]
 fn bench_binary_trees_mir() {
     let root = repo_root();
-    let src = std::fs::read_to_string(root.join("bench/binary-trees/mir/main.mir")).unwrap();
-    let m = cirka_mir::parse(FileId(0), &src).expect("parse");
+    for (path, perceus) in [
+        ("bench/binary-trees/mir/main.mir", false),
+        ("bench/binary-trees/mir-perceus/main.mir", true),
+    ] {
+        check_binary_trees(&std::fs::read_to_string(root.join(path)).unwrap(), perceus);
+    }
+}
+
+fn check_binary_trees(src: &str, perceus: bool) {
+    let mut m = cirka_mir::parse(FileId(0), src).expect("parse");
+    if perceus {
+        cirka_mir::perceus::run(&mut m);
+    }
     let errs = cirka_mir::verify::verify_module(&m);
     assert!(
         errs.is_empty(),
@@ -236,6 +251,16 @@ fn run_checked(c: &cirka_testkit::Case, m: &cirka_mir::Module) -> Outcome {
     Outcome::Pass
 }
 
+/// `pipeline: rc` = dup/drop insertion only (no borrow inference, reuse or
+/// fusion); otherwise the whole Perceus pipeline.
+fn perceus_pipeline(c: &cirka_testkit::Case, m: &mut cirka_mir::Module) {
+    if c.header.get("pipeline") == Some("rc") {
+        cirka_mir::perceus::insert_rc(m);
+    } else {
+        cirka_mir::perceus::run(m);
+    }
+}
+
 /// Perceus snapshots (FEAT-0020): `tests/mir/perceus/*.mir` contain no
 /// dup/drop; the annotated output is compared with `.out` and the program
 /// must run leak-free.
@@ -248,7 +273,7 @@ fn mir_perceus() {
             Ok(m) => m,
             Err(e) => return Outcome::Fail(format!("parse error: {}", e.message)),
         };
-        cirka_mir::perceus::insert_rc(&mut m);
+        perceus_pipeline(c, &mut m);
         if let Err(e) = check_expect(&c.sibling("out"), &cirka_mir::print_module(&m)) {
             return Outcome::Fail(e);
         }
@@ -270,7 +295,7 @@ fn mir_perceus_roundtrip() {
             Err(e) => return Outcome::Fail(format!("parse error: {}", e.message)),
         };
         cirka_mir::perceus::strip_rc(&mut m);
-        cirka_mir::perceus::insert_rc(&mut m);
+        cirka_mir::perceus::run(&mut m);
         run_checked(c, &m)
     });
 }
@@ -303,7 +328,8 @@ fn mir_borrow_inference() {
         let mut plain = base.clone();
         cirka_mir::perceus::insert_rc(&mut plain);
         let mut inferred = base;
-        cirka_mir::perceus::run(&mut inferred);
+        cirka_mir::borrow::infer_borrow(&mut inferred);
+        cirka_mir::perceus::insert_rc(&mut inferred);
         if let Outcome::Fail(e) = run_checked(c, &inferred) {
             return Outcome::Fail(e);
         }
@@ -342,4 +368,26 @@ fn mir_borrow_inference() {
     let dir = root.join("_build");
     let _ = std::fs::create_dir_all(&dir);
     let _ = std::fs::write(dir.join("borrow-inference.txt"), lines.join("\n") + "\n");
+}
+
+/// FBIP (FEAT-0022): `map` over a unique list allocates nothing new; over a
+/// shared list it copies.
+#[test]
+fn fbip_map_reuses_unique_cells() {
+    let src = std::fs::read_to_string(repo_root().join("tests/mir/perceus/map_reuse.mir")).unwrap();
+    let mut m = cirka_mir::parse(FileId(0), &src).unwrap();
+    cirka_mir::perceus::run(&mut m);
+    let errs = cirka_mir::verify::verify_module(&m);
+    assert!(
+        errs.is_empty(),
+        "{}",
+        cirka_mir::verify::render_errors(&errs)
+    );
+    let r = cirka_mir::interp::run(&m, b"", u64::MAX).unwrap();
+    assert_eq!(r.stdout, "501500 502500\n");
+    assert_eq!(r.leaked, 0);
+    // range: 1000 cells (Nil is static). The first map reuses all of them;
+    // ys is still used afterwards, so the second map copies 1000 cells.
+    assert_eq!(r.stats.reuses, 1000, "{:?}", r.stats);
+    assert_eq!(r.stats.allocs, 2000, "{:?}", r.stats);
 }

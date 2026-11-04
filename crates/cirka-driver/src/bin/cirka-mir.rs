@@ -6,7 +6,11 @@
 //! cirka-mir run [--debug-rt] [-O0..3] foo.mir [-- args]   # native
 //! cirka-mir build [-O0..3] [-o out] foo.mir                 # native executable
 //! cirka-mir emit-llvm foo.mir         # print LLVM IR
+//! cirka-mir emit-mir foo.mir          # print the MIR (after --perceus)
 //! ```
+//!
+//! `--perceus` runs the Perceus pipeline (borrow inference, dup/drop
+//! insertion, reuse, fusion) on functions without reference counting first.
 
 use cirka_diagnostics::{SourceMap, Style, render};
 use cirka_driver::Config;
@@ -19,7 +23,9 @@ fn main() -> ExitCode {
     let (cmd, rest) = match args.split_first() {
         Some((c, r)) => (c.as_str(), r),
         None => {
-            eprintln!("usage: cirka-mir <check|interp|run|emit-llvm> [options] file.mir [-- args]");
+            eprintln!(
+                "usage: cirka-mir <check|interp|run|build|emit-llvm|emit-mir> [options] file.mir [-- args]"
+            );
             return ExitCode::from(2);
         }
     };
@@ -27,11 +33,13 @@ fn main() -> ExitCode {
     let mut file = None;
     let mut prog_args = Vec::new();
     let mut output: Option<String> = None;
+    let mut perceus = false;
     let mut it = rest.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--debug-rt" | "--runtime=debug" => opts.runtime = RuntimeKind::Debug,
             "--runtime=release" => opts.runtime = RuntimeKind::Release,
+            "--perceus" => perceus = true,
             s if s.starts_with("-O") => opts.opt_level = s[2..].parse().unwrap_or(2),
             "-o" => output = it.next().cloned(),
             "--" => {
@@ -53,13 +61,16 @@ fn main() -> ExitCode {
     };
     let mut sm = SourceMap::new();
     let fid = sm.add(file.clone(), text.clone());
-    let m = match cirka_mir::parse(fid, &text) {
+    let mut m = match cirka_mir::parse(fid, &text) {
         Ok(m) => m,
         Err(d) => {
             eprint!("{}", render(&d, &sm, Style::for_stderr()));
             return ExitCode::from(1);
         }
     };
+    if perceus {
+        cirka_mir::perceus::run(&mut m);
+    }
     let errs = cirka_mir::verify::verify_module(&m);
     if !errs.is_empty() {
         for d in &errs {
@@ -70,6 +81,10 @@ fn main() -> ExitCode {
     let cfg = Config::from_env();
     match cmd {
         "check" => ExitCode::SUCCESS,
+        "emit-mir" => {
+            print!("{}", cirka_mir::print_module(&m));
+            ExitCode::SUCCESS
+        }
         "interp" => match cirka_mir::interp::run(&m, &[], u64::MAX) {
             Ok(r) => {
                 print!("{}", r.stdout);

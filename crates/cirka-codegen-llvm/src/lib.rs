@@ -407,6 +407,19 @@ impl<'m> Gen<'m> {
                 }
             }
         }
+        // Projections: var -> (object, constructor, field).
+        let mut projs: HashMap<Var, (Var, CtorRef, u32)> = HashMap::new();
+        for b in &f.blocks {
+            for i in &b.instrs {
+                if let Instr::Let {
+                    var: Some(v),
+                    rhs: Rhs::Proj { obj, ctor, field },
+                } = i
+                {
+                    projs.insert(*v, (*obj, *ctor, *field));
+                }
+            }
+        }
         // Emit blocks; phi nodes are filled in afterwards via placeholders.
         let mut block_bodies = Vec::new();
         for (bi, b) in f.blocks.iter().enumerate() {
@@ -414,7 +427,16 @@ impl<'m> Gen<'m> {
             c.cur = bb_label(bi);
             let n = b.instrs.len();
             let mut skip_term = false;
+            let mut skip = 0;
             for (ii, ins) in b.instrs.iter().enumerate() {
+                if skip > 0 {
+                    skip -= 1;
+                    continue;
+                }
+                if let Some(k) = self.try_drop_spec(&mut c, &projs, &b.instrs[ii..]) {
+                    skip = k - 1;
+                    continue;
+                }
                 // `let r = call/apply ...; ret r` → musttail.
                 if ii + 1 == n
                     && let (Instr::Let { var: Some(r), rhs }, Terminator::Ret(Operand::Var(rv))) =
@@ -464,6 +486,88 @@ impl<'m> Gen<'m> {
             self.out.push_str(body);
         }
         self.out.push_str("}\n\n");
+    }
+
+    /// Drop specialization (04-memory-model.md §2.1): `dup y1..yk` of
+    /// pointer fields of `x` followed by `drop x` / `let t = drop_reuse x`
+    /// becomes a uniqueness test. When `x` is unique the dups cancel with
+    /// the drops of those fields, the other pointer fields are dropped and
+    /// the cell is freed (or becomes the reuse token); otherwise the fields
+    /// are dup'ed and `x` is decremented. Returns the number of
+    /// instructions consumed.
+    fn try_drop_spec(
+        &mut self,
+        c: &mut FnCtx<'_>,
+        projs: &HashMap<Var, (Var, CtorRef, u32)>,
+        instrs: &[Instr],
+    ) -> Option<usize> {
+        let mut dups = Vec::new();
+        let mut k = 0;
+        while let Some(Instr::Dup(y)) = instrs.get(k) {
+            dups.push(*y);
+            k += 1;
+        }
+        if dups.is_empty() {
+            return None;
+        }
+        let (x, tok) = match instrs.get(k)? {
+            Instr::Drop(x) if !c.tokens.contains(x) => (*x, None),
+            Instr::Let {
+                var: Some(t),
+                rhs: Rhs::DropReuse(x),
+            } => (*x, Some(*t)),
+            _ => return None,
+        };
+        let mut ctor = None;
+        let mut fields = Vec::new();
+        for y in &dups {
+            let (obj, cr, fi) = *projs.get(y)?;
+            if obj != x || ctor.is_some_and(|c0| c0 != cr) || fields.contains(&fi) {
+                return None;
+            }
+            ctor = Some(cr);
+            fields.push(fi);
+        }
+        let ctor = ctor?;
+        let def = self.m.ctor(ctor);
+        let xo = var(x);
+        let rc = c.t();
+        let is1 = c.t();
+        let (uniq, shared, done) = (
+            self.fresh_label("dspec.uniq"),
+            self.fresh_label("dspec.shared"),
+            self.fresh_label("dspec.done"),
+        );
+        c.line(&format!("{rc} = load i32, ptr {xo}, align 8"));
+        c.line(&format!("{is1} = icmp eq i32 {rc}, 1"));
+        c.line(&format!("br i1 {is1}, label %{uniq}, label %{shared}"));
+        c.label(&uniq);
+        for (i, fd) in def.fields.iter().enumerate() {
+            if fd.ty.is_ptr() && !fields.contains(&(i as u32)) {
+                let fv = Self::load_field(c, &xo, def.slot(i), Ty::Ptr);
+                self.emit_drop(c, &fv);
+            }
+        }
+        if tok.is_none() {
+            c.line(&format!("call void @cirka_free_raw(ptr {xo})"));
+        }
+        let uniq_end = c.cur.clone();
+        c.line(&format!("br label %{done}"));
+        c.label(&shared);
+        for y in &dups {
+            self.emit_dup(c, &var(*y));
+        }
+        self.emit_drop(c, &xo);
+        let shared_end = c.cur.clone();
+        c.line(&format!("br label %{done}"));
+        c.label(&done);
+        if let Some(t) = tok {
+            c.line(&format!(
+                "{} = phi ptr [ {xo}, %{uniq_end} ], [ null, %{shared_end} ]",
+                var(t)
+            ));
+        }
+        Some(k + 1)
     }
 
     fn try_tail(&mut self, c: &mut FnCtx<'_>, rhs: &Rhs) -> bool {

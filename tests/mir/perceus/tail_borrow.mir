@@ -1,3 +1,4 @@
+// pipeline: rc
 // A tail call passing an owned value to a borrowed parameter becomes
 // call + drop + ret; dead parameters and dead lets are dropped at once.
 type Box { B = 0 { v: i64 } }

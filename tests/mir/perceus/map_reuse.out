@@ -1,0 +1,62 @@
+type List { Nil = 0 {}, Cons = 1 { head: i64, tail: ptr } }
+extern fn cirka_write_i64(i64) -> void
+extern fn cirka_write_char(i64) -> void
+
+fn range(i: i64, n: i64) -> ptr {
+entry:
+  let c = prim gt(i, n)
+  switch c { 1 => done, default => more }
+done:
+  let nil = alloc List.Nil()
+  ret nil
+more:
+  let i1 = prim add(i, 1)
+  let rest = call range(i1, n)
+  let r = alloc List.Cons(i, rest)
+  ret r
+}
+
+fn map_inc(xs: ptr @owned) -> ptr {
+entry:
+  switch xs { List.Nil => nil, List.Cons => cons }
+nil:
+  ret xs
+cons:
+  let h = proj xs List.Cons.head
+  let t = proj xs List.Cons.tail
+  dup t
+  let ru%6 = drop_reuse xs
+  let h1 = prim add(h, 1)
+  let t1 = call map_inc(t)
+  let r = alloc List.Cons(h1, t1) reuse ru%6
+  ret r
+}
+
+fn sum(xs: ptr @borrowed, acc: i64) -> i64 {
+entry:
+  switch xs { List.Nil => nil, List.Cons => cons }
+nil:
+  ret acc
+cons:
+  let h = proj xs List.Cons.head
+  let t = proj xs List.Cons.tail
+  let acc2 = prim add(acc, h)
+  tailcall sum(t, acc2)
+}
+
+fn main() -> i64 {
+entry:
+  let xs = call range(1, 1000)
+  let ys = call map_inc(xs)
+  dup ys
+  let zs = call map_inc(ys)
+  let a = call sum(ys, 0)
+  drop ys
+  let b = call sum(zs, 0)
+  drop zs
+  let _ = extern cirka_write_i64(a)
+  let _ = extern cirka_write_char(32)
+  let _ = extern cirka_write_i64(b)
+  let _ = extern cirka_write_char(10)
+  ret 0
+}

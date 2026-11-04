@@ -3,6 +3,7 @@
 # hyperfine (10-testing.md §5). Usage: bench/run.sh [name...]
 #
 #   mir/main.mir   hand-written MIR            (cirka-mir build)
+#   mir-perceus/main.mir  MIR without dup/drop (cirka-mir build --perceus)
 #   main.cirka     CirkaLang                   (cirka build)
 #   own.chs        aCHC with ownership         (achc build)
 #   plain.hs       plain Haskell: aCHC and GHC -O2
@@ -31,6 +32,10 @@ for name in "${names[@]}"; do
   if [ -f "$dir/mir/main.mir" ]; then
     target/release/cirka-mir build -O2 -o "$bin/$name-mir" "$dir/mir/main.mir"
     cmds+=(-n mir "$bin/$name-mir $args")
+  fi
+  if [ -f "$dir/mir-perceus/main.mir" ]; then
+    target/release/cirka-mir build --perceus -O2 -o "$bin/$name-mir-perceus" "$dir/mir-perceus/main.mir"
+    cmds+=(-n mir-perceus "$bin/$name-mir-perceus $args")
   fi
   if [ -f "$dir/main.cirka" ] && target/release/cirka build -O2 -o "$bin/$name-cirka" "$dir/main.cirka" 2>/dev/null; then
     cmds+=(-n cirka "$bin/$name-cirka $args")

@@ -27,12 +27,12 @@ cons:
   let h = proj xs List.Cons.head
   let t = proj xs List.Cons.tail
   let v = proj h Int.I.v
+  dup t
+  let ru%8 = drop_reuse xs
   let v2 = prim add(v, v)
   let b = alloc Int.I(v2)
-  dup t
   let t2 = call double_all(t)
-  drop xs
-  let r = alloc List.Cons(b, t2)
+  let r = alloc List.Cons(b, t2) reuse ru%8
   ret r
 }
 

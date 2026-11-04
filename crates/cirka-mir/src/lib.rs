@@ -7,6 +7,7 @@ pub mod ir;
 pub mod parse;
 pub mod perceus;
 pub mod print;
+pub mod reuse;
 pub mod verify;
 
 pub use ir::*;
