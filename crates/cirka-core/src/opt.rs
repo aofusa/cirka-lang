@@ -40,11 +40,14 @@ pub struct Stats {
     pub beta: usize,
     pub inlined: usize,
     pub inlined_once: usize,
+    pub unpacked_fields: usize,
     pub known_case: usize,
     pub floated: usize,
     pub folded: usize,
     pub dead: usize,
     pub removed_globals: usize,
+    /// Functions split into a worker and a wrapper.
+    pub worker_wrapper: usize,
     /// Bindings restored because Lint rejected them (release builds only).
     pub reverted: usize,
 }
@@ -62,6 +65,27 @@ pub fn optimize_with_stats(p: &mut Program) -> Result<Stats, Diagnostic> {
         b.expr = freshen(&b.expr, &mut next);
     }
     lint_all(p, "uniquify")?;
+    let unpacked = crate::unpack::unpack_strict_fields(p, &mut next);
+    if unpacked > 0 {
+        st.unpacked_fields += unpacked;
+        lint_all(p, "unpack")?;
+    }
+    simplify_rounds(p, &mut st, &mut next)?;
+    // Worker/wrapper splits strict functions over boxed numbers; the
+    // simplifier then inlines the wrappers and removes the boxes.
+    let split = crate::ww::worker_wrapper(p, &mut next);
+    if split > 0 {
+        st.worker_wrapper += split;
+        lint_all(p, "worker-wrapper")?;
+        simplify_rounds(p, &mut st, &mut next)?;
+    }
+    st.removed_globals = dce_globals(p);
+    lint_all(p, "dce")?;
+    Ok(st)
+}
+
+/// Runs the simplifier to a fixed point (at most [`MAX_ITERS`] rounds).
+fn simplify_rounds(p: &mut Program, st: &mut Stats, next: &mut u32) -> Result<(), Diagnostic> {
     for _ in 0..MAX_ITERS {
         st.iterations += 1;
         let inl = inline_candidates(p);
@@ -88,12 +112,12 @@ pub fn optimize_with_stats(p: &mut Program) -> Result<Stats, Diagnostic> {
                 env: HashMap::new(),
                 known: HashMap::new(),
                 known_globals: &kg,
-                next,
+                next: *next,
                 changed: false,
                 st: Stats::default(),
             };
             let new = s.expr(old.clone());
-            next = s.next;
+            *next = s.next;
             if !s.changed {
                 continue;
             }
@@ -102,7 +126,7 @@ pub fn optimize_with_stats(p: &mut Program) -> Result<Stats, Diagnostic> {
             let errs = lint::lint_bind(p, i);
             if errs.is_empty() {
                 changed = true;
-                add_stats(&mut st, &local);
+                add_stats(st, &local);
             } else if cfg!(debug_assertions) {
                 return Err(ice("simplify", &p.binds[i].name, &errs, &p.binds[i].expr));
             } else {
@@ -114,9 +138,7 @@ pub fn optimize_with_stats(p: &mut Program) -> Result<Stats, Diagnostic> {
             break;
         }
     }
-    st.removed_globals = dce_globals(p);
-    lint_all(p, "dce")?;
-    Ok(st)
+    Ok(())
 }
 
 fn add_stats(st: &mut Stats, o: &Stats) {
@@ -567,12 +589,23 @@ fn inline_candidates(p: &Program) -> HashMap<String, Expr> {
         while let Expr::TyLam(_, _, x) = body {
             body = x;
         }
-        if b.name == "main" || !matches!(body, Expr::Lam(..)) {
+        // Aliases (`(+) = primIntAdd`) are inlined like small functions.
+        let alias = {
+            let mut a = body;
+            while let Expr::TyApp(x, _) = a {
+                a = x;
+            }
+            matches!(a, Expr::Global(g) if *g != b.name)
+        };
+        if b.name == "main" || !(matches!(body, Expr::Lam(..)) || alias) {
             continue;
         }
         let small = size(&b.expr) <= INLINE_SIZE;
         let once = uses.get(b.name.as_str()) == Some(&1);
-        if (small || once) && !recursive(&b.name) {
+        // A wrapper of the worker/wrapper split only calls its worker: it
+        // is always inlined, even though the worker may call it back.
+        let wrapper = p.bind(&format!("{}$w", b.name)).is_some();
+        if wrapper || ((small || once) && !recursive(&b.name)) {
             out.insert(b.name.clone(), b.expr.clone());
         }
     }
@@ -880,6 +913,37 @@ impl Simp<'_> {
             self.st.floated += 1;
             return Expr::Let(inner, Box::new(self.let_lazy(b, *r2, k)));
         }
+        if let Expr::Con(c, ts, args) = &r
+            && args.iter().any(|a| !a.is_atom())
+            && args.iter().all(|a| a.is_atom() || self.total(a))
+            && let Some(fts) = self.strict_field_types(c, ts)
+        {
+            // let b = K e (e total)  ⇒  let! u = e in let b = K u: no thunk
+            // for a constructor whose strict fields are cheap to compute.
+            self.hit();
+            self.st.floated += 1;
+            let Expr::Con(c, ts, args) = r else {
+                unreachable!()
+            };
+            let mut binds = Vec::new();
+            let mut atoms = Vec::new();
+            for (a, ft) in args.into_iter().zip(fts) {
+                if a.is_atom() {
+                    atoms.push(a);
+                } else {
+                    let u = Binder::new(Id::new("u", self.next), Mult::Many, ft);
+                    self.next += 1;
+                    self.bind(&u);
+                    atoms.push(Expr::Var(u.id.clone()));
+                    binds.push((u, a));
+                }
+            }
+            let mut body = self.let_lazy(b, Expr::Con(c, ts, atoms), k);
+            for (u, a) in binds.into_iter().rev() {
+                body = Expr::LetStrict(u, Box::new(a), Box::new(body));
+            }
+            return body;
+        }
         self.bind(&b);
         let x = b.id.id;
         if r.is_atom() {
@@ -919,6 +983,37 @@ impl Simp<'_> {
             }
             _ => {}
         }
+        if let Expr::Con(c, ts, args) = &r
+            && args.iter().any(|a| !a.is_atom())
+            && let Some(fts) = self.strict_field_types(c, ts)
+        {
+            // let! b = K e  ⇒  let! u = e in let! b = K u  (strict fields
+            // are evaluated before construction anyway), so that `b` is a
+            // known constructor.
+            self.hit();
+            self.st.floated += 1;
+            let Expr::Con(c, ts, args) = r else {
+                unreachable!()
+            };
+            let mut binds = Vec::new();
+            let mut atoms = Vec::new();
+            for (a, ft) in args.into_iter().zip(fts) {
+                if a.is_atom() {
+                    atoms.push(a);
+                } else {
+                    let u = Binder::new(Id::new("u", self.next), Mult::Many, ft);
+                    self.next += 1;
+                    self.bind(&u);
+                    atoms.push(Expr::Var(u.id.clone()));
+                    binds.push((u, a));
+                }
+            }
+            let mut body = self.let_strict(b, Expr::Con(c, ts, atoms), k);
+            for (u, a) in binds.into_iter().rev() {
+                body = Expr::LetStrict(u, Box::new(a), Box::new(body));
+            }
+            return body;
+        }
         self.bind(&b);
         let x = b.id.id;
         if matches!(r, Expr::Lit(_)) || self.is_unboxed_var(&r) {
@@ -938,6 +1033,55 @@ impl Simp<'_> {
             return body;
         }
         Expr::LetStrict(b, Box::new(r), Box::new(body))
+    }
+
+    /// Whether `case (case .. of alts2) as b of alts` may become a case in
+    /// each alternative of the inner one: no linear binders, and either a
+    /// single inner alternative or inner results whose shape is known
+    /// (so the copies of `alts` reduce), unless `alts` is small.
+    fn case_of_case_ok(&self, b: &Binder, alts: &[Alt], alts2: &[Alt]) -> bool {
+        let linear = |a: &Alt| match &a.con {
+            AltCon::Con(_, fs) => fs.iter().any(|f| f.mult != Mult::Many),
+            _ => false,
+        };
+        if b.mult != Mult::Many || alts.iter().any(linear) || alts2.iter().any(linear) {
+            return false;
+        }
+        if alts2.len() == 1 {
+            return true;
+        }
+        // A pending single-use substitution would be consumed by the first
+        // copy of `alts`; keep those cases as they are.
+        let pending = alts.iter().any(|a| {
+            free_vars(&a.rhs)
+                .iter()
+                .any(|x| self.sub.get(x).is_some_and(|r| !r.is_atom()))
+        });
+        if pending {
+            return false;
+        }
+        let known = alts2
+            .iter()
+            .all(|a| matches!(a.rhs, Expr::Con(..) | Expr::Lit(_) | Expr::Panic(..)));
+        let small = alts.iter().map(|a| size(&a.rhs)).sum::<usize>() <= INLINE_SIZE;
+        known || small
+    }
+
+    /// Field types of constructor `c` at type arguments `ts` when all its
+    /// fields are strict and not linear.
+    fn strict_field_types(&self, c: &str, ts: &[Type]) -> Option<Vec<Type>> {
+        let (d, i) = self.p.ctor(c)?;
+        let k = &d.ctors[i];
+        if d.linear || !k.strict.iter().all(|s| *s) || d.params.len() != ts.len() {
+            return None;
+        }
+        let s: Vec<(TyVar, Type)> = d
+            .params
+            .iter()
+            .map(|p| p.0.clone())
+            .zip(ts.iter().cloned())
+            .collect();
+        Some(k.fields.iter().map(|f| f.subst_all(&s)).collect())
     }
 
     /// Evaluating `e` terminates without effects (so an unused `let!` of it
@@ -973,6 +1117,28 @@ impl Simp<'_> {
                 self.hit();
                 self.st.floated += 1;
                 Expr::LetStrict(b2, r2, Box::new(self.case(*s2, b, res, alts)))
+            }
+            Expr::Case(s2, b2, _, alts2) if self.case_of_case_ok(&b, &alts, &alts2) => {
+                // case (case s2 of p -> e) of alts  ⇒  case s2 of p -> case e of alts
+                self.hit();
+                self.st.known_case += 1;
+                let n = alts2.len();
+                let outer = Expr::Case(Box::new(Expr::Lit(Lit::Unit)), b, res.clone(), alts);
+                let alts2 = alts2
+                    .into_iter()
+                    .map(|a| {
+                        let Expr::Case(_, b, r, alts) = (if n > 1 {
+                            freshen(&outer, &mut self.next)
+                        } else {
+                            outer.clone()
+                        }) else {
+                            unreachable!()
+                        };
+                        let rhs = self.case(a.rhs, b, r, alts);
+                        Alt { con: a.con, rhs }
+                    })
+                    .collect();
+                Expr::Case(s2, b2, res, alts2)
             }
             Expr::Lit(Lit::Int(n)) => {
                 let pick = alts

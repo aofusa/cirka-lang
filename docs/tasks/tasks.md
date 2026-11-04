@@ -80,7 +80,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | ID | タイトル | 状態 | 優先度 | 依存 |
 |---|---|---|---|---|
 | [FEAT-0040](features/FEAT-0040-unwinding.md) | 例外/パニックのアンワインド | todo | P1 | 0031 |
-| [FEAT-0041](features/FEAT-0041-core-optimizations.md) | Core 最適化の強化 | todo | P0 | 0033 |
+| [FEAT-0041](features/FEAT-0041-core-optimizations.md) | Core 最適化の強化 | done | P0 | 0033 |
 | [FEAT-0042](features/FEAT-0042-escape-analysis.md) | エスケープ解析とスタック割り当て | todo | P2 | 0041 |
 | [FEAT-0043](features/FEAT-0043-benchmarks.md) | ベンチマーク集と性能レポート | todo | P1 | 0016 |
 | [FEAT-0044](features/FEAT-0044-debug-info.md) | DWARF デバッグ情報 | todo | P2 | 0032 |

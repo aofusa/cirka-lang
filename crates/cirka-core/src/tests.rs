@@ -229,3 +229,74 @@ fn opt_respects_linearity() {
     let (m, _) = opt_main(&src);
     assert_eq!(m.trim(), "9", "{m}");
 }
+
+const STRICT_INT: &str = "(data Int () (I# (! Int#)))\n";
+
+#[test]
+fn opt_worker_wrapper_unboxes_strict_loops() {
+    // A loop strict in two boxed accumulators: the worker takes and
+    // returns `Int#`, and no `I#` is built inside it.
+    let src = format!(
+        "{STRICT_INT}(def sum (-> Int Int Int)
+           (lam ((n Int) (acc Int))
+             (case n (s Int) Int
+               ((I# k) (case k (kk Int#) Int
+                 (0 acc)
+                 (_ (case acc (t Int) Int
+                   ((I# a) (sum (con I# () (prim sub k 1)) (con I# () (prim add a k)))))))))))
+         (extern arg () Int#)
+         (def main Int#
+           (let! (x Int# (extern arg))
+             (case (sum (con I# () x) (con I# () 0)) (r Int) Int# ((I# v) v))))"
+    );
+    let mut p = parse_program(FileId(0), &src).unwrap();
+    let st = opt::optimize_with_stats(&mut p).unwrap();
+    assert!(lint::lint_program(&p).is_empty(), "{}", print_program(&p));
+    assert_eq!(st.worker_wrapper, 1, "{st:?}");
+    let w = p.bind("sum$w").expect("worker");
+    let s = print::print_expr(&w.expr);
+    assert!(!s.contains("I#"), "{s}");
+    assert_eq!(w.ty.to_string(), "(-> Int# (-> Int# Int#))");
+    let m = print::print_expr(&p.bind("main").unwrap().expr);
+    assert!(m.contains("sum$w") && !m.contains("I#"), "{m}");
+}
+
+#[test]
+fn opt_unpacks_strict_boxed_fields() {
+    let src = format!(
+        "{STRICT_INT}(data V () (V (! Int) (! Int)) (W Int))
+         (extern arg () Int#)
+         (def main Int#
+           (let! (x Int# (extern arg))
+             (case (con V () (con I# () x) (con I# () (prim add x 1))) (v V) Int#
+               ((V a b) (case a (s Int) Int# ((I# y) y)))
+               ((W c) 0))))"
+    );
+    let mut p = parse_program(FileId(0), &src).unwrap();
+    let st = opt::optimize_with_stats(&mut p).unwrap();
+    assert!(lint::lint_program(&p).is_empty(), "{}", print_program(&p));
+    assert_eq!(st.unpacked_fields, 2, "{st:?}");
+    let v = p.data("V").unwrap();
+    assert_eq!(v.ctors[0].fields[0].to_string(), "Int#");
+    // The lazy field of `W` stays boxed.
+    assert_eq!(v.ctors[1].fields[0].to_string(), "Int");
+    let m = print::print_expr(&p.bind("main").unwrap().expr);
+    assert!(!m.contains("I#"), "{m}");
+}
+
+#[test]
+fn opt_case_of_case() {
+    // case (case c of 0 -> I# 1; _ -> I# 2) of I# v -> v + 10
+    //   ⇒ case c of 0 -> 11; _ -> 12
+    let src = format!(
+        "{STRICT_INT}(extern arg () Int#)
+         (def main Int#
+           (let! (c Int# (extern arg))
+             (case (case c (k Int#) Int (0 (con I# () 1)) (_ (con I# () 2))) (s Int) Int#
+               ((I# v) (prim add v 10)))))"
+    );
+    let (m, st) = opt_main(&src);
+    assert!(!m.contains("I#"), "{m}");
+    assert!(m.contains("11") && m.contains("12"), "{m}");
+    assert!(st.known_case >= 3, "{st:?}");
+}

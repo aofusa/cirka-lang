@@ -10,6 +10,8 @@ pub mod parse;
 pub mod print;
 pub mod sexp;
 pub mod ty;
+pub mod unpack;
+pub mod ww;
 
 pub use expr::*;
 pub use parse::parse_program;
