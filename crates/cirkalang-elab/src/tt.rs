@@ -278,6 +278,8 @@ pub enum Prim {
     PrintFloat,
     PutChar,
     ReadInt,
+    ArgCount,
+    GetArg,
     Exit,
     Panic,
     // Unique.
@@ -343,6 +345,8 @@ impl Prim {
         ("printFloat", Prim::PrintFloat),
         ("putChar", Prim::PutChar),
         ("readInt", Prim::ReadInt),
+        ("argCount", Prim::ArgCount),
+        ("getArg", Prim::GetArg),
         ("exit", Prim::Exit),
         ("panic", Prim::Panic),
         ("unique", Prim::MkUnique),

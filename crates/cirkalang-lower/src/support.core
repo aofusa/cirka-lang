@@ -8,6 +8,8 @@
 (extern cirka_panic_bytes (Bytes) Unit#)
 (extern cirka_exit (Int#) Unit#)
 (extern cirka_read_byte () Int#)
+(extern cirka_argc () Int#)
+(extern cirka_arg (Int#) Bytes)
 (extern cirka_f64_to_bytes (Double#) Bytes)
 (extern sqrt (Double#) Double#)
 

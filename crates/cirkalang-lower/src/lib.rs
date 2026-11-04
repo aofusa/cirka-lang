@@ -1320,6 +1320,18 @@ impl<'a> Lower<'a> {
                     vec![g("cirka$read_int", vec![a[0].clone()])],
                 )
             }),
+            Prim::ArgCount => self.skeleton(ty, 1, |_, _| {
+                c::Expr::Con(
+                    "I#".into(),
+                    Vec::new(),
+                    vec![c::Expr::Extern("cirka_argc".into(), Vec::new())],
+                )
+            }),
+            Prim::GetArg => self.skeleton(ty, 2, |a, r| {
+                self.unbox(a[0].clone(), "I#", "Int", c::Type::int(), r, |u| {
+                    c::Expr::Extern("cirka_arg".into(), vec![u])
+                })
+            }),
             Prim::Exit => self.skeleton(ty, 2, |a, r| {
                 self.unbox(a[0].clone(), "I#", "Int", c::Type::int(), r.clone(), |u| {
                     self.seq_unit(

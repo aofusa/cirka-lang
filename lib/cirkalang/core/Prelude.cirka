@@ -82,6 +82,10 @@ prim printInt : Int -> IO ()
 prim printFloat : Float -> IO ()
 prim putChar : Char -> IO ()
 prim readInt : IO Int
+-- Command line arguments (without the program name); `getArg` panics when
+-- the index is out of range.
+prim argCount : IO Int
+prim getArg : Int -> IO String
 prim exit : Int -> IO a
 prim panic : String -> a
 
@@ -228,6 +232,23 @@ strLength s = primStrLength s
 
 strEq : String -> String -> Bool
 strEq s t = primStrEq s t
+
+-- Decimal integer (optional leading `-`); stops at the first non-digit.
+parseInt : String -> Int
+parseInt s =
+  if strLength s == 0 then 0
+  else if primStrIndex s 0 == 45 then negate (parseDigits s 1 0)
+  else parseDigits s 0 0
+
+-- (`&&` evaluates both arguments, so the bounds check is a nested `if`.)
+parseDigits : String -> Int -> Int -> Int
+parseDigits s i acc =
+  if i >= strLength s then acc
+  else if isDigit (primStrIndex s i) then parseDigits s (i + 1) (acc * 10 + primStrIndex s i - 48)
+  else acc
+
+isDigit : Int -> Bool
+isDigit b = b >= 48 && b <= 57
 
 showInt : Int -> String
 showInt n = primIntToStr n

@@ -1,0 +1,36 @@
+module Main
+
+-- binary-trees (Benchmarks Game), single-threaded. Same output as rust/main.rs.
+
+data Tree = Leaf | Node Tree Tree
+
+make : Int -> Tree
+make 0 = Node Leaf Leaf
+make d = Node (make (d - 1)) (make (d - 1))
+
+check : Tree -> Int
+check Leaf = 0
+check (Node l r) = 1 + check l + check r
+
+-- Sum of `check` over `n` fresh trees of depth `d`.
+iterate : Int -> Int -> Int -> Int
+iterate 0 d acc = acc
+iterate n d acc = iterate (n - 1) d (acc + check (make d))
+
+depths : Int -> Int -> IO ()
+depths d maxd =
+  if d > maxd then pure ()
+  else do
+    let n = primShlInt 1 (maxd - d + 4)
+    putStrLn (showInt n ++ "\t trees of depth " ++ showInt d ++ "\t check: " ++ showInt (iterate n d 0))
+    depths (d + 2) maxd
+
+main : IO ()
+main = do
+  argc <- argCount
+  arg <- if argc > 0 then getArg 0 else pure "10"
+  let maxd = max 6 (parseInt arg)
+  putStrLn ("stretch tree of depth " ++ showInt (maxd + 1) ++ "\t check: " ++ showInt (check (make (maxd + 1))))
+  let long = make maxd
+  depths 4 maxd
+  putStrLn ("long lived tree of depth " ++ showInt maxd ++ "\t check: " ++ showInt (check long))
