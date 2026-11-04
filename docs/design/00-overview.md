@@ -3,7 +3,7 @@
 ## 1. 目的
 
 **バグがなく仕様を満たすことを証明でき (Idris 2 / Clean / Lean 4 のような証明系)、Haskell のような表現力を持ち、
-Rust のように GC なしでメモリ安全かつ高速で、CUI・サーバ・GUI (Vulkan)・OS の syscall 呼び出しといった通常のプログラミングができる言語**
+Rust のように GC なしでメモリ安全かつ高速で、CUI・サーバ・GPU 計算 (Vulkan)・GUI・OS の syscall 呼び出しといった通常のプログラミングができる言語**
 を作る。これを **CirkaLang** としてリリースする。
 
 優先順位は次のとおり。
@@ -25,13 +25,13 @@ Rust のように GC なしでメモリ安全かつ高速で、CUI・サーバ�
 
 | | 試作A: **aCHC** (aofusa's CirkaHaskellCompiler) | 試作B: **CirkaLang** プロトタイプ |
 |---|---|---|
-| 目的 | 既存の Haskell が GC なしで動くか、性能はどうか、所有権拡張の書き味の検証 | 最終目標の言語の形 (正格・所有権前提・証明付き・Rust 並みの性能) の検証 |
-| 言語 | Haskell 2010 + 最小限の GHC 拡張 + 所有権拡張 (`.chs`) | 独自の小さな言語 (Haskell / Idris 風構文) |
+| 目的 | 初期: 既存の Haskell が GC なしで動くか・性能・所有権拡張の書き味の検証。後期: CirkaLang で検証済みの依存型・検証・効果を Haskell の拡張として取り込む | 最終目標の言語の形 (正格・所有権前提・証明付き・Rust 並みの性能) の検証 |
+| 言語 | Haskell 2010 + GHC 拡張 (初期は最小限、後期に GADTs・型族・DataKinds・FunctionalDependencies 等) + Cirka 拡張 (`.chs`) | 独自の小さな言語 (Haskell / Idris 風構文) |
 | 評価戦略 | 遅延 (Haskell 互換) | **正格**。遅延は `Lazy a` で明示 |
-| 型システム | HM + 型クラス + 多重度 + 一意性 (`LType`) | **QTT に基づく依存型** (0/1/ω) + 一意性 (`LType`) + トレイト + 部分集合型 (SMT) |
-| 証明 | 対象外 (Liquid Haskell 互換注釈は任意・低優先) | 全域性・等式証明・部分集合型の SMT 自動証明・契約 |
+| 型システム | HM + 型クラス + 多重度 + 一意性 (`LType`)。後期に高度な型拡張と依存量化 (`foreach`、シングルトン) | **QTT に基づく依存型** (0/1/ω) + 一意性 (`LType`) + トレイト + 部分集合型 (SMT) |
+| 証明・効果 | 後期 (H6・H7): Liquid Haskell 互換の洗練型・契約・全域性、`Eff es a` の効果システム・能力・セッション型 | 全域性・等式証明・部分集合型の SMT 自動証明・契約 (v0.0.4)、効果・能力・セッション型 (v0.0.7) |
 | ライブラリ | `cirka-base` (base 互換の縮小版) | `core` + libc ベースの `std` |
-| 版 | リリース対象外。版は付けずマイルストーン (H1–H4) で管理 | **v0.0.1, v0.0.2, …** (プロトタイプごとに上げる) |
+| 版 | リリース対象外。版は付けずマイルストーン (H1–H7) で管理 | **v0.0.1, v0.0.2, …** (プロトタイプごとに上げる) |
 | コンパイラ | `achc` | `cirka` |
 | 拡張子 | `.hs` / `.chs` | `.cirka` |
 
@@ -70,24 +70,33 @@ Rust のように GC なしでメモリ安全かつ高速で、CUI・サーバ�
 - G2. すべての実行テストで **リーク 0** (意図的な循環を除く) と valgrind エラー 0。
 - G3. 性能: CirkaLang と aCHC の `.chs` (所有権を使うコード) で **Rust の 1.5 倍以内** (主要ベンチ)。aCHC の素の `.hs` は GHC `-O2` と同等を目標。
 
-### aCHC のゴール (スコープ縮小版)
+### aCHC のゴール
+
+初期 (H1–H4、最優先):
 
 - A1. Haskell 2010 + 最小限の拡張で書かれたプログラムを GC なしで実行し、GHC と同じ出力を得る (差分テスト 50 本以上)。
 - A2. 多重度・一意性・Drop/Release・借用を Haskell の拡張として試し、書き味を評価する。
 - A3. 評価結果 (遅延評価と RC の相性、何を捨てるべきか) を CirkaLang v0.1.0 の設計に入力する。
 
+後期 (H5–H7、CirkaLang で検証した後: ADR-027、[14-achc-advanced.md](14-achc-advanced.md)):
+
+- A4. GADTs・型族・DataKinds・PolyKinds・FunctionalDependencies・型レベル Nat を扱う。
+- A5. 依存量化 (`foreach`)・洗練型 (Liquid Haskell 互換)・契約・全域性を Haskell の拡張として取り込む。
+- A6. 効果システム (`Eff es a`)・能力・セッション型を Haskell の拡張として取り込む。
+
 ### CirkaLang プロトタイプのゴール
 
 - C1. 正格・所有権前提の言語で Rust 並みの性能を出す (v0.0.1–v0.0.3)。
 - C2. 依存型 (QTT) と SMT による自動証明で、仕様を満たすことを **実行時コストゼロ** で保証する (v0.0.4)。
-- C3. 通常のプログラミング: CUI (v0.0.2)、サーバ・syscall (v0.0.5)、GUI (Vulkan) (v0.0.6)。
+- C3. 通常のプログラミング: CUI (v0.0.2)、サーバ・syscall (v0.0.5)、Vulkan のコンピュートシェーダによる GPU 計算 (v0.0.6。Docker 内)。GUI は遠隔の macOS / Windows で任意に検証する ([15-gpu-and-remote.md](15-gpu-and-remote.md))。
 - C4. 効果・能力・セッション型を試す (v0.0.7)。
 
 ### 非ゴール (第一段階)
 
-- aCHC: GHC ライブラリとのバイナリ互換、Hackage パッケージの移植、GHC testsuite の合格率目標、Template Haskell、GHCi、非同期例外、GADTs/型族などの高度な型拡張、検証機能 (Liquid 互換注釈は任意)。
+- aCHC: GHC ライブラリとのバイナリ互換、Hackage パッケージの移植、GHC testsuite の合格率目標、Template Haskell、GHCi、非同期例外。
 - CirkaLang プロトタイプ: 版間の互換性、Lean 4 級の対話的証明 (タクティク)、完全なパッケージエコシステム。
-- x86_64 Linux 以外のターゲット。
+- x86_64 Linux 以外のターゲット (遠隔 GUI 検証のための macOS / Windows 移植は任意: FEAT-0053, 0054)。
+- Docker 内での GUI (ウィンドウ・描画)。Docker 内の GPU 利用はコンピュートのみ。
 
 ## 5. メモリ管理の三層 (要約・両試作共通)
 
@@ -105,7 +114,7 @@ aCHC では遅延評価の knot-tying も加わる。詳細は [04-memory-model.
 | 軸 | 内容 | 入力 | 優先度 | 主な実施場所 |
 |----|------|------|--------|--------------|
 | **性能・メモリ安全** | GC なし・所有権・RAII・ネイティブ速度・FFI | specs 00, 01, 02 | **最優先** | 共通基盤、aCHC H1–H4、CirkaLang v0.0.1–v0.0.3 |
-| **正しさ・仕様検証** | 依存型・全域性・部分集合型 (SMT)・契約・能力・セッション型 | specs 03, 04 | その次 | CirkaLang v0.0.4 以降 ([13-verification.md](13-verification.md)) |
+| **正しさ・仕様検証** | 依存型・全域性・部分集合型 (SMT)・契約・能力・効果・セッション型 | specs 03, 04 | その次 | まず CirkaLang v0.0.4 / v0.0.7 で検証し、その後 aCHC H5–H7 ([13-verification.md](13-verification.md), [14-achc-advanced.md](14-achc-advanced.md)) |
 
 検証の軸は性能の軸を犠牲にしない: 型・証明は多重度 0 で消去され、SMT による検証はコンパイル時だけに動く。
 
@@ -130,17 +139,20 @@ aCHC では遅延評価の knot-tying も加わる。詳細は [04-memory-model.
 | ADR-013 | 例外/パニックは最初は **abort**、後に **Itanium ABI のアンワインド + landing pad で drop** | Rust の panic=unwind と同じ実績ある方式 | 戻り値でのエラー伝播: 全呼び出しにチェック |
 | ADR-014 | 循環参照は **リーク扱い (安全) + コンパイル時警告** | Rust の `Rc` と同じ立場。トレーシング GC を持たない | 常時循環回収器: GC を持つことになる |
 | ADR-015 | 検証機能は **実行時コストゼロ** の別軸とし、性能の軸より優先度を下げる | 性能目標を犠牲にしない | 検証のために実行時検査を残す: 性能低下 |
-| ADR-016 | 検証の中心は **CirkaLang の部分集合型 + SMT (Z3)** (ADR-020 で改訂)。aCHC の Liquid Haskell 互換注釈は任意・低優先 | 依存型の中で「値 + 消去される証明」として統一的に扱える。SMT 連携 (`cirka-smt`) は共通基盤として両方で使える | aCHC を検証機能の主な場にする: Haskell の型システムの上限に縛られる |
-| ADR-017 | 完全な依存型は **CirkaLang で最初から QTT に基づいて** 作る (ADR-020, ADR-023 で改訂)。aCHC では依存型を扱わない | 多重度 0/1/ω は QTT の半環そのもの。Haskell の型推論・型クラスと衝突しない | aCHC に軽量依存型 (GADTs/型族): 工数に対して得るものが少ない |
-| ADR-018 | 効果システム (Koka 風) は **CirkaLang v0.0.7 で試作** (ADR-020 で改訂)。aCHC は扱わない | 関数型の形を変えるため Haskell 互換と両立しない | aCHC で導入: `.hs` との互換性が壊れる |
+| ADR-016 | 検証は **まず CirkaLang の部分集合型 + SMT (Z3)** で設計・検証し、その後 aCHC に Liquid Haskell 互換の洗練型として取り込む (ADR-020, ADR-027 で改訂) | 依存型の中で「値 + 消去される証明」として統一的に扱える。SMT 連携 (`cirka-smt`) は共通基盤として両方で使える | aCHC を検証機能の主な場にする: Haskell の型システムの上限に縛られる |
+| ADR-017 | 完全な依存型は **CirkaLang で最初から QTT に基づいて** 作る (ADR-023)。aCHC には CirkaLang v0.0.4 の後に、GHC の流儀 (GADTs・型族・DataKinds・型レベル Nat・`foreach` とシングルトン) で取り込む (ADR-027 で改訂) | 多重度 0/1/ω は QTT の半環そのもの。aCHC では Haskell の意味を変えない範囲の依存型にとどめる | aCHC に先に依存型: 最優先の GC なし・所有権の検証が遅れる |
+| ADR-018 | 効果システムは **CirkaLang v0.0.7 で試作** し、その後 aCHC に **モナド `Eff es a`** (effectful / polysemy の流儀) として取り込む。ハンドラの変換 (evidence passing) は共通 Core 上で共有 (ADR-027 で改訂) | モナドとして提供すれば関数の型の形が変わらず Haskell 互換を保てる | 行多相な効果型を aCHC の関数型に入れる: `.hs` との互換性が壊れる |
 | ADR-019 | 証明できた事実で **実行時検査を除去** する (境界検査・ゼロ除算・到達不能分岐) | 検証機能を性能向上にもつなげる | 検証結果をコード生成に使わない: 機会損失 |
 | ADR-020 | 第一段階は **aCHC (スコープ縮小) と CirkaLang プロトタイプの二つの試作を並行** し、**消去後の Core 以降を共有** する | aCHC だけでは「証明付きで GC なし」という最終目標を第二段階まで検証できない。共通基盤により重複はフロントエンドだけ | aCHC のみ: 最終形の検証が遅れる。別々のコンパイラ: 基盤の重複 |
 | ADR-021 | 共通 Core は **CirkaLang を基準に設計した消去後の Core** (System F + 多重度 + `Any`/`cast`) | 依存型を消去した結果を表せる必要がある。aCHC の Core はその部分集合として収まる | aCHC 基準の Core: 後から依存型由来のコードが入りにくい |
 | ADR-022 | CirkaLang は **正格評価がデフォルト**、遅延は `Lazy a` で明示 | 性能と資源解放の予測可能性。循環がほぼ生じない | 遅延デフォルト: サンクのコストと循環リーク |
 | ADR-023 | CirkaLang の型検査は **最初から QTT 依存型の双方向型検査** (トップレベルは型注釈必須) | 小さな依存型検査器は HM + 型クラスの完全推論より複雑ではない。後から依存型を足す方が手戻りが大きい | HM から始めて後で依存型: 型検査器の作り直し |
 | ADR-024 | 版: CirkaLang は **v0.0.x (プロトタイプ) → v0.1.0 〜 (第二段階) → v1.0.0 (仕様固定)**。aCHC はリリース対象外で版を付けない | 利用者の指定。プロトタイプごとにテーマを区切って評価する | — |
-| ADR-025 | aCHC の **スコープを縮小**: Hackage 移植・GHC testsuite の合格率目標・高度な型拡張・検証機能を対象外 | aCHC の目的は「GC なしで Haskell が動くか」の検証と書き味の評価。互換性の作業は CirkaLang で捨てるもの | 当初の広いスコープ: 最終目標に寄与しない作業が大きい |
+| ADR-025 | aCHC の **初期スコープを縮小** (ADR-027 で改訂): Hackage 移植・GHC testsuite の合格率目標を対象外。高度な型拡張・依存型・検証・効果は後期 (H5–H7) へ回す | aCHC の目的は「GC なしで Haskell が動くか」の検証と書き味の評価。互換性の作業は CirkaLang で捨てるもの | 当初の広いスコープ: 最終目標に寄与しない作業が大きい |
 | ADR-026 | CirkaLang のコンパイラは `cirka`、拡張子は `.cirka`、設定は `cirka.toml` | aCHC (`achc`, `.hs`/`.chs`, `achc.toml`) と明確に区別する | — |
+| ADR-027 | aCHC の順序: **(1) GC なし・所有権 (H1–H4)** → **(2) CirkaLang で依存型・検証 (v0.0.4)・効果 (v0.0.7) を検証** → **(3) aCHC に高度な型・依存型・検証 (H5・H6)、効果・能力・セッション型 (H7)** | 利用者の指定。最優先の検証を遅らせず、新しい型機能は制約の少ない CirkaLang で先に形を決めてから Haskell に合わせる | aCHC と CirkaLang で同時に作る: 設計が二重になり手戻りが大きい |
+| ADR-028 | Docker 内 (x86_64 Linux) では **Vulkan のコンピュートシェーダによる計算のみ** を扱う (Mesa lavapipe)。GUI は遠隔の macOS / Windows で任意に検証する | Docker には GPU・表示装置がない。lavapipe なら GPU なしでテストできる | Docker 内で GUI: 表示環境がなく検証できない |
+| ADR-029 | 遠隔ホストの接続先・作業ディレクトリは **`.env` のみ** に書き、git で管理しない。文書・スクリプト・コミットには変数名だけを書く | 環境依存の情報であり、公開リポジトリに残すべきでない | 設定ファイルや文書に直接書く: 情報が git に残る |
 
 ## 8. 第一段階で検証する項目
 
@@ -151,7 +163,8 @@ aCHC では遅延評価の knot-tying も加わる。詳細は [04-memory-model.
 | 3 | 遅延評価と RC の相性 (サンクのコスト、knot-tying の頻度) | aCHC |
 | 4 | 一意性・線形性・借用の書きやすさ、エラーメッセージ | 両方 |
 | 5 | 依存型・部分集合型の証明の書き味と、性能への影響がないこと | CirkaLang |
-| 6 | CUI・サーバ・GUI・syscall の実用性 | CirkaLang |
+| 6 | CUI・サーバ・GPU 計算・syscall の実用性 (GUI は遠隔で任意) | CirkaLang |
 | 7 | Haskell から何を捨て、何を残すべきか | aCHC → CirkaLang v0.1.0 |
+| 8 | 依存型・検証・効果を Haskell の拡張として入れたときの書き味と限界 (CirkaLang との比較) | aCHC 後期 (FEAT-0164) |
 
 計測結果は各チケット、`docs/design/bench-report.md`、aCHC の評価レポート (FEAT-0132)、各 CirkaLang 版のリリースチケットに記録する。

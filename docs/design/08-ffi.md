@@ -5,7 +5,7 @@
 
 ABI の実装 (構造体・共用体・可変長引数・コールバック: FEAT-0047) と bindgen (FEAT-0048) は **共通基盤** で、
 aCHC と CirkaLang は宣言の構文だけが異なる。本書の §1〜§7 は aCHC の記法で書き、CirkaLang の記法は §8 に示す。
-実用目標 (サーバ・syscall・Vulkan) に必要な要件は §9。
+実用目標 (サーバ・syscall・Vulkan compute) に必要な要件は §9。
 
 ## 1. 三つの水準
 
@@ -139,5 +139,5 @@ impl Release File where
 | CUI / ファイル | `FILE*`・fd を RAII で扱う、`errno` → `Result` | FEAT-0213, 0242 |
 | サーバ | ソケット fd、`epoll`、ノンブロッキング I/O、スレッドから安全に呼べること (`Send` 相当の区別) | FEAT-0046, 0240, 0241 |
 | syscall | libc の syscall ラッパ、シグナルハンドラ (コールバック)、`mmap` | FEAT-0242 |
-| Vulkan / GUI | 構造体・共用体の値渡しとアラインメント、ポインタの配列、ハンドル型 (64bit 不透明値) を `LType` として RAII 管理、関数ポインタの取得 (`vkGetInstanceProcAddr`)、コールバック (デバッグメッセンジャ)、大きなヘッダの bindgen | FEAT-0047, 0048, 0250, 0251 |
+| Vulkan (Docker 内は compute のみ。GUI は遠隔環境で任意、[15-gpu-and-remote.md](15-gpu-and-remote.md)) | 構造体・共用体の値渡しとアラインメント、ポインタの配列、ハンドル型 (64bit 不透明値) を `LType` として RAII 管理、関数ポインタの取得 (`vkGetInstanceProcAddr`)、コールバック (デバッグメッセンジャ)、大きなヘッダの bindgen | FEAT-0047, 0048, 0250, 0251, 0290 |
 | 数値計算 | BLAS/LAPACK への配列の受け渡し (借用ポインタ、行優先/列優先) | FEAT-0252 |

@@ -14,7 +14,7 @@ Rust のように GC なしでメモリ安全かつ高速で、CUI・サーバ�
 
 | 段階 | 成果物 | 内容 |
 |------|--------|------|
-| 第一段階 | **aCHC** (aofusa's CirkaHaskellCompiler) — 試作A | Haskell の拡張としての試作 (スコープ縮小版)。既存 Haskell (`.hs`) を GC なしで実行し、`.chs` で所有権拡張を試す。TypeScript と JavaScript の関係を目指す。リリース対象外 (版なし) |
+| 第一段階 | **aCHC** (aofusa's CirkaHaskellCompiler) — 試作A | Haskell の拡張としての試作。**前期 (H1–H4)**: 既存 Haskell (`.hs`) を GC なしで実行し、`.chs` で所有権拡張を試す。**後期 (H5–H7)**: CirkaLang で検証済みの依存型・検証・効果を、GADTs・TypeFamilies・DataKinds・FunctionalDependencies などとともに Haskell の拡張として取り込む。TypeScript と JavaScript の関係を目指す。リリース対象外 (版なし) |
 | 第一段階 | **CirkaLang v0.0.x** — 試作B | 最終目標の言語のプロトタイプ。正格・QTT 依存型・所有権・証明。**v0.0.1 から始め、プロトタイプごとに v0.0.2, v0.0.3, … と版を上げる** |
 | 第二段階 | **CirkaLang v0.1.0 〜 v1.0.0** | 第一段階の評価をもとに正式な言語として作り込む。仕様が完全に固定されたら v1.0.0 |
 
@@ -57,6 +57,8 @@ Rust のように GC なしでメモリ安全かつ高速で、CUI・サーバ�
 | `docs/design/12-cirkalang.md` | CirkaLang 言語設計 (プロトタイプ v0.0.x の各版と第二段階) |
 | `docs/design/cirkalang/spec-v0.0.N.md` | CirkaLang 各版の言語仕様 (各版の仕様チケットで作成) |
 | `docs/design/13-verification.md` | 検証機能 (依存型・全域性・部分集合型と SMT・契約・能力・効果・セッション型) |
+| `docs/design/14-achc-advanced.md` | aCHC 後期 (H5–H7): 高度な型拡張・依存型と検証・効果 |
+| `docs/design/15-gpu-and-remote.md` | Vulkan compute (Docker) と遠隔環境 (macOS / Windows) での GUI 検証 |
 | `docs/tasks/tasks.md` | チケット一覧(作業の起点) |
 
 ## 3. ディレクトリ構成
@@ -118,6 +120,19 @@ scripts/ci.sh                  # fmt / clippy / 全テスト (FEAT-0003 で作�
 
 コンテナ内の `ghc` は **差分テスト用の参照実装** であり、aCHC のビルドには使いません。
 
+Docker 内には GPU も表示装置もないため、**GPU は Vulkan のコンピュートシェーダのみ** を扱う (Mesa lavapipe で CPU 実行。FEAT-0251 でイメージに追加)。ウィンドウを使う GUI は扱わない。
+
+### 遠隔環境での GUI 検証 (任意)
+
+ウィンドウを使う GUI の確認は、ssh で接続できる macOS / Windows のホストで **可能な場合に任意で** 行う (`docs/design/15-gpu-and-remote.md`、FEAT-0052, 0290)。
+
+- 接続先と作業ディレクトリは **環境依存の情報なので `.env` だけに書く** (`CIRKA_REMOTE_MAC_HOST` / `CIRKA_REMOTE_MAC_WORKDIR` / `CIRKA_REMOTE_WIN_HOST` / `CIRKA_REMOTE_WIN_WORKDIR`)。
+  **実際のホスト名・ssh の別名・パスを、設計書・チケット・スクリプト・テスト・コミットメッセージなど git 管理下のものに書かない。** 変数名だけを書く。
+- 値が空の変数に対応する遠隔検証はスキップする。
+- 遠隔ホストでは `.env` で指定された作業ディレクトリの中だけで作業する (その外のファイルを作成・変更・削除しない)。
+- 遠隔操作は `scripts/remote.sh` で行い、コンテナ内ではなくホスト側 (ssh の設定と鍵があるところ) で実行する。同期するのは git 管理下のファイルだけ (`.env` は送らない)。
+- ログ・画像は `docs/artifacts/remote/<mac|win>/` に回収し (git 管理外)、結論だけをチケットに記録する。CI・リリース条件には含めない。
+
 ## 5. 作業フロー
 
 1. **チケットから始める。** 作業は必ず `docs/tasks/features/` または `docs/tasks/bugs/` のチケットに紐づける。該当チケットがなければ先に作成し、`docs/tasks/tasks.md` の一覧に追加する。
@@ -132,7 +147,8 @@ scripts/ci.sh                  # fmt / clippy / 全テスト (FEAT-0003 で作�
 
 - 機能: `docs/tasks/features/FEAT-XXXX-<kebab-title>.md`、バグ: `docs/tasks/bugs/BUG-XXXX-<kebab-title>.md`
 - 番号はトラックごとの番号帯を使う: 共通基盤 0001–0099、aCHC 0100–0199、CirkaLang 0200–0299 (版ごとに 10 番ずつ)、第二段階 0300–。詳細は `11-roadmap.md`。
-- 作業が競合したときの優先順位は `11-roadmap.md` §6 に従う (共通基盤 > CirkaLang v0.0.1–v0.0.3 > aCHC > 証明 > その他)。
+- 作業が競合したときの優先順位は `11-roadmap.md` §6 に従う (共通基盤 > GC なし・所有権 (CirkaLang v0.0.1–v0.0.3、aCHC H1–H4) > CirkaLang での依存型・検証・効果の検証 (v0.0.4–v0.0.7) > aCHC への取り込み (H5–H7) > 任意の遠隔 GUI 検証)。
+- aCHC の後期 (H5–H7) は、対応する CirkaLang の版 (H5/H6 は v0.0.4、H7 は v0.0.7) がリリースされるまで着手しない。
 - 雛形は `docs/tasks/features/_TEMPLATE.md` / `docs/tasks/bugs/_TEMPLATE.md`。
 - 状態: `todo` → `in-progress` → `done`(他に `blocked` / `wontfix`)。
 - `tasks.md` の一覧とチケット本文の状態は常に一致させる。
@@ -167,7 +183,7 @@ scripts/ci.sh                  # fmt / clippy / 全テスト (FEAT-0003 で作�
 | ユニットテスト | 各クレートの `#[cfg(test)]` | 関数単位 |
 | スナップショット | 各クレート `tests/snapshots` (insta) | パース結果・Core・MIR・LLVM IR のダンプ |
 | 共通基盤 | `tests/mir/`, `tests/core/` | 手書き MIR / Core の実行 (インタプリタとネイティブの一致) |
-| aCHC | `tests/achc/{run,fail,diff,compat}/` | 実行・診断・GHC との差分・互換計測 |
+| aCHC | `tests/achc/{run,fail,diff,compat,verify}/` | 実行・診断・GHC との差分・互換計測・検証 (verify は後期 H6〜、Z3 が必要) |
 | CirkaLang | `tests/cirkalang/{run,fail,verify}/` | 実行 (版ごとのディレクトリ)・診断・証明の検証 (Z3 が必要) |
 | メモリ | 実行テスト全体 | `CIRKA_LEAK_CHECK=1` でリーク 0、`CIRKA_ALLOC=system` + valgrind でエラー 0 |
 | 性能 | `bench/` | Rust / GHC -O2 との比較 (hyperfine) |

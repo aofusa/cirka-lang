@@ -99,7 +99,7 @@ aCHC と CirkaLang のフロントエンドは互いに依存しない。
 achc build [--release] [-o out] [Main.hs]   # achc.toml があればそれに従う
 achc run Main.hs [-- args...]
 achc check Main.hs                          # 型・所有権検査のみ
-achc verify Main.hs                         # (任意) Liquid 互換注釈の検証 (FEAT-0131)
+achc verify Main.hs                         # (後期 H6) 洗練型・契約の検証 (FEAT-0151, 0152)
 ```
 
 フラグ: `-O0|-O1|-O2`、`--ownership=off|warn|strict`、`--cycles=warn|error|collect`、`--runtime=release|debug`、`--emit=llvm|obj|exe`。

@@ -16,12 +16,15 @@
 | aCHC エラー | `tests/achc/fail/**/*.{hs,chs}` + `.stderr` | aCHC | 診断コードとメッセージが一致 |
 | aCHC 差分 | `tests/achc/diff/**/*.hs` | aCHC | GHC の実行結果と stdout・終了コードが一致 (`CIRKA_GHC` 未設定ならスキップ) |
 | aCHC 互換計測 | `tests/achc/compat/` (GHC testsuite / nofib の一部) | aCHC | 合格率は目標にせず、失敗理由の分類を記録 (ADR-025) |
+| aCHC 検証 (後期) | `tests/achc/verify/{pass,fail}/**/*.{hs,chs}` | aCHC (H6〜) | 洗練型・契約・全域性が通る / 反例付きで失敗する (`CIRKA_Z3` 未設定ならスキップ) |
 | CirkaLang 実行 | `tests/cirkalang/run/v0.0.N/**/*.cirka` + `.stdout` | CirkaLang | 出力一致、リーク 0。版ごとにディレクトリを分ける |
 | CirkaLang エラー | `tests/cirkalang/fail/**/*.cirka` + `.stderr` | CirkaLang | 型・所有権・全域性・証明の診断が一致 |
 | CirkaLang 検証 | `tests/cirkalang/verify/{pass,fail}/**/*.cirka` | CirkaLang (v0.0.4〜) | 証明が通る / 反例付きで失敗する (`CIRKA_Z3` 未設定ならスキップ) |
 | 契約の実行時検査 | `tests/cirkalang/run/contracts/` | CirkaLang | `--contracts=check` で違反時に期待どおり停止 |
 | メモリ | 実行テスト全体 | 全部 | `CIRKA_ALLOC=system` + valgrind でエラー 0 |
 | 並行性 | `tests/cirkalang/run/threads/` | CirkaLang (v0.0.5〜) | ThreadSanitizer でエラーなし |
+| Vulkan compute | `tests/cirkalang/run/v0.0.6/vulkan/` | CirkaLang (v0.0.6〜) | lavapipe 上で CPU 計算と一致、検証レイヤーのエラー・警告 0 (Vulkan がなければスキップ) |
+| 遠隔 GUI (任意) | `scripts/remote.sh` で手動実行 | macOS / Windows | CI には含めない。結果は `docs/artifacts/remote/` に置き、結論をチケットに記録 (§7) |
 | 性能 | `bench/` | 全部 | hyperfine で比較し記録 |
 | ファズ | `fuzz/` (cargo-fuzz、後半) | 両パーサ・型検査 | パニックしない |
 
@@ -48,12 +51,13 @@ GHC (Docker イメージに同梱、Ubuntu 24.04 の `ghc` パッケージ) を�
 2. aCHC でコンパイル・実行した結果と比較。
 3. 差分が出たら、まず MIR インタプリタで再現するか確認し、フロントエンド/バックエンドどちらのバグかを切り分ける。
 
-## 4. aCHC: 互換性の計測 (縮小)
+## 4. aCHC: 互換性の計測
 
 - GHC の `testsuite/tests/**/should_run/*.hs` と `nofib/{imaginary,spectral}` の一部を取り込み (BSD ライセンス表記を保持)、
   失敗理由 (パース / 未対応拡張 / 型検査 / 実行時差分 / リーク / 性能) を分類する。
 - 合格率は目標にしない (ADR-025)。分類結果は「GC なし実行で何が問題になるか」「CirkaLang で何を捨てるか」の材料として
-  `docs/design/compat-report.md` と aCHC 評価レポート (FEAT-0132) に記録する。
+  `docs/design/compat-report.md` と aCHC 評価レポート (前期 FEAT-0132、後期 FEAT-0164) に記録する。
+- 後期 (H5) では GADTs・型族などを使う GHC testsuite のテストも計測対象に加え、前期との差を記録する。
 
 ## 5. 性能の計測
 
@@ -83,6 +87,14 @@ cargo build -p cirka-runtime --profile release   (+ debug runtime)
 cargo test --workspace                           (ユニット・スナップショット・mir・core・achc run/fail・cirkalang run/fail)
 cargo test --test achc_diff                      (CIRKA_GHC があれば)
 cargo test --test cirkalang_verify               (CIRKA_Z3 があれば)
+cargo test --test achc_verify                    (後期 H6〜、CIRKA_Z3 があれば)
 ```
 
 `scripts/memcheck.sh`、`scripts/compat.sh`、`scripts/bench.sh` は時間がかかるため任意実行 (マイルストーン完了時・CirkaLang のリリース時は必須)。
+
+## 7. 遠隔環境での GUI 検証 (任意)
+
+- Docker 内では GUI を扱わない (ADR-028)。ウィンドウを使う検証は、利用者が `.env` に設定した macOS / Windows のホストで `scripts/remote.sh` を使って手動で行う ([15-gpu-and-remote.md](15-gpu-and-remote.md), FEAT-0052, 0290)。
+- 接続先・作業ディレクトリは `.env` の `CIRKA_REMOTE_*` からのみ読む (ADR-029)。値が空なら何もしない。
+- 判定はオフスクリーン描画の画像比較と検証レイヤーのログ。ログ・画像は `docs/artifacts/remote/<mac|win>/` に回収し、結論だけをチケットに記録する。
+- CI・リリース条件には含めない。

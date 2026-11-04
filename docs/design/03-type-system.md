@@ -141,8 +141,9 @@ Linear Haskell と同様に、文脈の各変数に多重度を付ける。
 
 ## 10. 検証機能・CirkaLang との関係
 
-- aCHC の型システムは依存型を持たない。検証機能の本体は CirkaLang で扱う ([13-verification.md](13-verification.md))。
-- aCHC で任意に行う Liquid 互換注釈の検証 (FEAT-0131) は、型検査が通った Core に対する独立パスで、型推論・型クラス解決には影響しない。
+- 本書が定める前期 (H1–H4) の aCHC の型システムは依存型を持たない。検証機能はまず CirkaLang で評価する ([13-verification.md](13-verification.md))。
+- 後期には GADTs・型族・DataKinds (H5)、Haskell 流の依存型 (`foreach` をシングルトンへ脱糖)・洗練型・契約・全域性 (H6)、ケイパビリティ・効果 (H7) を追加する。
+  型規則の追加分は [14-achc-advanced.md](14-achc-advanced.md) に記す。洗練型の検証 (FEAT-0151) は型検査が通った Core に対する独立パスで、型推論・型クラス解決には影響しない。
 - 多重度 `%0` は aCHC では「実行時に消える引数」で、CirkaLang の QTT の 0 (型・証明) と同じ意味を持つ。共通 Core ではどちらも多重度 0 として消去される。
 
 ## 11. 診断コード
