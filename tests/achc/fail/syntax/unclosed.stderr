@@ -1,0 +1,5 @@
+error[E0102]: expected an expression, found keyword `where`
+ --> unclosed.hs:2:3
+  |
+2 |   where x = 1
+  |   ^^^^^ expected an expression

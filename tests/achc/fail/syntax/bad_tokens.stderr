@@ -1,0 +1,10 @@
+error[E0101]: unterminated string literal
+ --> bad_tokens.hs:1:5
+  |
+1 | s = "unterminated
+  |     ^^^^^^^^^^^^^ string starts here
+error[E0101]: unterminated character literal
+ --> bad_tokens.hs:2:5
+  |
+2 | c = 'ab'
+  |     ^^ expected `'`

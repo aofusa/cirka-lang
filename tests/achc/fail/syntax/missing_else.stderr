@@ -1,0 +1,5 @@
+error[E0102]: expected keyword `else`, found `g`
+ --> missing_else.hs:2:1
+  |
+2 | g = 2
+  | ^ expected keyword `else`
