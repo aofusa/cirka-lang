@@ -185,3 +185,10 @@ fn exhaustiveness_warnings() {
         Vec::<String>::new()
     );
 }
+
+#[test]
+fn lazy_pattern_with_several_variables() {
+    // Regression: the selector of `b` re-bound `a` to its own field.
+    let src = "add ~(a, b) = a + b\nmain = print (add (3, 4))\n";
+    assert_eq!(run(src), "7\n");
+}

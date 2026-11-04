@@ -1,0 +1,9 @@
+# A package with two modules (FEAT-0105).
+[package]
+name = "hello"
+main = "src/Main.hs"
+source-dirs = ["src"]
+
+[compiler]
+ownership = "warn"
+cycles = "warn"

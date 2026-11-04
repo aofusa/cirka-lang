@@ -768,6 +768,7 @@ impl Ds {
                 }
                 let mut vars = Vec::new();
                 pat_vars(&q, &mut vars);
+                let mut bound = Vec::new();
                 for (v, vt) in vars {
                     // `v = case col of q -> v; _ -> error`
                     let cvt = self.ty(&vt);
@@ -790,8 +791,14 @@ impl Ds {
                         None => c::Expr::Panic("irrefutable pattern".into(), cvt.clone()),
                     };
                     let body = replace_unit_leaf(inner, &val);
-                    let i = self.bind_local(&v);
+                    let i = self.id(&v);
+                    bound.push((v, i.clone()));
                     lets.push((c::Binder::new(i, c::Mult::Many, cvt), body));
+                }
+                // Each selector re-binds all the pattern's variables to its
+                // own fields; the variables finally refer to the lets.
+                for (v, i) in bound {
+                    self.locals.insert(v, i);
                 }
                 Pat::Wild(col.1.clone())
             }

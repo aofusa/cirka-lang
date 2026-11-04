@@ -33,6 +33,14 @@ lib/cirka-base/
 - 移植元のバージョンとライセンス表記をファイル先頭に残す。
 - 優先順位はテストスイートで使われる頻度順(`tests/compat` の失敗理由を集計して決める)。
 
+#### H1 時点の範囲 (FEAT-0105)
+
+型クラスがない H1 では、`Prelude` は **`Int` に単相化した版** を置く (`+`・`==`・`show`・`print` などは `Int` 専用、
+リスト・`Maybe`・`Either`・文字列・`IO` の関数は多相)。`Int` だけを使うプログラムは GHC と同じ結果になる。
+`Cirka/Prim.hs` は `data Int` などの空のデータ宣言と `foreign import prim "p"` だけからなり、各プリミティブの実体は
+脱糖器の Core 定義 `prim$p` (`crates/achc-desugar/src/prims.core`) にある。`Data/Char.hs` は文字の判定と変換の小さな部分集合。
+型クラス導入 (H2, FEAT-0110) で `Num`・`Eq`・`Ord`・`Show` などに置き換える。
+
 ### 1.3 数値
 
 | 型 | 実装 |

@@ -89,7 +89,7 @@ aCHC と CirkaLang のフロントエンドは互いに依存しない。
 - **名前**: `Name { id: u32, text: Symbol }`。文字列はインターン化。
 - **Span** はすべてのノードに付け、TT・Core・MIR にも保持する。
 - **パスは純関数的に**: 各パスは入力 IR を受け取り新しい IR を返す。検証器 (TT Lint / Core Lint / MIR 検証器) をデバッグビルドでは各パス後に実行。
-- **ダンプ**: `--dump=<段階>` で各段階を出力 (aCHC: `ast,rn,tc`、CirkaLang: `ast,rn,tt,erased`、共通: `core,core-opt,mir,mir-opt,llvm`)。スナップショットテストに使う。
+- **ダンプ**: `--dump=<段階>` で各段階を出力 (aCHC: `rn,tc`、CirkaLang: `ast,rn,tt,erased`、共通: `core,core-opt,mir,mir-opt,llvm`)。スナップショットテストに使う。
 
 ## 5. CLI
 

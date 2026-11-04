@@ -187,3 +187,142 @@ fn achc_desugar() {
     }
     assert!(failed.is_empty(), "{}", failed.join("\n"));
 }
+
+/// Haskell programs under tests/achc/run/<milestone>/ (FEAT-0105): the
+/// interpreter prints `.stdout` (exit code `.exitcode`, default 0) at -O0
+/// and -O2 without leaks, native code with both runtimes agrees, the
+/// warnings match `.warn` (none when absent) and, when `CIRKA_GHC` is set,
+/// GHC prints the same and exits with the same code.
+#[test]
+fn achc_run() {
+    cirka_testkit::init();
+    cirka_driver::native::ensure_runtime_built().unwrap();
+    let cfg = cirka_driver::Config::from_env();
+    let root = format!("{}/", repo_root().display());
+    let cases = discover(&repo_root().join("tests/achc/run"), &["hs"]);
+    assert!(!cases.is_empty());
+    run_suite("achc-run", &cases, |c| {
+        let mut sm = SourceMap::new();
+        let opts = cirka_driver::pipeline::Options::new(&c.name);
+        let roots = vec![c.path.parent().unwrap().to_path_buf(), achc::lib_dir()];
+        let compiled = match achc::compile(&mut sm, &c.path, &roots, &opts, "test") {
+            Ok(x) => x,
+            Err(ds) => {
+                return Outcome::Fail(
+                    ds.iter()
+                        .map(|d| render(d, &sm, Style::Plain))
+                        .collect::<String>()
+                        .replace(&root, ""),
+                );
+            }
+        };
+        let warn: String = compiled
+            .warnings
+            .iter()
+            .map(|d| render(d, &sm, Style::Plain))
+            .collect::<String>()
+            .replace(&root, "");
+        let wpath = c.sibling("warn");
+        if (!warn.is_empty() || wpath.exists())
+            && let Err(e) = check_expect(&wpath, &warn)
+        {
+            return Outcome::Fail(format!("warnings: {e}"));
+        }
+        let stdin = std::fs::read(c.sibling("stdin")).unwrap_or_default();
+        let want_code: i32 = std::fs::read_to_string(c.sibling("exitcode"))
+            .map(|s| s.trim().parse().unwrap())
+            .unwrap_or(0);
+        if let Some(r) = cirka_testkit::ghc_reference(&c.path, Some(&stdin), &[]) {
+            match r {
+                Ok(g) => {
+                    let want = std::fs::read_to_string(c.sibling("stdout")).unwrap_or_default();
+                    if g.stdout != want || g.code != want_code {
+                        return Outcome::Fail(format!(
+                            "GHC disagrees with the expectation (exit {}):\n{}",
+                            g.code,
+                            cirka_testkit::line_diff(&want, &g.stdout)
+                        ));
+                    }
+                }
+                // GHC is optional outside the Docker image.
+                Err(e) if e.starts_with("cannot run") => {}
+                Err(e) => return Outcome::Fail(e),
+            }
+        }
+        let mut reference = None;
+        for level in [0u8, 2] {
+            let mut opts = cirka_driver::pipeline::Options::new(&c.name);
+            opts.opt_level = level;
+            opts.build_dir = cirka_testkit::work_dir("achc-run", &c.name);
+            let out = match cirka_driver::pipeline::compile_core(
+                compiled.core.clone(),
+                &c.name,
+                &opts,
+                false,
+            ) {
+                Ok(o) => o,
+                Err(ds) => {
+                    return Outcome::Fail(
+                        ds.iter()
+                            .map(|d| d.message.clone())
+                            .collect::<Vec<_>>()
+                            .join("\n"),
+                    );
+                }
+            };
+            let r = match cirka_mir::interp::run(&out.mir, &stdin, u64::MAX) {
+                Ok(r) => r,
+                Err(e) => return Outcome::Fail(format!("-O{level}: {e}")),
+            };
+            if let Err(e) = check_expect(&c.sibling("stdout"), &r.stdout) {
+                return Outcome::Fail(format!("-O{level}: {e}"));
+            }
+            if r.exit_code != want_code {
+                return Outcome::Fail(format!(
+                    "-O{level}: exit code {} (expected {want_code})",
+                    r.exit_code
+                ));
+            }
+            if r.leaked != 0 && want_code == 0 {
+                return Outcome::Fail(format!("-O{level}: {} objects leaked", r.leaked));
+            }
+            reference = Some((out.mir, r));
+        }
+        let (m, r) = reference.unwrap();
+        cirka_integration::check_native_with(
+            &cfg,
+            c,
+            "achc-native",
+            &m,
+            &stdin,
+            &r,
+            true,
+            want_code == 0,
+        )
+    });
+}
+
+/// `achc.toml` packages (FEAT-0105): tests/achc/pkg/hello compiles through
+/// the frontend of the `achc` driver and prints its greeting.
+#[test]
+fn achc_package() {
+    let dir = repo_root().join("tests/achc/pkg/hello");
+    let mut sm = SourceMap::new();
+    let opts = cirka_driver::pipeline::Options::new("hello");
+    let core = match achc::frontend(&mut sm, &dir, &opts) {
+        Some(Ok(p)) => p,
+        Some(Err(ds)) => panic!(
+            "{}",
+            ds.iter()
+                .map(|d| render(d, &sm, Style::Plain))
+                .collect::<String>()
+        ),
+        None => panic!("the package was not recognized"),
+    };
+    let out = cirka_driver::pipeline::compile_core(core, "hello", &opts, false).unwrap();
+    let r = cirka_mir::interp::run(&out.mir, b"", u64::MAX).unwrap();
+    assert_eq!(r.stdout, "hello, package\n");
+    assert_eq!(r.leaked, 0);
+    // Not a Haskell file: left to the driver (`.core`) or rejected.
+    assert!(achc::frontend(&mut sm, &dir.join("achc.toml.bak"), &opts).is_none());
+}

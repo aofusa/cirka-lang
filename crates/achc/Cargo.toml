@@ -14,3 +14,4 @@ achc-rename.workspace = true
 achc-typeck.workspace = true
 achc-desugar.workspace = true
 cirka-driver.workspace = true
+cirka-core.workspace = true

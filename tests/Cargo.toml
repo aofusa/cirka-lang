@@ -26,6 +26,7 @@ achc-syntax.workspace = true
 achc-rename.workspace = true
 achc-typeck.workspace = true
 achc-desugar.workspace = true
+achc.workspace = true
 
 [[test]]
 name = "workspace"

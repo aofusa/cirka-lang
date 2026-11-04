@@ -1646,7 +1646,7 @@ impl Tc {
                                     wheres: Vec::new(),
                                     body: vec![(Vec::new(), fail)],
                                 },
-                                span: *bsp,
+                                span: Span::DUMMY,
                             },
                         ],
                         rt.clone(),
@@ -1721,7 +1721,8 @@ impl Tc {
                                     tast::Expr::Con(list_tc(), vec![a.clone()]),
                                 )],
                             },
-                            span: *bsp,
+                            // Generated: never reported as redundant.
+                            span: Span::DUMMY,
                         },
                     ],
                     la.clone(),
@@ -1914,7 +1915,7 @@ impl Tc {
                     tast::Expr::Error("no constructor has all these fields".into(), rt.clone()),
                 )],
             },
-            span: sp,
+            span: Span::DUMMY,
         });
         let v = self.fresh_name("$c");
         let m = tast::Expr::Match(vec![(v.clone(), rt.clone())], clauses, rt.clone());
