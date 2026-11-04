@@ -1,0 +1,12 @@
+error[E0605]: equations for `g` have different numbers of arguments
+ --> tests/achc/typeck/fail/arity.hs:6:1
+  |
+5 | g 0 = 1
+  | ------- the first equation is here
+6 | g x y = 2
+  | ^^^^^^^^^
+error[E0601]: the constructor `P` should have 2 arguments, but has been given 1
+ --> tests/achc/typeck/fail/arity.hs:8:4
+  |
+8 | h (P a) = a
+  |    ^^^

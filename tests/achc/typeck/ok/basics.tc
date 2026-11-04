@@ -1,0 +1,73 @@
+rec
+Main.insert :: Int -> Tree Int -> Tree Int
+Main.insert = (\($a42 :: Int) -> (\($a43 :: Tree Int) -> match $a42 $a43 {
+    x#1 Leaf -> (((Main.Node @Int Main.Leaf @Int) x#1) Main.Leaf @Int)
+    x#2 t#3@(Node l#4 y#5 r#6) | ((Prelude.== x#2) y#5) -> t#3 | otherwise#7 -> (((Main.Node @Int ((Main.insert x#2) l#4)) y#5) r#6)
+      where
+        otherwise#7 :: Bool
+        otherwise#7 = Cirka.Prim.True
+
+  }))
+rec
+Main.toList :: forall a. Tree a -> [a]
+Main.toList = (\($a44 :: Tree a) -> match $a44 {
+    Leaf -> Cirka.Prim.[] @a
+    (Node l#8 x#9 r#10) -> ((Prelude.++ @a (Main.toList @a l#8)) ((Prelude.++ @a ((Cirka.Prim.: @a x#9) Cirka.Prim.[] @a)) (Main.toList @a r#10)))
+  })
+Main.size :: forall a. Tree a -> Int
+Main.size = (\($a46 :: Tree a) -> match $a46 {
+    t#11 -> (len#12 @a (Main.toList @a t#11))
+      where
+        len#12 :: forall a. [a] -> Int
+        len#12 = ((Prelude.foldr @a @Int (\($l47 :: a) -> (\($l48 :: Int) -> match $l47 $l48 {
+            _ n#13 -> ((Prelude.+ n#13) 1)
+          }))) 0)
+
+  })
+Main.swap :: forall a b. (a, b) -> (b, a)
+Main.swap = (\($a51 :: (a, b)) -> match $a51 {
+    ((,) a#14 b#15) -> ((Cirka.Prim.(,) @b @a b#15) a#14)
+  })
+Main.twice :: forall a. (a -> a) -> a -> a
+Main.twice = (\($a54 :: a -> a) -> match $a54 {
+    f#16 -> ((Prelude.. @a @a @a f#16) f#16)
+  })
+Main.fromMaybe :: forall a. a -> Maybe a -> a
+Main.fromMaybe = (\($a56 :: a) -> (\($a57 :: Maybe a) -> match $a56 $a57 {
+    d#17 Nothing -> d#17
+    _ (Just x#18) -> x#18
+  }))
+Main.evens :: Int -> [Int]
+Main.evens = (\($a59 :: Int) -> match $a59 {
+    n#19 -> ((Prelude.concatMap @Int @Int (\($q62 :: Int) -> match $q62 {
+        x#22 -> let
+            $c61 :: Bool
+            $c61 = (even#20 x#22)
+          in match $c61 {
+            True -> ((Cirka.Prim.: @Int x#22) Cirka.Prim.[] @Int)
+            False -> Cirka.Prim.[] @Int
+          }
+        _ -> Cirka.Prim.[] @Int
+      })) ((Prelude.enumFromTo 1) n#19))
+      where
+        even#20 :: Int -> Bool
+        even#20 = (\($a60 :: Int) -> match $a60 {
+            k#21 -> ((Prelude.== k#21) k#21)
+          })
+
+  })
+Main.greet :: [Char] -> [Char]
+Main.greet = (\($a63 :: [Char]) -> match $a63 {
+    name#23 -> ((Prelude.++ @Char "hello, ") name#23)
+  })
+Main.main :: IO ()
+Main.main = let
+    t#24 :: Tree Int
+    t#24 = (((Prelude.foldr @Int @(Tree Int) Main.insert) Main.Leaf @Int) ((Cirka.Prim.: @Int 3) ((Cirka.Prim.: @Int 1) ((Cirka.Prim.: @Int 2) Cirka.Prim.[] @Int))))
+  in ((Prelude.>> @() @() (Cirka.Prim.putStr (Main.greet "world"))) ((Prelude.>>= @Int @() (Prelude.return @Int (Main.size @Int t#24))) (\(n#25 :: Int) -> let
+    $c64 :: Bool
+    $c64 = ((Prelude.== n#25) 3)
+  in match $c64 {
+    True -> (Cirka.Prim.putStr "ok")
+    False -> (Prelude.return @() Cirka.Prim.())
+  })))

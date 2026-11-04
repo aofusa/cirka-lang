@@ -1,0 +1,56 @@
+Main.height :: Shape -> Int
+Main.height = (\($r0 :: Shape) -> match $r0 {
+    (Rect _ $v0) -> $v0
+  })
+Main.radius :: Shape -> Int
+Main.radius = (\($r1 :: Shape) -> match $r1 {
+    (Circle $v1) -> $v1
+  })
+Main.width :: Shape -> Int
+Main.width = (\($r2 :: Shape) -> match $r2 {
+    (Rect $v2 _) -> $v2
+  })
+Main.area :: Shape -> Int
+Main.area = (\($c42 :: Shape) -> match $c42 {
+    (Circle r#1) -> ((Prelude.+ r#1) r#1)
+    (Rect w#2 h#3) -> ((Prelude.+ w#2) h#3)
+  })
+Main.grow :: Shape -> Shape
+Main.grow = (\($a43 :: Shape) -> match $a43 {
+    s#4 -> let
+        $c45 :: Shape
+        $c45 = s#4
+      in match $c45 {
+        (Circle $u44) -> (Main.Circle 1)
+        _ -> error "no constructor has all these fields"
+      }
+  })
+Main.pairs :: [(Int, Bool)]
+Main.pairs = ((Prelude.map @Int @(Int, Bool) (\($s46 :: Int) -> ((Cirka.Prim.(,) @Int @Bool $s46) Cirka.Prim.True))) ((Cirka.Prim.: @Int 1) ((Cirka.Prim.: @Int 2) Cirka.Prim.[] @Int)))
+Main.classify :: Int -> [Char]
+Main.classify = (\($a47 :: Int) -> match $a47 {
+    n#5 -> match  {
+         | ((Prelude.== n#5) 0) -> "zero" | otherwise#6 -> "other"
+      }
+      where
+        otherwise#6 :: Bool
+        otherwise#6 = Cirka.Prim.True
+
+  })
+Main.firsts :: forall a b. [(a, b)] -> [a]
+Main.firsts = (\($a48 :: [(a, b)]) -> match $a48 {
+    xs#7 -> ((Prelude.concatMap @(a, b) @a (\($q49 :: (a, b)) -> match $q49 {
+        ((,) a#8 _) -> ((Cirka.Prim.: @a a#8) Cirka.Prim.[] @a)
+        _ -> Cirka.Prim.[] @a
+      })) xs#7)
+  })
+Main.sections :: ([Int], [Int], [Int])
+Main.sections = match  {
+     -> (((Cirka.Prim.(,,) @[Int] @[Int] @[Int] ((Prelude.map @Int @Int (\($s52 :: Int) -> ((Prelude.+ $s52) 1))) ((Cirka.Prim.: @Int 1) Cirka.Prim.[] @Int))) ((Prelude.map @Int @Int (Prelude.- 1)) ((Cirka.Prim.: @Int 2) Cirka.Prim.[] @Int))) ((Prelude.map @Int @Int (\($s53 :: Int) -> ((sub#9 $s53) 1))) ((Cirka.Prim.: @Int 3) Cirka.Prim.[] @Int)))
+      where
+        sub#9 :: Int -> Int -> Int
+        sub#9 = Prelude.-
+
+  }
+Main.main :: IO ()
+Main.main = (Cirka.Prim.putStr (Main.classify (Main.area ((Main.Rect 1) 2))))

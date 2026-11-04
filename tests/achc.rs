@@ -93,3 +93,46 @@ fn achc_modules() {
     }
     assert!(failed.is_empty(), "{}", failed.join("\n"));
 }
+
+/// Type checker tests (FEAT-0103) against the small library in
+/// tests/achc/typeck/lib: `ok/*.hs` type check and the inferred bindings
+/// of `Main` match `.tc`; `fail/*.hs` report the errors in `.stderr`.
+#[test]
+fn achc_typeck() {
+    let dir = repo_root().join("tests/achc/typeck");
+    let root = format!("{}/", repo_root().display());
+    let mut failed = Vec::new();
+    for (sub, ok) in [("ok", true), ("fail", false)] {
+        let cases = discover(&dir.join(sub), &["hs"]);
+        assert!(!cases.is_empty());
+        for c in cases {
+            let src = c.source();
+            let mut sm = SourceMap::new();
+            let id = sm.add(c.path.display().to_string(), src.clone());
+            let mut loader = achc_rename::FsLoader {
+                roots: vec![dir.join("lib")],
+            };
+            let opts = achc_rename::Options::default();
+            let r = achc_rename::rename_program(&mut sm, id, &src, false, &mut loader, &opts)
+                .and_then(|p| achc_typeck::typecheck(&p));
+            let (ext, text) = match r {
+                Ok(p) => ("tc", achc_typeck::tast::print_module_binds(&p, "Main")),
+                Err(errs) => (
+                    "stderr",
+                    errs.iter()
+                        .map(|d| render(d, &sm, Style::Plain))
+                        .collect::<String>()
+                        .replace(&root, ""),
+                ),
+            };
+            if (ext == "tc") != ok {
+                failed.push(format!("{sub}/{}: unexpected result\n{text}", c.name));
+                continue;
+            }
+            if let Err(e) = check_expect(&c.sibling(ext), &text) {
+                failed.push(format!("{sub}/{}: {e}", c.name));
+            }
+        }
+    }
+    assert!(failed.is_empty(), "{}", failed.join("\n"));
+}

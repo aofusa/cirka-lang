@@ -1,0 +1,10 @@
+error[E0601]: couldn't match expected type `[t29]` with actual type `Int`
+ --> tests/achc/typeck/fail/mismatch.hs:4:7
+  |
+4 | f x = x ++ [1]
+  |       ^
+error[E0601]: couldn't match expected type `[Char]` with actual type `Char`
+ --> tests/achc/typeck/fail/mismatch.hs:6:15
+  |
+6 | main = putStr 'c'
+  |               ^^^

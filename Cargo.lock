@@ -43,6 +43,7 @@ name = "achc-typeck"
 version = "0.0.1"
 dependencies = [
  "achc-rename",
+ "achc-syntax",
  "cirka-core",
  "cirka-diagnostics",
 ]
@@ -103,6 +104,7 @@ version = "0.0.1"
 dependencies = [
  "achc-rename",
  "achc-syntax",
+ "achc-typeck",
  "cirka",
  "cirka-codegen-llvm",
  "cirka-core",

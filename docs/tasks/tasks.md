@@ -105,7 +105,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0100](features/FEAT-0100-hs-lexer-layout.md) | Haskell 字句解析とレイアウト規則 | done | P0 | 0005 |
 | [FEAT-0101](features/FEAT-0101-hs-parser.md) | Haskell 構文解析 | done | P0 | 0100 |
 | [FEAT-0102](features/FEAT-0102-hs-renamer.md) | Haskell 名前解決とモジュール | done | P0 | 0101 |
-| [FEAT-0103](features/FEAT-0103-hs-typeck-hm.md) | Haskell 型推論 (HM・ADT) | todo | P0 | 0102, 0030 |
+| [FEAT-0103](features/FEAT-0103-hs-typeck-hm.md) | Haskell 型推論 (HM・ADT) | done | P0 | 0102, 0030 |
 | [FEAT-0104](features/FEAT-0104-hs-desugar.md) | Haskell 脱糖とパターンマッチのコンパイル | todo | P0 | 0103 |
 | [FEAT-0105](features/FEAT-0105-achc-cli.md) | achc CLI と achc.toml | todo | P0 | 0104, 0031, 0032 |
 

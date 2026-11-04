@@ -1614,6 +1614,16 @@ impl Parser {
                         },
                         Vec::new(),
                     )
+                } else if let Tok::VarSym(None, s) = self.cur()
+                    && self.peek_real(1) == &Tok::RParen
+                {
+                    // `(op)` as a variable: `(>>=) = primBindIO`.
+                    self.bump();
+                    self.bump();
+                    PatKind::Var(Ident {
+                        name: s,
+                        span: start.to(self.prev_span()),
+                    })
                 } else if self.at(&Tok::Comma) {
                     let mut n = 1;
                     while self.eat(&Tok::Comma) {

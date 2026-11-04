@@ -1,0 +1,6 @@
+error[E0604]: couldn't match expected type `b` with actual type `a`
+ --> tests/achc/typeck/fail/rigid.hs:4:12
+  |
+4 | coerce x = x
+  |            ^
+  = note: `b` is a rigid type variable bound by a type signature

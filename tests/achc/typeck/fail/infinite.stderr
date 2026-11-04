@@ -1,0 +1,6 @@
+error[E0602]: cannot construct the infinite type `t32 ~ t32 -> t33`
+ --> tests/achc/typeck/fail/infinite.hs:3:12
+  |
+3 | self f = f f
+  |            ^
+  = help: a value is used both as a whole and as a part of itself
