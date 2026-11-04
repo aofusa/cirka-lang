@@ -43,7 +43,11 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
 RUN (userdel -r ubuntu 2>/dev/null || true) \
     && groupadd -g ${USER_GID} ${USERNAME} \
     && useradd -m -u ${USER_UID} -g ${USER_GID} -s /bin/bash ${USERNAME} \
-    && echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/${USERNAME}
+    && echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/${USERNAME} \
+    && mkdir -p /work/target ${CARGO_HOME}/registry \
+    && chown ${USER_UID}:${USER_GID} /work/target ${CARGO_HOME}/registry
+# (Named volumes mounted on /work/target and the cargo registry inherit the
+#  ownership above, so the non-root user can write to them.)
 
 USER ${USERNAME}
 WORKDIR /work

@@ -18,3 +18,7 @@ cirka-testkit.workspace = true
 [[test]]
 name = "workspace"
 path = "workspace.rs"
+
+[[test]]
+name = "harness_selftest"
+path = "harness_selftest.rs"

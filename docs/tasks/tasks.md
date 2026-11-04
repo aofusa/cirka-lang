@@ -12,8 +12,8 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 
 | トラック | マイルストーン | 完了 / 全体 |
 |---|---|---|
-| 共通基盤 | M0 基盤整備 | 2 / 5 |
-| 共通基盤 | M1 バックエンド基盤 | 0 / 7 |
+| 共通基盤 | M0 基盤整備 | 5 / 5 |
+| 共通基盤 | M1 バックエンド基盤 | 1 / 7 |
 | 共通基盤 | M2 Perceus | 0 / 3 |
 | 共通基盤 | M3 共通 Core と Core→MIR | 0 / 4 |
 | 共通基盤 | SX 共通基盤の拡張 (各トラックの必要に応じて) | 0 / 15 |
@@ -41,16 +41,16 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | ID | タイトル | 状態 | 優先度 | 依存 |
 |---|---|---|---|---|
 | [FEAT-0001](features/FEAT-0001-cargo-workspace.md) | Cargo ワークスペースとクレート雛形 | done | P0 | - |
-| [FEAT-0002](features/FEAT-0002-docker-dev-env.md) | Docker 開発環境と .env 読み込み | todo | P0 | 0001 |
-| [FEAT-0003](features/FEAT-0003-test-harness.md) | 統合テストハーネス | todo | P0 | 0001 |
-| [FEAT-0004](features/FEAT-0004-ci-scripts.md) | CI スクリプト | todo | P1 | 0003 |
+| [FEAT-0002](features/FEAT-0002-docker-dev-env.md) | Docker 開発環境と .env 読み込み | done | P0 | 0001 |
+| [FEAT-0003](features/FEAT-0003-test-harness.md) | 統合テストハーネス | done | P0 | 0001 |
+| [FEAT-0004](features/FEAT-0004-ci-scripts.md) | CI スクリプト | done | P1 | 0003 |
 | [FEAT-0005](features/FEAT-0005-diagnostics.md) | 診断基盤 (cirka-diagnostics) | done | P0 | 0001 |
 
 ### M1 バックエンド基盤
 
 | ID | タイトル | 状態 | 優先度 | 依存 |
 |---|---|---|---|---|
-| [FEAT-0010](features/FEAT-0010-mir-ir.md) | MIR の定義とテキスト形式 | todo | P0 | 0005 |
+| [FEAT-0010](features/FEAT-0010-mir-ir.md) | MIR の定義とテキスト形式 | done | P0 | 0005 |
 | [FEAT-0011](features/FEAT-0011-mir-verifier.md) | MIR 所有権検証器 | todo | P0 | 0010 |
 | [FEAT-0012](features/FEAT-0012-mir-interp.md) | MIR インタプリタ | todo | P0 | 0010 |
 | [FEAT-0013](features/FEAT-0013-runtime-core.md) | ランタイム最小版 | todo | P0 | 0001 |

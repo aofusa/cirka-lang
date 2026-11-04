@@ -1,6 +1,6 @@
 # FEAT-0003: 統合テストハーネス
 
-- 状態: todo
+- 状態: done
 - トラック: 共通基盤
 - マイルストーン: M0 基盤整備
 - 優先度: P0
@@ -13,17 +13,20 @@
 
 ## 作業内容
 
-- [ ] テストファイルの列挙とヘッダコメント (`flags` 等) の解析
-- [ ] 期待ファイルとの比較と `ACHC_BLESS=1` / `CIRKA_BLESS=1` による更新
-- [ ] 失敗時の成果物を `_build/test-failures/` に保存
-- [ ] `CIRKA_TEST_JOBS` による並列実行
-- [ ] diff 種別: `CIRKA_GHC` で GHC の結果を取得・キャッシュ
+- [x] テストファイルの列挙とヘッダコメント (`flags` 等) の解析
+- [x] 期待ファイルとの比較と `ACHC_BLESS=1` / `CIRKA_BLESS=1` による更新
+- [x] 失敗時の成果物を `_build/test-failures/` に保存
+- [x] `CIRKA_TEST_JOBS` による並列実行
+- [x] diff 種別: `CIRKA_GHC` で GHC の結果を取得・キャッシュ
 
 ## 受け入れ条件
 
-- [ ] ダミーのテストケースで成功・失敗・bless が期待どおり動く
-- [ ] ハーネス自体のユニットテスト
-- [ ] テストを追加し `scripts/ci.sh` が通る
+- [x] ダミーのテストケースで成功・失敗・bless が期待どおり動く
+- [x] ハーネス自体のユニットテスト
+- [x] テストを追加し `scripts/ci.sh` が通る
 
 ## メモ
 
+- 実装は `crates/cirka-testkit` (コンパイラのクレートに依存しないので各クレートの dev-dependency にできる)。統合テストは `tests/` (`cirka-integration`) に `[[test]]` で並べる。
+- スナップショットは insta を使わず、testkit の期待ファイル比較 (`check_expect`) に統一した (外部クレートを増やさないため)。
+- `CIRKA_TEST_FILTER=<部分文字列>` で実行するケースを絞れる。

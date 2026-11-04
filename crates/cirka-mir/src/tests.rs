@@ -1,0 +1,298 @@
+use crate::*;
+use cirka_diagnostics::{FileId, Span};
+
+pub(crate) const MAP_EXAMPLE: &str = r#"
+type List { Nil = 0 {}, Cons = 1 { head: ptr, tail: ptr } }
+
+fn map(f: ptr @owned, xs: ptr @owned) -> ptr {
+entry:
+  switch xs {
+    List.Nil  => nil_case,
+    List.Cons => cons_case,
+  }
+nil_case:
+  drop f
+  ret xs                              // Nil is a static object
+cons_case:
+  let h  = proj xs List.Cons.head
+  let t  = proj xs List.Cons.tail
+  dup h
+  dup t
+  let tok = drop_reuse xs             // reuse xs when RC==1
+  dup f
+  let y  = apply f(h)
+  let ys = call map(f, t)
+  let r  = alloc List.Cons(y, ys) reuse tok
+  ret r
+}
+"#;
+
+fn strip_spans(mut m: Module) -> Module {
+    for f in &mut m.funcs {
+        f.span = Span::DUMMY;
+    }
+    m
+}
+
+#[test]
+fn parses_design_example() {
+    let m = parse(FileId(0), MAP_EXAMPLE).unwrap();
+    assert_eq!(m.types.len(), 1);
+    let f = m.func("map").unwrap();
+    assert_eq!(f.blocks.len(), 3);
+    assert_eq!(f.params[1].own, Own::Owned);
+    let printed = print_module(&m);
+    let again = parse(FileId(0), &printed).unwrap();
+    assert_eq!(strip_spans(m), strip_spans(again));
+}
+
+#[test]
+fn parse_errors_have_spans() {
+    let e = parse(FileId(0), "fn f() -> i64 {\nentry:\n  ret y\n}").unwrap_err();
+    assert!(
+        e.message.contains("undefined variable `y`"),
+        "{}",
+        e.message
+    );
+    assert!(e.primary_span().is_some());
+    let e = parse(
+        FileId(0),
+        "fn f() -> i64 { entry: let x = prim nope(1) ret x }",
+    )
+    .unwrap_err();
+    assert!(e.message.contains("unknown primitive"));
+    let e = parse(
+        FileId(0),
+        "fn f() -> i64 { entry: let x = lit 1 let x = lit 2 ret x }",
+    )
+    .unwrap_err();
+    assert!(e.message.contains("more than once"));
+    assert!(parse(FileId(0), "fn f(").is_err());
+    assert!(parse(FileId(0), "\"abc").is_err());
+}
+
+// ---- property test: print → parse round trip on random modules ----
+
+struct Rng(u64);
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0
+    }
+    fn below(&mut self, n: usize) -> usize {
+        (self.next() % n as u64) as usize
+    }
+}
+
+fn random_module(rng: &mut Rng) -> Module {
+    let mut m = Module::default();
+    let nt = 1 + rng.below(3);
+    for t in 0..nt {
+        let nc = 1 + rng.below(3);
+        let ctors = (0..nc)
+            .map(|c| CtorDef {
+                name: format!("C{c}"),
+                tag: c as u32,
+                fields: (0..rng.below(4))
+                    .map(|i| Field {
+                        name: format!("f{i}"),
+                        ty: [Ty::Ptr, Ty::I64, Ty::F64, Ty::I32][rng.below(4)],
+                    })
+                    .collect(),
+            })
+            .collect();
+        m.types.push(TypeDef {
+            name: format!("T{t}"),
+            ctors,
+        });
+    }
+    m.externs.push(ExternDecl {
+        name: "ext".into(),
+        params: vec![(Ty::I64, Own::Borrowed), (Ty::Ptr, Own::Owned)],
+        ret: if rng.below(2) == 0 {
+            None
+        } else {
+            Some(Ty::I64)
+        },
+    });
+    let nf = 1 + rng.below(3);
+    for fi in 0..nf {
+        let mut f = Function::new(format!("fn{fi}"), Ty::I64);
+        let mut ints = Vec::new();
+        let mut ptrs = Vec::new();
+        for i in 0..rng.below(3) {
+            let ty = if i % 2 == 0 { Ty::I64 } else { Ty::Ptr };
+            let v = f.new_var(format!("p{i}"), ty);
+            f.params.push(Param {
+                var: v,
+                own: if rng.below(2) == 0 {
+                    Own::Owned
+                } else {
+                    Own::Borrowed
+                },
+            });
+            if ty == Ty::Ptr {
+                ptrs.push(v)
+            } else {
+                ints.push(v)
+            }
+        }
+        let nb = 1 + rng.below(3);
+        let mut blocks = Vec::new();
+        for bi in 0..nb {
+            let mut instrs = Vec::new();
+            for k in 0..rng.below(6) {
+                let pick = rng.below(9);
+                let iop = |rng: &mut Rng, ints: &Vec<Var>| {
+                    if !ints.is_empty() && rng.below(2) == 0 {
+                        Operand::Var(ints[rng.below(ints.len())])
+                    } else {
+                        Operand::Const(Const::Int(rng.next() as i32 as i64, Ty::I64))
+                    }
+                };
+                match pick {
+                    0 => {
+                        let v = f.new_var(format!("x{bi}_{k}"), Ty::I64);
+                        let a = iop(rng, &ints);
+                        let b = iop(rng, &ints);
+                        instrs.push(Instr::Let {
+                            var: Some(v),
+                            rhs: Rhs::Prim(Prim::ALL[rng.below(18)], vec![a, b]).fix_arity(),
+                        });
+                        ints.push(v);
+                    }
+                    1 => {
+                        let v = f.new_var(format!("s{bi}_{k}"), Ty::Ptr);
+                        let bytes: Vec<u8> =
+                            (0..rng.below(5)).map(|_| rng.below(256) as u8).collect();
+                        instrs.push(Instr::Let {
+                            var: Some(v),
+                            rhs: Rhs::Lit(Const::Str(bytes)),
+                        });
+                        ptrs.push(v);
+                    }
+                    2 if !ptrs.is_empty() => instrs.push(Instr::Dup(ptrs[rng.below(ptrs.len())])),
+                    3 if !ptrs.is_empty() => instrs.push(Instr::Drop(ptrs[rng.below(ptrs.len())])),
+                    4 => {
+                        let v = f.new_var(format!("d{bi}_{k}"), Ty::F64);
+                        let x = (rng.next() % 10000) as f64 / 8.0;
+                        instrs.push(Instr::Let {
+                            var: Some(v),
+                            rhs: Rhs::Lit(Const::Float(x)),
+                        });
+                    }
+                    5 => {
+                        let v = f.new_var(format!("w{bi}_{k}"), Ty::I32);
+                        instrs.push(Instr::Let {
+                            var: Some(v),
+                            rhs: Rhs::Lit(Const::Int(-(rng.below(100) as i64), Ty::I32)),
+                        });
+                    }
+                    6 if !ptrs.is_empty() => {
+                        let v = f.new_var(format!("t{bi}_{k}"), Ty::Ptr);
+                        instrs.push(Instr::Let {
+                            var: Some(v),
+                            rhs: Rhs::Force(ptrs[rng.below(ptrs.len())]),
+                        });
+                        ptrs.push(v);
+                    }
+                    7 => {
+                        let t = rng.below(m.types.len());
+                        let c = rng.below(m.types[t].ctors.len());
+                        let cr = CtorRef {
+                            ty: t as u32,
+                            ctor: c as u32,
+                        };
+                        let args = m
+                            .ctor(cr)
+                            .fields
+                            .iter()
+                            .map(|fd| match fd.ty {
+                                Ty::Ptr if !ptrs.is_empty() => Operand::Var(ptrs[0]),
+                                Ty::Ptr => Operand::Const(Const::Str(b"z".to_vec())),
+                                Ty::F64 => Operand::Const(Const::Float(2.5)),
+                                t => Operand::Const(Const::Int(7, t)),
+                            })
+                            .collect();
+                        let v = f.new_var(format!("a{bi}_{k}"), Ty::Ptr);
+                        instrs.push(Instr::Let {
+                            var: Some(v),
+                            rhs: Rhs::Alloc {
+                                ctor: cr,
+                                args,
+                                reuse: None,
+                            },
+                        });
+                        ptrs.push(v);
+                    }
+                    8 if !ptrs.is_empty() => {
+                        let a = Operand::Var(ptrs[0]);
+                        let var = if m.externs[0].ret.is_some() {
+                            Some(f.new_var(format!("e{bi}_{k}"), Ty::I64))
+                        } else {
+                            None
+                        };
+                        instrs.push(Instr::Let {
+                            var,
+                            rhs: Rhs::Extern {
+                                func: "ext".into(),
+                                args: vec![Operand::Const(Const::Int(1, Ty::I64)), a],
+                            },
+                        });
+                    }
+                    _ => {}
+                }
+            }
+            let term = if bi + 1 < nb {
+                match rng.below(2) {
+                    0 => Terminator::Jump(BlockId(bi as u32 + 1), vec![]),
+                    _ if !ints.is_empty() => Terminator::Switch {
+                        scrut: ints[0],
+                        arms: vec![(Case::Int(rng.below(5) as i64 - 2), BlockId(bi as u32 + 1))],
+                        default: Some(BlockId(nb as u32 - 1)),
+                    },
+                    _ => Terminator::Panic("bad\n\"x\"".into()),
+                }
+            } else if !ints.is_empty() {
+                Terminator::Ret(Operand::Var(ints[rng.below(ints.len())]))
+            } else {
+                Terminator::Ret(Operand::Const(Const::Int(-3, Ty::I64)))
+            };
+            blocks.push(Block {
+                label: format!("b{bi}"),
+                params: vec![],
+                instrs,
+                term,
+            });
+        }
+        f.blocks = blocks;
+        m.funcs.push(f);
+    }
+    m
+}
+
+impl Rhs {
+    fn fix_arity(self) -> Rhs {
+        match self {
+            Rhs::Prim(p, mut a) => {
+                a.truncate(p.signature().0.len());
+                Rhs::Prim(p, a)
+            }
+            r => r,
+        }
+    }
+}
+
+#[test]
+fn roundtrip_property() {
+    let mut rng = Rng(0x2545F4914F6CDD1D);
+    for _ in 0..500 {
+        let m = random_module(&mut rng);
+        let text = print_module(&m);
+        let parsed = parse(FileId(0), &text).unwrap_or_else(|e| panic!("{}\n{text}", e.message));
+        assert_eq!(strip_spans(parsed.clone()), strip_spans(m), "\n{text}");
+        assert_eq!(print_module(&parsed), text);
+    }
+}
