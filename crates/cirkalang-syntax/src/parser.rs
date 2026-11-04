@@ -353,7 +353,11 @@ impl Parser {
             }
             Tok::Kw(Kw::Prim) => {
                 self.bump();
-                let (name, name_span) = self.def_name()?;
+                // Primitive types have upper-case names (`prim Int : Type`).
+                let (name, name_span) = match self.peek().clone() {
+                    Tok::UIdent(p, n) if p.is_empty() => (n, self.bump().span),
+                    _ => self.def_name()?,
+                };
                 self.expect(&Tok::Colon, "`:`")?;
                 let ty = self.expr()?;
                 DeclKind::Prim {

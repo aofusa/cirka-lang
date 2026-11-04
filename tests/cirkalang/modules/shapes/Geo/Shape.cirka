@@ -1,0 +1,9 @@
+module Geo.Shape
+
+import Geo.Num
+
+data Shape = Square Num | Rect Num Num
+
+area : Shape -> Num
+area (Square a) = a <+> a
+area (Rect a b) = a <+> b <+> a

@@ -1,0 +1,10 @@
+error[E1106]: `Lib.hidden` is private
+ --> tests/cirkalang/modules/private_fail/Main.cirka:4:5
+  |
+4 | f = Lib.hidden
+  |     ^^^^^^^^^^ declared `private` in `Lib`
+error[E1101]: `missing` is not defined
+ --> tests/cirkalang/modules/private_fail/Main.cirka:7:5
+  |
+7 | g = missing
+  |     ^^^^^^^ not in scope

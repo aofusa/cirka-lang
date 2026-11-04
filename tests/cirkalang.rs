@@ -52,3 +52,44 @@ fn cirkalang_syntax_errors() {
         }
     });
 }
+
+/// Multi-module programs under tests/cirkalang/modules/<name>/Main.cirka
+/// (FEAT-0202): the resolved program matches `<name>.rn`, or the
+/// diagnostics match `<name>.stderr` when that file exists.
+#[test]
+fn cirkalang_modules() {
+    let dir = repo_root().join("tests/cirkalang/modules");
+    let mut names: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_dir())
+        .map(|e| e.file_name().into_string().unwrap())
+        .collect();
+    names.sort();
+    assert!(!names.is_empty());
+    let mut failed = Vec::new();
+    for n in names {
+        let main = dir.join(&n).join("Main.cirka");
+        let mut sm = SourceMap::new();
+        let opts = cirkalang_resolve::Options { prelude: false };
+        let r = cirkalang_resolve::resolve_file(&mut sm, &main, &[], &opts);
+        let root = format!("{}/", repo_root().display());
+        let (path, text) = match r {
+            Ok(p) => (
+                dir.join(format!("{n}.rn")),
+                cirkalang_resolve::print::print_program(&p),
+            ),
+            Err(errs) => (
+                dir.join(format!("{n}.stderr")),
+                errs.iter()
+                    .map(|d| render(d, &sm, Style::Plain))
+                    .collect::<String>()
+                    .replace(&root, ""),
+            ),
+        };
+        if let Err(e) = check_expect(&path, &text) {
+            failed.push(format!("{n}: {e}"));
+        }
+    }
+    assert!(failed.is_empty(), "{}", failed.join("\n"));
+}

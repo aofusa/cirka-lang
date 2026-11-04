@@ -1,0 +1,15 @@
+module Geo.Num
+
+infixl 6 <+>
+
+prim Num : Type
+prim primPlus : Num -> Num -> Num
+
+one : Num
+one = helper
+
+private helper : Num
+helper = one
+
+(<+>) : Num -> Num -> Num
+a <+> b = primPlus a b

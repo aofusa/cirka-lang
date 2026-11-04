@@ -1,0 +1,5 @@
+module Lib
+
+prim T : Type
+private hidden : T
+hidden = hidden

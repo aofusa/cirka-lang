@@ -1,0 +1,12 @@
+-- Multi-module program: nested module path, qualified names, private
+-- helpers, fixity declared in another module.
+module Main
+
+import Geo.Shape
+import Geo.Num
+
+total2 : Shape -> Num
+total2 s = area s <+> Geo.Num.one
+
+main : Num
+main = total2 (Square Geo.Num.one)

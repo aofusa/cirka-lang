@@ -1,0 +1,7 @@
+import Lib
+
+f : Lib.T
+f = Lib.hidden
+
+g : Lib.T
+g = missing

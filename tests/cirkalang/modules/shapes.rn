@@ -1,0 +1,25 @@
+(module Geo.Num
+  (prim Geo.Num.Num Type)
+  (prim Geo.Num.primPlus (-> Geo.Num.Num (-> Geo.Num.Num Geo.Num.Num)))
+  (def Geo.Num.one : Geo.Num.Num
+    () = Geo.Num.helper)
+  (def Geo.Num.helper : Geo.Num.Num
+    () = Geo.Num.one)
+  (def Geo.Num.<+> : (-> Geo.Num.Num (-> Geo.Num.Num Geo.Num.Num))
+    (a b) = (Geo.Num.primPlus 'a 'b))
+)
+(module Geo.Shape
+  (data Geo.Shape.Shape
+    (Geo.Shape.Square Geo.Num.Num)
+    (Geo.Shape.Rect Geo.Num.Num Geo.Num.Num))
+  (def Geo.Shape.area : (-> Geo.Shape.Shape Geo.Num.Num)
+    ((Geo.Shape.Square a)) = (Geo.Num.<+> 'a 'a)
+    ((Geo.Shape.Rect a b)) = (Geo.Num.<+> (Geo.Num.<+> 'a 'b) 'a))
+)
+(module Main
+  (def Main.total2 : (-> Geo.Shape.Shape Geo.Num.Num)
+    (s) = (Geo.Num.<+> (Geo.Shape.area 's) Geo.Num.one))
+  (def Main.main : Geo.Num.Num
+    () = (Main.total2 (Geo.Shape.Square Geo.Num.one)))
+)
+(main Main.main)

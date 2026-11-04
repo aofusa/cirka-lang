@@ -1,0 +1,207 @@
+//! The resolved program: every name refers to a local variable or a
+//! global, operator sequences are associated by fixity, sections and
+//! `let f x = e` are desugared.
+
+use cirka_diagnostics::{FileId, Span};
+pub use cirkalang_syntax::ast::{Lit, Mult};
+
+/// A global: index into [`Program::globals`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct GName(pub u32);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GKind {
+    /// A function or value defined by clauses.
+    Def,
+    /// A data type.
+    Data,
+    /// A data constructor.
+    Con,
+    /// A primitive (`prim name : T`).
+    Prim,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct GlobalInfo {
+    /// Dotted module name.
+    pub module: String,
+    pub name: String,
+    pub kind: GKind,
+    pub span: Span,
+    pub private: bool,
+}
+
+impl GlobalInfo {
+    pub fn qualified(&self) -> String {
+        format!("{}.{}", self.module, self.name)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct Program {
+    pub globals: Vec<GlobalInfo>,
+    /// Modules in dependency order (imports first).
+    pub modules: Vec<Module>,
+    /// `main` of the root module.
+    pub main: Option<GName>,
+}
+
+impl Program {
+    pub fn info(&self, g: GName) -> &GlobalInfo {
+        &self.globals[g.0 as usize]
+    }
+
+    /// Looks up a global by module and name (used for built-in sugar).
+    pub fn find(&self, module: &str, name: &str) -> Option<GName> {
+        self.globals
+            .iter()
+            .position(|g| g.module == module && g.name == name)
+            .map(|i| GName(i as u32))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Module {
+    pub name: String,
+    pub file: FileId,
+    pub items: Vec<Item>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Item {
+    Def(Def),
+    Data(Data),
+    Prim(GName, Expr),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Def {
+    pub name: GName,
+    /// The signature, with auto-bound implicit arguments made explicit.
+    pub sig: Expr,
+    pub clauses: Vec<Clause>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Clause {
+    pub pats: Vec<Pat>,
+    pub rhs: Expr,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Data {
+    pub name: GName,
+    pub params: Vec<Param>,
+    pub sig: Option<Expr>,
+    pub cons: Vec<Con>,
+    pub short: bool,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Param {
+    pub mult: Option<Mult>,
+    pub name: String,
+    pub span: Span,
+    /// `None` for short-form parameters (of type `Type`).
+    pub ty: Option<Expr>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Con {
+    pub name: GName,
+    pub span: Span,
+    pub body: ConBody,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum ConBody {
+    Sig(Expr),
+    Fields(Vec<Expr>),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Expr {
+    pub kind: ExprKind,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct LamBinder {
+    pub name: Option<String>,
+    pub span: Span,
+    pub mult: Option<Mult>,
+    pub ty: Option<Expr>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct LetBind {
+    pub mult: Option<Mult>,
+    pub name: String,
+    pub span: Span,
+    pub ty: Option<Expr>,
+    pub rhs: Expr,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Alt {
+    pub pat: Pat,
+    pub rhs: Expr,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Stmt {
+    Bind(String, Span, Expr),
+    Let(Vec<LetBind>),
+    Expr(Expr),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum ExprKind {
+    Local(String),
+    Global(GName),
+    Lit(Lit),
+    Hole(String),
+    Wildcard,
+    Type,
+    LType,
+    Unit,
+    App(Box<Expr>, Box<Expr>),
+    Lam(Vec<LamBinder>, Box<Expr>),
+    Let(Vec<LetBind>, Box<Expr>),
+    Case(Box<Expr>, Vec<Alt>),
+    If(Box<Expr>, Box<Expr>, Box<Expr>),
+    Do(Vec<Stmt>),
+    /// One binder per `Pi` (`(x, y : A) -> B` is split).
+    Pi {
+        mult: Option<Mult>,
+        implicit: bool,
+        name: Option<String>,
+        name_span: Span,
+        dom: Box<Expr>,
+        cod: Box<Expr>,
+    },
+    Ann(Box<Expr>, Box<Expr>),
+    Tuple(Vec<Expr>),
+    List(Vec<Expr>),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Pat {
+    pub kind: PatKind,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum PatKind {
+    Var(String),
+    Wild,
+    Con(GName, Vec<Pat>),
+    /// Literal; `true` when negated (`-1`).
+    Lit(Lit, bool),
+    Unit,
+    Tuple(Vec<Pat>),
+    List(Vec<Pat>),
+}

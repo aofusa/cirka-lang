@@ -1,1 +1,1148 @@
-//! cirkalang-resolve
+//! cirkalang-resolve: module loading, scopes and name resolution
+//! (docs/design/cirkalang/spec-v0.0.1.md §1, §3.1).
+//!
+//! The result ([`rast::Program`]) has every name resolved to a local or a
+//! global, operator sequences associated by fixity, sections and
+//! `let f x = e` desugared, and auto-bound implicit arguments of
+//! signatures made explicit.
+
+pub mod rast;
+
+use cirka_diagnostics::{Diagnostic, FileId, SourceMap, Span};
+use cirkalang_syntax::ast;
+use rast::*;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+
+/// Finds module sources.
+pub trait Loader {
+    /// Loads module `path` (e.g. `["Core", "List"]`), adding it to `sm`.
+    fn load(&mut self, sm: &mut SourceMap, path: &[String]) -> Option<(FileId, String)>;
+}
+
+/// Loads `A/B.cirka` from the first root that has it.
+pub struct FsLoader {
+    pub roots: Vec<PathBuf>,
+}
+
+impl Loader for FsLoader {
+    fn load(&mut self, sm: &mut SourceMap, path: &[String]) -> Option<(FileId, String)> {
+        for r in &self.roots {
+            let mut p = r.clone();
+            for (i, seg) in path.iter().enumerate() {
+                if i + 1 == path.len() {
+                    p.push(format!("{seg}.cirka"));
+                } else {
+                    p.push(seg);
+                }
+            }
+            if let Ok(text) = std::fs::read_to_string(&p) {
+                let id = sm.add(p.display().to_string(), text.clone());
+                return Some((id, text));
+            }
+        }
+        None
+    }
+}
+
+/// In-memory sources (tests): module name → text.
+pub struct MemLoader(pub HashMap<String, String>);
+
+impl Loader for MemLoader {
+    fn load(&mut self, sm: &mut SourceMap, path: &[String]) -> Option<(FileId, String)> {
+        let name = path.join(".");
+        let text = self.0.get(&name)?.clone();
+        let id = sm.add(format!("{}.cirka", path.join("/")), text.clone());
+        Some((id, text))
+    }
+}
+
+pub struct Options {
+    /// Import `Prelude` implicitly (when it can be found).
+    pub prelude: bool,
+}
+
+impl Default for Options {
+    fn default() -> Options {
+        Options { prelude: true }
+    }
+}
+
+/// Parses and resolves the program whose root module is in `file`
+/// (already added to `sm`). Other modules come from `loader`.
+pub fn resolve_program(
+    sm: &mut SourceMap,
+    root: FileId,
+    root_text: &str,
+    loader: &mut dyn Loader,
+    opts: &Options,
+) -> Result<Program, Vec<Diagnostic>> {
+    let mut st = State {
+        loaded: HashMap::new(),
+        order: Vec::new(),
+        errs: Vec::new(),
+        visiting: Vec::new(),
+    };
+    let (m, errs) = cirkalang_syntax::parse(root, root_text);
+    st.errs.extend(errs);
+    let root_name = m
+        .name
+        .as_ref()
+        .map(|(p, _)| p.join("."))
+        .unwrap_or_else(|| "Main".to_string());
+    let has_prelude = opts.prelude && root_name != "Prelude" && {
+        let mut probe = SourceMap::new();
+        loader.load(&mut probe, &["Prelude".to_string()]).is_some()
+    };
+    st.add_module(sm, loader, root_name.clone(), root, m, has_prelude, None);
+    if st.errs.iter().any(|e| e.is_error()) {
+        return Err(st.errs);
+    }
+    let mut r = Resolver::new(&st);
+    r.declare_all();
+    r.collect_fixities();
+    let mut prog = Program {
+        globals: r.globals.clone(),
+        modules: Vec::new(),
+        main: None,
+    };
+    for name in st.order.clone() {
+        let m = r.module(&name);
+        prog.modules.push(m);
+    }
+    prog.globals = r.globals.clone();
+    prog.main = r.tables[&root_name]
+        .own
+        .get("main")
+        .copied()
+        .filter(|g| r.globals[g.0 as usize].kind == GKind::Def);
+    let rerrs = std::mem::take(&mut r.errs);
+    drop(r);
+    let mut errs = st.errs;
+    errs.extend(rerrs);
+    if errs.iter().any(|e| e.is_error()) {
+        return Err(errs);
+    }
+    Ok(prog)
+}
+
+/// Convenience: reads `main_file`, uses its directory and `lib_roots` as
+/// source roots.
+pub fn resolve_file(
+    sm: &mut SourceMap,
+    main_file: &Path,
+    lib_roots: &[PathBuf],
+    opts: &Options,
+) -> Result<Program, Vec<Diagnostic>> {
+    let text = std::fs::read_to_string(main_file).map_err(|e| {
+        vec![
+            Diagnostic::error(format!("cannot read {}: {e}", main_file.display()))
+                .with_code("E1104"),
+        ]
+    })?;
+    let id = sm.add(main_file.display().to_string(), text.clone());
+    let mut roots = vec![
+        main_file
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_default(),
+    ];
+    roots.extend(lib_roots.iter().cloned());
+    let mut loader = FsLoader { roots };
+    resolve_program(sm, id, &text, &mut loader, opts)
+}
+
+// ---------------------------------------------------------------------
+// Loading
+
+struct Loaded {
+    file: FileId,
+    ast: ast::Module,
+    /// Imported module names (including the implicit Prelude).
+    imports: Vec<String>,
+}
+
+struct State {
+    loaded: HashMap<String, Loaded>,
+    /// Dependency order.
+    order: Vec<String>,
+    errs: Vec<Diagnostic>,
+    visiting: Vec<String>,
+}
+
+impl State {
+    #[allow(clippy::too_many_arguments)]
+    fn add_module(
+        &mut self,
+        sm: &mut SourceMap,
+        loader: &mut dyn Loader,
+        name: String,
+        file: FileId,
+        m: ast::Module,
+        prelude: bool,
+        expected: Option<Span>,
+    ) {
+        if let Some((p, sp)) = &m.name
+            && p.join(".") != name
+        {
+            self.errs.push(
+                Diagnostic::error(format!(
+                    "module `{}` is declared in the file for `{name}`",
+                    p.join(".")
+                ))
+                .with_code("E1104")
+                .with_label(*sp, format!("expected `module {name}`")),
+            );
+        }
+        let _ = expected;
+        let mut imports: Vec<(String, Span)> = m
+            .imports
+            .iter()
+            .map(|i| (i.path.join("."), i.span))
+            .collect();
+        if prelude && name != "Prelude" && !imports.iter().any(|(n, _)| n == "Prelude") {
+            imports.insert(0, ("Prelude".to_string(), Span::new(file, 0, 0)));
+        }
+        self.visiting.push(name.clone());
+        for (imp, sp) in &imports {
+            if self.visiting.contains(imp) {
+                let cycle = self.visiting[self.visiting.iter().position(|v| v == imp).unwrap()..]
+                    .join(" -> ");
+                self.errs.push(
+                    Diagnostic::error(format!("import cycle: {cycle} -> {imp}"))
+                        .with_code("E1105")
+                        .with_label(*sp, "this import closes the cycle"),
+                );
+                continue;
+            }
+            if self.loaded.contains_key(imp) {
+                continue;
+            }
+            let path: Vec<String> = imp.split('.').map(|s| s.to_string()).collect();
+            match loader.load(sm, &path) {
+                Some((fid, text)) => {
+                    let (sub, errs) = cirkalang_syntax::parse(fid, &text);
+                    self.errs.extend(errs);
+                    self.add_module(sm, loader, imp.clone(), fid, sub, prelude, Some(*sp));
+                }
+                None => {
+                    self.errs.push(
+                        Diagnostic::error(format!("module `{imp}` not found"))
+                            .with_code("E1104")
+                            .with_label(
+                                *sp,
+                                format!("no file `{}.cirka` in the source roots", path.join("/")),
+                            ),
+                    );
+                }
+            }
+        }
+        self.visiting.pop();
+        self.loaded.insert(
+            name.clone(),
+            Loaded {
+                file,
+                ast: m,
+                imports: imports.into_iter().map(|x| x.0).collect(),
+            },
+        );
+        self.order.push(name);
+    }
+}
+
+// ---------------------------------------------------------------------
+// Resolution
+
+#[derive(Default)]
+struct Table {
+    /// Names defined in the module.
+    own: HashMap<String, GName>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Fixity {
+    assoc: ast::Assoc,
+    prec: i32,
+}
+
+const DEFAULT_FIXITY: Fixity = Fixity {
+    assoc: ast::Assoc::Left,
+    prec: 9,
+};
+
+struct Resolver<'s> {
+    st: &'s State,
+    globals: Vec<GlobalInfo>,
+    tables: HashMap<String, Table>,
+    fixity: HashMap<String, (Fixity, Span)>,
+    errs: Vec<Diagnostic>,
+    // Per-module state.
+    cur: String,
+    locals: Vec<String>,
+    /// Collect unbound lower-case names instead of reporting them.
+    auto_bind: Option<Vec<(String, Span)>>,
+    fresh: u32,
+}
+
+impl<'s> Resolver<'s> {
+    fn new(st: &'s State) -> Resolver<'s> {
+        Resolver {
+            st,
+            globals: Vec::new(),
+            tables: HashMap::new(),
+            fixity: HashMap::new(),
+            errs: Vec::new(),
+            cur: String::new(),
+            locals: Vec::new(),
+            auto_bind: None,
+            fresh: 0,
+        }
+    }
+
+    fn declare(
+        &mut self,
+        module: &str,
+        name: &str,
+        kind: GKind,
+        span: Span,
+        private: bool,
+    ) -> GName {
+        let t = self.tables.entry(module.to_string()).or_default();
+        if let Some(&g) = t.own.get(name) {
+            let prev = self.globals[g.0 as usize].span;
+            self.errs.push(
+                Diagnostic::error(format!("`{name}` is defined more than once"))
+                    .with_code("E1103")
+                    .with_label(span, "redefined here")
+                    .with_secondary(prev, "first defined here"),
+            );
+            return g;
+        }
+        let g = GName(self.globals.len() as u32);
+        self.globals.push(GlobalInfo {
+            module: module.to_string(),
+            name: name.to_string(),
+            kind,
+            span,
+            private,
+        });
+        self.tables
+            .get_mut(module)
+            .unwrap()
+            .own
+            .insert(name.to_string(), g);
+        g
+    }
+
+    fn declare_all(&mut self) {
+        for name in &self.st.order {
+            let m = &self.st.loaded[name].ast;
+            self.tables.entry(name.clone()).or_default();
+            let mut seen_defs: HashSet<String> = HashSet::new();
+            for d in &m.decls {
+                match &d.kind {
+                    ast::DeclKind::Sig { names, .. } => {
+                        for (n, sp) in names {
+                            if seen_defs.insert(n.clone()) {
+                                self.declare(name, n, GKind::Def, *sp, d.private);
+                            } else {
+                                self.errs.push(
+                                    Diagnostic::error(format!(
+                                        "`{n}` has more than one type signature"
+                                    ))
+                                    .with_code("E1103")
+                                    .with_label(*sp, "second signature"),
+                                );
+                            }
+                        }
+                    }
+                    ast::DeclKind::Clause {
+                        name: n, name_span, ..
+                    } => {
+                        if !seen_defs.contains(n) {
+                            self.errs.push(
+                                Diagnostic::error(format!("`{n}` has no type signature"))
+                                    .with_code("E1107")
+                                    .with_label(
+                                        *name_span,
+                                        "top-level definitions need a signature",
+                                    )
+                                    .with_help(format!("add `{n} : <type>` before the definition")),
+                            );
+                            seen_defs.insert(n.clone());
+                            self.declare(name, n, GKind::Def, *name_span, d.private);
+                        }
+                    }
+                    ast::DeclKind::Data(dd) => {
+                        self.declare(name, &dd.name, GKind::Data, dd.name_span, d.private);
+                        for c in &dd.cons {
+                            self.declare(name, &c.name, GKind::Con, c.span, d.private);
+                        }
+                    }
+                    ast::DeclKind::Prim {
+                        name: n, name_span, ..
+                    } => {
+                        self.declare(name, n, GKind::Prim, *name_span, d.private);
+                    }
+                    ast::DeclKind::Fixity { .. } => {}
+                }
+            }
+        }
+    }
+
+    fn collect_fixities(&mut self) {
+        for name in &self.st.order {
+            for d in &self.st.loaded[name].ast.decls {
+                if let ast::DeclKind::Fixity { assoc, prec, ops } = &d.kind {
+                    for (op, sp) in ops {
+                        let f = Fixity {
+                            assoc: *assoc,
+                            prec: *prec as i32,
+                        };
+                        match self.fixity.get(op) {
+                            Some((g, prev)) if *g != f => {
+                                let prev = *prev;
+                                self.errs.push(
+                                    Diagnostic::error(format!(
+                                        "conflicting fixity declarations for `{op}`"
+                                    ))
+                                    .with_code("E1110")
+                                    .with_label(*sp, "this declaration")
+                                    .with_secondary(prev, "conflicts with this one"),
+                                );
+                            }
+                            Some(_) => {}
+                            None => {
+                                self.fixity.insert(op.clone(), (f, *sp));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn fixity_of(&self, name: &str) -> Fixity {
+        self.fixity.get(name).map(|x| x.0).unwrap_or(DEFAULT_FIXITY)
+    }
+
+    // ---- lookup ----
+
+    fn visible(&self, module: &str, name: &str) -> Option<GName> {
+        let g = *self.tables.get(module)?.own.get(name)?;
+        if module != self.cur && self.globals[g.0 as usize].private {
+            return None;
+        }
+        Some(g)
+    }
+
+    fn lookup_global(&mut self, q: &ast::QName, span: Span) -> Option<GName> {
+        if !q.module.is_empty() {
+            let m = q.module.join(".");
+            let imported = m == self.cur || self.st.loaded[&self.cur].imports.contains(&m);
+            if !imported {
+                self.errs.push(
+                    Diagnostic::error(format!("module `{m}` is not imported"))
+                        .with_code("E1101")
+                        .with_label(span, format!("add `import {m}`")),
+                );
+                return None;
+            }
+            if let Some(g) = self.visible(&m, &q.name) {
+                return Some(g);
+            }
+            let private = self
+                .tables
+                .get(&m)
+                .and_then(|t| t.own.get(&q.name))
+                .is_some();
+            self.errs.push(
+                Diagnostic::error(if private {
+                    format!("`{q}` is private")
+                } else {
+                    format!("`{}` is not defined in module `{m}`", q.name)
+                })
+                .with_code(if private { "E1106" } else { "E1101" })
+                .with_label(
+                    span,
+                    if private {
+                        format!("declared `private` in `{m}`")
+                    } else {
+                        "unknown name".to_string()
+                    },
+                ),
+            );
+            return None;
+        }
+        if let Some(g) = self.visible(&self.cur.clone(), &q.name) {
+            return Some(g);
+        }
+        let mut found: Vec<GName> = Vec::new();
+        for imp in &self.st.loaded[&self.cur].imports {
+            if let Some(g) = self.visible(imp, &q.name)
+                && !found.contains(&g)
+            {
+                found.push(g);
+            }
+        }
+        match found.as_slice() {
+            [g] => Some(*g),
+            [] => None,
+            _ => {
+                let mods: Vec<String> = found
+                    .iter()
+                    .map(|g| self.globals[g.0 as usize].qualified())
+                    .collect();
+                self.errs.push(
+                    Diagnostic::error(format!("`{}` is ambiguous", q.name))
+                        .with_code("E1102")
+                        .with_label(span, "refers to more than one definition")
+                        .with_note(format!("candidates: {}", mods.join(", ")))
+                        .with_help("use a qualified name"),
+                );
+                Some(found[0])
+            }
+        }
+    }
+
+    fn unknown(&mut self, q: &ast::QName, span: Span) {
+        self.errs.push(
+            Diagnostic::error(format!("`{q}` is not defined"))
+                .with_code("E1101")
+                .with_label(span, "not in scope"),
+        );
+    }
+
+    fn resolve_name(&mut self, q: &ast::QName, span: Span) -> ExprKind {
+        if q.module.is_empty() && self.locals.iter().rev().any(|l| *l == q.name) {
+            return ExprKind::Local(q.name.clone());
+        }
+        let before = self.errs.len();
+        match self.lookup_global(q, span) {
+            Some(g) => ExprKind::Global(g),
+            None => {
+                if self.errs.len() == before {
+                    let lower = q.module.is_empty()
+                        && q.name.starts_with(|c: char| c.is_lowercase() || c == '_');
+                    if lower && let Some(ab) = &mut self.auto_bind {
+                        if !ab.iter().any(|(n, _)| *n == q.name) {
+                            ab.push((q.name.clone(), span));
+                        }
+                        return ExprKind::Local(q.name.clone());
+                    }
+                    self.unknown(q, span);
+                }
+                ExprKind::Wildcard
+            }
+        }
+    }
+
+    fn fresh_name(&mut self, base: &str) -> String {
+        self.fresh += 1;
+        format!("{base}${}", self.fresh)
+    }
+
+    // ---- modules ----
+
+    fn module(&mut self, name: &str) -> Module {
+        self.cur = name.to_string();
+        let loaded = &self.st.loaded[name];
+        let mut items = Vec::new();
+        // Group clauses with their signature.
+        let mut defs: Vec<Def> = Vec::new();
+        let mut def_index: HashMap<String, usize> = HashMap::new();
+        let decls = loaded.ast.decls.clone();
+        for d in &decls {
+            match &d.kind {
+                ast::DeclKind::Sig { names, ty } => {
+                    let sig = self.signature(ty);
+                    for (n, sp) in names {
+                        let g = self.tables[name].own[n];
+                        if def_index.contains_key(n) {
+                            continue;
+                        }
+                        def_index.insert(n.clone(), defs.len());
+                        defs.push(Def {
+                            name: g,
+                            sig: sig.clone(),
+                            clauses: Vec::new(),
+                            span: *sp,
+                        });
+                    }
+                }
+                ast::DeclKind::Clause {
+                    name: n, pats, rhs, ..
+                } => {
+                    let c = self.clause(pats, rhs, d.span);
+                    match def_index.get(n) {
+                        Some(&i) => defs[i].clauses.push(c),
+                        None => {
+                            // Missing signature (already reported).
+                            let g = self.tables[name].own[n];
+                            def_index.insert(n.clone(), defs.len());
+                            defs.push(Def {
+                                name: g,
+                                sig: Expr {
+                                    kind: ExprKind::Wildcard,
+                                    span: d.span,
+                                },
+                                clauses: vec![c],
+                                span: d.span,
+                            });
+                        }
+                    }
+                }
+                ast::DeclKind::Data(dd) => {
+                    let data = self.data(dd, d.span);
+                    items.push(Item::Data(data));
+                }
+                ast::DeclKind::Prim { name: n, ty, .. } => {
+                    let g = self.tables[name].own[n];
+                    let t = self.signature(ty);
+                    items.push(Item::Prim(g, t));
+                }
+                ast::DeclKind::Fixity { .. } => {}
+            }
+        }
+        for d in defs {
+            if d.clauses.is_empty() {
+                let n = self.globals[d.name.0 as usize].name.clone();
+                self.errs.push(
+                    Diagnostic::error(format!("`{n}` has a signature but no definition"))
+                        .with_code("E1107")
+                        .with_label(d.span, "add equations for this name"),
+                );
+            }
+            items.push(Item::Def(d));
+        }
+        Module {
+            name: name.to_string(),
+            file: loaded.file,
+            items,
+        }
+    }
+
+    /// A type signature: unbound lower-case names become implicit
+    /// arguments `{x : _}` (multiplicity 0) in front.
+    fn signature(&mut self, ty: &ast::Expr) -> Expr {
+        let saved = self.auto_bind.replace(Vec::new());
+        let t = self.expr(ty);
+        let bound = std::mem::replace(&mut self.auto_bind, saved).unwrap_or_default();
+        bound.into_iter().rev().fold(t, |acc, (n, sp)| Expr {
+            span: acc.span,
+            kind: ExprKind::Pi {
+                mult: Some(Mult::Zero),
+                implicit: true,
+                name: Some(n),
+                name_span: sp,
+                dom: Box::new(Expr {
+                    kind: ExprKind::Wildcard,
+                    span: sp,
+                }),
+                cod: Box::new(acc),
+            },
+        })
+    }
+
+    fn data(&mut self, dd: &ast::DataDecl, span: Span) -> Data {
+        let name = self.tables[&self.cur].own[&dd.name];
+        let mut params = Vec::new();
+        let base = self.locals.len();
+        for p in &dd.params {
+            let ty = p.ty.as_ref().map(|t| self.expr(t));
+            for (n, sp) in &p.names {
+                params.push(Param {
+                    mult: p.mult,
+                    name: n.clone(),
+                    span: *sp,
+                    ty: ty.clone(),
+                });
+                self.locals.push(n.clone());
+            }
+        }
+        let sig = dd.sig.as_ref().map(|t| self.signature(t));
+        let mut cons = Vec::new();
+        for c in &dd.cons {
+            let g = self.tables[&self.cur].own[&c.name];
+            let body = match &c.body {
+                ast::ConBody::Sig(t) => ConBody::Sig(self.signature(t)),
+                ast::ConBody::Fields(fs) => {
+                    ConBody::Fields(fs.iter().map(|f| self.expr(f)).collect())
+                }
+            };
+            cons.push(Con {
+                name: g,
+                span: c.span,
+                body,
+            });
+        }
+        self.locals.truncate(base);
+        Data {
+            name,
+            params,
+            sig,
+            cons,
+            short: dd.short,
+            span,
+        }
+    }
+
+    fn clause(&mut self, pats: &[ast::Pat], rhs: &ast::Expr, span: Span) -> Clause {
+        let base = self.locals.len();
+        let mut bound = Vec::new();
+        let pats: Vec<Pat> = pats.iter().map(|p| self.pat(p, &mut bound)).collect();
+        self.locals.extend(bound);
+        let rhs = self.expr(rhs);
+        self.locals.truncate(base);
+        Clause { pats, rhs, span }
+    }
+
+    // ---- patterns ----
+
+    fn pat(&mut self, p: &ast::Pat, bound: &mut Vec<String>) -> Pat {
+        let kind = match &p.kind {
+            ast::PatKind::Var(x) => {
+                if bound.contains(x) {
+                    self.errs.push(
+                        Diagnostic::error(format!(
+                            "`{x}` is bound more than once in the same pattern"
+                        ))
+                        .with_code("E1109")
+                        .with_label(p.span, "rename one of the occurrences"),
+                    );
+                }
+                bound.push(x.clone());
+                PatKind::Var(x.clone())
+            }
+            ast::PatKind::Wild => PatKind::Wild,
+            ast::PatKind::Con(q, args) => match self.con_ref(q, p.span) {
+                Some(g) => PatKind::Con(g, args.iter().map(|a| self.pat(a, bound)).collect()),
+                None => PatKind::Wild,
+            },
+            ast::PatKind::Lit(l, neg) => PatKind::Lit(l.clone(), *neg),
+            ast::PatKind::Unit => PatKind::Unit,
+            ast::PatKind::Tuple(ps) => {
+                PatKind::Tuple(ps.iter().map(|a| self.pat(a, bound)).collect())
+            }
+            ast::PatKind::List(ps) => {
+                PatKind::List(ps.iter().map(|a| self.pat(a, bound)).collect())
+            }
+            ast::PatKind::OpSeq(ps, ops) => {
+                let ps: Vec<Pat> = ps.iter().map(|a| self.pat(a, bound)).collect();
+                return self.assoc_pats(ps, ops, p.span);
+            }
+        };
+        Pat { kind, span: p.span }
+    }
+
+    fn con_ref(&mut self, q: &ast::QName, span: Span) -> Option<GName> {
+        let before = self.errs.len();
+        match self.lookup_global(q, span) {
+            Some(g) if self.globals[g.0 as usize].kind == GKind::Con => Some(g),
+            Some(_) => {
+                self.errs.push(
+                    Diagnostic::error(format!("`{q}` is not a constructor"))
+                        .with_code("E1108")
+                        .with_label(span, "only constructors can be matched"),
+                );
+                None
+            }
+            None => {
+                if self.errs.len() == before {
+                    self.unknown(q, span);
+                }
+                None
+            }
+        }
+    }
+
+    /// Associates `p1 op p2 op p3` by fixity (constructor operators).
+    fn assoc_pats(&mut self, ps: Vec<Pat>, ops: &[ast::OpRef], span: Span) -> Pat {
+        let mut items: Vec<Either<Pat, (ast::OpRef, Fixity)>> = Vec::new();
+        for (i, p) in ps.into_iter().enumerate() {
+            if i > 0 {
+                let o = ops[i - 1].clone();
+                let f = self.fixity_of(&o.name.name);
+                items.push(Either::R((o, f)));
+            }
+            items.push(Either::L(p));
+        }
+        let mut it = items.into_iter().peekable();
+        match self.assoc(
+            &mut it,
+            -1,
+            ast::Assoc::None,
+            None,
+            span,
+            &mut |r: &mut Self, o: &ast::OpRef, l: Pat, rr: Pat| {
+                let sp = l.span.to(rr.span);
+                match r.con_ref(&o.name, o.span) {
+                    Some(g) => Pat {
+                        kind: PatKind::Con(g, vec![l, rr]),
+                        span: sp,
+                    },
+                    None => Pat {
+                        kind: PatKind::Wild,
+                        span: sp,
+                    },
+                }
+            },
+        ) {
+            Some(p) => p,
+            None => Pat {
+                kind: PatKind::Wild,
+                span,
+            },
+        }
+    }
+
+    /// Haskell 2010 §10.6 operator resolution over a token stream.
+    #[allow(clippy::too_many_arguments)]
+    fn assoc<T, I: Iterator<Item = Either<T, (ast::OpRef, Fixity)>>>(
+        &mut self,
+        it: &mut std::iter::Peekable<I>,
+        prec1: i32,
+        assoc1: ast::Assoc,
+        neg: Option<&mut dyn FnMut(&mut Self, T) -> T>,
+        span: Span,
+        mk: &mut dyn FnMut(&mut Self, &ast::OpRef, T, T) -> T,
+    ) -> Option<T> {
+        let _ = neg;
+        let first = match it.next()? {
+            Either::L(x) => x,
+            Either::R(_) => return None,
+        };
+        self.assoc_rest(it, prec1, assoc1, first, span, mk)
+    }
+
+    fn assoc_rest<T, I: Iterator<Item = Either<T, (ast::OpRef, Fixity)>>>(
+        &mut self,
+        it: &mut std::iter::Peekable<I>,
+        prec1: i32,
+        assoc1: ast::Assoc,
+        mut lhs: T,
+        _span: Span,
+        mk: &mut dyn FnMut(&mut Self, &ast::OpRef, T, T) -> T,
+    ) -> Option<T> {
+        loop {
+            let (op2, f2) = match it.peek() {
+                Some(Either::R((o, f))) => (o.clone(), *f),
+                _ => return Some(lhs),
+            };
+            if prec1 == f2.prec && (assoc1 != f2.assoc || assoc1 == ast::Assoc::None) {
+                self.errs.push(
+                    Diagnostic::error(format!("cannot mix operators with the same precedence {} but different associativity", f2.prec))
+                        .with_code("E1111")
+                        .with_label(op2.span, "add parentheses"),
+                );
+                return None;
+            }
+            if prec1 > f2.prec || (prec1 == f2.prec && assoc1 == ast::Assoc::Left) {
+                return Some(lhs);
+            }
+            it.next();
+            let rhs_first = match it.next()? {
+                Either::L(x) => x,
+                Either::R(_) => return None,
+            };
+            let rhs = self.assoc_rest(it, f2.prec, f2.assoc, rhs_first, _span, mk)?;
+            lhs = mk(self, &op2, lhs, rhs);
+        }
+    }
+
+    // ---- expressions ----
+
+    fn expr(&mut self, e: &ast::Expr) -> Expr {
+        let span = e.span;
+        let kind = match &e.kind {
+            ast::ExprKind::Var(q) => self.resolve_name(q, span),
+            ast::ExprKind::Lit(l) => ExprKind::Lit(l.clone()),
+            ast::ExprKind::Hole(h) => ExprKind::Hole(h.clone()),
+            ast::ExprKind::Wildcard => ExprKind::Wildcard,
+            ast::ExprKind::Type => ExprKind::Type,
+            ast::ExprKind::LType => ExprKind::LType,
+            ast::ExprKind::Unit => ExprKind::Unit,
+            ast::ExprKind::App(f, a) => {
+                ExprKind::App(Box::new(self.expr(f)), Box::new(self.expr(a)))
+            }
+            ast::ExprKind::Lam(bs, body) => {
+                let base = self.locals.len();
+                let mut out = Vec::new();
+                for b in bs {
+                    let ty = b.ty.as_ref().map(|t| self.expr(t));
+                    if let Some(n) = &b.name {
+                        self.locals.push(n.clone());
+                    }
+                    out.push(LamBinder {
+                        name: b.name.clone(),
+                        span: b.span,
+                        mult: b.mult,
+                        ty,
+                    });
+                }
+                let body = self.expr(body);
+                self.locals.truncate(base);
+                ExprKind::Lam(out, Box::new(body))
+            }
+            ast::ExprKind::Let(bs, body) => {
+                let base = self.locals.len();
+                let bs = self.let_binds(bs);
+                let body = self.expr(body);
+                self.locals.truncate(base);
+                ExprKind::Let(bs, Box::new(body))
+            }
+            ast::ExprKind::Case(s, alts) => {
+                let s = self.expr(s);
+                let alts = alts
+                    .iter()
+                    .map(|a| {
+                        let base = self.locals.len();
+                        let mut bound = Vec::new();
+                        let pat = self.pat(&a.pat, &mut bound);
+                        self.locals.extend(bound);
+                        let rhs = self.expr(&a.rhs);
+                        self.locals.truncate(base);
+                        Alt { pat, rhs }
+                    })
+                    .collect();
+                ExprKind::Case(Box::new(s), alts)
+            }
+            ast::ExprKind::If(c, t, f) => ExprKind::If(
+                Box::new(self.expr(c)),
+                Box::new(self.expr(t)),
+                Box::new(self.expr(f)),
+            ),
+            ast::ExprKind::Do(stmts) => {
+                let base = self.locals.len();
+                let mut out = Vec::new();
+                for s in stmts {
+                    match s {
+                        ast::Stmt::Bind(x, sp, e) => {
+                            let e = self.expr(e);
+                            self.locals.push(x.clone());
+                            out.push(Stmt::Bind(x.clone(), *sp, e));
+                        }
+                        ast::Stmt::Let(bs) => {
+                            let bs = self.let_binds(bs);
+                            out.push(Stmt::Let(bs));
+                        }
+                        ast::Stmt::Expr(e) => out.push(Stmt::Expr(self.expr(e))),
+                    }
+                }
+                self.locals.truncate(base);
+                ExprKind::Do(out)
+            }
+            ast::ExprKind::Pi {
+                mult,
+                implicit,
+                names,
+                dom,
+                cod,
+            } => {
+                let dom = self.expr(dom);
+                if names.is_empty() {
+                    let cod = self.expr(cod);
+                    ExprKind::Pi {
+                        mult: *mult,
+                        implicit: *implicit,
+                        name: None,
+                        name_span: span,
+                        dom: Box::new(dom),
+                        cod: Box::new(cod),
+                    }
+                } else {
+                    let base = self.locals.len();
+                    for (n, _) in names {
+                        self.locals.push(n.clone());
+                    }
+                    let mut acc = self.expr(cod);
+                    self.locals.truncate(base);
+                    for (n, sp) in names.iter().rev() {
+                        acc = Expr {
+                            span,
+                            kind: ExprKind::Pi {
+                                mult: *mult,
+                                implicit: *implicit,
+                                name: if n == "_" { None } else { Some(n.clone()) },
+                                name_span: *sp,
+                                dom: Box::new(dom.clone()),
+                                cod: Box::new(acc),
+                            },
+                        };
+                    }
+                    return acc;
+                }
+            }
+            ast::ExprKind::Ann(e, t) => {
+                ExprKind::Ann(Box::new(self.expr(e)), Box::new(self.expr(t)))
+            }
+            ast::ExprKind::Tuple(es) => ExprKind::Tuple(es.iter().map(|x| self.expr(x)).collect()),
+            ast::ExprKind::List(es) => ExprKind::List(es.iter().map(|x| self.expr(x)).collect()),
+            ast::ExprKind::OpSeq { neg, operands, ops } => {
+                return self.opseq(*neg, operands, ops, span);
+            }
+            ast::ExprKind::LeftSection(e, o) => {
+                let f = self.op_expr(o);
+                let e = self.expr(e);
+                ExprKind::App(Box::new(f), Box::new(e))
+            }
+            ast::ExprKind::RightSection(o, e) => {
+                let x = self.fresh_name("sec");
+                let f = self.op_expr(o);
+                let e = self.expr(e);
+                let xv = Expr {
+                    kind: ExprKind::Local(x.clone()),
+                    span: o.span,
+                };
+                let body = app2(f, xv, e, span);
+                ExprKind::Lam(
+                    vec![LamBinder {
+                        name: Some(x),
+                        span: o.span,
+                        mult: None,
+                        ty: None,
+                    }],
+                    Box::new(body),
+                )
+            }
+        };
+        Expr { kind, span }
+    }
+
+    fn let_binds(&mut self, bs: &[ast::LetBind]) -> Vec<LetBind> {
+        let mut out = Vec::new();
+        for b in bs {
+            let ty = b.ty.as_ref().map(|t| self.expr(t));
+            let rhs = if b.args.is_empty() {
+                self.expr(&b.rhs)
+            } else {
+                let base = self.locals.len();
+                let mut binders = Vec::new();
+                for a in &b.args {
+                    match &a.kind {
+                        ast::PatKind::Var(x) => {
+                            self.locals.push(x.clone());
+                            binders.push(LamBinder {
+                                name: Some(x.clone()),
+                                span: a.span,
+                                mult: None,
+                                ty: None,
+                            });
+                        }
+                        ast::PatKind::Wild => binders.push(LamBinder {
+                            name: None,
+                            span: a.span,
+                            mult: None,
+                            ty: None,
+                        }),
+                        _ => self.errs.push(
+                            Diagnostic::error("arguments of a local function must be variables")
+                                .with_code("E1108")
+                                .with_label(a.span, "use `case` to match on this argument"),
+                        ),
+                    }
+                }
+                let body = self.expr(&b.rhs);
+                self.locals.truncate(base);
+                Expr {
+                    span: b.rhs.span,
+                    kind: ExprKind::Lam(binders, Box::new(body)),
+                }
+            };
+            // Bindings are sequential: later ones see earlier ones.
+            self.locals.push(b.name.clone());
+            out.push(LetBind {
+                mult: b.mult,
+                name: b.name.clone(),
+                span: b.name_span,
+                ty,
+                rhs,
+            });
+        }
+        out
+    }
+
+    fn op_expr(&mut self, o: &ast::OpRef) -> Expr {
+        Expr {
+            kind: self.resolve_name(&o.name, o.span),
+            span: o.span,
+        }
+    }
+
+    fn opseq(
+        &mut self,
+        neg: Option<Span>,
+        operands: &[ast::Expr],
+        ops: &[ast::OpRef],
+        span: Span,
+    ) -> Expr {
+        let mut items: Vec<Either<Expr, (ast::OpRef, Fixity)>> = Vec::new();
+        for (i, e) in operands.iter().enumerate() {
+            if i > 0 {
+                let o = ops[i - 1].clone();
+                let f = self.fixity_of(&o.name.name);
+                items.push(Either::R((o, f)));
+            }
+            items.push(Either::L(self.expr(e)));
+        }
+        let mut mk = |r: &mut Self, o: &ast::OpRef, l: Expr, rr: Expr| {
+            let f = r.op_expr(o);
+            let sp = l.span.to(rr.span);
+            app2(f, l, rr, sp)
+        };
+        let mut it = items.into_iter().peekable();
+        let result = if let Some(nsp) = neg {
+            // `- e1 op ...`: negation binds like a precedence-6 left operator.
+            let first = match it.next() {
+                Some(Either::L(x)) => x,
+                _ => return err_expr(span),
+            };
+            let operand = match self.assoc_rest(&mut it, 6, ast::Assoc::Left, first, span, &mut mk)
+            {
+                Some(x) => x,
+                None => return err_expr(span),
+            };
+            let negate = Expr {
+                kind: self.resolve_name(&ast::QName::simple("negate"), nsp),
+                span: nsp,
+            };
+            let sp = nsp.to(operand.span);
+            let n = Expr {
+                kind: ExprKind::App(Box::new(negate), Box::new(operand)),
+                span: sp,
+            };
+            self.assoc_rest(&mut it, -1, ast::Assoc::None, n, span, &mut mk)
+        } else {
+            self.assoc(&mut it, -1, ast::Assoc::None, None, span, &mut mk)
+        };
+        result.unwrap_or_else(|| err_expr(span))
+    }
+}
+
+enum Either<A, B> {
+    L(A),
+    R(B),
+}
+
+fn app2(f: Expr, a: Expr, b: Expr, span: Span) -> Expr {
+    let fa = Expr {
+        span,
+        kind: ExprKind::App(Box::new(f), Box::new(a)),
+    };
+    Expr {
+        span,
+        kind: ExprKind::App(Box::new(fa), Box::new(b)),
+    }
+}
+
+fn err_expr(span: Span) -> Expr {
+    Expr {
+        kind: ExprKind::Wildcard,
+        span,
+    }
+}
+
+pub mod print;
+
+#[cfg(test)]
+mod tests;
