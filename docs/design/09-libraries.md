@@ -2,7 +2,7 @@
 
 入力: [docs/specs/02-library.md](../specs/02-library.md)
 
-## 1. 第一段階 (aCHC)
+## 1. 第一段階: aCHC (スコープ縮小版)
 
 ### 1.1 前提: GHC のコンパイル済みライブラリは使えない
 
@@ -48,32 +48,39 @@ GMP は使わない(静的リンク時の LGPL の扱いを避ける・依存を
 
 ### 1.4 Hackage パッケージ
 
-- `achc.toml` の `[dependencies]` で、ソースディレクトリ(または tarball)を指定してビルド。`.cabal` ファイルの `exposed-modules`・
-  `hs-source-dirs`・`default-extensions` だけを読む最小限の Cabal 解釈器を持つ。
-- 移植の優先度: `transformers` → `mtl` → `containers` → `array` → `deepseq` → `bytestring` → `text` → `vector` → `random`。
-- aCHC で通らない部分はパッチ (`lib/patches/<pkg>-<ver>.patch`) で対応し、パッチの量を互換性の指標として記録する。
-- `bytestring`/`text`/`vector` の内部実装は GHC primop 依存が強いため、公開 API 互換の再実装を検討(Unique 配列で in-place 実装できる好例)。
+**対象外** (ADR-025)。aCHC の目的は GC なし実行の検証であり、`cirka-base` (縮小版) の範囲で書けるプログラムで十分。
+必要になった場合でも、`transformers` 程度の小さく純粋なパッケージをソースから取り込むにとどめる。
 
-### 1.5 数学・数値計算ラッパー (specs 02 の第一段階での実現)
+## 1A. 第一段階: CirkaLang プロトタイプ (v0.0.x)
 
-specs 02 の「C の成熟した資産を安全な薄いラッパーで使う(再実装しない)」方針を、第一段階でも `extern` (FEAT-0060) の上で試作する (FEAT-0063)。
+| 名前 | 内容 | 版 |
+|------|------|----|
+| `lib/cirkalang/core` | プリミティブ型・`Maybe`/`Result`/`List`/`Nat`・基本トレイト・`Unique`/`Drop`/`Release`・`Lazy`・証明用の型 | v0.0.1〜 |
+| `lib/cirkalang/std` | libc ベース: fs / io / env / process / time (v0.0.2)、thread / net / os (v0.0.5)、math (v0.0.6) | v0.0.2〜 |
+| `cirka-linalg` 等 | 数学・線形代数ラッパー (下記 1.5) | v0.0.6 |
+
+方針は第二段階 (§2) と同じで、プロトタイプではその最小部分を作る。
+
+### 1.5 数学・数値計算ラッパー (specs 02、CirkaLang v0.0.6)
+
+specs 02 の「C の成熟した資産を安全な薄いラッパーで使う(再実装しない)」方針は、**CirkaLang v0.0.6** で試作する (FEAT-0252)。aCHC では行わない。以下は API の考え方 (aCHC 風の記法で示す)。
 
 | パッケージ | 内容 | 実装 |
 |------------|------|------|
 | `cirka-math` | 基本数学関数 | libm の FFI。利用者からは純粋関数に見える |
 | `cirka-linalg` | 行列・ベクトル | OpenBLAS / LAPACKE の安全ラッパー |
-| `cirka-array` | 高性能配列 | `Cirka.Array` (一意配列) + 行優先/列優先の明示 |
+| `cirka-array` | 高性能配列 | `core` の一意配列 (`Unique (Array a)`) + 行優先/列優先の明示 |
 
-```haskell
--- 所有権を移して出力行列を in-place 更新 (高速)。specs の gemm! に相当 (Haskell では ! を名前に使えないため In 接尾辞)
-gemmIn :: Matrix a -> Matrix a -> Unique (Matrix a) %1 -> Unique (Matrix a)
+```
+-- 所有権を移して出力行列を in-place 更新 (高速)。specs の gemm! に相当
+gemmIn : Matrix m k a -> Matrix k n a -> (1 out : Unique (Matrix m n a)) -> Unique (Matrix m n a)
 -- 純粋版 (内部で新しい行列を確保)
-gemm   :: Matrix a -> Matrix a -> Matrix a
+gemm   : Matrix m k a -> Matrix k n a -> Matrix m n a
 ```
 
-検証機能 (M9) が入れば、行列の次元を洗練型や型レベル Nat で表し (`Matrix m n a`)、次元不一致をコンパイル時に検出できる。
+CirkaLang では次元を依存型で表す (`Matrix m n a`) ので、次元不一致はコンパイル時に検出される。次元は多重度 0 で消去されるので実行時コストはない。
 
-## 2. 第二段階 (CirkaLang) の推奨構成
+## 2. 第二段階 (CirkaLang v0.1.0〜) の推奨構成
 
 specs 02 の層構成 (core / base / std / 外部パッケージ) を採用する。前提として「まずは言語仕様・言語機能を作り、
 標準ライブラリや数学系は glibc を使う」で十分実用になる。
@@ -104,5 +111,5 @@ specs 02 の層構成 (core / base / std / 外部パッケージ) を採用す�
 
 ### 第一段階との接続
 
-第一段階で書いた `cirka-base` のうち、純粋な部分(リスト・Maybe・数値の Haskell 実装)は第二段階の `core`/`base` の原型になる。
-`Cirka.Ownership`/`Cirka.Array` の設計結果は `core.Linear`・`base.Data.Array` に、`cirka-math`/`cirka-linalg` の試作は `std.Math` と外部パッケージに反映する。
+CirkaLang プロトタイプの `lib/cirkalang/core`・`std` が第二段階の `core`/`base`/`std` の原型になる。aCHC の `cirka-base` は参考 (Haskell の API の取捨選択の材料) にとどめる。
+所有権・一意配列の設計結果 (aCHC の `Cirka.Ownership`/`Cirka.Array` と CirkaLang の `core`) は `core.Linear`・`base.Data.Array` に、`cirka-math`/`cirka-linalg` の試作は `std.Math` と外部パッケージに反映する。

@@ -1,6 +1,8 @@
 # 02. aCHC 言語仕様 (Haskell への拡張)
 
-本書は aCHC が受け付ける言語を定義する。ベースは **Haskell 2010 Report**。本書は差分のみを記す。
+本書は aCHC (第一段階の試作A) が受け付ける言語を定義する。ベースは **Haskell 2010 Report**。本書は差分のみを記す。
+aCHC のスコープは縮小されている (ADR-025): 目的は「既存の Haskell が GC なしで動くか」と「所有権拡張の書き味」の検証であり、
+依存型・検証機能・効果システムは CirkaLang ([12-cirkalang.md](12-cirkalang.md)) で扱う。
 型規則の詳細は [03-type-system.md](03-type-system.md)、実行時の意味は [04-memory-model.md](04-memory-model.md)。
 
 ## 1. ソースファイルと言語モード
@@ -29,24 +31,14 @@
 
 個別に有効化することもできる。型・関数は `Cirka.*` モジュールに定義され、構文糖はそれらへの脱糖にすぎない。
 
-### 1.1.1 `CirkaVerify` (検証機能。別軸・opt-in)
+### 1.2 サポートする GHC 拡張 (縮小版)
 
-`CirkaOwnership` には含めない。詳細は [13-verification.md](13-verification.md)。
+差分テストと `cirka-base` に必要なものに限る (FEAT-0118):
+`BangPatterns`, `ScopedTypeVariables`, `LambdaCase`, `TupleSections`, `MultiWayIf`,
+`RankNTypes` (注釈必須), `MultiParamTypeClasses`, `FlexibleInstances`, `FlexibleContexts`,
+`GeneralizedNewtypeDeriving`, `KindSignatures`, `LinearTypes`, `Strict`, `StrictData`。
 
-| 拡張名 | 内容 |
-|--------|------|
-| `CirkaRefinement` | 洗練型のネイティブ構文 `{v : τ \| p}`、名前付き引数 `(x : τ) ->` |
-| `CirkaContracts` | `requires` / `ensures` / `invariant` 節 |
-
-Liquid Haskell 互換の `{-@ ... @-}` 注釈は拡張の指定なしで、`.hs` にも書ける(Haskell としてはコメント)。
-
-### 1.2 サポートする GHC 拡張(第一段階の目標)
-
-優先度順: `BangPatterns`, `ScopedTypeVariables`, `LambdaCase`, `TupleSections`, `MultiWayIf`,
-`RankNTypes`, `ExistentialQuantification`, `MultiParamTypeClasses`, `FlexibleInstances`,
-`FlexibleContexts`, `GeneralizedNewtypeDeriving`, `KindSignatures`, `LinearTypes`,
-`Strict`, `StrictData`, `RecordWildCards`, `NamedFieldPuns`, `DeriveFunctor`/`Foldable`/`Traversable`,
-`FunctionalDependencies`, `GADTs`, `TypeFamilies`, `DataKinds`(後半)。
+対象外: `GADTs`, `TypeFamilies`, `DataKinds`, `FunctionalDependencies` などの高度な型拡張 (依存型的な表現は CirkaLang で扱う)。
 
 サポートしない拡張を使うと、エラー `E0001 unsupported extension` を出す(黙って無視しない)。
 
@@ -232,19 +224,16 @@ import "C" "math.h" (sin, cos)                     -- ヘッダから型を取�
 - この規則は `CirkaOwnership` 由来の型を使うコードにしか影響せず、既存 Haskell コードの意味は変わらない。
   ただし GHC の `LinearTypes` を使った既存コードでは、遅延だった `let` が正格になる場合がある(互換性注記に記載)。
 
-## 9. 検証用の注釈 (概要)
+## 9. 検証用の注釈 (任意・低優先)
+
+Liquid Haskell 互換の `{-@ @-}` 注釈を `achc verify` で検証できるようにする (FEAT-0131。CirkaLang の作業を優先し、余力があれば行う)。
+Haskell としてはコメントなので、`.hs` に書いても意味は変わらない。
 
 ```haskell
-{-@ safeDiv :: Int -> {d:Int | d /= 0} -> Int @-}       -- .hs でも可 (Liquid Haskell 互換)
-
-take :: (n : Nat) -> (xs : [a]) -> {ys : [a] | len ys == min n (len xs)}   -- .chs ネイティブ構文
-
-binarySearch :: (arr : Ref r (Array Int)) -> (key : Int) -> Borrow r (Maybe Int)
-  requires sorted arr
-  ensures  \res -> maybe True (\i -> arr ! i == key) res
+{-@ safeDiv :: Int -> {d:Int | d /= 0} -> Int @-}
 ```
 
-これらはすべて消去され、実行時の意味を変えない。検証は `achc verify` で行う。
+検証機能の本体は CirkaLang で設計する ([13-verification.md](13-verification.md))。
 
 ## 10. GHC との既知の非互換 (第一段階)
 
@@ -254,6 +243,8 @@ binarySearch :: (arr : Ref r (Array Int)) -> (key : Int) -> Borrow r (Maybe Int)
 | `System.Mem.performGC`, `System.Mem.Weak` のファイナライザ | `performGC` は no-op。Weak は RC ベースで、最後の強参照消滅時にファイナライザを実行 |
 | 非同期例外 (`throwTo`, `timeout`) | 非対応 |
 | Template Haskell / GHCi | 非対応 |
+| GADTs・型族・DataKinds 等 | 非対応 (ADR-025) |
+| Hackage パッケージ | 対象外。`cirka-base` (縮小版) のみ |
 | `GHC.*` 内部モジュール・primop | 一部のみ (`GHC.Exts` の公開 API の一部) |
 | `unsafePerformIO` | 対応。ただし `NOINLINE` グローバル `IORef` パターンは静的初期化で実装 |
 | `LinearTypes` 使用コードの `let` | 線形変数を含む `let` は正格 (§8) |

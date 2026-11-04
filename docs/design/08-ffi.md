@@ -1,7 +1,11 @@
 # 08. C FFI
 
-`docs/specs/01-cffi.md` の構想(仮称 LinHask)を aCHC に具体化したもの。
+`docs/specs/01-cffi.md` の構想(仮称 LinHask)を具体化したもの。
 目標は「宣言は Rust/Swift/cgo 並みに簡単、安全性は線形型で保証、オーバーヘッドはゼロ」。
+
+ABI の実装 (構造体・共用体・可変長引数・コールバック: FEAT-0047) と bindgen (FEAT-0048) は **共通基盤** で、
+aCHC と CirkaLang は宣言の構文だけが異なる。本書の §1〜§7 は aCHC の記法で書き、CirkaLang の記法は §8 に示す。
+実用目標 (サーバ・syscall・Vulkan) に必要な要件は §9。
 
 ## 1. 三つの水準
 
@@ -87,9 +91,9 @@ callbackPtr :: Ref r (Callback f) -> Borrow r (FunPtr f)   -- C 側が保持し�
 
 クロージャを保持するトランポリンを確保し、`Release` で解放する。
 
-## 6. `import "C"` と `achc bindgen`
+## 6. `import "C"` と bindgen
 
-- `achc bindgen header.h [--allowlist 'sin|cos'] -o Math.chs` が libclang でヘッダを解析し `extern` ブロックを生成する。
+- `achc bindgen header.h [--allowlist 'sin|cos'] -o Math.chs` / `cirka bindgen header.h -o math.cirka` が、共通の `cirka-bindgen` (libclang) でヘッダを解析し `extern` ブロックを生成する。
 - 既定の推測: ポインタ引数 → `Ptr`、`const T*` → `BorrowedPtr`、戻り値ポインタ → `Ptr`(所有権は推測しない)。
   所有権は利用者が生成ファイルを編集して与える(Rust の bindgen と同じ考え方)。
 - `import "C" "math.h" (sin, cos)` はビルド時に bindgen を走らせてキャッシュする糖衣。
@@ -99,3 +103,41 @@ callbackPtr :: Ref r (Callback f) -> Borrow r (FunPtr f)   -- C 側が保持し�
 - 型検査: `extern` 宣言は通常の型シグネチャとして扱い、C ABI で表現可能な型か(`CInt` 等・ポインタ・構造体のみ)を検査する。
 - MIR: `extern f(args)` 命令。LLVM では `declare` + `call ccc`。構造体の値渡し・可変長引数は x86_64 SysV ABI に従い展開する。
 - `IO` 付きの呼び出しは `State#` トークンで順序付けられ、最適化で並べ替えられない。
+
+## 8. CirkaLang の記法
+
+```
+extern "C" link "c" where
+  type CFile                                               -- 不透明型
+
+  fopen  : CString -> CString -> IO (Nullable (OwnedPtr CFile))  free with fclose
+  fclose : (1 f : OwnedPtr CFile) -> IO CInt
+  write  : CInt -> BorrowedPtr r UInt8 -> CSize -> IO CSSize
+
+  struct Timespec where
+    tv_sec  : CLong
+    tv_nsec : CLong
+
+  clock_gettime : CInt -> MutPtr Timespec -> IO CInt
+
+-- 安全なラッパ
+data File : LType where
+  MkFile : (1 p : OwnedPtr CFile) -> File
+
+impl Release File where
+  release (MkFile p) = ignore (fclose p)
+```
+
+- 型の対応・所有権の考え方 (§2〜§5) は aCHC と同じ。`OwnedPtr` は `LType`。
+- CirkaLang ではエラーは `Result` で返すラッパを標準とし、`errno` は `Result IOError a` に変換する (std.os、FEAT-0242)。
+- 部分集合型を FFI 宣言に付けられる (例: `{n : CSize | n <= length buf}`)。宣言の述語は信頼される仮定として扱い、`--report` に列挙する (13 §1 P5)。
+
+## 9. 実用目標のための FFI 要件
+
+| 用途 | 必要な機能 | 担当 |
+|------|------------|------|
+| CUI / ファイル | `FILE*`・fd を RAII で扱う、`errno` → `Result` | FEAT-0213, 0242 |
+| サーバ | ソケット fd、`epoll`、ノンブロッキング I/O、スレッドから安全に呼べること (`Send` 相当の区別) | FEAT-0046, 0240, 0241 |
+| syscall | libc の syscall ラッパ、シグナルハンドラ (コールバック)、`mmap` | FEAT-0242 |
+| Vulkan / GUI | 構造体・共用体の値渡しとアラインメント、ポインタの配列、ハンドル型 (64bit 不透明値) を `LType` として RAII 管理、関数ポインタの取得 (`vkGetInstanceProcAddr`)、コールバック (デバッグメッセンジャ)、大きなヘッダの bindgen | FEAT-0047, 0048, 0250, 0251 |
+| 数値計算 | BLAS/LAPACK への配列の受け渡し (借用ポインタ、行優先/列優先) | FEAT-0252 |

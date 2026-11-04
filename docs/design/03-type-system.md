@@ -1,4 +1,7 @@
-# 03. 型システム
+# 03. 型システム (aCHC)
+
+本書は aCHC の型システム。CirkaLang の型システム (QTT 依存型) は [12-cirkalang.md](12-cirkalang.md) §4。
+一意性 (U-Bind)・Drop/Release・借用の考え方は両者で共通で、CirkaLang は本書の規則を宇宙 `Type`/`LType` の上でそのまま使う。
 
 aCHC の型システムは **Haskell 2010 の HM + 型クラス** に、
 (1) Linear Haskell の **多重度**、(2) Clean 由来の **一意性** を種で表したもの、
@@ -32,7 +35,7 @@ kind(T τ̄) = ⊔ { kind(τᵢⱼ[τ̄/ā]) }     Type ⊔ LType = LType
 ### 1.2 型変数
 
 - 型変数の既定の種は `Type`。`forall (a :: LType)` と書くと LType も具体化できる。
-- 推論: 関数の本体で型変数 `a` の値がすべて多重度 1 で使われている場合、`a :: LType` に一般化してよい(FEAT-0057 で実装。初期実装は注釈必須)。
+- 推論: 関数の本体で型変数 `a` の値がすべて多重度 1 で使われている場合、`a :: LType` に一般化してよい(FEAT-0128 で実装。初期実装は注釈必須)。
 - **型クラスの辞書は常に `Type`**(何度でも使える)。クラスの引数は既定で `Type`。`class Drop (a :: LType)` のように明示すれば LType を取れる。
 
 ## 2. 多重度と使用量
@@ -122,7 +125,7 @@ Linear Haskell と同様に、文脈の各変数に多重度を付ける。
 - 辞書渡しで実装。辞書は `Type`(ω)。
 - メソッドの型に線形矢印を含めてよい(`class Consumable a where consume :: a %1 -> ()`)。
 - 標準のクラス (`Eq`, `Ord`, `Show`, …) の引数は `Type`。LType の値を比較・表示したい場合は借用して中を読む。
-- linear-base 互換のクラス `Consumable`, `Dupable`, `Movable` を `Cirka.Ownership` に用意する(FEAT-0051)。
+- linear-base 互換のクラス `Consumable`, `Dupable`, `Movable` を `Cirka.Ownership` に用意する(FEAT-0121)。
 
 ## 8. 例外と線形性
 
@@ -136,13 +139,11 @@ Linear Haskell と同様に、文脈の各変数に多重度を付ける。
 3. **共有値**: Perceus の dup/drop は MIR 検証器で静的に整合性を検査する。⇒ 二重解放・解放後使用なし(循環時のリークを除く)。
 4. **抜け穴**: `unsafeCoerce`、`Cirka.Unsafe.*`、FFI の型宣言の誤り。これらは `unsafe` 扱いとし、`--deny-unsafe` で禁止できる。
 
-## 10. 検証機能との関係
+## 10. 検証機能・CirkaLang との関係
 
-洗練型・契約・終了性 ([13-verification.md](13-verification.md)) は、本章の型システムの **上に載る独立した層** である。
-
-- 型推論・型クラス解決・多重度検査は洗練述語を一切見ない。洗練型は「型検査が通った Core」に対して別パスで検査する。
-- 洗練型の基底型 `{v : τ | p}` の `τ` は通常の型で、述語を消すと本章の型になる(消去後の型で型検査する)。
-- 多重度 `%0` は、第一段階では「実行時に消える引数」、第二段階では QTT の 0(型・証明)としてそのまま拡張される。
+- aCHC の型システムは依存型を持たない。検証機能の本体は CirkaLang で扱う ([13-verification.md](13-verification.md))。
+- aCHC で任意に行う Liquid 互換注釈の検証 (FEAT-0131) は、型検査が通った Core に対する独立パスで、型推論・型クラス解決には影響しない。
+- 多重度 `%0` は aCHC では「実行時に消える引数」で、CirkaLang の QTT の 0 (型・証明) と同じ意味を持つ。共通 Core ではどちらも多重度 0 として消去される。
 
 ## 11. 診断コード
 

@@ -21,16 +21,16 @@
 | `switch` | `switch i16 tag` (ヘッダの tag を load) |
 | `force` | `kind == THUNK/IND` の判定をインライン、評価が必要な場合のみ `call @cirka_force` |
 
-- 名前マングリング: `_C<モジュール長><モジュール名><名前長><名前>`(Rust v0 風、`achc --demangle` を用意)。
-- 呼び出し規約 `tailcc` はすべて x86_64 で `musttail` を保証する。Haskell 関数どうしの呼び出しはすべて `tailcc`。
-- 例外導入後 (FEAT-0070) は、drop が必要な値を持つ呼び出しを `invoke` にし、landing pad で drop して `resume`。
+- 名前マングリング: `_C<モジュール長><モジュール名><名前長><名前>`(Rust v0 風。`achc` / `cirka` の両方で `--demangle` を用意)。
+- 呼び出し規約 `tailcc` はすべて x86_64 で `musttail` を保証する。aCHC / CirkaLang から生成した関数どうしの呼び出しはすべて `tailcc`。
+- アンワインド導入後 (FEAT-0040) は、drop が必要な値を持つ呼び出しを `invoke` にし、landing pad で drop して `resume`。
 
 ## 3. 最適化レベル
 
-| フラグ | aCHC 側 | LLVM 側 |
+| フラグ | Core/MIR 側 (共通) | LLVM 側 |
 |--------|---------|---------|
 | `-O0` | Core 最適化なし、Perceus の最小限のみ | `-O0` |
-| `-O1` | 簡約・インライン・正格性解析・借用推論 | `-O1` |
+| `-O1` | 簡約・インライン・借用推論 (aCHC は正格性解析も) | `-O1` |
 | `-O2` (release 既定) | 全パス (特殊化・worker/wrapper・再利用解析・エスケープ解析) | `-O2` |
 
 ## 4. リンク
