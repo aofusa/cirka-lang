@@ -101,6 +101,7 @@ dependencies = [
 name = "cirka-integration"
 version = "0.0.1"
 dependencies = [
+ "achc-rename",
  "achc-syntax",
  "cirka",
  "cirka-codegen-llvm",

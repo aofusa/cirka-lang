@@ -1,0 +1,15 @@
+(module Main
+  (language NoImplicitPrelude)
+  (exports main)
+  (import Data.Stack qualified as S)
+  (import Data.Stack (Stack(..) <:))
+  (import Util hiding (secret))
+  (fun main ()
+    ((Util.plus (Data.Stack.size ((Data.Stack.<: 1) ((Data.Stack.<: 2) Data.Stack.Empty)))) (twice#1 3))
+    (where
+      (fun twice#1 (x#2)
+        ((Util.plus x#2) x#2)
+      )
+    )
+  )
+)

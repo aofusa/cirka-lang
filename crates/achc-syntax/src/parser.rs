@@ -1223,17 +1223,9 @@ impl Parser {
         for it in items {
             out.push(match it {
                 OpItem::Operand(run) => OpItem::Operand(self.run_to_pat(run)?),
-                OpItem::Op(op) => {
-                    if !op.is_con() {
-                        self.error_at(
-                            op.span,
-                            format!("`{}` is not a constructor operator", op.text()),
-                            "only constructor operators can appear in patterns".into(),
-                        );
-                        return Err(());
-                    }
-                    OpItem::Op(op)
-                }
+                // Variable operators are rejected by the renamer, except in
+                // a parenthesized function head `(f . g) x = ...`.
+                OpItem::Op(op) => OpItem::Op(op),
                 OpItem::Neg(s) => OpItem::Neg(s),
             });
         }

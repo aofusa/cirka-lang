@@ -1,0 +1,37 @@
+error[E0203]: multiple declarations of `T`
+  --> tests/achc/modules/scope_errors/Main.hs:11:14
+   |
+11 | data T = T | T
+   |          - first declared here
+   |              ^
+error[E0606]: the type signature for `k` lacks an accompanying binding
+  --> tests/achc/modules/scope_errors/Main.hs:10:1
+   |
+10 | k :: a -> a
+   | ^
+error[E0202]: `shared` is ambiguous
+ --> tests/achc/modules/scope_errors/Main.hs:7:5
+  |
+7 | f = shared
+  |     ^^^^^^
+  = note: it could refer to `A.shared`
+  = note: it could refer to `B.shared`
+  = help: qualify the name or hide one of the imports
+error[E0201]: name `unknown` is not in scope
+ --> tests/achc/modules/scope_errors/Main.hs:8:5
+  |
+8 | g = unknown
+  |     ^^^^^^^
+error[E0203]: conflicting definitions for `x`
+ --> tests/achc/modules/scope_errors/Main.hs:9:7
+  |
+9 | h (x, x) = x
+  |    - first bound here
+  |       ^
+  = note: a variable can appear only once in a pattern
+error[E0102]: `+` is not a constructor operator
+  --> tests/achc/modules/scope_errors/Main.hs:12:6
+   |
+12 | p (x + 1) = x
+   |      ^
+   = note: only constructor operators can appear in patterns

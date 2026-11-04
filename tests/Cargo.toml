@@ -23,6 +23,7 @@ cirka-driver.workspace = true
 cirka-codegen-llvm.workspace = true
 cirka.workspace = true
 achc-syntax.workspace = true
+achc-rename.workspace = true
 
 [[test]]
 name = "workspace"

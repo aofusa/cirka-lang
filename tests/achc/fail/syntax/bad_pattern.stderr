@@ -1,5 +1,0 @@
-error[E0102]: `+` is not a constructor operator
- --> bad_pattern.hs:1:6
-  |
-1 | f (x + 1) = x
-  |      ^ only constructor operators can appear in patterns
