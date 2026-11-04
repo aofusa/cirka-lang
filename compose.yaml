@@ -1,0 +1,29 @@
+# Development container. Usage:
+#   cp .env.sample .env
+#   docker compose build
+#   docker compose run --rm dev            # interactive shell
+#   docker compose run --rm dev cargo test # one-off command
+services:
+  dev:
+    build:
+      context: .
+      args:
+        LLVM_VERSION: ${CIRKA_LLVM_VERSION:-18}
+        USER_UID: ${CIRKA_UID:-1000}
+        USER_GID: ${CIRKA_GID:-1000}
+    image: ${CIRKA_DOCKER_IMAGE:-achc-dev}
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - .:/work
+      - cargo-registry:/usr/local/cargo/registry
+      - target-cache:/work/target
+    working_dir: /work
+    # Generous stack limit: compiled Haskell programs may recurse deeply.
+    ulimits:
+      stack: -1
+
+volumes:
+  cargo-registry:
+  target-cache:

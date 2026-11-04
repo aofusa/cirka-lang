@@ -1,0 +1,20 @@
+# Rust build output
+/target/
+**/*.rs.bk
+
+# aCHC build output (compiled test programs, LLVM IR, objects)
+/_build/
+*.ll.tmp
+*.o
+
+# Environment-specific settings (copy .env.sample to .env)
+.env
+
+# Temporary artifacts produced by AI agents
+docs/artifacts/
+
+# Editors / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
