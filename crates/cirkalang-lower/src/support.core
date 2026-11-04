@@ -1,0 +1,129 @@
+; Support functions for the primitives of CirkaLang v0.0.1 (spec-v0.0.1.md
+; §5.4). Merged into every lowered program; unused ones are removed by DCE.
+
+(extern cirka_write_i64 (Int#) Unit#)
+(extern cirka_write_f64 (Double#) Unit#)
+(extern cirka_write_char (Int#) Unit#)
+(extern cirka_write_bytes (Bytes) Unit#)
+(extern cirka_panic_bytes (Bytes) Unit#)
+(extern cirka_exit (Int#) Unit#)
+(extern cirka_read_byte () Int#)
+(extern cirka_f64_to_bytes (Double#) Bytes)
+(extern sqrt (Double#) Double#)
+
+; Unsigned comparison through the sign bit.
+(def cirka$ult (-> Int# Int# Int#)
+  (lam ((a Int#) (b Int#))
+    (prim lt (prim xor a -9223372036854775808) (prim xor b -9223372036854775808))))
+
+(def cirka$ule (-> Int# Int# Int#)
+  (lam ((a Int#) (b Int#))
+    (prim le (prim xor a -9223372036854775808) (prim xor b -9223372036854775808))))
+
+; ---- strings (Bytes) ----
+
+(def cirka$bytes_eq_loop (-> Bytes Bytes Int# Int# Int#)
+  (lam ((a Bytes) (b Bytes) (i Int#) (n Int#))
+    (case (prim lt i n) (c Int#) Int#
+      (0 1)
+       (_ (case (prim eq (prim bytes_get a i) (prim bytes_get b i)) (d Int#) Int#
+            (0 0)
+             (_ (cirka$bytes_eq_loop a b (prim add i 1) n)))))))
+
+(def cirka$bytes_eq (-> Bytes Bytes Int#)
+  (lam ((a Bytes) (b Bytes))
+    (let! (n Int# (prim bytes_len a))
+      (case (prim eq n (prim bytes_len b)) (c Int#) Int#
+        (0 0)
+         (_ (cirka$bytes_eq_loop a b 0 n))))))
+
+; Copies src[0..n] to dst[off..off+n].
+(def cirka$bytes_copy (-> Bytes Bytes Int# Int# Int# Unit#)
+  (lam ((dst Bytes) (src Bytes) (off Int#) (i Int#) (n Int#))
+    (case (prim lt i n) (c Int#) Unit#
+      (0 unit)
+       (_ (let! (u Unit# (prim bytes_set dst (prim add off i) (prim bytes_get src i)))
+            (cirka$bytes_copy dst src off (prim add i 1) n))))))
+
+(def cirka$bytes_concat (-> Bytes Bytes Bytes)
+  (lam ((a Bytes) (b Bytes))
+    (let! (la Int# (prim bytes_len a))
+      (let! (lb Int# (prim bytes_len b))
+        (let! (r Bytes (prim bytes_new (prim add la lb)))
+          (let! (u1 Unit# (cirka$bytes_copy r a 0 0 la))
+            (let! (u2 Unit# (cirka$bytes_copy r b la 0 lb))
+              r)))))))
+
+(def cirka$ndigits (-> Int# Int# Int#)
+  (lam ((v Int#) (acc Int#))
+    (case v (c Int#) Int#
+      (0 acc)
+       (_ (cirka$ndigits (prim quot v 10) (prim add acc 1))))))
+
+(def cirka$fill_digits (-> Bytes Int# Int# Unit#)
+  (lam ((r Bytes) (i Int#) (v Int#))
+    (case v (c Int#) Unit#
+      (0 unit)
+       (_ (let! (d Int# (prim rem v 10))
+            (let! (d2 Int# (case (prim lt d 0) (e Int#) Int# (0 d) (_ (prim neg d))))
+              (let! (u Unit# (prim bytes_set r i (prim add 48 d2)))
+                (cirka$fill_digits r (prim sub i 1) (prim quot v 10)))))))))
+
+(def cirka$int_to_bytes (-> Int# Bytes)
+  (lam ((n Int#))
+    (case n (c Int#) Bytes
+      (0 "0")
+       (_ (let! (neg Int# (prim lt n 0))
+            (let! (len Int# (prim add (cirka$ndigits n 0) neg))
+              (let! (r Bytes (prim bytes_new len))
+                (let! (u Unit# (cirka$fill_digits r (prim sub len 1) n))
+                  (let! (u2 Unit# (case neg (e Int#) Unit# (0 unit) (_ (prim bytes_set r 0 45))))
+                    r)))))))))
+
+(def cirka$char_to_bytes (-> Int# Bytes)
+  (lam ((c Int#))
+    (case (prim lt c 128) (k1 Int#) Bytes
+      (1 (let! (r Bytes (prim bytes_new 1))
+            (let! (u Unit# (prim bytes_set r 0 c)) r)))
+       (_ (case (prim lt c 2048) (k2 Int#) Bytes
+            (1 (let! (r Bytes (prim bytes_new 2))
+                  (let! (u Unit# (prim bytes_set r 0 (prim or 192 (prim shr c 6))))
+                    (let! (u2 Unit# (prim bytes_set r 1 (prim or 128 (prim and c 63)))) r))))
+             (_ (case (prim lt c 65536) (k3 Int#) Bytes
+                  (1 (let! (r Bytes (prim bytes_new 3))
+                        (let! (u Unit# (prim bytes_set r 0 (prim or 224 (prim shr c 12))))
+                          (let! (u2 Unit# (prim bytes_set r 1 (prim or 128 (prim and (prim shr c 6) 63))))
+                            (let! (u3 Unit# (prim bytes_set r 2 (prim or 128 (prim and c 63)))) r)))))
+                   (_ (let! (r Bytes (prim bytes_new 4))
+                        (let! (u Unit# (prim bytes_set r 0 (prim or 240 (prim shr c 18))))
+                          (let! (u2 Unit# (prim bytes_set r 1 (prim or 128 (prim and (prim shr c 12) 63))))
+                            (let! (u3 Unit# (prim bytes_set r 2 (prim or 128 (prim and (prim shr c 6) 63))))
+                              (let! (u4 Unit# (prim bytes_set r 3 (prim or 128 (prim and c 63)))) r)))))))))))))
+
+; ---- input ----
+
+(def cirka$skip_ws (-> Int# Int#)
+  (lam ((c Int#))
+    (case c (k Int#) Int#
+      (32 (cirka$skip_ws (extern cirka_read_byte)))
+       (10 (cirka$skip_ws (extern cirka_read_byte)))
+       (9 (cirka$skip_ws (extern cirka_read_byte)))
+       (13 (cirka$skip_ws (extern cirka_read_byte)))
+       (_ c))))
+
+(def cirka$read_digits (-> Int# Int# Int#)
+  (lam ((c Int#) (acc Int#))
+    (case (prim le 48 c) (k Int#) Int#
+      (0 acc)
+       (_ (case (prim le c 57) (k2 Int#) Int#
+            (0 acc)
+             (_ (cirka$read_digits (extern cirka_read_byte)
+                                   (prim add (prim mul acc 10) (prim sub c 48)))))))))
+
+; Reads a decimal integer from stdin (0 at the end of input).
+(def cirka$read_int (-> Unit# Int#)
+  (lam ((w Unit#))
+    (let! (c Int# (cirka$skip_ws (extern cirka_read_byte)))
+      (case c (k Int#) Int#
+        (45 (prim neg (cirka$read_digits (extern cirka_read_byte) 0)))
+         (_ (cirka$read_digits c 0))))))

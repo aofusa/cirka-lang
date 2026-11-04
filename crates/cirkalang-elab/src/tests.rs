@@ -311,3 +311,12 @@ main = do
   printInt (open (MkBox (unique 3)))
 "#);
 }
+
+/// Regression: a solved meta applied to arguments must be beta-reduced
+/// when zonked (it left lambdas with error annotations).
+#[test]
+fn zonk_reduces_applied_metas() {
+    ok(
+        "foldl : (b -> a -> b) -> b -> List a -> b\nfoldl f z Nil = z\nfoldl f z (x :: xs) = foldl f (f z x) xs\nlength : List a -> Int\nlength xs = foldl (\\n, _ => n + 1) 0 xs\nmain : IO ()\nmain = pure ()\n",
+    );
+}

@@ -157,6 +157,7 @@ dependencies = [
  "cirka-core",
  "cirka-diagnostics",
  "cirkalang-elab",
+ "cirkalang-resolve",
 ]
 
 [[package]]

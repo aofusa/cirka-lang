@@ -998,6 +998,18 @@ impl<'m> Interp<'m> {
                 self.err.extend_from_slice(&b);
                 Ok(unit)
             }
+            "cirka_f64_to_bytes" => {
+                let b = crate::interp::format_f64(a[0].float()).into_bytes();
+                let size = 16 + b.len().div_ceil(8) * 8;
+                Ok(Val::P(self.alloc(
+                    kind::BYTES,
+                    0,
+                    vec![],
+                    Payload::Bytes(b),
+                    size,
+                )))
+            }
+            "sqrt" => Ok(Val::F(a[0].float().sqrt())),
             "cirka_flush" => Ok(unit),
             "cirka_exit" => Err(Exit::Code(a[0].int() as i32)),
             "cirka_read_byte" => {

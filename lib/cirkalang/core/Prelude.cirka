@@ -1,0 +1,297 @@
+-- The CirkaLang v0.0.1 Prelude (spec-v0.0.1.md §3.1, §5). Imported
+-- implicitly by every module.
+module Prelude
+
+infixr 9 .
+infixl 7 *, /, %, *., /.
+infixl 6 +, -, +., -., ++
+infixr 5 ::
+infix 4 ==, /=, <, <=, >, >=, ==., <., <=., >., >=.
+infixr 3 &&
+infixr 2 ||
+infixl 1 >>=, >>
+infixr 0 $
+
+-- Primitive types (§5.4)
+prim Int : Type
+prim UInt : Type
+prim Float : Type
+prim Char : Type
+prim String : Type
+prim IO : Type -> Type
+prim Unique : Type -> LType
+
+-- Basic data types
+data Bool = False | True
+data Unit = MkUnit
+data Nat = Z | S Nat
+data Pair a b = MkPair a b
+data List a = Nil | a :: List a
+data Maybe a = Nothing | Just a
+data Either a b = Left a | Right b
+
+-- Primitive operations (§5.6)
+prim primAddInt : Int -> Int -> Int
+prim primSubInt : Int -> Int -> Int
+prim primMulInt : Int -> Int -> Int
+prim primDivInt : Int -> Int -> Int
+prim primModInt : Int -> Int -> Int
+prim primNegInt : Int -> Int
+prim primEqInt : Int -> Int -> Bool
+prim primLtInt : Int -> Int -> Bool
+prim primLeInt : Int -> Int -> Bool
+prim primAndInt : Int -> Int -> Int
+prim primOrInt : Int -> Int -> Int
+prim primXorInt : Int -> Int -> Int
+prim primShlInt : Int -> Int -> Int
+prim primShrInt : Int -> Int -> Int
+prim primAddUInt : UInt -> UInt -> UInt
+prim primSubUInt : UInt -> UInt -> UInt
+prim primMulUInt : UInt -> UInt -> UInt
+prim primEqUInt : UInt -> UInt -> Bool
+prim primLtUInt : UInt -> UInt -> Bool
+prim primLeUInt : UInt -> UInt -> Bool
+prim primIntToUInt : Int -> UInt
+prim primUIntToInt : UInt -> Int
+prim primAddFloat : Float -> Float -> Float
+prim primSubFloat : Float -> Float -> Float
+prim primMulFloat : Float -> Float -> Float
+prim primDivFloat : Float -> Float -> Float
+prim primNegFloat : Float -> Float
+prim primEqFloat : Float -> Float -> Bool
+prim primLtFloat : Float -> Float -> Bool
+prim primLeFloat : Float -> Float -> Bool
+prim primIntToFloat : Int -> Float
+prim primFloatToInt : Float -> Int
+prim primSqrtFloat : Float -> Float
+prim primCharToInt : Char -> Int
+prim primIntToChar : Int -> Char
+prim primStrLength : String -> Int
+prim primStrIndex : String -> Int -> Int
+prim primStrConcat : String -> String -> String
+prim primStrEq : String -> String -> Bool
+prim primIntToStr : Int -> String
+prim primFloatToStr : Float -> String
+prim primCharToStr : Char -> String
+
+-- IO (§5.2)
+prim pure : a -> IO a
+prim primBind : IO a -> (a -> IO b) -> IO b
+prim putStr : String -> IO ()
+prim printInt : Int -> IO ()
+prim printFloat : Float -> IO ()
+prim putChar : Char -> IO ()
+prim readInt : IO Int
+prim exit : Int -> IO a
+prim panic : String -> a
+
+-- Uniqueness (§4.3)
+prim unique : a -> Unique a
+prim freeze : (1 u : Unique a) -> a
+
+(>>=) : IO a -> (a -> IO b) -> IO b
+m >>= f = primBind m f
+
+(>>) : IO a -> IO b -> IO b
+m >> k = primBind m (\_ => k)
+
+putStrLn : String -> IO ()
+putStrLn s = putStr s >> putStr "\n"
+
+-- Functions
+id : a -> a
+id x = x
+
+const : a -> b -> a
+const x _ = x
+
+flip : (a -> b -> c) -> b -> a -> c
+flip f x y = f y x
+
+(.) : (b -> c) -> (a -> b) -> a -> c
+(.) f g x = f (g x)
+
+($) : (a -> b) -> a -> b
+f $ x = f x
+
+-- Bool
+not : Bool -> Bool
+not True = False
+not False = True
+
+(&&) : Bool -> Bool -> Bool
+True && b = b
+False && _ = False
+
+(||) : Bool -> Bool -> Bool
+True || _ = True
+False || b = b
+
+-- Int
+(+) : Int -> Int -> Int
+x + y = primAddInt x y
+
+(-) : Int -> Int -> Int
+x - y = primSubInt x y
+
+(*) : Int -> Int -> Int
+x * y = primMulInt x y
+
+(/) : Int -> Int -> Int
+x / y = primDivInt x y
+
+(%) : Int -> Int -> Int
+x % y = primModInt x y
+
+negate : Int -> Int
+negate x = primNegInt x
+
+(==) : Int -> Int -> Bool
+x == y = primEqInt x y
+
+(/=) : Int -> Int -> Bool
+x /= y = not (primEqInt x y)
+
+(<) : Int -> Int -> Bool
+x < y = primLtInt x y
+
+(<=) : Int -> Int -> Bool
+x <= y = primLeInt x y
+
+(>) : Int -> Int -> Bool
+x > y = primLtInt y x
+
+(>=) : Int -> Int -> Bool
+x >= y = primLeInt y x
+
+min : Int -> Int -> Int
+min x y = if x <= y then x else y
+
+max : Int -> Int -> Int
+max x y = if x <= y then y else x
+
+abs : Int -> Int
+abs x = if x < 0 then negate x else x
+
+-- Float
+(+.) : Float -> Float -> Float
+x +. y = primAddFloat x y
+
+(-.) : Float -> Float -> Float
+x -. y = primSubFloat x y
+
+(*.) : Float -> Float -> Float
+x *. y = primMulFloat x y
+
+(/.) : Float -> Float -> Float
+x /. y = primDivFloat x y
+
+(==.) : Float -> Float -> Bool
+x ==. y = primEqFloat x y
+
+(<.) : Float -> Float -> Bool
+x <. y = primLtFloat x y
+
+(<=.) : Float -> Float -> Bool
+x <=. y = primLeFloat x y
+
+(>.) : Float -> Float -> Bool
+x >. y = primLtFloat y x
+
+(>=.) : Float -> Float -> Bool
+x >=. y = primLeFloat y x
+
+negateF : Float -> Float
+negateF x = primNegFloat x
+
+sqrt : Float -> Float
+sqrt x = primSqrtFloat x
+
+toFloat : Int -> Float
+toFloat n = primIntToFloat n
+
+truncate : Float -> Int
+truncate x = primFloatToInt x
+
+-- Char and String
+ord : Char -> Int
+ord c = primCharToInt c
+
+chr : Int -> Char
+chr n = primIntToChar n
+
+(++) : String -> String -> String
+s ++ t = primStrConcat s t
+
+strLength : String -> Int
+strLength s = primStrLength s
+
+strEq : String -> String -> Bool
+strEq s t = primStrEq s t
+
+showInt : Int -> String
+showInt n = primIntToStr n
+
+showFloat : Float -> String
+showFloat x = primFloatToStr x
+
+showChar : Char -> String
+showChar c = primCharToStr c
+
+-- Nat
+plus : Nat -> Nat -> Nat
+plus Z m = m
+plus (S k) m = S (plus k m)
+
+natToInt : Nat -> Int
+natToInt Z = 0
+natToInt (S k) = 1 + natToInt k
+
+-- Pairs
+fst : (a, b) -> a
+fst (x, _) = x
+
+snd : (a, b) -> b
+snd (_, y) = y
+
+-- Maybe
+fromMaybe : a -> Maybe a -> a
+fromMaybe d Nothing = d
+fromMaybe _ (Just x) = x
+
+-- Lists
+map : (a -> b) -> List a -> List b
+map f Nil = Nil
+map f (x :: xs) = f x :: map f xs
+
+filter : (a -> Bool) -> List a -> List a
+filter p Nil = Nil
+filter p (x :: xs) = if p x then x :: filter p xs else filter p xs
+
+foldl : (b -> a -> b) -> b -> List a -> b
+foldl f z Nil = z
+foldl f z (x :: xs) = foldl f (f z x) xs
+
+foldr : (a -> b -> b) -> b -> List a -> b
+foldr f z Nil = z
+foldr f z (x :: xs) = f x (foldr f z xs)
+
+length : List a -> Int
+length xs = foldl (\n, _ => n + 1) 0 xs
+
+sum : List Int -> Int
+sum xs = foldl (\a, b => a + b) 0 xs
+
+reverse : List a -> List a
+reverse xs = foldl (\acc, x => x :: acc) Nil xs
+
+append : List a -> List a -> List a
+append Nil ys = ys
+append (x :: xs) ys = x :: append xs ys
+
+range : Int -> Int -> List Int
+range a b = if a > b then Nil else a :: range (a + 1) b
+
+mapM_ : (a -> IO ()) -> List a -> IO ()
+mapM_ f Nil = pure ()
+mapM_ f (x :: xs) = f x >> mapM_ f xs

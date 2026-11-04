@@ -2116,7 +2116,22 @@ impl<'r> Elab<'r> {
             },
             Term::Pi(x, m, i, a, b) => Term::Pi(x.clone(), *m, *i, z(lvl, a), z(lvl + 1, b)),
             Term::Lam(x, m, i, a, b) => Term::Lam(x.clone(), *m, *i, z(lvl, a), z(lvl + 1, b)),
-            Term::App(f, a, i) => Term::App(z(lvl, f), z(lvl, a), *i),
+            Term::App(f, a, i) => {
+                // A solved meta applied to arguments: beta-reduce.
+                let mut h: &Term = f;
+                while let Term::App(g, _, _) = h {
+                    h = g;
+                }
+                if let Term::Meta(m) | Term::InsertedMeta(m, _) = h
+                    && self.metas.get(*m).is_some()
+                {
+                    let env: Env = (0..lvl).map(Val::var).collect();
+                    let v = self.ev().eval(&env, t);
+                    let q = self.ev().quote(lvl, &v);
+                    return self.zonk(lvl, &q);
+                }
+                Term::App(z(lvl, f), z(lvl, a), *i)
+            }
             Term::Let(x, m, a, v, b) => {
                 Term::Let(x.clone(), *m, z(lvl, a), z(lvl, v), z(lvl + 1, b))
             }

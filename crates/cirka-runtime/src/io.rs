@@ -133,6 +133,20 @@ pub extern "C" fn cirka_write_f64(x: f64) {
     out(&buf[..n]);
 }
 
+/// Formats a double like `cirka_write_f64` into a new BYTES object.
+#[unsafe(no_mangle)]
+pub extern "C" fn cirka_f64_to_bytes(x: f64) -> Obj {
+    let mut buf = [0u8; 64];
+    let mut f = Fmt {
+        buf: &mut buf,
+        len: 0,
+    };
+    let _ = core::fmt::write(&mut f, format_args!("{x}"));
+    let n = f.len;
+    // SAFETY: `buf` holds `n` initialized bytes.
+    unsafe { crate::cirka_bytes_from(buf.as_ptr(), n) }
+}
+
 /// Writes a Unicode scalar value as UTF-8.
 #[unsafe(no_mangle)]
 pub extern "C" fn cirka_write_char(c: i64) {
