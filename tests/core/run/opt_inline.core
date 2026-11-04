@@ -1,0 +1,44 @@
+; Small wrappers, tuples and higher-order helpers in a loop: the Core
+; simplifier (FEAT-0033) inlines them and removes the intermediate pairs,
+; closures and thunks (see tests/core.rs `core_opt_reduces_allocations`).
+(data Int () (I# Int#))
+(data Pair (a b) (P a b))
+(extern cirka_write_i64 (Int#) Unit#)
+(extern cirka_write_char (Int#) Unit#)
+
+(def plus (-> Int Int Int)
+  (lam ((x Int) (y Int))
+    (case x (s Int) Int
+      ((I# a) (case y (t Int) Int ((I# b) (con I# () (prim add a b))))))))
+
+(def swap (forall (a b) (-> (Pair a b) (Pair b a)))
+  (tlam (a b) (lam ((p (Pair a b)))
+    (case p (s (Pair a b)) (Pair b a) ((P x y) (con P (b a) y x))))))
+
+(def fst (forall (a b) (-> (Pair a b) a))
+  (tlam (a b) (lam ((p (Pair a b))) (case p (s (Pair a b)) a ((P x y) x)))))
+
+(def snd (forall (a b) (-> (Pair a b) b))
+  (tlam (a b) (lam ((p (Pair a b))) (case p (s (Pair a b)) b ((P x y) y)))))
+
+(def twice (forall (a) (-> (-> a a) a a))
+  (tlam (a) (lam ((f (-> a a)) (x a)) (f (f x)))))
+
+(def unI (-> Int Int#) (lam ((x Int)) (case x (s Int) Int# ((I# v) v))))
+
+; loop n acc = if n == 0 then acc else
+;   let q = swap (P step acc) in loop (n - 1) (twice (plus (fst q)) (snd q))
+(def loop (-> Int# Int Int#)
+  (lam ((n Int#) (acc Int))
+    (case n (s Int#) Int#
+      (0 (unI acc))
+      (_ (let ((step Int (con I# () (prim add 1 (prim mul 2 0))))
+               (q (Pair Int Int) ((@ swap Int Int) (con P (Int Int) step acc))))
+           (loop (prim sub n 1)
+                 ((@ twice Int) (plus ((@ snd Int Int) q)) ((@ fst Int Int) q))))))))
+
+(def main Int#
+  (let! (r Int# (loop 1000 (con I# () 0)))
+    (let! (u Unit# (extern cirka_write_i64 r))
+      (let! (u2 Unit# (extern cirka_write_char 10))
+        0))))

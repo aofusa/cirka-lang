@@ -131,3 +131,101 @@ fn printer_disambiguates_shadowed_names() {
     let s = print::print_expr(&e);
     assert!(s.contains("x~1") && s.contains("x~2"), "{s}");
 }
+
+/// Optimizes `src` and returns the printed `main`.
+fn opt_main(src: &str) -> (String, opt::Stats) {
+    let mut p = parse_program(FileId(0), src).unwrap();
+    assert!(lint::lint_program(&p).is_empty());
+    let st = opt::optimize_with_stats(&mut p).unwrap();
+    assert!(lint::lint_program(&p).is_empty(), "{}", print_program(&p));
+    let m = p.bind("main").unwrap();
+    (print::print_expr(&m.expr), st)
+}
+
+const PRELUDE: &str = "(data Int () (I# Int#))\n(data Pair (a b) (P a b))\n";
+
+#[test]
+fn opt_beta_and_constant_folding() {
+    let src = format!(
+        "{PRELUDE}(def main Int# ((lam ((x Int#) (y Int#)) (prim add x (prim mul y 2))) 1 20))"
+    );
+    let (m, st) = opt_main(&src);
+    assert_eq!(m.trim(), "41");
+    assert!(st.beta >= 2 && st.folded >= 2, "{st:?}");
+}
+
+#[test]
+fn opt_inlines_small_functions_and_removes_them() {
+    let src = format!(
+        "{PRELUDE}(def unI (-> Int Int#) (lam ((x Int)) (case x (s Int) Int# ((I# v) v))))
+         (def main Int# (unI (con I# () 7)))"
+    );
+    let mut p = parse_program(FileId(0), &src).unwrap();
+    let st = opt::optimize_with_stats(&mut p).unwrap();
+    assert_eq!(print::print_expr(&p.bind("main").unwrap().expr).trim(), "7");
+    assert_eq!(st.removed_globals, 1);
+    assert!(p.bind("unI").is_none());
+}
+
+#[test]
+fn opt_case_of_known_constructor() {
+    // fst (P a b) with a lazy, non-atomic second component: the pair and
+    // the thunk for the unused field disappear.
+    let src = format!(
+        "{PRELUDE}(def main Int#
+           (case (con P (Int Int) (con I# () 3) (con I# () (prim add 1 2))) (p (Pair Int Int)) Int#
+             ((P a b) (case a (s Int) Int# ((I# v) v)))))"
+    );
+    let (m, st) = opt_main(&src);
+    assert_eq!(m.trim(), "3");
+    assert!(st.known_case >= 2, "{st:?}");
+}
+
+#[test]
+fn opt_keeps_strictness_and_effects() {
+    // `let!` of an extern call and of a possibly-diverging variable must
+    // stay; an unused lazy `let` goes away.
+    let src = format!(
+        "{PRELUDE}(extern f (Int#) Unit#)
+         (def g Int (con I# () 1))
+         (def main Int#
+           (let ((dead Int (con I# () (prim add 1 1))))
+             (let! (u Unit# (extern f 1))
+               (let! (w Int g)
+                 0))))"
+    );
+    let (m, st) = opt_main(&src);
+    assert!(m.contains("extern f"), "{m}");
+    assert!(m.contains("(w Int g)"), "{m}");
+    assert!(!m.contains("dead"), "{m}");
+    assert!(st.dead >= 1);
+}
+
+#[test]
+fn opt_single_use_thunk_moves_to_its_use() {
+    // A lazy let used once (not under a lambda) is moved to its use; one
+    // used under a lambda is kept (work would be repeated).
+    let src = format!(
+        "{PRELUDE}(def h (-> Int Int) (lam ((x Int)) x))
+         (def main Int#
+           (let ((t Int (h (con I# () 5))))
+             (let ((k (-> Int# Int) (lam ((z Int#)) t)))
+               (case (k 0) (s Int) Int# ((I# v) v)))))"
+    );
+    let (m, _) = opt_main(&src);
+    assert_eq!(m.trim(), "5", "{m}");
+}
+
+#[test]
+fn opt_respects_linearity() {
+    // A linear argument that is not a value is substituted at its single
+    // use instead of becoming a lazy let (Strict-Linear).
+    let src = format!(
+        "{PRELUDE}(def id1 (-> 1 Int Int) (lam ((x 1 Int)) x))
+         (def big (-> Int Int) (lam ((y Int)) y))
+         (def main Int#
+           ((lam ((q 1 Int)) (case (id1 q) (s Int) Int# ((I# v) v))) (big (con I# () 9))))"
+    );
+    let (m, _) = opt_main(&src);
+    assert_eq!(m.trim(), "9", "{m}");
+}

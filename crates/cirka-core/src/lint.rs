@@ -26,6 +26,14 @@ pub fn lint_program(p: &Program) -> Vec<Diagnostic> {
     l.errs
 }
 
+/// Lints one top-level binding of `p` (by index) against the rest of the
+/// program; used by the optimizer to check each binding after a pass.
+pub fn lint_bind(p: &Program, i: usize) -> Vec<Diagnostic> {
+    let mut l = Linter::new(p);
+    l.top(&p.binds[i]);
+    l.errs
+}
+
 /// Renders lint errors as plain text (tests and ICE reports).
 pub fn render_errors(errs: &[Diagnostic]) -> String {
     let sm = cirka_diagnostics::SourceMap::new();
@@ -182,26 +190,7 @@ impl<'p> Linter<'p> {
                 self.error(&format!("`{}`", b.name), "defined twice".into());
                 continue;
             }
-            self.vars.clear();
-            self.tyvars.clear();
-            self.inconsistent.clear();
-            let r = (|| {
-                let k = self.type_kind(&b.ty)?;
-                if k == Kind::LType {
-                    return Err(format!(
-                        "top-level bindings are unrestricted (ω), but `{}` has a linear type",
-                        b.ty
-                    ));
-                }
-                let (t, _) = self.expr(&b.expr)?;
-                if !t.alpha_eq(&b.ty) {
-                    return Err(format!("declared type {} but the body has type {t}", b.ty));
-                }
-                Ok(())
-            })();
-            if let Err(m) = r {
-                self.error(&format!("`{}`", b.name), m);
-            }
+            self.top(b);
         }
         match p.bind("main") {
             Some(m) if m.ty.alpha_eq(&Type::int()) => {}
@@ -210,6 +199,29 @@ impl<'p> Linter<'p> {
                 self.error("`main`", format!("must have type Int#, not {t}"));
             }
             None => {}
+        }
+    }
+
+    fn top(&mut self, b: &TopBind) {
+        self.vars.clear();
+        self.tyvars.clear();
+        self.inconsistent.clear();
+        let r = (|| {
+            let k = self.type_kind(&b.ty)?;
+            if k == Kind::LType {
+                return Err(format!(
+                    "top-level bindings are unrestricted (ω), but `{}` has a linear type",
+                    b.ty
+                ));
+            }
+            let (t, _) = self.expr(&b.expr)?;
+            if !t.alpha_eq(&b.ty) {
+                return Err(format!("declared type {} but the body has type {t}", b.ty));
+            }
+            Ok(())
+        })();
+        if let Err(m) = r {
+            self.error(&format!("`{}`", b.name), m);
         }
     }
 
