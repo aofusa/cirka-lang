@@ -177,3 +177,29 @@ fn mir_run_native() {
         Outcome::Pass
     });
 }
+
+/// The hand-written binary-trees benchmark (FEAT-0016) stays valid: it
+/// verifies, runs leak-free in the interpreter at a small depth and matches
+/// the Rust baseline's output.
+#[test]
+fn bench_binary_trees_mir() {
+    let root = repo_root();
+    let src = std::fs::read_to_string(root.join("bench/binary-trees/mir/main.mir")).unwrap();
+    let m = cirka_mir::parse(FileId(0), &src).expect("parse");
+    let errs = cirka_mir::verify::verify_module(&m);
+    assert!(
+        errs.is_empty(),
+        "{}",
+        cirka_mir::verify::render_errors(&errs)
+    );
+    let r = cirka_mir::interp::run_with_args(&m, &["6"], b"", u64::MAX).unwrap();
+    assert_eq!(r.exit_code, 0, "{}", r.stderr);
+    assert_eq!(r.leaked, 0);
+    let expected = "\
+stretch tree of depth 7\t check: 255
+64\t trees of depth 4\t check: 1984
+16\t trees of depth 6\t check: 2032
+long lived tree of depth 6\t check: 127
+";
+    assert_eq!(r.stdout, expected);
+}

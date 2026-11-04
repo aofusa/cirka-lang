@@ -113,6 +113,7 @@ pub struct Interp<'m> {
     pub rc_ops: u64,
     stdin: Vec<u8>,
     stdin_pos: usize,
+    args: Vec<Vec<u8>>,
     /// Per function: variables that hold reuse tokens.
     tokens: Vec<Vec<bool>>,
 }
@@ -136,8 +137,15 @@ impl<'m> Interp<'m> {
             rc_ops: 0,
             stdin: Vec::new(),
             stdin_pos: 0,
+            args: Vec::new(),
             tokens: m.funcs.iter().map(token_vars).collect(),
         }
+    }
+
+    /// Program arguments returned by `cirka_argc` / `cirka_arg`.
+    pub fn with_args(mut self, args: &[&str]) -> Self {
+        self.args = args.iter().map(|a| a.as_bytes().to_vec()).collect();
+        self
     }
 
     pub fn with_stdin(mut self, input: &[u8]) -> Self {
@@ -997,6 +1005,25 @@ impl<'m> Interp<'m> {
                 };
                 Ok(Val::I(r))
             }
+            "cirka_argc" => Ok(Val::I(self.args.len() as i64)),
+            "cirka_arg" => {
+                let k = a[0].int();
+                let Some(b) = usize::try_from(k)
+                    .ok()
+                    .and_then(|k| self.args.get(k))
+                    .cloned()
+                else {
+                    return Err(Exit::Panic("argument index out of range".into()));
+                };
+                let size = 16 + b.len().div_ceil(8) * 8;
+                Ok(Val::P(self.alloc(
+                    kind::BYTES,
+                    0,
+                    vec![],
+                    Payload::Bytes(b),
+                    size,
+                )))
+            }
             "cirka_panic_bytes" => {
                 let b = self.bytes(a[0])?.clone();
                 Err(Exit::Panic(String::from_utf8_lossy(&b).into_owned()))
@@ -1050,11 +1077,21 @@ fn token_vars(f: &Function) -> Vec<bool> {
 
 /// Runs `main` on a thread with a large stack (deep non-tail recursion).
 pub fn run(m: &Module, stdin: &[u8], fuel: u64) -> Result<RunResult, String> {
+    run_with_args(m, &[], stdin, fuel)
+}
+
+/// Like [`run`], with program arguments.
+pub fn run_with_args(
+    m: &Module,
+    args: &[&str],
+    stdin: &[u8],
+    fuel: u64,
+) -> Result<RunResult, String> {
     std::thread::scope(|s| {
         std::thread::Builder::new()
             .stack_size(1 << 30)
             .spawn_scoped(s, || {
-                let mut it = Interp::new(m).with_stdin(stdin);
+                let mut it = Interp::new(m).with_stdin(stdin).with_args(args);
                 it.fuel = fuel;
                 it.run_main()
             })

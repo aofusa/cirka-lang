@@ -143,6 +143,9 @@ pub extern "C" fn cirka_arg(i: i64) -> Obj {
     // SAFETY: argv entries are NUL-terminated strings valid for the process.
     unsafe {
         let st = STARTUP.get();
+        if i < 0 || i as usize + 1 >= st.argc {
+            panic_msg(b"argument index out of range");
+        }
         let s = core::ffi::CStr::from_ptr(*st.argv.add(i as usize + 1)).to_bytes();
         crate::cirka_bytes_from(s.as_ptr(), s.len())
     }

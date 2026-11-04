@@ -4,6 +4,7 @@
 //! cirka-mir check foo.mir             # parse + verify
 //! cirka-mir interp foo.mir            # run on the reference interpreter
 //! cirka-mir run [--debug-rt] [-O0..3] foo.mir [-- args]   # native
+//! cirka-mir build [-O0..3] [-o out] foo.mir                 # native executable
 //! cirka-mir emit-llvm foo.mir         # print LLVM IR
 //! ```
 
@@ -25,12 +26,14 @@ fn main() -> ExitCode {
     let mut opts = NativeOptions::default();
     let mut file = None;
     let mut prog_args = Vec::new();
+    let mut output: Option<String> = None;
     let mut it = rest.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--debug-rt" | "--runtime=debug" => opts.runtime = RuntimeKind::Debug,
             "--runtime=release" => opts.runtime = RuntimeKind::Release,
             s if s.starts_with("-O") => opts.opt_level = s[2..].parse().unwrap_or(2),
+            "-o" => output = it.next().cloned(),
             "--" => {
                 prog_args.extend(it.by_ref().cloned());
             }
@@ -93,6 +96,19 @@ fn main() -> ExitCode {
                 )
             );
             ExitCode::SUCCESS
+        }
+        "build" => {
+            let out = output.unwrap_or_else(|| "a.out".into());
+            let work = std::env::temp_dir().join(format!("cirka-mir-{}", std::process::id()));
+            let r = build_mir(&cfg, &m, &work, std::path::Path::new(&out), &opts);
+            let _ = std::fs::remove_dir_all(&work);
+            match r {
+                Ok(_) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("cirka-mir: {e}");
+                    ExitCode::from(1)
+                }
+            }
         }
         "run" => {
             let work = std::env::temp_dir().join(format!("cirka-mir-{}", std::process::id()));
