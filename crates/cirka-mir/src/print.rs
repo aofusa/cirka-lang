@@ -55,17 +55,14 @@ pub fn print_function(m: &Module, f: &Function) -> String {
         if i > 0 {
             s.push_str(", ");
         }
-        let _ = write!(
-            s,
-            "{}: {} @{}",
-            f.var_name(p.var),
-            f.ty(p.var),
-            if p.own == Own::Owned {
-                "owned"
+        let _ = write!(s, "{}: {}", f.var_name(p.var), f.ty(p.var));
+        if f.ty(p.var).is_ptr() {
+            s.push_str(if p.own == Own::Owned {
+                " @owned"
             } else {
-                "borrowed"
-            }
-        );
+                " @borrowed"
+            });
+        }
     }
     let _ = writeln!(s, ") -> {} {{", f.ret);
     for b in &f.blocks {

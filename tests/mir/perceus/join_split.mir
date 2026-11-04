@@ -1,0 +1,70 @@
+// A switch whose targets are shared with other predecessors: the edges are
+// split to drop variables that die on them. Loops pass ownership through
+// block parameters.
+type Box { B = 0 { v: i64 } }
+type Pair { P = 0 { a: ptr, b: ptr } }
+extern fn cirka_write_i64(i64) -> void
+extern fn cirka_write_char(i64) -> void
+
+fn get(x: ptr @borrowed) -> i64 {
+entry:
+  let v = proj x Box.B.v
+  ret v
+}
+
+fn pick(c: i64, x: ptr @owned, y: ptr @owned) -> ptr {
+entry:
+  switch c { 0 => left, 1 => join, default => right }
+left:
+  jump join()
+right:
+  ret y
+join:
+  ret x
+}
+
+// Returns a projected field: the field is dup'ed, the parent dropped.
+fn first(p: ptr @owned) -> ptr {
+entry:
+  let a = proj p Pair.P.a
+  ret a
+}
+
+// Counts down while keeping a box alive across iterations.
+fn loop(n: i64, acc: ptr @owned) -> i64 {
+entry:
+  jump head(n, acc)
+head(i: i64, cur: ptr):
+  let z = prim eq(i, 0)
+  switch z { 1 => done, default => step }
+done:
+  let r = call get(cur)
+  ret r
+step:
+  let v = call get(cur)
+  let v1 = prim add(v, i)
+  let nb = alloc Box.B(v1)
+  let i1 = prim sub(i, 1)
+  jump head(i1, nb)
+}
+
+fn main() -> i64 {
+entry:
+  let x = alloc Box.B(1)
+  let y = alloc Box.B(2)
+  let p = call pick(0, x, y)
+  let v = call get(p)
+  let _ = extern cirka_write_i64(v)
+  let _ = extern cirka_write_char(32)
+  let x2 = alloc Box.B(3)
+  let y2 = alloc Box.B(4)
+  let pr = alloc Pair.P(x2, y2)
+  let f = call first(pr)
+  let w = call get(f)
+  let _ = extern cirka_write_i64(w)
+  let _ = extern cirka_write_char(32)
+  let s = call loop(10, f)
+  let _ = extern cirka_write_i64(s)
+  let _ = extern cirka_write_char(10)
+  ret 0
+}

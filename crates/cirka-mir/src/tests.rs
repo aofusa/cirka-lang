@@ -127,7 +127,8 @@ fn random_module(rng: &mut Rng) -> Module {
             let v = f.new_var(format!("p{i}"), ty);
             f.params.push(Param {
                 var: v,
-                own: if rng.below(2) == 0 {
+                // Scalars are always passed by value (printed without @).
+                own: if rng.below(2) == 0 || !ty.is_ptr() {
                     Own::Owned
                 } else {
                     Own::Borrowed

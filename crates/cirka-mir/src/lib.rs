@@ -4,6 +4,7 @@
 pub mod interp;
 pub mod ir;
 pub mod parse;
+pub mod perceus;
 pub mod print;
 pub mod verify;
 

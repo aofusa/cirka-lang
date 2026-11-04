@@ -1,0 +1,29 @@
+type Box { B = 0 { v: i64 } }
+extern fn cirka_write_i64(i64) -> void
+extern fn cirka_write_char(i64) -> void
+
+fn get(x: ptr @borrowed) -> i64 {
+entry:
+  let v = proj x Box.B.v
+  ret v
+}
+
+fn ignore(x: ptr @owned, y: ptr @owned) -> i64 {
+entry:
+  drop x
+  let d = alloc Box.B(7)
+  drop d
+  let r%3 = call get(y)
+  drop y
+  ret r%3
+}
+
+fn main() -> i64 {
+entry:
+  let a = alloc Box.B(1)
+  let b = alloc Box.B(42)
+  let r = call ignore(a, b)
+  let _ = extern cirka_write_i64(r)
+  let _ = extern cirka_write_char(10)
+  ret 0
+}

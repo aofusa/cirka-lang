@@ -203,3 +203,74 @@ long lived tree of depth 6\t check: 127
 ";
     assert_eq!(r.stdout, expected);
 }
+
+/// Runs a module (after Perceus) in the interpreter and checks the case's
+/// expected stdout / exit code and that nothing leaks.
+fn run_checked(c: &cirka_testkit::Case, m: &cirka_mir::Module) -> Outcome {
+    let errs = cirka_mir::verify::verify_module(m);
+    if !errs.is_empty() {
+        return Outcome::Fail(format!(
+            "{}\n{}",
+            cirka_mir::verify::render_errors(&errs),
+            cirka_mir::print_module(m)
+        ));
+    }
+    let stdin = std::fs::read(c.sibling("stdin")).unwrap_or_default();
+    let r = match cirka_mir::interp::run(m, &stdin, u64::MAX) {
+        Ok(r) => r,
+        Err(e) => return Outcome::Fail(e),
+    };
+    if let Err(e) = check_expect(&c.sibling("stdout"), &r.stdout) {
+        return Outcome::Fail(e);
+    }
+    if r.exit_code != expected_exit(c) {
+        return Outcome::Fail(format!("exit code {} (stderr: {})", r.exit_code, r.stderr));
+    }
+    if r.leaked != 0 {
+        return Outcome::Fail(format!(
+            "{} objects leaked\n{}",
+            r.leaked,
+            cirka_mir::print_module(m)
+        ));
+    }
+    Outcome::Pass
+}
+
+/// Perceus snapshots (FEAT-0020): `tests/mir/perceus/*.mir` contain no
+/// dup/drop; the annotated output is compared with `.out` and the program
+/// must run leak-free.
+#[test]
+fn mir_perceus() {
+    let cases = discover(&repo_root().join("tests/mir/perceus"), &["mir"]);
+    assert!(!cases.is_empty());
+    run_suite("mir-perceus", &cases, |c| {
+        let mut m = match cirka_mir::parse(FileId(0), &c.source()) {
+            Ok(m) => m,
+            Err(e) => return Outcome::Fail(format!("parse error: {}", e.message)),
+        };
+        cirka_mir::perceus::insert_rc(&mut m);
+        if let Err(e) = check_expect(&c.sibling("out"), &cirka_mir::print_module(&m)) {
+            return Outcome::Fail(e);
+        }
+        run_checked(c, &m)
+    });
+}
+
+/// Every hand-annotated run test still works after stripping its dup/drop
+/// and re-inserting them with Perceus.
+#[test]
+fn mir_perceus_roundtrip() {
+    let cases = discover(&repo_root().join("tests/mir/run"), &["mir"]);
+    run_suite("mir-perceus-roundtrip", &cases, |c| {
+        if c.header.get("skip-backend") == Some("interp") || c.header.get("expect-leak").is_some() {
+            return Outcome::Skip("not applicable".into());
+        }
+        let mut m = match cirka_mir::parse(FileId(0), &c.source()) {
+            Ok(m) => m,
+            Err(e) => return Outcome::Fail(format!("parse error: {}", e.message)),
+        };
+        cirka_mir::perceus::strip_rc(&mut m);
+        cirka_mir::perceus::insert_rc(&mut m);
+        run_checked(c, &m)
+    });
+}
