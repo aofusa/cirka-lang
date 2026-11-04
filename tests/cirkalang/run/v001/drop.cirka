@@ -1,0 +1,20 @@
+module Main
+
+-- Linear values that are not used are dropped implicitly (Weaken-Drop,
+-- spec §4.4); Perceus frees them, so the leak check stays at 0.
+data Box : LType where
+  MkBox : (1 u : Unique Int) -> (1 rest : List Int) -> Box
+
+ignore : (1 b : Box) -> Int
+ignore b = 0
+
+firstOnly : (1 b : Box) -> Bool -> Int
+firstOnly (MkBox u xs) c = if c then freeze u else length xs
+
+main : IO ()
+main = do
+  printInt (ignore (MkBox (unique 1) [1, 2, 3]))
+  printInt (firstOnly (MkBox (unique 5) [1, 2]) True)
+  printInt (firstOnly (MkBox (unique 5) [1, 2]) False)
+  let 1 b = MkBox (unique 3) (range 1 1000)
+  printInt (firstOnly b False)

@@ -481,11 +481,29 @@ impl<'r> Elab<'r> {
     /// Values of this type cannot contain linear resources (spec §4.4):
     /// primitive scalars and strings, and `Type` data built only from them.
     fn resource_free(&self, cx: &Cxt, ty: &Val) -> bool {
-        self.resource_free_go(cx.lvl(), ty, &mut Vec::new())
+        self.resource_free_go(cx.lvl(), ty, &mut Vec::new(), &mut false)
     }
 
-    fn resource_free_go(&self, lvl: u32, ty: &Val, visiting: &mut Vec<GName>) -> bool {
+    /// `Some(resource_free)`, or `None` when the answer depends on an
+    /// unsolved meta (e.g. `List ?a`).
+    fn resource_free_known(&self, cx: &Cxt, ty: &Val) -> Option<bool> {
+        let mut blocked = false;
+        let rf = self.resource_free_go(cx.lvl(), ty, &mut Vec::new(), &mut blocked);
+        if rf || !blocked { Some(rf) } else { None }
+    }
+
+    fn resource_free_go(
+        &self,
+        lvl: u32,
+        ty: &Val,
+        visiting: &mut Vec<GName>,
+        blocked: &mut bool,
+    ) -> bool {
         match self.whnf(ty) {
+            Val::Neutral(Head::Meta(_), _) => {
+                *blocked = true;
+                false
+            }
             Val::Neutral(Head::Global(g), sp) if sp.is_empty() => matches!(
                 self.prog.prim_of(g),
                 Some(Prim::Int | Prim::UInt | Prim::Float | Prim::Char | Prim::String)
@@ -518,7 +536,7 @@ impl<'r> Elab<'r> {
                     }
                     let mut l = lvl;
                     while let Val::Pi(_, m, _, a, clo) = self.whnf(&v) {
-                        if m != Mult::Zero && !self.resource_free_go(l, &a, visiting) {
+                        if m != Mult::Zero && !self.resource_free_go(l, &a, visiting, blocked) {
                             ok = false;
                             break 'cons;
                         }
@@ -1086,12 +1104,37 @@ impl<'r> Elab<'r> {
             }
             match self.whnf(&ty) {
                 Val::Pi(_, m, Icit::Expl, dom, c) => {
-                    let m = if m == Mult::Many && (is_con || self.resource_free(cx, &dom)) {
-                        Mult::One
+                    let known = if m == Mult::Many && !is_con && rig != Mult::Zero {
+                        self.resource_free_known(cx, &dom)
                     } else {
-                        m
+                        Some(false)
                     };
-                    let at = self.check(cx, a, &dom, rig.times(m));
+                    let at = if known.is_none() {
+                        // Whether the argument is resource-free is only known
+                        // after checking it (`length xs` with `List ?a`):
+                        // check it as a scope and scale its usage afterwards.
+                        let saved = self.enter_scope(cx);
+                        let at = self.check(cx, a, &dom, Mult::One);
+                        let f = if self.resource_free(cx, &dom) {
+                            Mult::One
+                        } else {
+                            Mult::Many
+                        };
+                        let (code, what) = if matches!(a.kind, ExprKind::Lam(..)) {
+                            ("E0305", "a closure used many times")
+                        } else {
+                            ("E0303", "an argument used many times")
+                        };
+                        self.exit_scope(cx, saved, rig.times(f), code, what);
+                        at
+                    } else {
+                        let m = if m == Mult::Many && (is_con || known == Some(true)) {
+                            Mult::One
+                        } else {
+                            m
+                        };
+                        self.check(cx, a, &dom, rig.times(m))
+                    };
                     let av = self.eval(cx, &at);
                     t = Term::App(Rc::new(t), Rc::new(at), Icit::Expl);
                     ty = self.ev().inst(&c, av);

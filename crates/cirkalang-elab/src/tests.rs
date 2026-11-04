@@ -338,3 +338,16 @@ fn resource_free_arguments_and_empty_matches() {
         "data Void : LType where\nabsurd : (1 v : Void) -> a\nabsurd v = case v of {}\nmain : IO ()\nmain = pure ()\n",
     );
 }
+
+/// The argument type `List ?a` is resource-free once `?a := Int` is solved
+/// by checking the argument itself.
+#[test]
+fn resource_free_after_solving_metas() {
+    ok(
+        "len : List a -> Int\nlen _ = 0\ndata Box : LType where\n  MkBox : (1 u : Unique Int) -> (1 xs : List Int) -> Box\nf : (1 b : Box) -> Int\nf (MkBox u xs) = len xs\nmain : IO ()\nmain = pure ()\n",
+    );
+    fails(
+        "len : List a -> Int\nlen _ = 0\ng : (1 u : Unique Int) -> Int\ng u = len [u]\nmain : IO ()\nmain = pure ()\n",
+        "E0303",
+    );
+}
