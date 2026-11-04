@@ -21,12 +21,14 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # - build-essential / clang / lld : link generated objects with libcirka_rt
 # - llvm-*-dev / libclang-*-dev   : LLVM tools, and libclang for `achc bindgen`
 # - ghc / libgmp-dev              : reference implementation for differential tests
+# - z3                            : SMT solver for `achc verify` (refinement types)
 # - valgrind / hyperfine          : memory-safety checks and benchmarks
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential ca-certificates curl git pkg-config python3 sudo \
         clang-${LLVM_VERSION} llvm-${LLVM_VERSION} llvm-${LLVM_VERSION}-dev \
         lld-${LLVM_VERSION} libclang-${LLVM_VERSION}-dev \
         ghc libgmp-dev \
+        z3 \
         valgrind hyperfine \
     && rm -rf /var/lib/apt/lists/*
 
