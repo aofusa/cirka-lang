@@ -1,0 +1,21 @@
+; Regression test for BUG-0002: case-of-known-constructor substitutes the
+; fields of a constructor that stays bound; the occurrence counts of the
+; field arguments must not drop (the `let!` of `y` was removed as dead).
+(data Int () (I# (! Int#)))
+(data Pair (a b) (MkPair (! a) (! b)))
+(extern cirka_write_i64 (Int#) Unit#)
+(extern cirka_write_char (Int#) Unit#)
+
+(def fst (forall (a b) (-> (Pair a b) a))
+  (tlam (a b) (lam ((p (Pair a b)))
+    (case p (s (Pair a b)) a ((MkPair x y) x)))))
+
+(def main Int#
+  (let! (t2 Int (let! (t1 (Pair Int Int)
+                       (let! (x Int (con I# () 1))
+                         (let! (y Int (con I# () 2))
+                           (con MkPair (Int Int) x y))))
+                  ((@ fst Int Int) t1)))
+    (case t2 (s Int) Int#
+      ((I# n) (let! (u Unit# (extern cirka_write_i64 n))
+                (let! (v Unit# (extern cirka_write_char 10)) 0))))))

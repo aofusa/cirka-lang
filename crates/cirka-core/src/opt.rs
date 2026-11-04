@@ -655,8 +655,16 @@ impl Simp<'_> {
         matches!(e, Expr::Var(v) if self.env.get(&v.id).is_some_and(|(_, u)| *u))
     }
 
-    /// `x` is substituted by atom `a`: its occurrences become `a`'s.
+    /// `x` is substituted by atom `a`: its occurrences become `a`'s, and
+    /// the occurrence of `a` that bound `x` disappears.
     fn transfer_occ(&mut self, x: u32, a: &Expr) {
+        self.transfer_occ_by(x, a, 1);
+    }
+
+    /// Like `transfer_occ`, but `removed` occurrences of `a` disappear (0
+    /// when `a` stays where it was, e.g. the field of a known constructor
+    /// that remains bound).
+    fn transfer_occ_by(&mut self, x: u32, a: &Expr, removed: u32) {
         let mut a = a;
         while let Expr::TyApp(e, _) | Expr::Cast(e, _) = a {
             a = e;
@@ -664,7 +672,7 @@ impl Simp<'_> {
         if let Expr::Var(y) = a {
             let ox = self.occ(x);
             let oy = self.occ.entry(y.id).or_default();
-            oy.count = oy.count.saturating_add(ox.count).saturating_sub(1);
+            oy.count = oy.count.saturating_add(ox.count).saturating_sub(removed);
             oy.in_lam |= ox.in_lam;
         }
     }
@@ -1025,7 +1033,8 @@ impl Simp<'_> {
         if let AltCon::Con(_, fs) = &alt.con {
             for (f, a) in fs.iter().zip(args) {
                 self.bind(f);
-                self.transfer_occ(f.id.id, &a);
+                // The constructor keeps its fields: nothing is removed.
+                self.transfer_occ_by(f.id.id, &a, 0);
                 self.sub.insert(f.id.id, a);
             }
         }

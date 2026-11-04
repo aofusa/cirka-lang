@@ -270,5 +270,6 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | ID | タイトル | 状態 | 重大度 | 関連 |
 |---|---|---|---|---|
 | [BUG-0001](bugs/BUG-0001-runtime-unit-test-race.md) | ランタイムの単体テストが並列実行で時々異常終了する | done | minor | FEAT-0013 |
+| [BUG-0002](bugs/BUG-0002-opt-known-case-field-occurrences.md) | Core 簡約器の case-of-known でフィールドの束縛が消える | done | major | FEAT-0033 |
 
 新しいチケットは `features/_TEMPLATE.md` / `bugs/_TEMPLATE.md` をコピーして作成する。
