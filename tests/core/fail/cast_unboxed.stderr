@@ -1,0 +1,1 @@
+error[C0100]: Core Lint: in `main`: cast between Int# and Any: unboxed types cannot be cast

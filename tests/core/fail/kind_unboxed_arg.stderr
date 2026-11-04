@@ -1,0 +1,1 @@
+error[C0100]: Core Lint: in `bad`: type argument `Int#` of `List` has kind #, expected Type

@@ -1,0 +1,7 @@
+; Strict-Linear: a lazy let would capture a linear value
+(data Handle () :linear (MkHandle Int#))
+(data Int () (I# Int#))
+(def close (-> 1 Handle Int#) (lam ((h 1 Handle)) (case h (s 1 Handle) Int# ((MkHandle fd) fd))))
+(def bad (-> 1 Handle Int) (lam ((h 1 Handle))
+  (let ((x Int (con I# () (close h)))) x)))
+(def main Int# 0)

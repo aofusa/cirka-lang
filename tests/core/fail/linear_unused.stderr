@@ -1,0 +1,1 @@
+error[C0100]: Core Lint: in `bad`: linear variable `h` is never used

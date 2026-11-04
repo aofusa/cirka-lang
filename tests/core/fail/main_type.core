@@ -1,0 +1,2 @@
+; main must return Int#
+(def main Unit# unit)

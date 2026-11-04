@@ -1,0 +1,2 @@
+; unbound variable (parse error)
+(def main Int# (prim add x 1))

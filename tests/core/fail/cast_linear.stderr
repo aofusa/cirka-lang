@@ -1,0 +1,1 @@
+error[C0100]: Core Lint: in `bad`: cast from Handle (LType) to Any (Type) changes linearity

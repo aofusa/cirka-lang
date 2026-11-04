@@ -1,0 +1,4 @@
+; a type variable out of scope
+(data List (a) (Nil) (Cons a (List a)))
+(def bad (List b) (con Nil (b)))
+(def main Int# 0)

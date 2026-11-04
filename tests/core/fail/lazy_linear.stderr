@@ -1,0 +1,1 @@
+error[C0100]: Core Lint: in `bad`: Strict-Linear: lazy `let x` would capture a linear value (use `let!`)

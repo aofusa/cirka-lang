@@ -1,0 +1,57 @@
+; Core as produced by aCHC: boxed Int, type-class dictionaries (with a
+; higher-kinded parameter), lazy lets and an infinite lazy list.
+(data Int () (I# Int#))
+(data List (a) (Nil) (Cons a (List a)))
+(data Functor ((f (-> Type Type)))
+  (MkFunctor (forall (a b) (-> (-> a b) (f a) (f b)))))
+(extern cirka_write_i64 (Int#) Unit#)
+(extern cirka_write_char (Int#) Unit#)
+
+(def map (forall (a b) (-> (-> a b) (List a) (List b)))
+  (tlam (a b) (lam ((f (-> a b)) (xs (List a)))
+    (case xs (s (List a)) (List b)
+      ((Nil) (con Nil (b)))
+      ((Cons y ys)
+        (let ((y2 b (f y))
+              (ys2 (List b) ((@ map a b) f ys)))
+          (con Cons (b) y2 ys2)))))))
+
+(def functorList (Functor List)
+  (con MkFunctor (List) map))
+
+(def fmap (forall ((f (-> Type Type)) a b) (-> (Functor f) (-> a b) (f a) (f b)))
+  (tlam ((f (-> Type Type)) a b) (lam ((d (Functor f)))
+    (case d (s (Functor f)) (-> (-> a b) (f a) (f b))
+      ((MkFunctor m) (@ m a b))))))
+
+; from n = n : from (n + 1)   (infinite, lazy)
+(def from (-> Int (List Int))
+  (lam ((n Int))
+    (let ((rest (List Int)
+            (from (case n (s Int) Int ((I# k) (con I# () (prim add k 1)))))))
+      (con Cons (Int) n rest))))
+
+(def take (-> Int# (List Int) (List Int))
+  (lam ((k Int#) (xs (List Int)))
+    (case k (s Int#) (List Int)
+      (0 (con Nil (Int)))
+      (_ (case xs (t (List Int)) (List Int)
+           ((Nil) (con Nil (Int)))
+           ((Cons y ys) (con Cons (Int) y (take (prim sub k 1) ys))))))))
+
+(def sum (-> (List Int) Int# Int#)
+  (lam ((xs (List Int)) (acc Int#))
+    (case xs (s (List Int)) Int#
+      ((Nil) acc)
+      ((Cons y ys) (case y (t Int) Int# ((I# v) (sum ys (prim add acc v))))))))
+
+(def double (-> Int Int)
+  (lam ((x Int)) (case x (s Int) Int ((I# v) (con I# () (prim mul v 2))))))
+
+(def main Int#
+  (let! (xs (List Int) (take 10 (from (con I# () 1))))
+    (let! (ys (List Int) ((@ fmap List Int Int) functorList double xs))
+      (let! (r Int# (sum ys 0))
+        (let! (u Unit# (extern cirka_write_i64 r))
+          (let! (u2 Unit# (extern cirka_write_char 10))
+            0))))))

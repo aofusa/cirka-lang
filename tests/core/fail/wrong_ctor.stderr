@@ -1,0 +1,5 @@
+error[C0001]: constructor `B1` does not belong to type `A`
+ --> wrong_ctor:4:46
+  |
+4 | (def main Int# (case (con A1 ()) (s A) Int# ((B1) 0)))
+  |                                              ^^^^ here

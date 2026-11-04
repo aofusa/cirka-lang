@@ -1,0 +1,6 @@
+; a linear variable never used
+(data Handle () :linear (MkHandle Int#))
+(data Int () (I# Int#))
+(def close (-> 1 Handle Int#) (lam ((h 1 Handle)) (case h (s 1 Handle) Int# ((MkHandle fd) fd))))
+(def bad (-> 1 Handle Int#) (lam ((h 1 Handle)) 0))
+(def main Int# 0)

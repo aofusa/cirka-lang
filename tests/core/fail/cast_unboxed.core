@@ -1,0 +1,2 @@
+; unboxed values cannot be cast
+(def main Int# (cast 1 Any))

@@ -1,5 +1,5 @@
-use crate::object::*;
 use crate::TEST_LOCK as LOCK;
+use crate::object::*;
 const N: usize = 1_000_000;
 
 unsafe fn con(tag: u16, fields: &[usize], nptr: u8) -> Obj {

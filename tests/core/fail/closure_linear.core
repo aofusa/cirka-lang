@@ -1,0 +1,8 @@
+; a closure capturing a linear variable is used twice
+(data Handle () :linear (MkHandle Int#))
+(data Int () (I# Int#))
+(def close (-> 1 Handle Int#) (lam ((h 1 Handle)) (case h (s 1 Handle) Int# ((MkHandle fd) fd))))
+(def bad (-> 1 Handle Int#) (lam ((h 1 Handle))
+  (let! (f (-> Unit# Int#) (lam ((u Unit#)) (close h)))
+    (prim add (f unit) (f unit)))))
+(def main Int# 0)

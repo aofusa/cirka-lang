@@ -1,0 +1,4 @@
+; constructor of another type in a pattern
+(data A () (A1) (A2))
+(data B () (B1))
+(def main Int# (case (con A1 ()) (s A) Int# ((B1) 0)))

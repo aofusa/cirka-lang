@@ -1,0 +1,5 @@
+error[C0001]: unbound variable `x`
+ --> unbound:2:26
+  |
+2 | (def main Int# (prim add x 1))
+  |                          ^ here

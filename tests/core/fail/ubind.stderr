@@ -1,0 +1,1 @@
+error[C0100]: Core Lint: in `bad`: U-Bind: `h` has linear type Handle but is bound with multiplicity ω

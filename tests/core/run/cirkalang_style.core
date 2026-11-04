@@ -1,0 +1,46 @@
+; Core as produced by CirkaLang: strict lets, erased dependent types (a
+; length-indexed vector becomes a list of Any with casts), a linear resource
+; consumed exactly once, and an explicitly lazy value.
+(data Vec () (VNil) (VCons Any Vec))
+(data Nat () (Z) (S Nat))
+(data Handle () :linear (MkHandle Int#))
+(data Lazy (a) (Delay (-> Unit# a)))
+(data Int () (I# Int#))
+(extern cirka_write_i64 (Int#) Unit#)
+(extern cirka_write_char (Int#) Unit#)
+
+; replicate : (n : Nat) -> a -> Vec n a, with `a` erased to Any
+(def replicate (-> Nat Any Vec)
+  (lam ((n Nat) (x Any))
+    (case n (s Nat) Vec
+      ((Z) (con VNil ()))
+      ((S m) (let! (rest Vec (replicate m x)) (con VCons () x rest))))))
+
+(def vlen (-> Vec Int#)
+  (lam ((v Vec))
+    (case v (s Vec) Int#
+      ((VNil) 0)
+      ((VCons x rest) (prim add 1 (vlen rest))))))
+
+; close : Handle %1 -> Int#   (consumes the handle)
+(def close (-> 1 Handle Int#)
+  (lam ((h 1 Handle))
+    (case h (s 1 Handle) Int#
+      ((MkHandle fd) fd))))
+
+(def force (forall (a) (-> (Lazy a) a))
+  (tlam (a) (lam ((l (Lazy a)))
+    (case l (s (Lazy a)) a ((Delay f) (f unit))))))
+
+(def main Int#
+  (let! (three Nat (con S () (con S () (con S () (con Z ())))))
+    (let! (v Vec (replicate three (cast (con Z ()) Any)))
+      (let! (h 1 Handle (con MkHandle () 7))
+        (let! (fd Int# (close h))
+          (let! (lz (Lazy Int) (con Delay (Int) (lam ((u Unit#)) (con I# () (prim mul fd 6)))))
+            (let! (a Unit# (extern cirka_write_i64 (vlen v)))
+              (let! (b Unit# (extern cirka_write_char 32))
+                (let! (c Unit# (extern cirka_write_i64
+                                 (case ((@ force Int) lz) (r Int) Int# ((I# k) k))))
+                  (let! (d Unit# (extern cirka_write_char 10))
+                    0))))))))))
