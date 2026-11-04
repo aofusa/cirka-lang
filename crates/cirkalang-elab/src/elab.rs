@@ -201,6 +201,13 @@ impl<'r> Elab<'r> {
         Term::InsertedMeta(m, Rc::new(cx.bound.clone()))
     }
 
+    fn fresh_meta_masked(&self, mask: &[bool], span: Span) -> Term {
+        let m = self.metas.fresh();
+        self.meta_spans.borrow_mut().push(span);
+        self.meta_reported.borrow_mut().push(false);
+        Term::InsertedMeta(m, Rc::new(mask.to_vec()))
+    }
+
     fn check_fuel(&self, span: Span) {
         if self.out_of_fuel.get() && self.fuel_span.get().is_none() {
             self.fuel_span.set(Some(span));
@@ -367,7 +374,7 @@ impl<'r> Elab<'r> {
                         format!("linear variable `{}` is captured by {what}", cx.names[l]),
                     )
                     .with_note(format!(
-                        "{what} may be used many times, so `{}` could be used more than once",
+                        "it may be evaluated more than once, so `{}` could be used more than once",
                         cx.names[l]
                     ))
                     .with_help("use the closure linearly, or pass the value as an argument"),
@@ -468,6 +475,61 @@ impl<'r> Elab<'r> {
             },
             v @ Val::Neutral(Head::Var(_), _) => self.univ_of(cx, &v) == Univ::Type,
             _ => true,
+        }
+    }
+
+    /// Values of this type cannot contain linear resources (spec §4.4):
+    /// primitive scalars and strings, and `Type` data built only from them.
+    fn resource_free(&self, cx: &Cxt, ty: &Val) -> bool {
+        self.resource_free_go(cx.lvl(), ty, &mut Vec::new())
+    }
+
+    fn resource_free_go(&self, lvl: u32, ty: &Val, visiting: &mut Vec<GName>) -> bool {
+        match self.whnf(ty) {
+            Val::Neutral(Head::Global(g), sp) if sp.is_empty() => matches!(
+                self.prog.prim_of(g),
+                Some(Prim::Int | Prim::UInt | Prim::Float | Prim::Char | Prim::String)
+            ),
+            Val::Data(d, args) => {
+                if visiting.contains(&d) {
+                    return true;
+                }
+                let Global::Data {
+                    univ: Univ::Type,
+                    cons,
+                    nparams,
+                    ..
+                } = self.prog.get(d).clone()
+                else {
+                    return false;
+                };
+                visiting.push(d);
+                let mut ok = true;
+                'cons: for c in cons {
+                    let Some(cty) = self.prog.type_of(c) else {
+                        continue;
+                    };
+                    let mut v = self.ev().eval(&Vec::new(), cty);
+                    for (a, _) in args.iter().take(nparams) {
+                        match self.whnf(&v) {
+                            Val::Pi(_, _, _, _, clo) => v = self.ev().inst(&clo, a.clone()),
+                            _ => break,
+                        }
+                    }
+                    let mut l = lvl;
+                    while let Val::Pi(_, m, _, a, clo) = self.whnf(&v) {
+                        if m != Mult::Zero && !self.resource_free_go(l, &a, visiting) {
+                            ok = false;
+                            break 'cons;
+                        }
+                        v = self.ev().inst(&clo, Val::var(l));
+                        l += 1;
+                    }
+                }
+                visiting.pop();
+                ok
+            }
+            _ => false,
         }
     }
 
@@ -988,9 +1050,43 @@ impl<'r> Elab<'r> {
             let (t2, ty2) = self.insert_implicits(cx, t, ty, span);
             t = t2;
             ty = ty2;
+            // A value of unknown type that is applied is a function:
+            // refine `?m` to `(x : ?A) -> ?B x`.
+            if let Val::Neutral(Head::Meta(_), sp_) = self.whnf(&ty) {
+                // The new metas may only depend on the variables the
+                // applied meta can see (its spine), or solving it escapes.
+                let mut mask = vec![false; cx.bound.len()];
+                for e in &sp_ {
+                    if let Elim::App(v, _) = e
+                        && let Val::Neutral(Head::Var(l), es) = self.whnf(v)
+                        && es.is_empty()
+                        && (l as usize) < mask.len()
+                    {
+                        mask[l as usize] = cx.bound[l as usize];
+                    }
+                }
+                let dom = self.fresh_meta_masked(&mask, span);
+                let dv = self.eval(cx, &dom);
+                let mut cx2 = cx.clone();
+                self.push(&mut cx2, "x", Mult::Many, &dv, None, span, None);
+                // Non-dependent: the codomain does not mention `x`.
+                mask.push(false);
+                let cod = self.fresh_meta_masked(&mask, span);
+                let pi = Term::Pi(
+                    "x".into(),
+                    Mult::Many,
+                    Icit::Expl,
+                    Rc::new(dom),
+                    Rc::new(cod),
+                );
+                let pv = self.eval(cx, &pi);
+                if self.ev().unify(cx.lvl(), &ty, &pv).is_ok() {
+                    ty = pv;
+                }
+            }
             match self.whnf(&ty) {
                 Val::Pi(_, m, Icit::Expl, dom, c) => {
-                    let m = if is_con && m == Mult::Many {
+                    let m = if m == Mult::Many && (is_con || self.resource_free(cx, &dom)) {
                         Mult::One
                     } else {
                         m
@@ -1071,14 +1167,20 @@ impl<'r> Elab<'r> {
         expected: Option<&Val>,
         rig: Mult,
     ) -> (Term, Val) {
+        // The whole `let` is checked as a scope used `rig` times, so the
+        // usage of its own binders is counted relative to one evaluation of
+        // the `let` (a `let 1` under an ω argument is still fine).
+        let outer_saved = self.enter_scope(cx);
+        let outer_rig = rig;
+        let rig = if rig == Mult::Zero {
+            Mult::Zero
+        } else {
+            Mult::One
+        };
         let mut binds = Vec::new();
         for b in bs {
             let saved = self.enter_scope(cx);
-            let inner = if rig == Mult::Zero {
-                Mult::Zero
-            } else {
-                Mult::One
-            };
+            let inner = rig;
             let (vt, ty) = match &b.ty {
                 Some(t) => {
                     let tt = self.check_type(cx, t);
@@ -1095,12 +1197,14 @@ impl<'r> Elab<'r> {
                 .iter()
                 .enumerate()
                 .any(|(l, u)| u.mult() != Mult::Zero && cx.mults[l] == Mult::One);
+            let rf = self.resource_free(cx, &ty);
             let m = match b.mult {
                 Some(m) => conv_mult(m),
-                None if self.univ_of(cx, &ty) == Univ::LType || uses_linear => Mult::One,
+                None if self.univ_of(cx, &ty) == Univ::LType || (uses_linear && !rf) => Mult::One,
                 None => Mult::Many,
             };
-            self.exit_scope(cx, saved, rig.times(m), "E0303", "an ω let binding");
+            let factor = if m == Mult::Many && rf { Mult::One } else { m };
+            self.exit_scope(cx, saved, rig.times(factor), "E0303", "an ω let binding");
             if rig != Mult::Zero {
                 self.check_ubind(cx, m, &ty, b.span, "let binding");
             }
@@ -1120,6 +1224,13 @@ impl<'r> Elab<'r> {
         for _ in 0..binds.len() {
             self.pop(cx, rig != Mult::Zero);
         }
+        self.exit_scope(
+            cx,
+            outer_saved,
+            outer_rig,
+            "E0303",
+            "a `let` used many times",
+        );
         let mut t = bt;
         for (x, m, a, v) in binds.into_iter().rev() {
             t = Term::Let(x, m, Rc::new(a), Rc::new(v), Rc::new(t));
@@ -1186,13 +1297,29 @@ impl<'r> Elab<'r> {
         let rest_span = span;
         let rest_e = mk(ExprKind::Do(rest.to_vec()), rest_span);
         Some(match s {
-            rast::Stmt::Expr(e) => app(
+            // `e; rest` is `e >>= \_ => rest`, not `e >> rest`: evaluation is
+            // strict, so `rest` must stay under a lambda until `e` has run.
+            rast::Stmt::Expr(e) => {
+                let lam = mk(
+                    ExprKind::Lam(
+                        vec![rast::LamBinder {
+                            name: None,
+                            span: e.span,
+                            mult: None,
+                            ty: None,
+                        }],
+                        Box::new(rest_e),
+                    ),
+                    span,
+                );
                 app(
-                    self.gexpr(self.prog.builtins.then, ">>", e.span)?,
-                    e.clone(),
-                ),
-                rest_e,
-            ),
+                    app(
+                        self.gexpr(self.prog.builtins.bind, ">>=", e.span)?,
+                        e.clone(),
+                    ),
+                    lam,
+                )
+            }
             rast::Stmt::Bind(x, xs, e) => {
                 let lam = mk(
                     ExprKind::Lam(
@@ -1343,7 +1470,12 @@ impl<'r> Elab<'r> {
         } else {
             Mult::Many
         };
-        self.exit_scope(cx, saved, rig.times(m), "E0303", "a shared scrutinee");
+        let factor = if m == Mult::Many && self.resource_free(cx, &sty) {
+            Mult::One
+        } else {
+            m
+        };
+        self.exit_scope(cx, saved, rig.times(factor), "E0303", "a shared scrutinee");
         let val = self.eval(cx, &st);
         let at = self.quote(cx, &sty);
         let l = self.push(cx, "scrut$", m, &sty, Some(val), s.span, None);
@@ -1523,6 +1655,19 @@ impl<'r> Elab<'r> {
         ci: &mut ClauseInfo,
     ) -> Term {
         if rows.is_empty() {
+            // An empty match on a value whose type has no possible
+            // constructor (e.g. `case h of {}` on an empty data type).
+            for &x in &ci.top.clone() {
+                if cx.bound[x as usize] && !cx.shapes.contains_key(&x) && self.absurd(cx, x) {
+                    self.use_var(cx, x, rig, ci.span);
+                    return Term::Case(Rc::new(Case {
+                        scrut: Term::Var(cx.ix(x)),
+                        ret: goal.clone(),
+                        alts: Vec::new(),
+                        default: None,
+                    }));
+                }
+            }
             let ex = self.example(cx, ci);
             self.report(
                 self.error("E1230", ci.span, "patterns are not exhaustive")
@@ -1584,6 +1729,50 @@ impl<'r> Elab<'r> {
             PatKind::Lit(..) => self.split_lit(cx, rows, x, &xty, goal, rig, ci),
             _ => unreachable!("stripped above"),
         }
+    }
+
+    /// Every constructor of the type of `x` is impossible.
+    fn absurd(&self, cx: &Cxt, x: u32) -> bool {
+        let Val::Data(d, args) = self.whnf(&self.ty_val(cx, x)) else {
+            return false;
+        };
+        let Global::Data { cons, nparams, .. } = self.prog.get(d).clone() else {
+            return false;
+        };
+        let params: Vec<Val> = args.iter().take(nparams).map(|a| a.0.clone()).collect();
+        let indices: Vec<Val> = args.iter().skip(nparams).map(|a| a.0.clone()).collect();
+        for c in cons {
+            let mut bcx = cx.clone();
+            let Some(cty) = self.prog.type_of(c) else {
+                return false;
+            };
+            let mut ct = self.ev().eval(&Vec::new(), cty);
+            for p in &params {
+                if let Val::Pi(_, _, _, _, clo) = self.whnf(&ct) {
+                    ct = self.ev().inst(&clo, p.clone());
+                }
+            }
+            while let Val::Pi(fx, fm, _, fa, clo) = self.whnf(&ct) {
+                let l = self.push(&mut bcx, &fx, fm, &fa, None, Span::DUMMY, None);
+                ct = self.ev().inst(&clo, Val::var(l));
+            }
+            let Val::Data(_, rargs) = self.whnf(&ct) else {
+                return false;
+            };
+            let pairs: Vec<(Term, Term)> = rargs
+                .iter()
+                .skip(nparams)
+                .zip(&indices)
+                .map(|(a, b)| (self.quote(&bcx, &a.0), self.quote(&bcx, b)))
+                .collect();
+            if !matches!(
+                self.match_unify(&mut bcx, pairs, &mut Vec::new()),
+                Unif::Absurd
+            ) {
+                return false;
+            }
+        }
+        true
     }
 
     /// Weakens `goal` (in the context of `base` variables) to `cx`.

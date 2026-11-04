@@ -2,7 +2,9 @@
 
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: cirka <build|run|check> [options] FILE (.cirka / .core)";
+const USAGE: &str =
+    "usage: cirka <build|run|check> [options] FILE.cirka | DIR (with cirka.toml) | FILE.core
+  --dump=rn,tt also writes the resolved program and the elaborated TT";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -10,7 +12,5 @@ fn main() -> ExitCode {
         println!("CirkaLang v{}", env!("CARGO_PKG_VERSION"));
         return ExitCode::SUCCESS;
     }
-    // The CirkaLang frontend is added by later tickets (FEAT-0200..); until
-    // then only `.core` input is accepted.
-    cirka_driver::cli::main("cirka", USAGE, &|_, _, _| None)
+    cirka_driver::cli::main("cirka", USAGE, &cirka::frontend)
 }

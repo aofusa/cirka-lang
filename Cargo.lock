@@ -52,6 +52,7 @@ name = "cirka"
 version = "0.0.1-dev"
 dependencies = [
  "cirka-bindgen",
+ "cirka-core",
  "cirka-diagnostics",
  "cirka-driver",
  "cirkalang-check",
@@ -100,6 +101,7 @@ dependencies = [
 name = "cirka-integration"
 version = "0.0.1-dev"
 dependencies = [
+ "cirka",
  "cirka-codegen-llvm",
  "cirka-core",
  "cirka-diagnostics",

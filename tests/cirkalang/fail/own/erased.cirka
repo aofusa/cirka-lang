@@ -1,0 +1,7 @@
+module Main
+
+bad : (0 n : Int) -> Int
+bad n = n + 1
+
+main : IO ()
+main = pure ()

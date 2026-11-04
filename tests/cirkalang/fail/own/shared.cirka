@@ -1,0 +1,7 @@
+module Main
+
+shared : Unique Int -> Int
+shared u = freeze u
+
+main : IO ()
+main = pure ()

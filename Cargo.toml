@@ -40,6 +40,7 @@ cirkalang-resolve = { path = "crates/cirkalang-resolve" }
 cirkalang-elab = { path = "crates/cirkalang-elab" }
 cirkalang-check = { path = "crates/cirkalang-check" }
 cirkalang-lower = { path = "crates/cirkalang-lower" }
+cirka = { path = "crates/cirka" }
 
 # The runtime is a no_std staticlib; it needs panic=abort outside of tests
 # (cargo always uses unwinding for the test harness itself).

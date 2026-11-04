@@ -1,0 +1,10 @@
+module Main
+
+check : Int -> Int
+check n = if n > 3 then panic "too big" else n
+
+main : IO ()
+main = do
+  printInt (check 1)
+  printInt (check 5)
+  printInt (check 2)

@@ -1,0 +1,7 @@
+error[E0301]: parameter of linear type `Unique Int` is bound with multiplicity ω
+ --> tests/cirkalang/fail/own/shared.cirka:4:8
+  |
+4 | shared u = freeze u
+  |        ^
+  = note: values of an LType may be used only once
+  = help: bind it with multiplicity 1, e.g. `(1 x : A)`, or make it shareable with `freeze`

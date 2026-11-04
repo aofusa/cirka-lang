@@ -59,6 +59,9 @@ pub struct Options {
     pub opt_level: u8,
     pub runtime: RuntimeKind,
     pub dumps: Vec<Stage>,
+    /// Dumps of frontend stages (e.g. `rn`, `tt`), checked by the frontend;
+    /// `all` requests every stage.
+    pub frontend_dumps: Vec<String>,
     /// Directory for intermediate files (default `_build/<name>`).
     pub build_dir: PathBuf,
     pub link_args: Vec<String>,
@@ -70,6 +73,7 @@ impl Options {
             opt_level: 2,
             runtime: RuntimeKind::Release,
             dumps: Vec::new(),
+            frontend_dumps: Vec::new(),
             build_dir: PathBuf::from("_build").join(name),
             link_args: Vec::new(),
         }
@@ -92,6 +96,21 @@ fn dump(opts: &Options, stage: Stage, name: &str, text: &str) -> Result<(), Vec<
     }
     let p = opts.build_dir.join(format!("{name}.{}", stage.ext()));
     write_file(&p, text)
+}
+
+/// Writes the dump of a frontend stage to `<build_dir>/<name>.<ext>` when
+/// it was requested with `--dump=<stage>` (or `--dump=all`).
+pub fn dump_frontend(
+    opts: &Options,
+    stage: &str,
+    name: &str,
+    ext: &str,
+    text: &str,
+) -> Result<(), Vec<Diagnostic>> {
+    if !opts.frontend_dumps.iter().any(|s| s == stage || s == "all") {
+        return Ok(());
+    }
+    write_file(&opts.build_dir.join(format!("{name}.{ext}")), text)
 }
 
 fn write_file(p: &Path, text: &str) -> Result<(), Vec<Diagnostic>> {

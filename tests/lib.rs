@@ -25,6 +25,23 @@ pub fn check_native(
     reference: &cirka_mir::interp::RunResult,
     interp_ok: bool,
 ) -> Outcome {
+    check_native_with(cfg, c, suite, m, stdin, reference, interp_ok, true)
+}
+
+/// [`check_native`]; with `leak_check` off (a program ending by `panic` or
+/// `exit`, which do not unwind) live objects and allocation counts are not
+/// checked.
+#[allow(clippy::too_many_arguments)]
+pub fn check_native_with(
+    cfg: &cirka_driver::Config,
+    c: &Case,
+    suite: &str,
+    m: &cirka_mir::Module,
+    stdin: &[u8],
+    reference: &cirka_mir::interp::RunResult,
+    interp_ok: bool,
+    leak_check: bool,
+) -> Outcome {
     let work = cirka_testkit::work_dir(suite, &c.name);
     for (rt, name) in [
         (cirka_driver::native::RuntimeKind::Debug, "debug"),
@@ -64,6 +81,9 @@ pub fn check_native(
                 "[{name}] exit code {} (interpreter: {})\n{}",
                 out.code, reference.exit_code, out.stderr
             ));
+        }
+        if !leak_check {
+            continue;
         }
         if out.stderr.contains("objects leaked") || out.stderr.contains("debug runtime") {
             return Outcome::Fail(format!("[{name}] runtime report:\n{}", out.stderr));

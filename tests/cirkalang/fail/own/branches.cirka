@@ -1,0 +1,15 @@
+module Main
+
+data Token : LType where
+  MkToken : (1 h : Unique Int) -> Token
+
+data Handle : LType where
+
+close : (1 h : Handle) -> Int
+close h = case h of {}
+
+use : (1 h : Handle) -> Bool -> Int
+use h b = if b then close h else 0
+
+main : IO ()
+main = pure ()

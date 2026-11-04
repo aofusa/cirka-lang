@@ -1,0 +1,8 @@
+error[E0306]: linear variable `h` is consumed in some branches but not in others
+  --> tests/cirkalang/fail/own/branches.cirka:12:11
+   |
+12 | use h b = if b then close h else 0
+   |     - bound here
+   |           ^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: its type `Handle` cannot be dropped implicitly
+   = help: consume it in every branch

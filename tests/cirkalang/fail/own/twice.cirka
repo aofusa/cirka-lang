@@ -1,0 +1,7 @@
+module Main
+
+twice : (1 u : Unique Int) -> Int
+twice u = freeze u + freeze u
+
+main : IO ()
+main = pure ()

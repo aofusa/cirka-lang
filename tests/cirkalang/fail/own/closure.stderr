@@ -1,0 +1,7 @@
+error[E0305]: linear variable `u` is captured by a closure used many times
+ --> tests/cirkalang/fail/own/closure.cirka:7:39
+  |
+7 | leak u = applyTwice (\x => x + freeze u)
+  |                                       ^
+  = note: it may be evaluated more than once, so `u` could be used more than once
+  = help: use the closure linearly, or pass the value as an argument

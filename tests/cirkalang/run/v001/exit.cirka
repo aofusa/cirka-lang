@@ -1,0 +1,10 @@
+module Main
+
+stop : IO ()
+stop = exit 3
+
+main : IO ()
+main = do
+  putStrLn "before"
+  stop
+  putStrLn "after"

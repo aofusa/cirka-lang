@@ -1,0 +1,7 @@
+error[E1200]: type mismatch
+ --> tests/cirkalang/fail/type/vect_length.cirka:8:7
+  |
+8 | two = VCons 1 VNil
+  |       ^^^^^^^^^^^^
+  = note: expected `Vect (S (S Z)) Int`
+  = note:    found `Vect (S Z) Int`

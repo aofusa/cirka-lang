@@ -1,0 +1,11 @@
+module Main
+
+data Vect : (0 n : Nat) -> (a : Type) -> Type where
+  VNil : Vect Z a
+  VCons : a -> Vect n a -> Vect (S n) a
+
+two : Vect 2 Int
+two = VCons 1 VNil
+
+main : IO ()
+main = pure ()

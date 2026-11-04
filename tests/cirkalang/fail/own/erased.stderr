@@ -1,0 +1,7 @@
+error[E0304]: erased variable `n` is used at runtime
+ --> tests/cirkalang/fail/own/erased.cirka:4:9
+  |
+4 | bad n = n + 1
+  |         ^
+  = note: variables of multiplicity 0 do not exist at runtime
+  = help: give the binder multiplicity ω (the default) or 1

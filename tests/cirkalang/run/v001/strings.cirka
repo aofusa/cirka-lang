@@ -1,0 +1,24 @@
+module Main
+
+greet : String -> String
+greet "world" = "Hello, world!"
+greet name = "Hi, " ++ name
+
+classify : Char -> String
+classify 'a' = "letter a"
+classify c = "other " ++ showChar c
+
+main : IO ()
+main = do
+  putStrLn (greet "world")
+  putStrLn (greet "CirkaLang")
+  putStrLn (showInt 0 ++ " " ++ showInt (-1234567) ++ " " ++ showInt 9000000000)
+  putStrLn (showFloat 1.5 ++ " " ++ showFloat (sqrt 16.0))
+  putStrLn (classify 'a')
+  putStrLn (classify 'あ')
+  printInt (strLength "héllo")
+  printInt (if strEq "abc" "abc" then 1 else 0)
+  putChar 'λ'
+  putChar '\n'
+  putStr "no newline"
+  putStrLn ""

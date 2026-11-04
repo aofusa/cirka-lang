@@ -320,3 +320,21 @@ fn zonk_reduces_applied_metas() {
         "foldl : (b -> a -> b) -> b -> List a -> b\nfoldl f z Nil = z\nfoldl f z (x :: xs) = foldl f (f z x) xs\nlength : List a -> Int\nlength xs = foldl (\\n, _ => n + 1) 0 xs\nmain : IO ()\nmain = pure ()\n",
     );
 }
+
+#[test]
+fn resource_free_arguments_and_empty_matches() {
+    // `freeze u` is an Int: passing it to the ω arguments of `+` uses `u`
+    // once (ADR-030).
+    ok(
+        "f : (1 u : Unique Int) -> Int\nf u = freeze u + 1\ng : (1 u : Unique Int) -> Int\ng u = let n = freeze u in n + n\nmain : IO ()\nmain = pure ()\n",
+    );
+    // ... but a closure is not resource-free.
+    fails(
+        "k : (1 u : Unique Int) -> Int -> Int\nk u = \\x => x + freeze u\nh : (Int -> Int) -> Int\nh f = f (f 0)\nbad : (1 u : Unique Int) -> Int\nbad u = h (k u)\nmain : IO ()\nmain = pure ()\n",
+        "E0303",
+    );
+    // An empty match on an empty type, and on an impossible index.
+    ok(
+        "data Void : LType where\nabsurd : (1 v : Void) -> a\nabsurd v = case v of {}\nmain : IO ()\nmain = pure ()\n",
+    );
+}

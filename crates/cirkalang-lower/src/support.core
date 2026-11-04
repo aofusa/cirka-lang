@@ -37,11 +37,12 @@
         (0 0)
          (_ (cirka$bytes_eq_loop a b 0 n))))))
 
-; Copies src[0..n] to dst[off..off+n].
-(def cirka$bytes_copy (-> Bytes Bytes Int# Int# Int# Unit#)
+; Copies src[0..n] to dst[off..off+n] and returns dst. The buffer is
+; threaded through the result so it stays unique for `bytes_set`.
+(def cirka$bytes_copy (-> Bytes Bytes Int# Int# Int# Bytes)
   (lam ((dst Bytes) (src Bytes) (off Int#) (i Int#) (n Int#))
-    (case (prim lt i n) (c Int#) Unit#
-      (0 unit)
+    (case (prim lt i n) (c Int#) Bytes
+      (0 dst)
        (_ (let! (u Unit# (prim bytes_set dst (prim add off i) (prim bytes_get src i)))
             (cirka$bytes_copy dst src off (prim add i 1) n))))))
 
@@ -50,9 +51,8 @@
     (let! (la Int# (prim bytes_len a))
       (let! (lb Int# (prim bytes_len b))
         (let! (r Bytes (prim bytes_new (prim add la lb)))
-          (let! (u1 Unit# (cirka$bytes_copy r a 0 0 la))
-            (let! (u2 Unit# (cirka$bytes_copy r b la 0 lb))
-              r)))))))
+          (let! (r1 Bytes (cirka$bytes_copy r a 0 0 la))
+            (cirka$bytes_copy r1 b la 0 lb)))))))
 
 (def cirka$ndigits (-> Int# Int# Int#)
   (lam ((v Int#) (acc Int#))
@@ -60,10 +60,10 @@
       (0 acc)
        (_ (cirka$ndigits (prim quot v 10) (prim add acc 1))))))
 
-(def cirka$fill_digits (-> Bytes Int# Int# Unit#)
+(def cirka$fill_digits (-> Bytes Int# Int# Bytes)
   (lam ((r Bytes) (i Int#) (v Int#))
-    (case v (c Int#) Unit#
-      (0 unit)
+    (case v (c Int#) Bytes
+      (0 r)
        (_ (let! (d Int# (prim rem v 10))
             (let! (d2 Int# (case (prim lt d 0) (e Int#) Int# (0 d) (_ (prim neg d))))
               (let! (u Unit# (prim bytes_set r i (prim add 48 d2)))
@@ -75,10 +75,10 @@
       (0 "0")
        (_ (let! (neg Int# (prim lt n 0))
             (let! (len Int# (prim add (cirka$ndigits n 0) neg))
-              (let! (r Bytes (prim bytes_new len))
-                (let! (u Unit# (cirka$fill_digits r (prim sub len 1) n))
-                  (let! (u2 Unit# (case neg (e Int#) Unit# (0 unit) (_ (prim bytes_set r 0 45))))
-                    r)))))))))
+              (let! (r Bytes (cirka$fill_digits (prim bytes_new len) (prim sub len 1) n))
+                (case neg (e Int#) Bytes
+                  (0 r)
+                   (_ (let! (u Unit# (prim bytes_set r 0 45)) r))))))))))
 
 (def cirka$char_to_bytes (-> Int# Bytes)
   (lam ((c Int#))

@@ -275,6 +275,9 @@ impl Report {
     }
 }
 
+/// Stack size of the threads that run compilers (tests and CLIs).
+pub const COMPILER_STACK: usize = 256 << 20;
+
 /// Runs `f` for every case on `jobs()` threads. An optional filter can be
 /// given with `CIRKA_TEST_FILTER=<substring>`.
 pub fn run_cases<F>(cases: &[Case], f: F) -> Report
@@ -291,25 +294,30 @@ where
     let n = jobs().min(cases.len().max(1));
     std::thread::scope(|s| {
         for _ in 0..n {
-            s.spawn(|| {
-                loop {
-                    let i = next.fetch_add(1, Ordering::SeqCst);
-                    if i >= cases.len() {
-                        break;
+            // Compilers recurse over deeply nested terms; use large stacks
+            // (reserved lazily) like the CLIs do.
+            std::thread::Builder::new()
+                .stack_size(COMPILER_STACK)
+                .spawn_scoped(s, || {
+                    loop {
+                        let i = next.fetch_add(1, Ordering::SeqCst);
+                        if i >= cases.len() {
+                            break;
+                        }
+                        let c = cases[i];
+                        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(c)))
+                            .unwrap_or_else(|e| {
+                                let msg = e
+                                    .downcast_ref::<String>()
+                                    .cloned()
+                                    .or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string()))
+                                    .unwrap_or_default();
+                                Outcome::Fail(format!("panicked: {msg}"))
+                            });
+                        results.lock().unwrap().push((i, r));
                     }
-                    let c = cases[i];
-                    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(c)))
-                        .unwrap_or_else(|e| {
-                            let msg = e
-                                .downcast_ref::<String>()
-                                .cloned()
-                                .or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string()))
-                                .unwrap_or_default();
-                            Outcome::Fail(format!("panicked: {msg}"))
-                        });
-                    results.lock().unwrap().push((i, r));
-                }
-            });
+                })
+                .expect("cannot spawn a test thread");
         }
     });
     let mut results = results.into_inner().unwrap();

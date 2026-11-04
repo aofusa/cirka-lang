@@ -1,0 +1,2 @@
+error[E1107]: module `Main` has no `main`
+  = help: define `main : IO ()`

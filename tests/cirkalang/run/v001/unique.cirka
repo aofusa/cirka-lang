@@ -1,0 +1,22 @@
+module Main
+
+-- Linear values: consumed exactly once (or dropped implicitly).
+data Box : LType where
+  MkBox : (1 u : Unique Int) -> Box
+
+open : (1 b : Box) -> Int
+open (MkBox u) = freeze u
+
+swap : (1 p : (a, b)) -> (b, a)
+swap (x, y) = (y, x)
+
+consume : (1 u : Unique Int) -> Bool -> Int
+consume u b = if b then freeze u + 1 else 0
+
+main : IO ()
+main = do
+  printInt (open (MkBox (unique 41)) + 1)
+  printInt (fst (swap (1, 2)))
+  printInt (consume (unique 1) True + consume (unique 2) False)
+  let 1 b = MkBox (unique 7)
+  printInt (open b)

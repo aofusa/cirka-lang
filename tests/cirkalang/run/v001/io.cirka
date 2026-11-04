@@ -1,0 +1,14 @@
+module Main
+
+readN : Int -> IO Int
+readN 0 = pure 0
+readN n = do
+  x <- readInt
+  rest <- readN (n - 1)
+  pure (x + rest)
+
+main : IO ()
+main = do
+  n <- readInt
+  s <- readN n
+  printInt s

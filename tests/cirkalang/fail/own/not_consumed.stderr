@@ -1,0 +1,7 @@
+error[E0302]: linear value `t` is not consumed
+ --> tests/cirkalang/fail/own/not_consumed.cirka:6:8
+  |
+6 | forget t = 0
+  |        ^
+  = note: its type `Token` cannot be dropped implicitly
+  = help: consume it by pattern matching or by passing it to a function

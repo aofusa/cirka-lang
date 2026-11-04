@@ -1,0 +1,21 @@
+module Main
+
+twice : (a -> a) -> a -> a
+twice f x = f (f x)
+
+adder : Int -> Int -> Int
+adder n = \x => x + n
+
+compose : List (Int -> Int) -> Int -> Int
+compose fs x = foldr (\f, acc => f acc) x fs
+
+main : IO ()
+main = do
+  let xs = range 1 20
+  let ys = map (\x => x * x) xs
+  printInt (sum ys)
+  printInt (length (filter (\x => x % 3 == 0) xs))
+  printInt (twice (adder 10) 1)
+  printInt (compose (map adder [1, 2, 3]) 100)
+  printInt (sum (reverse (map (\x => x - 1) [5, 6, 7])))
+  printInt (foldl (\acc, x => acc * 10 + x) 0 [1, 2, 3, 4])

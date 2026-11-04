@@ -1,0 +1,8 @@
+module Main
+
+g : List Int -> Maybe Int -> Int
+g Nil Nothing = 0
+g (x :: _) (Just y) = x + y
+
+main : IO ()
+main = pure ()

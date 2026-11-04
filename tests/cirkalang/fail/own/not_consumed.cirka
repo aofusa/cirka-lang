@@ -1,0 +1,9 @@
+module Main
+
+data Token : LType where
+
+forget : (1 t : Token) -> Int
+forget t = 0
+
+main : IO ()
+main = pure ()

@@ -15,4 +15,5 @@ cirkalang-elab.workspace = true
 cirkalang-check.workspace = true
 cirkalang-lower.workspace = true
 cirka-driver.workspace = true
+cirka-core.workspace = true
 cirka-bindgen.workspace = true

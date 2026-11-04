@@ -1,0 +1,17 @@
+module Main
+
+fib : Int -> Int
+fib 0 = 0
+fib 1 = 1
+fib n = fib (n - 1) + fib (n - 2)
+
+fibNat : Nat -> Nat
+fibNat Z = Z
+fibNat (S Z) = S Z
+fibNat (S (S n)) = plus (fibNat (S n)) (fibNat n)
+
+main : IO ()
+main = do
+  printInt (fib 25)
+  printInt (natToInt (fibNat 15))
+  mapM_ (\n => printInt (fib n)) (range 0 10)

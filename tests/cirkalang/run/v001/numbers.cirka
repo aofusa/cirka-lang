@@ -1,0 +1,21 @@
+module Main
+
+ubig : UInt
+ubig = 18446744073709551615
+
+main : IO ()
+main = do
+  printInt (17 / 5)
+  printInt (17 % 5)
+  printInt ((-17) / 5)
+  printInt (primAndInt 12 10 + primOrInt 12 10 + primXorInt 12 10)
+  printInt (primShlInt 1 10)
+  printInt (primUIntToInt (primAddUInt ubig 2))
+  printInt (if primLtUInt 1 ubig then 1 else 0)
+  printFloat (1.5 *. 4.0 -. 0.5)
+  printFloat (toFloat 7 /. 2.0)
+  printInt (truncate 3.99)
+  printInt (if 2.5 <. 3.0 then 1 else 0)
+  printInt (ord 'A' + ord (chr 66))
+  printInt (abs (-5) + min 3 4 + max 3 4)
+  printInt (if not (1 == 2) && (1 /= 2 || False) then 1 else 0)

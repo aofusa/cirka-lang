@@ -21,6 +21,7 @@ cirka-diagnostics.workspace = true
 cirka-mir.workspace = true
 cirka-driver.workspace = true
 cirka-codegen-llvm.workspace = true
+cirka.workspace = true
 
 [[test]]
 name = "workspace"

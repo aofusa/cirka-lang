@@ -1,0 +1,38 @@
+module Main
+
+data Vect : (0 n : Nat) -> (a : Type) -> Type where
+  VNil : Vect Z a
+  VCons : a -> Vect n a -> Vect (S n) a
+
+vappend : Vect n a -> Vect m a -> Vect (plus n m) a
+vappend VNil ys = ys
+vappend (VCons x xs) ys = VCons x (vappend xs ys)
+
+vhead : Vect (S n) a -> a
+vhead (VCons x _) = x
+
+vmap : (a -> b) -> Vect n a -> Vect n b
+vmap f VNil = VNil
+vmap f (VCons x xs) = VCons (f x) (vmap f xs)
+
+vzip : Vect n a -> Vect n b -> Vect n (a, b)
+vzip VNil VNil = VNil
+vzip (VCons x xs) (VCons y ys) = VCons (x, y) (vzip xs ys)
+
+vsum : Vect n Int -> Int
+vsum VNil = 0
+vsum (VCons x xs) = x + vsum xs
+
+replicate : (n : Nat) -> a -> Vect n a
+replicate Z _ = VNil
+replicate (S k) x = VCons x (replicate k x)
+
+pairSum : (Int, Int) -> Int
+pairSum (a, b) = a * b
+
+main : IO ()
+main = do
+  let v = vappend (replicate 3 2) (VCons 10 (VCons 20 VNil))
+  printInt (vsum v)
+  printInt (vhead (vmap (\x => x + 1) v))
+  printInt (vsum (vmap pairSum (vzip v v)))

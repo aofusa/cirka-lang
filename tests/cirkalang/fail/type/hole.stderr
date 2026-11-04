@@ -1,0 +1,7 @@
+error[E1211]: hole `?todo`
+ --> tests/cirkalang/fail/type/hole.cirka:4:7
+  |
+4 | f n = ?todo
+  |       ^^^^^
+  = note: goal: Pair Int Bool
+  = note:   ω n : Int

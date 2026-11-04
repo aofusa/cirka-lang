@@ -1,0 +1,35 @@
+module Main
+
+-- Tail recursion over a long range runs in constant stack.
+loop : Int -> Int -> Int
+loop 0 acc = acc
+loop n acc = loop (n - 1) (acc + n)
+
+isEven : Int -> Bool
+isEven 0 = True
+isEven n = isOdd (n - 1)
+
+isOdd : Int -> Bool
+isOdd 0 = False
+isOdd n = isEven (n - 1)
+
+ackermann : Int -> Int -> Int
+ackermann 0 n = n + 1
+ackermann m 0 = ackermann (m - 1) 1
+ackermann m n = ackermann (m - 1) (ackermann m (n - 1))
+
+hanoi : Int -> Int
+hanoi 0 = 0
+hanoi n = 2 * hanoi (n - 1) + 1
+
+boolInt : Bool -> Int
+boolInt True = 1
+boolInt False = 0
+
+main : IO ()
+main = do
+  printInt (loop 1000000 0)
+  printInt (boolInt (isEven 1001))
+  printInt (ackermann 2 3)
+  printInt (hanoi 20)
+  printInt (length (range 1 100000))

@@ -1,0 +1,10 @@
+module Main
+
+applyTwice : (Int -> Int) -> Int
+applyTwice f = f (f 0)
+
+leak : (1 u : Unique Int) -> Int
+leak u = applyTwice (\x => x + freeze u)
+
+main : IO ()
+main = pure ()

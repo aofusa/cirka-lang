@@ -1,0 +1,7 @@
+module Main
+
+f : Int -> Bool
+f x = x + 1
+
+main : IO ()
+main = pure ()

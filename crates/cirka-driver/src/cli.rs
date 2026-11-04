@@ -6,7 +6,7 @@
 //! <tool> run [flags] FILE [-- args...]
 //! <tool> check [flags] FILE
 //! flags: -O0|-O1|-O2  --release (= -O2)  --runtime=release|debug
-//!        --dump=core,core-opt,mir,mir-opt,llvm  --build-dir=DIR
+//!        --dump=core,core-opt,mir,mir-opt,llvm (+ frontend stages)  --build-dir=DIR
 //!        --emit=llvm|exe  -l<lib> / -L<dir> (passed to the linker)
 //! ```
 
@@ -20,8 +20,9 @@ use std::process::ExitCode;
 
 /// A frontend turns a source file into Core. It returns `None` when it does
 /// not handle the file's extension.
-pub type Frontend<'a> =
-    &'a dyn Fn(&mut SourceMap, &Path, &Options) -> Option<Result<Program, Vec<Diagnostic>>>;
+pub type Frontend<'a> = &'a (
+        dyn Fn(&mut SourceMap, &Path, &Options) -> Option<Result<Program, Vec<Diagnostic>>> + Sync
+    );
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Command {
@@ -71,11 +72,13 @@ pub fn parse_args(args: &[String]) -> Result<Args, String> {
                 for st in s["--dump=".len()..].split(',') {
                     if st == "all" {
                         opts.dumps.extend(Stage::ALL);
+                        opts.frontend_dumps.push(st.to_string());
                         continue;
                     }
                     match Stage::from_name(st) {
                         Some(x) => opts.dumps.push(x),
-                        None => return Err(format!("unknown dump stage `{st}`")),
+                        // Frontend stages are checked by the frontend.
+                        None => opts.frontend_dumps.push(st.to_string()),
                     }
                 }
             }
@@ -109,8 +112,22 @@ pub fn parse_args(args: &[String]) -> Result<Args, String> {
     })
 }
 
+/// Stack of the compiling thread: the compilers recurse over deeply nested
+/// terms (reserved lazily, so this costs nothing when unused).
+const STACK_SIZE: usize = 256 << 20;
+
 /// Entry point of a CLI: `tool` is the program name used in messages.
 pub fn main(tool: &'static str, usage: &str, frontend: Frontend) -> ExitCode {
+    std::thread::scope(|s| {
+        std::thread::Builder::new()
+            .stack_size(STACK_SIZE)
+            .spawn_scoped(s, || main_inner(tool, usage, frontend))
+            .map(|h| h.join().unwrap_or(ExitCode::from(101)))
+            .unwrap_or_else(|_| main_inner(tool, usage, frontend))
+    })
+}
+
+fn main_inner(tool: &'static str, usage: &str, frontend: Frontend) -> ExitCode {
     cirka_diagnostics::install_ice_hook(tool);
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let args = match parse_args(&argv) {
@@ -133,6 +150,10 @@ pub fn main(tool: &'static str, usage: &str, frontend: Frontend) -> ExitCode {
         .unwrap_or("out")
         .to_string();
     let is_core = args.file.extension().is_some_and(|e| e == "core");
+    if is_core && let Some(st) = args.opts.frontend_dumps.iter().find(|s| *s != "all") {
+        eprintln!("{tool}: unknown dump stage `{st}`\n{usage}");
+        return ExitCode::from(2);
+    }
     let program = if is_core {
         load_core(&mut sm, &args.file)
     } else {
