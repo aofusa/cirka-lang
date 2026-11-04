@@ -5,6 +5,7 @@
 pub mod build;
 pub mod expr;
 pub mod lint;
+pub mod opt;
 pub mod parse;
 pub mod print;
 pub mod sexp;

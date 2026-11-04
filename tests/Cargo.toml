@@ -35,3 +35,7 @@ path = "core.rs"
 [[test]]
 name = "mir"
 path = "mir.rs"
+
+[[test]]
+name = "driver"
+path = "driver.rs"

@@ -15,7 +15,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | 共通基盤 | M0 基盤整備 | 5 / 5 |
 | 共通基盤 | M1 バックエンド基盤 | 7 / 7 |
 | 共通基盤 | M2 Perceus | 3 / 3 |
-| 共通基盤 | M3 共通 Core と Core→MIR | 2 / 4 |
+| 共通基盤 | M3 共通 Core と Core→MIR | 3 / 4 |
 | 共通基盤 | SX 共通基盤の拡張 (各トラックの必要に応じて) | 0 / 15 |
 | aCHC | H1 Haskell 最小フロントエンド | 0 / 6 |
 | aCHC | H2 Haskell 実用化 (スコープ縮小版) | 0 / 10 |
@@ -72,7 +72,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 |---|---|---|---|---|
 | [FEAT-0030](features/FEAT-0030-core-ir.md) | 共通 Core IR と Core Lint | done | P0 | 0005 |
 | [FEAT-0031](features/FEAT-0031-core-to-mir.md) | Core → MIR 変換 | done | P0 | 0030, 0015, 0020 |
-| [FEAT-0032](features/FEAT-0032-driver-common.md) | 共通ドライバ (外部ツール・中間生成物・ダンプ) | todo | P0 | 0014, 0003 |
+| [FEAT-0032](features/FEAT-0032-driver-common.md) | 共通ドライバ (外部ツール・中間生成物・ダンプ) | done | P0 | 0014, 0003 |
 | [FEAT-0033](features/FEAT-0033-core-simplifier.md) | Core 簡約器とインライン | todo | P1 | 0030 |
 
 ### SX 共通基盤の拡張 (各トラックの必要に応じて)

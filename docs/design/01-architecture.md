@@ -152,7 +152,8 @@ contracts = "verify"       # off | check | verify
 
 ## 6. 中間生成物
 
-`_build/<profile>/` 以下に `.ll`、`.o`、ダンプ、SMT のキャッシュ (`_build/verify/`) を出力する。
+`_build/<入力ファイル名>/` (`--build-dir=` で変更可) 以下に `.ll`、`.o`、ダンプ (`<名前>.core` / `.opt.core` / `.mir` / `.opt.mir` / `.ll`)、`run` 用の実行ファイルを出力する。SMT のキャッシュは `_build/verify/`。
+共通部分 (Core Lint 以降・CLI の引数処理) は `cirka-driver` の `pipeline` / `cli` にあり、両 CLI はフロントエンド (ソース → Core) だけを差し替える。`.core` ファイルはどちらの CLI でも直接入力できる (FEAT-0032)。
 全体プログラムコンパイルのため、モジュール単位のキャッシュ (型検査結果) は性能が問題になってから追加する。
 
 ## 7. 版の表示
