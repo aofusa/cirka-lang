@@ -2,14 +2,14 @@
 
 - 状態: todo
 - トラック: CirkaLang
-- マイルストーン: CirkaLang v0.0.6 GUI (Vulkan)・数値計算
+- マイルストーン: CirkaLang v0.0.6 Vulkan compute・数値計算
 - 優先度: P0
 - 依存: FEAT-0251
 - 設計: [11-roadmap.md](../../design/11-roadmap.md)
 
 ## 概要
 
-GUI・FFI 用途の評価とリリース。
+Vulkan compute・FFI 用途の評価とリリース (遠隔 GUI 検証 FEAT-0290 は含めない)。
 
 ## 作業内容
 

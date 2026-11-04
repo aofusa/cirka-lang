@@ -2,7 +2,7 @@
 
 - 状態: todo
 - トラック: CirkaLang
-- マイルストーン: CirkaLang v0.0.6 GUI (Vulkan)・数値計算
+- マイルストーン: CirkaLang v0.0.6 Vulkan compute・数値計算
 - 優先度: P2
 - 依存: FEAT-0250
 - 設計: [09-libraries.md](../../design/09-libraries.md)

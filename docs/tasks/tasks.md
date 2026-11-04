@@ -1,7 +1,7 @@
 # タスク一覧
 
 aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AGENTS.md) §5、
-トラック・マイルストーン・版の対応は [11-roadmap.md](../design/11-roadmap.md) を参照。
+トラック・マイルストーン・版の対応と優先順位は [11-roadmap.md](../design/11-roadmap.md) を参照。
 
 - トラック: **共通基盤** (両試作が共有するバックエンド・ランタイム) / **aCHC** (Haskell 拡張の試作) / **CirkaLang** (プロトタイプ v0.0.x) / **第二段階** (CirkaLang v0.1.0 以降)
 - 状態: `todo` / `in-progress` / `done` / `blocked` / `wontfix`
@@ -16,18 +16,22 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | 共通基盤 | M1 バックエンド基盤 | 0 / 7 |
 | 共通基盤 | M2 Perceus | 0 / 3 |
 | 共通基盤 | M3 共通 Core と Core→MIR | 0 / 4 |
-| 共通基盤 | SX 共通基盤の拡張 (各トラックの必要に応じて) | 0 / 12 |
+| 共通基盤 | SX 共通基盤の拡張 (各トラックの必要に応じて) | 0 / 15 |
 | aCHC | H1 Haskell 最小フロントエンド | 0 / 6 |
 | aCHC | H2 Haskell 実用化 (スコープ縮小版) | 0 / 10 |
 | aCHC | H3 所有権拡張 (.chs) | 0 / 9 |
-| aCHC | H4 FFI 拡張と評価 | 0 / 3 |
+| aCHC | H4 FFI 拡張と評価 | 0 / 2 |
+| aCHC | H5 高度な型システム (CirkaLang v0.0.4 の後) | 0 / 5 |
+| aCHC | H6 依存型と検証 (CirkaLang v0.0.4 の後) | 0 / 5 |
+| aCHC | H7 効果・能力・セッション型 (CirkaLang v0.0.7 の後) | 0 / 5 |
 | CirkaLang | CirkaLang v0.0.1 最小の正格言語・所有権・ネイティブ | 0 / 8 |
 | CirkaLang | CirkaLang v0.0.2 実用 CUI | 0 / 6 |
 | CirkaLang | CirkaLang v0.0.3 借用・リージョン・性能 | 0 / 4 |
 | CirkaLang | CirkaLang v0.0.4 証明と検証 | 0 / 6 |
 | CirkaLang | CirkaLang v0.0.5 並行性・サーバ・syscall | 0 / 4 |
-| CirkaLang | CirkaLang v0.0.6 GUI (Vulkan)・数値計算 | 0 / 4 |
+| CirkaLang | CirkaLang v0.0.6 Vulkan compute・数値計算 | 0 / 4 |
 | CirkaLang | CirkaLang v0.0.7 効果・能力・セッション型 | 0 / 4 |
+| CirkaLang | CX 遠隔環境での GUI 検証 (任意) | 0 / 1 |
 | 第二段階 | P2 第二段階 (CirkaLang v0.1.0 以降) | 0 / 2 |
 
 ## 共通基盤
@@ -87,6 +91,9 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0049](features/FEAT-0049-region-arena.md) | リージョン用アリーナのランタイム | todo | P2 | 0031 |
 | [FEAT-0050](features/FEAT-0050-smt-infra.md) | SMT 連携基盤 (cirka-smt) | todo | P1 | 0005 |
 | [FEAT-0051](features/FEAT-0051-allocator-tuning.md) | アロケータの改善 | todo | P2 | 0043 |
+| [FEAT-0052](features/FEAT-0052-remote-scripts.md) | 遠隔検証スクリプト (scripts/remote.sh) | todo | P2 | 0002 |
+| [FEAT-0053](features/FEAT-0053-target-macos.md) | macOS ターゲットへの移植 | todo | P2 | 0052, 0045 |
+| [FEAT-0054](features/FEAT-0054-target-windows.md) | Windows ターゲットへの移植 | todo | P2 | 0052, 0045 |
 
 
 ## aCHC
@@ -114,7 +121,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0115](features/FEAT-0115-hs-records-modules.md) | レコード構文とモジュールの完成 | todo | P1 | 0110 |
 | [FEAT-0116](features/FEAT-0116-hs-ffi-h2010.md) | Haskell 2010 FFI (foreign import ccall) | todo | P1 | 0113 |
 | [FEAT-0117](features/FEAT-0117-hs-diff-corpus.md) | 差分テスト集 | todo | P1 | 0113, 0003 |
-| [FEAT-0118](features/FEAT-0118-hs-extensions.md) | GHC 拡張 (最小限) | todo | P1 | 0110 |
+| [FEAT-0118](features/FEAT-0118-hs-extensions.md) | GHC 拡張 (初期分) | todo | P1 | 0110 |
 | [FEAT-0119](features/FEAT-0119-hs-compat-measure.md) | 互換性の計測 (GHC testsuite / nofib の一部) | todo | P2 | 0117 |
 
 ### H3 所有権拡張 (.chs)
@@ -136,8 +143,37 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | ID | タイトル | 状態 | 優先度 | 依存 |
 |---|---|---|---|---|
 | [FEAT-0130](features/FEAT-0130-hs-extern-block.md) | extern "C" ブロック (aCHC) | todo | P1 | 0116, 0122, 0047 |
-| [FEAT-0131](features/FEAT-0131-hs-liquid-annotations.md) | Liquid Haskell 互換注釈の検証 (任意) | todo | P2 | 0050, 0105 |
 | [FEAT-0132](features/FEAT-0132-achc-evaluation.md) | aCHC の評価レポート | todo | P0 | 0117, 0125, 0043 |
+
+### H5 高度な型システム (CirkaLang v0.0.4 の後)
+
+| ID | タイトル | 状態 | 優先度 | 依存 |
+|---|---|---|---|---|
+| [FEAT-0140](features/FEAT-0140-hs-gadts.md) | GADTs と存在型 | todo | P1 | 0132, 0235 |
+| [FEAT-0141](features/FEAT-0141-hs-type-families.md) | 型族 (TypeFamilies) | todo | P1 | 0140 |
+| [FEAT-0142](features/FEAT-0142-hs-datakinds-polykinds.md) | DataKinds・PolyKinds・型演算子 | todo | P1 | 0140 |
+| [FEAT-0143](features/FEAT-0143-hs-fundeps.md) | FunctionalDependencies と制約ソルバの改良 | todo | P1 | 0110 |
+| [FEAT-0144](features/FEAT-0144-hs-typelits.md) | 型レベル Nat / Symbol (GHC.TypeLits 互換) | todo | P1 | 0142, 0141 |
+
+### H6 依存型と検証 (CirkaLang v0.0.4 の後)
+
+| ID | タイトル | 状態 | 優先度 | 依存 |
+|---|---|---|---|---|
+| [FEAT-0150](features/FEAT-0150-hs-dependent.md) | 依存量化 (foreach / 必須型引数) とシングルトン | todo | P1 | 0144 |
+| [FEAT-0151](features/FEAT-0151-hs-refinement.md) | 洗練型 (Liquid Haskell 互換注釈 + .chs 構文) | todo | P1 | 0050, 0105, 0235 |
+| [FEAT-0152](features/FEAT-0152-hs-contracts.md) | 契約 (requires / ensures / invariant) | todo | P2 | 0151 |
+| [FEAT-0153](features/FEAT-0153-hs-totality.md) | 全域性・終了性の検査と reflection | todo | P2 | 0151 |
+| [FEAT-0154](features/FEAT-0154-hs-check-elim.md) | 証明による実行時検査の除去 (aCHC) | todo | P2 | 0151, 0234 |
+
+### H7 効果・能力・セッション型 (CirkaLang v0.0.7 の後)
+
+| ID | タイトル | 状態 | 優先度 | 依存 |
+|---|---|---|---|---|
+| [FEAT-0160](features/FEAT-0160-hs-capabilities.md) | ケイパビリティ (Cirka.Capability) | todo | P2 | 0263, 0113 |
+| [FEAT-0161](features/FEAT-0161-hs-effects.md) | 効果システム (Eff es a) | todo | P1 | 0263, 0142, 0143 |
+| [FEAT-0162](features/FEAT-0162-hs-concurrency.md) | aCHC の並行性 (forkIO / MVar) | todo | P2 | 0045, 0113 |
+| [FEAT-0163](features/FEAT-0163-hs-session-types.md) | セッション型 (Cirka.Session) | todo | P2 | 0162, 0122, 0262 |
+| [FEAT-0164](features/FEAT-0164-achc-evaluation-2.md) | aCHC 後期拡張の評価 | todo | P2 | 0150, 0151, 0161 |
 
 
 ## CirkaLang
@@ -195,12 +231,12 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0242](features/FEAT-0242-cl-os-syscall.md) | OS 層 (syscall・シグナル・プロセス) | todo | P1 | 0213 |
 | [FEAT-0243](features/FEAT-0243-cl-release-v005.md) | CirkaLang v0.0.5 リリース | todo | P0 | 0241, 0242 |
 
-### CirkaLang v0.0.6 GUI (Vulkan)・数値計算
+### CirkaLang v0.0.6 Vulkan compute・数値計算
 
 | ID | タイトル | 状態 | 優先度 | 依存 |
 |---|---|---|---|---|
 | [FEAT-0250](features/FEAT-0250-cl-ffi-complete.md) | FFI の完成と bindgen の利用 | todo | P0 | 0243, 0047, 0048 |
-| [FEAT-0251](features/FEAT-0251-cl-vulkan-sample.md) | Vulkan サンプル (GUI) | todo | P1 | 0250 |
+| [FEAT-0251](features/FEAT-0251-cl-vulkan-compute.md) | Vulkan コンピュートシェーダ (Docker / lavapipe) | todo | P0 | 0250 |
 | [FEAT-0252](features/FEAT-0252-cl-math-linalg.md) | 数学・線形代数ラッパー | todo | P2 | 0250 |
 | [FEAT-0253](features/FEAT-0253-cl-release-v006.md) | CirkaLang v0.0.6 リリース | todo | P0 | 0251 |
 
@@ -212,6 +248,12 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0261](features/FEAT-0261-cl-effects.md) | 効果システムの試作 | todo | P1 | 0260 |
 | [FEAT-0262](features/FEAT-0262-cl-session-types.md) | セッション型 | todo | P2 | 0240 |
 | [FEAT-0263](features/FEAT-0263-cl-release-v007.md) | CirkaLang v0.0.7 リリース | todo | P0 | 0261 |
+
+### CX 遠隔環境での GUI 検証 (任意)
+
+| ID | タイトル | 状態 | 優先度 | 依存 |
+|---|---|---|---|---|
+| [FEAT-0290](features/FEAT-0290-cl-remote-gui.md) | 遠隔環境での GUI サンプル (ウィンドウ + 描画) | todo | P2 | 0052, 0053, 0054, 0253 |
 
 
 ## 第二段階
