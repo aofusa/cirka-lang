@@ -1,0 +1,4 @@
+; An incomplete pattern match panics (exit code 1).
+(data T () (A) (B))
+(def f (-> T Int#) (lam ((t T)) (case t (s T) Int# ((A) 0))))
+(def main Int# (f (con B ())))

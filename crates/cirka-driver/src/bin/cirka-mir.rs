@@ -61,15 +61,35 @@ fn main() -> ExitCode {
     };
     let mut sm = SourceMap::new();
     let fid = sm.add(file.clone(), text.clone());
-    let mut m = match cirka_mir::parse(fid, &text) {
+    let parsed = if file.ends_with(".core") {
+        // Common Core input: Lint, lower to MIR, then always run Perceus.
+        perceus = true;
+        cirka_core::parse_program(fid, &text)
+            .map_err(|d| vec![d])
+            .and_then(|p| {
+                let errs = cirka_core::lint::lint_program(&p);
+                if !errs.is_empty() {
+                    return Err(errs);
+                }
+                cirka_mir::lower::lower_program(&p)
+            })
+    } else {
+        cirka_mir::parse(fid, &text).map_err(|d| vec![d])
+    };
+    let mut m = match parsed {
         Ok(m) => m,
-        Err(d) => {
-            eprint!("{}", render(&d, &sm, Style::for_stderr()));
+        Err(ds) => {
+            for d in &ds {
+                eprint!("{}", render(d, &sm, Style::for_stderr()));
+            }
             return ExitCode::from(1);
         }
     };
     if perceus {
         cirka_mir::perceus::run(&mut m);
+    }
+    if std::env::var_os("CIRKA_DUMP_MIR").is_some() {
+        eprint!("{}", cirka_mir::print_module(&m));
     }
     let errs = cirka_mir::verify::verify_module(&m);
     if !errs.is_empty() {

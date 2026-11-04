@@ -4,6 +4,7 @@
 pub mod borrow;
 pub mod interp;
 pub mod ir;
+pub mod lower;
 pub mod parse;
 pub mod perceus;
 pub mod print;

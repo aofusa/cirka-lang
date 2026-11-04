@@ -242,6 +242,15 @@ fn sink_dups(sigs: &Sigs, f: &mut Function) {
                 }
             }
             match target {
+                // Only dups lie in between: already in place (moving would
+                // just swap dups forever).
+                Some(j)
+                    if b.instrs[i + 1..j]
+                        .iter()
+                        .all(|x| matches!(x, Instr::Dup(_))) =>
+                {
+                    i += 1
+                }
                 Some(j) if j > i + 1 => {
                     let d = b.instrs.remove(i);
                     b.instrs.insert(j - 1, d);

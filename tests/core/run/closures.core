@@ -1,0 +1,36 @@
+; Closures and calls: local recursive functions capturing variables,
+; closures with unboxed parameters (boxed at the closure boundary), partial
+; and over-application of top-level functions, higher-order functions.
+(data Int () (I# Int#))
+(extern cirka_write_i64 (Int#) Unit#)
+(extern cirka_write_char (Int#) Unit#)
+
+(def add3 (-> Int# Int# Int# Int#)
+  (lam ((a Int#) (b Int#) (c Int#)) (prim add a (prim add b c))))
+
+; twice f x = f (f x)  with an unboxed-typed closure
+(def twice (-> (-> Int# Int#) Int# Int#)
+  (lam ((f (-> Int# Int#)) (x Int#)) (f (f x))))
+
+; returns a function (over-application target)
+(def adder (-> Int# (-> Int# Int#))
+  (lam ((n Int#)) (lam ((m Int#)) (prim add n m))))
+
+(def print (-> Int# Unit#)
+  (lam ((n Int#))
+    (let! (u Unit# (extern cirka_write_i64 n)) (extern cirka_write_char 10))))
+
+(def main Int#
+  (let! (k Int# 100)
+    ; local recursion capturing k: sumTo i = if i == 0 then k else i + sumTo (i-1)
+    (letrec ((sumTo (-> Int# Int#)
+               (lam ((i Int#))
+                 (case i (s Int#) Int#
+                   (0 k)
+                   (_ (prim add i (sumTo (prim sub i 1))))))))
+      (let! (a Unit# (print (sumTo 10)))
+        (let! (b Unit# (print (twice (add3 1 2) 10)))
+          (let! (c Unit# (print (adder 5 6)))
+            (let! (d Unit# (print (twice (lam ((z Int#)) (prim mul z k)) 3)))
+              (let! (e Unit# (print (twice sumTo 3)))
+                0))))))))

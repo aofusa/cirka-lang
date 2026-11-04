@@ -1,0 +1,48 @@
+; Doubles, strings, byte arrays, boxed arrays, newtypes, CAFs, strict fields.
+(data Int () (I# Int#))
+(data D () (D# Double#))
+(data Age () :newtype (MkAge Int))
+(data SPair () (SP (! Int) (! Int)))
+(data List (a) (Nil) (Cons a (List a)))
+(extern cirka_write_i64 (Int#) Unit#)
+(extern cirka_write_f64 (Double#) Unit#)
+(extern cirka_write_bytes (Bytes) Unit#)
+(extern cirka_write_char (Int#) Unit#)
+
+; A CAF: computed once.
+(def big (List Int)
+  (con Cons (Int) (con I# () 1) (con Cons (Int) (con I# () 2) (con Nil (Int)))))
+
+(def len (forall (a) (-> (List a) Int#))
+  (tlam (a) (lam ((xs (List a)))
+    (case xs (s (List a)) Int# ((Nil) 0) ((Cons y ys) (prim add 1 ((@ len a) ys)))))))
+
+(def getAge (-> Age Int#)
+  (lam ((g Age)) (case g (s Age) Int# ((MkAge i) (case i (t Int) Int# ((I# n) n))))))
+
+(def nl Unit# (extern cirka_write_char 10))
+
+(def main Int#
+  (let! (x Double# (prim fmul 1.5 (prim int_to_double 3)))
+    (let! (a Unit# (extern cirka_write_f64 x))
+      (let! (a2 Unit# (extern cirka_write_char 10))
+        (let! (b Unit# (extern cirka_write_bytes "hello\n"))
+          (let! (s Bytes (prim bytes_new 2))
+            (let! (s1 Unit# (prim bytes_set s 0 79))
+              (let! (s2 Unit# (prim bytes_set s 1 10))
+                (let! (c Unit# (extern cirka_write_bytes s))
+                  (let! (arr (Array Int) (prim array_new (Int) 3 (con I# () 7)))
+                    (let! (w Unit# (prim array_set (Int) arr 1 (con I# () 9)))
+                      (let! (e Int (prim array_get (Int) arr 1))
+                        (let! (d Unit# (extern cirka_write_i64
+                                         (prim add (prim array_len (Int) arr)
+                                           (case e (q Int) Int# ((I# v) v)))))
+                          (let! (d2 Unit# (extern cirka_write_char 10))
+                            (let! (f Unit# (extern cirka_write_i64
+                                             (prim add ((@ len Int) big) ((@ len Int) big))))
+                              (let! (f2 Unit# (extern cirka_write_char 10))
+                                (let! (g Unit# (extern cirka_write_i64 (getAge (con MkAge () (con I# () 42)))))
+                                  (let! (g2 Unit# (extern cirka_write_char 10))
+                                    (let! (p SPair (con SP () (con I# () 3) (con I# () 4)))
+                                      (case p (ps SPair) Int#
+                                        ((SP l r) (case l (lb Int) Int# ((I# lv) lv)))))))))))))))))))))))
