@@ -155,6 +155,13 @@ pub fn has_rc(f: &Function) -> bool {
     })
 }
 
+/// The whole Perceus pipeline on MIR without reference counting:
+/// borrow inference, then dup/drop insertion.
+pub fn run(m: &mut Module) {
+    crate::borrow::infer_borrow(m);
+    insert_rc(m);
+}
+
 /// Inserts dup/drop into every function of `m` that has none.
 pub fn insert_rc(m: &mut Module) {
     let sigs = Sigs::new(m);

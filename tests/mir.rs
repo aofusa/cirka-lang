@@ -274,3 +274,72 @@ fn mir_perceus_roundtrip() {
         run_checked(c, &m)
     });
 }
+
+/// Borrow inference (FEAT-0021): every run test and Perceus snapshot input,
+/// with its hand-written ownership removed (all parameters owned, no
+/// dup/drop), runs leak-free after borrow inference + Perceus and executes
+/// no more dup/drop operations than with Perceus alone. The counts are
+/// written to `_build/borrow-inference.txt`.
+#[test]
+fn mir_borrow_inference() {
+    let root = repo_root();
+    let mut cases = discover(&root.join("tests/mir/run"), &["mir"]);
+    cases.extend(discover(&root.join("tests/mir/perceus"), &["mir"]));
+    let report = std::sync::Mutex::new(Vec::new());
+    run_suite("mir-borrow", &cases, |c| {
+        if c.header.get("skip-backend") == Some("interp") || c.header.get("expect-leak").is_some() {
+            return Outcome::Skip("not applicable".into());
+        }
+        let mut base = match cirka_mir::parse(FileId(0), &c.source()) {
+            Ok(m) => m,
+            Err(e) => return Outcome::Fail(format!("parse error: {}", e.message)),
+        };
+        cirka_mir::perceus::strip_rc(&mut base);
+        for f in &mut base.funcs {
+            for p in &mut f.params {
+                p.own = cirka_mir::Own::Owned;
+            }
+        }
+        let mut plain = base.clone();
+        cirka_mir::perceus::insert_rc(&mut plain);
+        let mut inferred = base;
+        cirka_mir::perceus::run(&mut inferred);
+        if let Outcome::Fail(e) = run_checked(c, &inferred) {
+            return Outcome::Fail(e);
+        }
+        if let Outcome::Fail(e) = run_checked(c, &plain) {
+            // In-place primitives (array_set) need a unique object; with
+            // every parameter owned the caller must dup it, so only the
+            // inferred version can run.
+            if e.contains("on a shared object") {
+                report
+                    .lock()
+                    .unwrap()
+                    .push(format!("{}: (needs borrowing) -> ok", c.name));
+                return Outcome::Pass;
+            }
+            return Outcome::Fail(e);
+        }
+        let ops = |m: &cirka_mir::Module| {
+            cirka_mir::interp::run(m, &[], u64::MAX)
+                .map(|r| r.stats.rc_ops)
+                .unwrap_or(0)
+        };
+        let (a, b) = (ops(&plain), ops(&inferred));
+        report
+            .lock()
+            .unwrap()
+            .push(format!("{}: {a} -> {b}", c.name));
+        if b > a {
+            return Outcome::Fail(format!(
+                "borrow inference increased dup/drop count: {a} -> {b}"
+            ));
+        }
+        Outcome::Pass
+    });
+    let mut lines = report.into_inner().unwrap();
+    lines.sort();
+    let dir = root.join("_build");
+    let _ = std::fs::create_dir_all(&dir);
+    let _ = std::fs::write(dir.join("borrow-inference.txt"), lines.join("\n") + "\n");
+}

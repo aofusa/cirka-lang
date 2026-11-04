@@ -65,6 +65,8 @@ pub struct Stats {
     pub frees: u64,
     pub max_live: u64,
     pub reuses: u64,
+    /// Executed dup/drop operations (on pointers).
+    pub rc_ops: u64,
 }
 
 /// Result of running a program.
@@ -288,7 +290,10 @@ impl<'m> Interp<'m> {
             stdout: String::from_utf8_lossy(&self.out).into_owned(),
             stderr: String::from_utf8_lossy(&self.err).into_owned(),
             exit_code: code,
-            stats: self.stats,
+            stats: Stats {
+                rc_ops: self.rc_ops,
+                ..self.stats
+            },
             leaked,
         })
     }

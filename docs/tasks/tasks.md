@@ -14,7 +14,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 |---|---|---|
 | 共通基盤 | M0 基盤整備 | 5 / 5 |
 | 共通基盤 | M1 バックエンド基盤 | 7 / 7 |
-| 共通基盤 | M2 Perceus | 1 / 3 |
+| 共通基盤 | M2 Perceus | 2 / 3 |
 | 共通基盤 | M3 共通 Core と Core→MIR | 0 / 4 |
 | 共通基盤 | SX 共通基盤の拡張 (各トラックの必要に応じて) | 0 / 15 |
 | aCHC | H1 Haskell 最小フロントエンド | 0 / 6 |
@@ -63,7 +63,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | ID | タイトル | 状態 | 優先度 | 依存 |
 |---|---|---|---|---|
 | [FEAT-0020](features/FEAT-0020-perceus-insertion.md) | Perceus: dup/drop の自動挿入 | done | P0 | 0011 |
-| [FEAT-0021](features/FEAT-0021-borrow-inference.md) | 借用推論 (borrowed parameters) | todo | P1 | 0020 |
+| [FEAT-0021](features/FEAT-0021-borrow-inference.md) | 借用推論 (borrowed parameters) | done | P1 | 0020 |
 | [FEAT-0022](features/FEAT-0022-reuse-analysis.md) | drop 特殊化と再利用解析 (FBIP) | todo | P0 | 0020 |
 
 ### M3 共通 Core と Core→MIR
