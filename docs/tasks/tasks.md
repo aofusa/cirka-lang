@@ -1,29 +1,36 @@
 # タスク一覧
 
 aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AGENTS.md) §5、
-マイルストーンの目的と終了条件は [11-roadmap.md](../design/11-roadmap.md) を参照。
+トラック・マイルストーン・版の対応は [11-roadmap.md](../design/11-roadmap.md) を参照。
 
+- トラック: **共通基盤** (両試作が共有するバックエンド・ランタイム) / **aCHC** (Haskell 拡張の試作) / **CirkaLang** (プロトタイプ v0.0.x) / **第二段階** (CirkaLang v0.1.0 以降)
 - 状態: `todo` / `in-progress` / `done` / `blocked` / `wontfix`
 - 優先度: `P0` (マイルストーン完了に必須) / `P1` (重要) / `P2` (後回し可)
 - チケットの状態を変えたら、この一覧も同じコミットで更新する。
 
 ## 進捗
 
-| マイルストーン | 完了 / 全体 |
-|---|---|
-| M0 基盤整備 | 0 / 5 |
-| M1 バックエンド基盤 | 0 / 7 |
-| M2 Perceus | 0 / 3 |
-| M3 Haskell 最小フロントエンド | 0 / 8 |
-| M4 Haskell 実用化 | 0 / 8 |
-| M5 線形性・一意性・RAII | 0 / 9 |
-| M6 FFI 拡張 | 0 / 4 |
-| M7 互換性と性能 | 0 / 10 |
-| M8 並行性 | 0 / 2 |
-| M9 検証機能 (別軸・優先度低) | 0 / 10 |
-| P2 CirkaLang | 0 / 5 |
+| トラック | マイルストーン | 完了 / 全体 |
+|---|---|---|
+| 共通基盤 | M0 基盤整備 | 0 / 5 |
+| 共通基盤 | M1 バックエンド基盤 | 0 / 7 |
+| 共通基盤 | M2 Perceus | 0 / 3 |
+| 共通基盤 | M3 共通 Core と Core→MIR | 0 / 4 |
+| 共通基盤 | SX 共通基盤の拡張 (各トラックの必要に応じて) | 0 / 12 |
+| aCHC | H1 Haskell 最小フロントエンド | 0 / 6 |
+| aCHC | H2 Haskell 実用化 (スコープ縮小版) | 0 / 10 |
+| aCHC | H3 所有権拡張 (.chs) | 0 / 9 |
+| aCHC | H4 FFI 拡張と評価 | 0 / 3 |
+| CirkaLang | CirkaLang v0.0.1 最小の正格言語・所有権・ネイティブ | 0 / 8 |
+| CirkaLang | CirkaLang v0.0.2 実用 CUI | 0 / 6 |
+| CirkaLang | CirkaLang v0.0.3 借用・リージョン・性能 | 0 / 4 |
+| CirkaLang | CirkaLang v0.0.4 証明と検証 | 0 / 6 |
+| CirkaLang | CirkaLang v0.0.5 並行性・サーバ・syscall | 0 / 4 |
+| CirkaLang | CirkaLang v0.0.6 GUI (Vulkan)・数値計算 | 0 / 4 |
+| CirkaLang | CirkaLang v0.0.7 効果・能力・セッション型 | 0 / 4 |
+| 第二段階 | P2 第二段階 (CirkaLang v0.1.0 以降) | 0 / 2 |
 
-## 機能チケット
+## 共通基盤
 
 ### M0 基盤整備
 
@@ -31,7 +38,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 |---|---|---|---|---|
 | [FEAT-0001](features/FEAT-0001-cargo-workspace.md) | Cargo ワークスペースとクレート雛形 | todo | P0 | - |
 | [FEAT-0002](features/FEAT-0002-docker-dev-env.md) | Docker 開発環境と .env 読み込み | todo | P0 | 0001 |
-| [FEAT-0003](features/FEAT-0003-test-harness.md) | 統合テストハーネス (run / fail / mir / diff) | todo | P0 | 0001 |
+| [FEAT-0003](features/FEAT-0003-test-harness.md) | 統合テストハーネス | todo | P0 | 0001 |
 | [FEAT-0004](features/FEAT-0004-ci-scripts.md) | CI スクリプト | todo | P1 | 0003 |
 | [FEAT-0005](features/FEAT-0005-diagnostics.md) | 診断基盤 (cirka-diagnostics) | todo | P0 | 0001 |
 
@@ -55,101 +62,166 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0021](features/FEAT-0021-borrow-inference.md) | 借用推論 (borrowed parameters) | todo | P1 | 0020 |
 | [FEAT-0022](features/FEAT-0022-reuse-analysis.md) | drop 特殊化と再利用解析 (FBIP) | todo | P0 | 0020 |
 
-### M3 Haskell 最小フロントエンド
+### M3 共通 Core と Core→MIR
 
 | ID | タイトル | 状態 | 優先度 | 依存 |
 |---|---|---|---|---|
-| [FEAT-0030](features/FEAT-0030-lexer-layout.md) | 字句解析とレイアウト規則 | todo | P0 | 0005 |
-| [FEAT-0031](features/FEAT-0031-parser.md) | 構文解析 (Haskell 2010) | todo | P0 | 0030 |
-| [FEAT-0032](features/FEAT-0032-renamer.md) | 名前解決とモジュール | todo | P0 | 0031 |
-| [FEAT-0033](features/FEAT-0033-core-ir.md) | Core IR の定義と Core Lint | todo | P0 | 0005 |
-| [FEAT-0034](features/FEAT-0034-typeck-hm.md) | 型推論 (HM・ADT・型シグネチャ) | todo | P0 | 0032, 0033 |
-| [FEAT-0035](features/FEAT-0035-desugar.md) | 脱糖とパターンマッチのコンパイル | todo | P0 | 0034 |
-| [FEAT-0036](features/FEAT-0036-core-to-mir.md) | Core → MIR 変換 | todo | P0 | 0035, 0015, 0020 |
-| [FEAT-0037](features/FEAT-0037-driver-cli.md) | achc ドライバと CLI | todo | P0 | 0036, 0003 |
+| [FEAT-0030](features/FEAT-0030-core-ir.md) | 共通 Core IR と Core Lint | todo | P0 | 0005 |
+| [FEAT-0031](features/FEAT-0031-core-to-mir.md) | Core → MIR 変換 | todo | P0 | 0030, 0015, 0020 |
+| [FEAT-0032](features/FEAT-0032-driver-common.md) | 共通ドライバ (外部ツール・中間生成物・ダンプ) | todo | P0 | 0014, 0003 |
+| [FEAT-0033](features/FEAT-0033-core-simplifier.md) | Core 簡約器とインライン | todo | P1 | 0030 |
 
-### M4 Haskell 実用化
+### SX 共通基盤の拡張 (各トラックの必要に応じて)
 
 | ID | タイトル | 状態 | 優先度 | 依存 |
 |---|---|---|---|---|
-| [FEAT-0040](features/FEAT-0040-typeclasses.md) | 型クラスと deriving | todo | P0 | 0037 |
-| [FEAT-0041](features/FEAT-0041-cirka-base-prelude.md) | cirka-base: Prelude と基本モジュール | todo | P0 | 0040 |
-| [FEAT-0042](features/FEAT-0042-core-opt-strictness.md) | Core 最適化の基本と正格性解析 | todo | P0 | 0036 |
-| [FEAT-0043](features/FEAT-0043-io-exceptions-abort.md) | IO・IORef・ハンドル・例外 (abort) | todo | P0 | 0041 |
-| [FEAT-0044](features/FEAT-0044-numerics.md) | 数値型と Integer | todo | P0 | 0041 |
-| [FEAT-0045](features/FEAT-0045-records-modules.md) | レコード構文とモジュールシステムの完成 | todo | P1 | 0040 |
-| [FEAT-0046](features/FEAT-0046-ffi-haskell2010.md) | Haskell 2010 FFI (foreign import ccall) | todo | P1 | 0043 |
-| [FEAT-0047](features/FEAT-0047-diff-test-corpus.md) | 差分テスト集の整備 | todo | P1 | 0043, 0003 |
+| [FEAT-0040](features/FEAT-0040-unwinding.md) | 例外/パニックのアンワインド | todo | P1 | 0031 |
+| [FEAT-0041](features/FEAT-0041-core-optimizations.md) | Core 最適化の強化 | todo | P0 | 0033 |
+| [FEAT-0042](features/FEAT-0042-escape-analysis.md) | エスケープ解析とスタック割り当て | todo | P2 | 0041 |
+| [FEAT-0043](features/FEAT-0043-benchmarks.md) | ベンチマーク集と性能レポート | todo | P1 | 0016 |
+| [FEAT-0044](features/FEAT-0044-debug-info.md) | DWARF デバッグ情報 | todo | P2 | 0032 |
+| [FEAT-0045](features/FEAT-0045-concurrency-runtime.md) | 並行性ランタイム (スレッド・アトミック RC) | todo | P1 | 0031 |
+| [FEAT-0046](features/FEAT-0046-async-io-runtime.md) | 非同期 I/O ランタイム (epoll) | todo | P1 | 0045 |
+| [FEAT-0047](features/FEAT-0047-ffi-abi.md) | FFI ABI の完成 (構造体・共用体・可変長引数・コールバック) | todo | P1 | 0031 |
+| [FEAT-0048](features/FEAT-0048-bindgen.md) | bindgen (libclang による C ヘッダ取り込み) | todo | P1 | 0047 |
+| [FEAT-0049](features/FEAT-0049-region-arena.md) | リージョン用アリーナのランタイム | todo | P2 | 0031 |
+| [FEAT-0050](features/FEAT-0050-smt-infra.md) | SMT 連携基盤 (cirka-smt) | todo | P1 | 0005 |
+| [FEAT-0051](features/FEAT-0051-allocator-tuning.md) | アロケータの改善 | todo | P2 | 0043 |
 
-### M5 線形性・一意性・RAII
 
-| ID | タイトル | 状態 | 優先度 | 依存 |
-|---|---|---|---|---|
-| [FEAT-0050](features/FEAT-0050-linear-types.md) | LinearTypes (多重度) | todo | P0 | 0040 |
-| [FEAT-0051](features/FEAT-0051-unique-ltype.md) | 種 LType と Unique 型 | todo | P0 | 0050 |
-| [FEAT-0052](features/FEAT-0052-drop-release.md) | Drop / Release による RAII | todo | P0 | 0051 |
-| [FEAT-0053](features/FEAT-0053-unique-arrays.md) | 一意配列 (Cirka.Array) と in-place 更新 | todo | P0 | 0051, 0022 |
-| [FEAT-0054](features/FEAT-0054-borrowing.md) | 借用 (Ref / MutRef / Borrow モナド) | todo | P1 | 0051 |
-| [FEAT-0055](features/FEAT-0055-regions.md) | リージョン | todo | P2 | 0054 |
-| [FEAT-0056](features/FEAT-0056-cycles.md) | 循環の検出 (警告) と局所回収器 | todo | P2 | 0042 |
-| [FEAT-0057](features/FEAT-0057-linearity-inference.md) | 線形性の推論 (LType 一般化) | todo | P2 | 0051 |
-| [FEAT-0058](features/FEAT-0058-chs-mode.md) | .chs モード・CirkaOwnership・ownership レベル | todo | P1 | 0052 |
+## aCHC
 
-### M6 FFI 拡張
+### H1 Haskell 最小フロントエンド
 
 | ID | タイトル | 状態 | 優先度 | 依存 |
 |---|---|---|---|---|
-| [FEAT-0060](features/FEAT-0060-extern-block.md) | extern "C" ブロックと所有権付きポインタ | todo | P1 | 0046, 0052 |
-| [FEAT-0061](features/FEAT-0061-bindgen.md) | achc bindgen と import "C" | todo | P2 | 0060 |
-| [FEAT-0062](features/FEAT-0062-extern-structs-callbacks.md) | C 構造体とコールバック | todo | P2 | 0060 |
-| [FEAT-0063](features/FEAT-0063-math-linalg-wrappers.md) | cirka-math / cirka-linalg 安全ラッパーの試作 | todo | P2 | 0060, 0053 |
+| [FEAT-0100](features/FEAT-0100-hs-lexer-layout.md) | Haskell 字句解析とレイアウト規則 | todo | P0 | 0005 |
+| [FEAT-0101](features/FEAT-0101-hs-parser.md) | Haskell 構文解析 | todo | P0 | 0100 |
+| [FEAT-0102](features/FEAT-0102-hs-renamer.md) | Haskell 名前解決とモジュール | todo | P0 | 0101 |
+| [FEAT-0103](features/FEAT-0103-hs-typeck-hm.md) | Haskell 型推論 (HM・ADT) | todo | P0 | 0102, 0030 |
+| [FEAT-0104](features/FEAT-0104-hs-desugar.md) | Haskell 脱糖とパターンマッチのコンパイル | todo | P0 | 0103 |
+| [FEAT-0105](features/FEAT-0105-achc-cli.md) | achc CLI と achc.toml | todo | P0 | 0104, 0031, 0032 |
 
-### M7 互換性と性能
-
-| ID | タイトル | 状態 | 優先度 | 依存 |
-|---|---|---|---|---|
-| [FEAT-0070](features/FEAT-0070-unwinding.md) | 例外のアンワインド | todo | P1 | 0043, 0052 |
-| [FEAT-0071](features/FEAT-0071-ghc-testsuite-compat.md) | GHC testsuite / nofib による互換性計測 | todo | P1 | 0047 |
-| [FEAT-0072](features/FEAT-0072-core-optimizations.md) | Core 最適化の強化 | todo | P0 | 0042 |
-| [FEAT-0073](features/FEAT-0073-escape-analysis.md) | エスケープ解析とスタック割り当て | todo | P2 | 0072 |
-| [FEAT-0074](features/FEAT-0074-benchmarks.md) | ベンチマーク集と性能レポート | todo | P1 | 0016, 0041 |
-| [FEAT-0075](features/FEAT-0075-ghc-extensions.md) | GHC 拡張の追加 | todo | P1 | 0040 |
-| [FEAT-0076](features/FEAT-0076-hackage-packages.md) | Hackage パッケージの移植 | todo | P2 | 0075 |
-| [FEAT-0077](features/FEAT-0077-debug-info.md) | DWARF デバッグ情報 | todo | P2 | 0037 |
-| [FEAT-0078](features/FEAT-0078-incremental.md) | モジュール単位のキャッシュ | todo | P2 | 0037 |
-| [FEAT-0079](features/FEAT-0079-random-diff-fuzz.md) | ランダムプログラム差分テストとファズ | todo | P2 | 0047 |
-
-### M8 並行性
+### H2 Haskell 実用化 (スコープ縮小版)
 
 | ID | タイトル | 状態 | 優先度 | 依存 |
 |---|---|---|---|---|
-| [FEAT-0080](features/FEAT-0080-concurrency.md) | 並行性 (forkIO / MVar / アトミック RC) | todo | P2 | 0043 |
-| [FEAT-0081](features/FEAT-0081-allocator-tuning.md) | アロケータの改善 | todo | P2 | 0074 |
+| [FEAT-0110](features/FEAT-0110-hs-typeclasses.md) | 型クラスと deriving | todo | P0 | 0105 |
+| [FEAT-0111](features/FEAT-0111-cirka-base.md) | cirka-base: Prelude と基本モジュール (縮小版) | todo | P0 | 0110 |
+| [FEAT-0112](features/FEAT-0112-hs-strictness.md) | 正格性解析と Strict/StrictData | todo | P0 | 0033 |
+| [FEAT-0113](features/FEAT-0113-hs-io-exceptions.md) | IO・IORef・ハンドル・例外 | todo | P0 | 0111 |
+| [FEAT-0114](features/FEAT-0114-hs-numerics.md) | 数値型と Integer | todo | P0 | 0111 |
+| [FEAT-0115](features/FEAT-0115-hs-records-modules.md) | レコード構文とモジュールの完成 | todo | P1 | 0110 |
+| [FEAT-0116](features/FEAT-0116-hs-ffi-h2010.md) | Haskell 2010 FFI (foreign import ccall) | todo | P1 | 0113 |
+| [FEAT-0117](features/FEAT-0117-hs-diff-corpus.md) | 差分テスト集 | todo | P1 | 0113, 0003 |
+| [FEAT-0118](features/FEAT-0118-hs-extensions.md) | GHC 拡張 (最小限) | todo | P1 | 0110 |
+| [FEAT-0119](features/FEAT-0119-hs-compat-measure.md) | 互換性の計測 (GHC testsuite / nofib の一部) | todo | P2 | 0117 |
 
-### M9 検証機能 (別軸・優先度低)
-
-| ID | タイトル | 状態 | 優先度 | 依存 |
-|---|---|---|---|---|
-| [FEAT-0090](features/FEAT-0090-verify-infra.md) | 検証基盤 (cirka-verify・SMT 連携・achc verify) | todo | P1 | 0033, 0037 |
-| [FEAT-0091](features/FEAT-0091-refinement-types.md) | 洗練型 (Liquid Haskell 互換注釈 + .chs 構文) | todo | P1 | 0090 |
-| [FEAT-0092](features/FEAT-0092-refinement-ownership.md) | 洗練型と所有権・借用の統合 | todo | P2 | 0091, 0053 |
-| [FEAT-0093](features/FEAT-0093-liquid-inference.md) | Liquid 型推論 (述語抽象) | todo | P2 | 0091 |
-| [FEAT-0094](features/FEAT-0094-contracts.md) | 契約 (requires / ensures / invariant) と --contracts | todo | P1 | 0091 |
-| [FEAT-0095](features/FEAT-0095-termination.md) | 終了性・全域性の検査 | todo | P2 | 0090 |
-| [FEAT-0096](features/FEAT-0096-proof-based-check-elim.md) | 証明に基づく実行時検査の除去 | todo | P1 | 0091, 0053 |
-| [FEAT-0097](features/FEAT-0097-typelevel-nat.md) | 軽量依存型: 型レベル自然数と Cirka.Nat | todo | P2 | 0075 |
-| [FEAT-0098](features/FEAT-0098-capabilities.md) | ケイパビリティ (Cirka.Capability) | todo | P2 | 0043 |
-| [FEAT-0099](features/FEAT-0099-session-types.md) | セッション型 (Cirka.Session) | todo | P2 | 0080, 0052 |
-
-### P2 CirkaLang
+### H3 所有権拡張 (.chs)
 
 | ID | タイトル | 状態 | 優先度 | 依存 |
 |---|---|---|---|---|
-| [FEAT-0100](features/FEAT-0100-cirkalang-design.md) | 第一段階の評価と CirkaLang 言語設計 | todo | P1 | 0071, 0074, 0058 |
-| [FEAT-0101](features/FEAT-0101-cirkalang-stdlib-design.md) | CirkaLang 標準ライブラリ設計 | todo | P2 | 0100 |
-| [FEAT-0102](features/FEAT-0102-qtt-dependent-core.md) | QTT に基づく依存型 Core の設計 (CirkaLang) | todo | P2 | 0100, 0097 |
-| [FEAT-0103](features/FEAT-0103-effect-system-design.md) | 効果システムの設計 (CirkaLang) | todo | P2 | 0100, 0098 |
-| [FEAT-0104](features/FEAT-0104-verification-integration.md) | 検証機能の言語統合 (CirkaLang) | todo | P2 | 0100, 0094 |
+| [FEAT-0120](features/FEAT-0120-hs-linear-types.md) | LinearTypes (多重度) | todo | P0 | 0110 |
+| [FEAT-0121](features/FEAT-0121-hs-unique-ltype.md) | 種 LType と Unique 型 | todo | P0 | 0120 |
+| [FEAT-0122](features/FEAT-0122-hs-drop-release.md) | Drop / Release による RAII | todo | P0 | 0121 |
+| [FEAT-0123](features/FEAT-0123-hs-unique-arrays.md) | 一意配列 (Cirka.Array) | todo | P1 | 0121, 0022 |
+| [FEAT-0124](features/FEAT-0124-hs-borrowing.md) | 借用 (Ref / MutRef / Borrow モナド) | todo | P1 | 0121 |
+| [FEAT-0125](features/FEAT-0125-hs-chs-mode.md) | .chs モード・CirkaOwnership・ownership レベル | todo | P1 | 0122 |
+| [FEAT-0126](features/FEAT-0126-hs-cycles.md) | 循環の検出と局所回収器 | todo | P2 | 0112 |
+| [FEAT-0127](features/FEAT-0127-hs-regions.md) | リージョン (aCHC) | todo | P2 | 0124, 0049 |
+| [FEAT-0128](features/FEAT-0128-hs-linearity-inference.md) | 線形性の推論 (LType 一般化) | todo | P2 | 0121 |
+
+### H4 FFI 拡張と評価
+
+| ID | タイトル | 状態 | 優先度 | 依存 |
+|---|---|---|---|---|
+| [FEAT-0130](features/FEAT-0130-hs-extern-block.md) | extern "C" ブロック (aCHC) | todo | P1 | 0116, 0122, 0047 |
+| [FEAT-0131](features/FEAT-0131-hs-liquid-annotations.md) | Liquid Haskell 互換注釈の検証 (任意) | todo | P2 | 0050, 0105 |
+| [FEAT-0132](features/FEAT-0132-achc-evaluation.md) | aCHC の評価レポート | todo | P0 | 0117, 0125, 0043 |
+
+
+## CirkaLang
+
+### CirkaLang v0.0.1 最小の正格言語・所有権・ネイティブ
+
+| ID | タイトル | 状態 | 優先度 | 依存 |
+|---|---|---|---|---|
+| [FEAT-0200](features/FEAT-0200-cl-spec-v001.md) | CirkaLang v0.0.1 言語仕様 | todo | P0 | - |
+| [FEAT-0201](features/FEAT-0201-cl-syntax.md) | CirkaLang 字句・構文解析 | todo | P0 | 0005, 0200 |
+| [FEAT-0202](features/FEAT-0202-cl-resolve.md) | CirkaLang 名前解決とモジュール | todo | P0 | 0201 |
+| [FEAT-0203](features/FEAT-0203-cl-elab-qtt.md) | CirkaLang エラボレータ (QTT 型検査) | todo | P0 | 0202 |
+| [FEAT-0204](features/FEAT-0204-cl-erase-lower.md) | 消去と共通 Core への変換 | todo | P0 | 0203, 0030 |
+| [FEAT-0205](features/FEAT-0205-cl-cli.md) | cirka CLI と cirka.toml | todo | P0 | 0204, 0031, 0032 |
+| [FEAT-0206](features/FEAT-0206-cl-prim-min.md) | プリミティブ型と最小ライブラリ | todo | P0 | 0205 |
+| [FEAT-0207](features/FEAT-0207-cl-release-v001.md) | CirkaLang v0.0.1 リリース | todo | P0 | 0206, 0016, 0022 |
+
+### CirkaLang v0.0.2 実用 CUI
+
+| ID | タイトル | 状態 | 優先度 | 依存 |
+|---|---|---|---|---|
+| [FEAT-0210](features/FEAT-0210-cl-traits.md) | トレイト (型クラス) と特殊化 | todo | P0 | 0207 |
+| [FEAT-0211](features/FEAT-0211-cl-strings-arrays.md) | 文字列と配列 | todo | P0 | 0210, 0022 |
+| [FEAT-0212](features/FEAT-0212-cl-raii-errors.md) | RAII (Drop/Release) とエラー処理 | todo | P0 | 0210 |
+| [FEAT-0213](features/FEAT-0213-cl-ffi-std.md) | FFI と libc ベースの std (CUI 向け) | todo | P0 | 0212 |
+| [FEAT-0214](features/FEAT-0214-cl-packages.md) | パッケージと依存 (cirka.toml) | todo | P1 | 0205 |
+| [FEAT-0215](features/FEAT-0215-cl-release-v002.md) | CirkaLang v0.0.2 リリース | todo | P0 | 0211, 0213, 0214 |
+
+### CirkaLang v0.0.3 借用・リージョン・性能
+
+| ID | タイトル | 状態 | 優先度 | 依存 |
+|---|---|---|---|---|
+| [FEAT-0220](features/FEAT-0220-cl-borrowing.md) | 借用 | todo | P0 | 0215 |
+| [FEAT-0221](features/FEAT-0221-cl-regions.md) | リージョン | todo | P1 | 0220, 0049 |
+| [FEAT-0222](features/FEAT-0222-cl-lazy-cycles.md) | 明示的な遅延 (Lazy a) と循環の扱い | todo | P1 | 0215 |
+| [FEAT-0223](features/FEAT-0223-cl-release-v003.md) | CirkaLang v0.0.3 リリース | todo | P0 | 0220, 0222, 0041 |
+
+### CirkaLang v0.0.4 証明と検証
+
+| ID | タイトル | 状態 | 優先度 | 依存 |
+|---|---|---|---|---|
+| [FEAT-0230](features/FEAT-0230-cl-totality.md) | 全域性・終了性の検査 | todo | P0 | 0223 |
+| [FEAT-0231](features/FEAT-0231-cl-proofs-stdlib.md) | 等式・証明と証明付き標準型 | todo | P0 | 0230 |
+| [FEAT-0232](features/FEAT-0232-cl-refinement-smt.md) | 洗練型 (部分集合型) と SMT による自動証明 | todo | P0 | 0231, 0050 |
+| [FEAT-0233](features/FEAT-0233-cl-contracts.md) | 契約 (requires / ensures / invariant) | todo | P1 | 0232 |
+| [FEAT-0234](features/FEAT-0234-cl-check-elim.md) | 証明に基づく実行時検査の除去 | todo | P1 | 0232, 0211 |
+| [FEAT-0235](features/FEAT-0235-cl-release-v004.md) | CirkaLang v0.0.4 リリース | todo | P0 | 0233, 0234 |
+
+### CirkaLang v0.0.5 並行性・サーバ・syscall
+
+| ID | タイトル | 状態 | 優先度 | 依存 |
+|---|---|---|---|---|
+| [FEAT-0240](features/FEAT-0240-cl-threads.md) | スレッドと共有 | todo | P0 | 0235, 0045 |
+| [FEAT-0241](features/FEAT-0241-cl-net-async.md) | ネットワークと非同期 I/O | todo | P0 | 0240, 0046 |
+| [FEAT-0242](features/FEAT-0242-cl-os-syscall.md) | OS 層 (syscall・シグナル・プロセス) | todo | P1 | 0213 |
+| [FEAT-0243](features/FEAT-0243-cl-release-v005.md) | CirkaLang v0.0.5 リリース | todo | P0 | 0241, 0242 |
+
+### CirkaLang v0.0.6 GUI (Vulkan)・数値計算
+
+| ID | タイトル | 状態 | 優先度 | 依存 |
+|---|---|---|---|---|
+| [FEAT-0250](features/FEAT-0250-cl-ffi-complete.md) | FFI の完成と bindgen の利用 | todo | P0 | 0243, 0047, 0048 |
+| [FEAT-0251](features/FEAT-0251-cl-vulkan-sample.md) | Vulkan サンプル (GUI) | todo | P1 | 0250 |
+| [FEAT-0252](features/FEAT-0252-cl-math-linalg.md) | 数学・線形代数ラッパー | todo | P2 | 0250 |
+| [FEAT-0253](features/FEAT-0253-cl-release-v006.md) | CirkaLang v0.0.6 リリース | todo | P0 | 0251 |
+
+### CirkaLang v0.0.7 効果・能力・セッション型
+
+| ID | タイトル | 状態 | 優先度 | 依存 |
+|---|---|---|---|---|
+| [FEAT-0260](features/FEAT-0260-cl-capabilities.md) | ケイパビリティ | todo | P1 | 0253 |
+| [FEAT-0261](features/FEAT-0261-cl-effects.md) | 効果システムの試作 | todo | P1 | 0260 |
+| [FEAT-0262](features/FEAT-0262-cl-session-types.md) | セッション型 | todo | P2 | 0240 |
+| [FEAT-0263](features/FEAT-0263-cl-release-v007.md) | CirkaLang v0.0.7 リリース | todo | P0 | 0261 |
+
+
+## 第二段階
+
+### P2 第二段階 (CirkaLang v0.1.0 以降)
+
+| ID | タイトル | 状態 | 優先度 | 依存 |
+|---|---|---|---|---|
+| [FEAT-0300](features/FEAT-0300-cl-v010-design.md) | 第一段階の評価と CirkaLang v0.1.0 仕様 | todo | P1 | 0132, 0263 |
+| [FEAT-0301](features/FEAT-0301-cl-stdlib-design.md) | CirkaLang 標準ライブラリ設計 | todo | P2 | 0300 |
 
 ## バグチケット
 

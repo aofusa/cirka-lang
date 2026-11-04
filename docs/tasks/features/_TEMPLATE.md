@@ -1,7 +1,8 @@
 # FEAT-XXXX: <タイトル>
 
 - 状態: todo
-- マイルストーン: <M?>
+- トラック: <共通基盤 | aCHC | CirkaLang | 第二段階>
+- マイルストーン: <M? / H? / C? (CirkaLang vX.Y.Z) / P2>
 - 優先度: <P0|P1|P2>
 - 依存: <FEAT-XXXX, ...>
 - 設計: <docs/design/xx.md>
