@@ -1,5 +1,3 @@
-# syntax=docker/dockerfile:1
-#
 # aCHC development / build environment (x86_64 Linux, Ubuntu 24.04).
 #
 #   docker build -t achc-dev .
