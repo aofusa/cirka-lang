@@ -1,0 +1,714 @@
+//! TT: the dependently typed core language of CirkaLang (spec-v0.0.1.md
+//! §4.1), its values (for normalization by evaluation) and the elaborated
+//! program.
+
+pub use cirkalang_resolve::rast::GName;
+use std::fmt::Write;
+use std::rc::Rc;
+
+pub type Name = Rc<str>;
+pub type MetaId = u32;
+
+/// Multiplicities {0, 1, ω} (spec §4.2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Mult {
+    Zero,
+    One,
+    Many,
+}
+
+impl Mult {
+    pub fn plus(self, o: Mult) -> Mult {
+        match (self, o) {
+            (Mult::Zero, x) | (x, Mult::Zero) => x,
+            _ => Mult::Many,
+        }
+    }
+
+    pub fn times(self, o: Mult) -> Mult {
+        match (self, o) {
+            (Mult::Zero, _) | (_, Mult::Zero) => Mult::Zero,
+            (Mult::One, x) | (x, Mult::One) => x,
+            _ => Mult::Many,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Mult::Zero => "0",
+            Mult::One => "1",
+            Mult::Many => "ω",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Icit {
+    Expl,
+    Impl,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Lit {
+    Int(i64),
+    UInt(u64),
+    Float(f64),
+    Char(char),
+    Str(Rc<str>),
+}
+
+impl std::fmt::Display for Lit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Lit::Int(n) => write!(f, "{n}"),
+            Lit::UInt(n) => write!(f, "{n}u"),
+            Lit::Float(x) => write!(f, "{x:?}"),
+            Lit::Char(c) => write!(f, "{c:?}"),
+            Lit::Str(s) => write!(f, "{s:?}"),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Term {
+    /// De Bruijn index.
+    Var(u32),
+    /// A definition, constructor, data type or primitive.
+    Global(GName),
+    Type,
+    LType,
+    Pi(Name, Mult, Icit, Rc<Term>, Rc<Term>),
+    /// `\(π x : A) => t` (the binder type is kept for lowering and Lint).
+    Lam(Name, Mult, Icit, Rc<Term>, Rc<Term>),
+    App(Rc<Term>, Rc<Term>, Icit),
+    /// Strict `let π x : A = t in u`.
+    Let(Name, Mult, Rc<Term>, Rc<Term>, Rc<Term>),
+    Lit(Lit),
+    Case(Rc<Case>),
+    Meta(MetaId),
+    /// A meta applied to the bound variables of the context (mask by level).
+    InsertedMeta(MetaId, Rc<Vec<bool>>),
+    /// The result of an error that has been reported.
+    Error,
+}
+
+/// `case scrut return ret of alts` (spec §4.5). Elaborated programs always
+/// scrutinize a variable; quoted stuck cases may have any neutral.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Case {
+    pub scrut: Term,
+    /// Type of the whole expression (in the context of the case).
+    pub ret: Term,
+    pub alts: Vec<Alt>,
+    pub default: Option<Term>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Alt {
+    Con {
+        con: GName,
+        /// All fields (implicit and erased ones included), with their
+        /// multiplicity and type (each in the context of the previous ones).
+        fields: Vec<(Name, Mult, Term)>,
+        /// Index refinements learnt by dependent pattern matching:
+        /// variable (de Bruijn index in the body's context) := term.
+        refine: Vec<(u32, Term)>,
+        body: Term,
+    },
+    Lit {
+        lit: Lit,
+        body: Term,
+    },
+}
+
+// ---------------------------------------------------------------------
+// Values
+
+pub type Env = Vec<Val>;
+
+#[derive(Clone, Debug)]
+pub struct Closure {
+    pub env: Env,
+    pub body: Rc<Term>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Head {
+    /// Bound variable (de Bruijn level).
+    Var(u32),
+    Meta(MetaId),
+    /// Definition or primitive (unfolded on demand).
+    Global(GName),
+}
+
+#[derive(Clone, Debug)]
+pub enum Elim {
+    App(Val, Icit),
+    /// A case stuck on the neutral (branches evaluated in `env`).
+    Case(Env, Rc<Case>),
+}
+
+#[derive(Clone, Debug)]
+pub enum Val {
+    Neutral(Head, Vec<Elim>),
+    /// Constructor applied to (some of) its arguments: parameters, then
+    /// fields.
+    Con(GName, Vec<Val>),
+    /// Data type applied to (some of) its parameters and indices.
+    Data(GName, Vec<(Val, Icit)>),
+    Lam(Name, Mult, Icit, Rc<Val>, Closure),
+    Pi(Name, Mult, Icit, Rc<Val>, Closure),
+    Type,
+    LType,
+    Lit(Lit),
+    Error,
+}
+
+impl Val {
+    pub fn var(l: u32) -> Val {
+        Val::Neutral(Head::Var(l), Vec::new())
+    }
+}
+
+// ---------------------------------------------------------------------
+// The elaborated program
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Univ {
+    Type,
+    LType,
+}
+
+#[derive(Clone, Debug)]
+pub enum Global {
+    /// Not elaborated (because of an earlier error).
+    Missing,
+    Def {
+        ty: Term,
+        /// `None` while being elaborated (opaque) or after an error.
+        body: Option<Term>,
+    },
+    Data {
+        ty: Term,
+        nparams: usize,
+        univ: Univ,
+        cons: Vec<GName>,
+        /// Values of this type may be dropped implicitly (spec §4.4).
+        drop: bool,
+    },
+    Con {
+        ty: Term,
+        data: GName,
+        nparams: usize,
+        /// Field multiplicities (after the parameters).
+        field_mults: Vec<Mult>,
+        /// Field plicities (implicit fields are not written in patterns).
+        field_icits: Vec<Icit>,
+        tag: usize,
+    },
+    Prim {
+        ty: Term,
+        prim: Prim,
+    },
+}
+
+/// The primitives known to the compiler (spec §5.4, §5.6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Prim {
+    // Types.
+    Int,
+    UInt,
+    Float,
+    Char,
+    String,
+    IO,
+    Unique,
+    // Int.
+    AddInt,
+    SubInt,
+    MulInt,
+    DivInt,
+    ModInt,
+    NegInt,
+    EqInt,
+    LtInt,
+    LeInt,
+    AndInt,
+    OrInt,
+    XorInt,
+    ShlInt,
+    ShrInt,
+    // UInt.
+    AddUInt,
+    SubUInt,
+    MulUInt,
+    EqUInt,
+    LtUInt,
+    LeUInt,
+    IntToUInt,
+    UIntToInt,
+    // Float.
+    AddFloat,
+    SubFloat,
+    MulFloat,
+    DivFloat,
+    NegFloat,
+    EqFloat,
+    LtFloat,
+    LeFloat,
+    IntToFloat,
+    FloatToInt,
+    SqrtFloat,
+    // Char.
+    CharToInt,
+    IntToChar,
+    // String.
+    StrLength,
+    StrIndex,
+    StrConcat,
+    StrEq,
+    IntToStr,
+    FloatToStr,
+    CharToStr,
+    // IO.
+    Pure,
+    Bind,
+    PutStr,
+    PrintInt,
+    PrintFloat,
+    PutChar,
+    ReadInt,
+    Exit,
+    Panic,
+    // Unique.
+    MkUnique,
+    Freeze,
+}
+
+impl Prim {
+    pub const ALL: &'static [(&'static str, Prim)] = &[
+        ("Int", Prim::Int),
+        ("UInt", Prim::UInt),
+        ("Float", Prim::Float),
+        ("Char", Prim::Char),
+        ("String", Prim::String),
+        ("IO", Prim::IO),
+        ("Unique", Prim::Unique),
+        ("primAddInt", Prim::AddInt),
+        ("primSubInt", Prim::SubInt),
+        ("primMulInt", Prim::MulInt),
+        ("primDivInt", Prim::DivInt),
+        ("primModInt", Prim::ModInt),
+        ("primNegInt", Prim::NegInt),
+        ("primEqInt", Prim::EqInt),
+        ("primLtInt", Prim::LtInt),
+        ("primLeInt", Prim::LeInt),
+        ("primAndInt", Prim::AndInt),
+        ("primOrInt", Prim::OrInt),
+        ("primXorInt", Prim::XorInt),
+        ("primShlInt", Prim::ShlInt),
+        ("primShrInt", Prim::ShrInt),
+        ("primAddUInt", Prim::AddUInt),
+        ("primSubUInt", Prim::SubUInt),
+        ("primMulUInt", Prim::MulUInt),
+        ("primEqUInt", Prim::EqUInt),
+        ("primLtUInt", Prim::LtUInt),
+        ("primLeUInt", Prim::LeUInt),
+        ("primIntToUInt", Prim::IntToUInt),
+        ("primUIntToInt", Prim::UIntToInt),
+        ("primAddFloat", Prim::AddFloat),
+        ("primSubFloat", Prim::SubFloat),
+        ("primMulFloat", Prim::MulFloat),
+        ("primDivFloat", Prim::DivFloat),
+        ("primNegFloat", Prim::NegFloat),
+        ("primEqFloat", Prim::EqFloat),
+        ("primLtFloat", Prim::LtFloat),
+        ("primLeFloat", Prim::LeFloat),
+        ("primIntToFloat", Prim::IntToFloat),
+        ("primFloatToInt", Prim::FloatToInt),
+        ("primSqrtFloat", Prim::SqrtFloat),
+        ("primCharToInt", Prim::CharToInt),
+        ("primIntToChar", Prim::IntToChar),
+        ("primStrLength", Prim::StrLength),
+        ("primStrIndex", Prim::StrIndex),
+        ("primStrConcat", Prim::StrConcat),
+        ("primStrEq", Prim::StrEq),
+        ("primIntToStr", Prim::IntToStr),
+        ("primFloatToStr", Prim::FloatToStr),
+        ("primCharToStr", Prim::CharToStr),
+        ("pure", Prim::Pure),
+        ("primBind", Prim::Bind),
+        ("putStr", Prim::PutStr),
+        ("printInt", Prim::PrintInt),
+        ("printFloat", Prim::PrintFloat),
+        ("putChar", Prim::PutChar),
+        ("readInt", Prim::ReadInt),
+        ("exit", Prim::Exit),
+        ("panic", Prim::Panic),
+        ("unique", Prim::MkUnique),
+        ("freeze", Prim::Freeze),
+    ];
+
+    pub fn from_name(s: &str) -> Option<Prim> {
+        Prim::ALL.iter().find(|(n, _)| *n == s).map(|x| x.1)
+    }
+
+    pub fn name(self) -> &'static str {
+        Prim::ALL
+            .iter()
+            .find(|(_, p)| *p == self)
+            .map(|x| x.0)
+            .unwrap()
+    }
+
+    /// Is this a type (former) rather than a function?
+    pub fn is_type(self) -> bool {
+        matches!(
+            self,
+            Prim::Int
+                | Prim::UInt
+                | Prim::Float
+                | Prim::Char
+                | Prim::String
+                | Prim::IO
+                | Prim::Unique
+        )
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Program {
+    /// Indexed like the resolver's globals.
+    pub globals: Vec<Global>,
+    /// Names for printing (qualified).
+    pub names: Vec<String>,
+    pub main: Option<GName>,
+    /// Definitions in elaboration order (for lowering).
+    pub order: Vec<GName>,
+    pub builtins: Builtins,
+}
+
+/// Prelude types and constructors used by built-in sugar (literals,
+/// `if`, tuples, lists, `do`) and primitive types.
+#[derive(Clone, Debug, Default)]
+pub struct Builtins {
+    pub bool_: Option<GName>,
+    pub true_: Option<GName>,
+    pub false_: Option<GName>,
+    pub unit: Option<GName>,
+    pub mk_unit: Option<GName>,
+    pub pair: Option<GName>,
+    pub mk_pair: Option<GName>,
+    pub list: Option<GName>,
+    pub nil: Option<GName>,
+    pub cons: Option<GName>,
+    pub nat: Option<GName>,
+    pub zero: Option<GName>,
+    pub succ: Option<GName>,
+    pub bind: Option<GName>,
+    pub then: Option<GName>,
+    pub negate: Option<GName>,
+    pub int: Option<GName>,
+    pub uint: Option<GName>,
+    pub float: Option<GName>,
+    pub char_: Option<GName>,
+    pub string: Option<GName>,
+    pub io: Option<GName>,
+    pub unique: Option<GName>,
+}
+
+impl Program {
+    pub fn get(&self, g: GName) -> &Global {
+        &self.globals[g.0 as usize]
+    }
+
+    pub fn name(&self, g: GName) -> &str {
+        &self.names[g.0 as usize]
+    }
+
+    /// Short (unqualified) name.
+    pub fn short_name(&self, g: GName) -> &str {
+        let n = self.name(g);
+        match n.rfind('.') {
+            Some(i) if i + 1 < n.len() && !n[..i].ends_with('.') => &n[i + 1..],
+            _ => n,
+        }
+    }
+
+    pub fn type_of(&self, g: GName) -> Option<&Term> {
+        match self.get(g) {
+            Global::Def { ty, .. }
+            | Global::Data { ty, .. }
+            | Global::Con { ty, .. }
+            | Global::Prim { ty, .. } => Some(ty),
+            Global::Missing => None,
+        }
+    }
+
+    pub fn prim_of(&self, g: GName) -> Option<Prim> {
+        match self.get(g) {
+            Global::Prim { prim, .. } => Some(*prim),
+            _ => None,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------
+// Printing
+
+/// Prints a term with `names` giving the names of the variables in scope
+/// (outermost first).
+pub fn print_term(p: &Program, names: &mut Vec<Name>, t: &Term) -> String {
+    let mut s = String::new();
+    pt(p, names, t, 0, &mut s);
+    s
+}
+
+fn fresh_name(names: &[Name], x: &Name) -> Name {
+    if x.as_ref() == "_" {
+        return x.clone();
+    }
+    let mut cand: Name = x.clone();
+    let mut i = 1;
+    while names.contains(&cand) {
+        cand = format!("{x}{i}").into();
+        i += 1;
+    }
+    cand
+}
+
+fn mult_prefix(m: Mult) -> &'static str {
+    match m {
+        Mult::Zero => "0 ",
+        Mult::One => "1 ",
+        Mult::Many => "",
+    }
+}
+
+// Precedence: 0 = top (lambda, pi, let), 1 = application spine, 2 = atom.
+fn pt(p: &Program, names: &mut Vec<Name>, t: &Term, prec: u8, s: &mut String) {
+    let paren = |s: &mut String, open: bool| {
+        if open {
+            s.push('(');
+        }
+    };
+    match t {
+        Term::Var(i) => {
+            let n = names.len() as i64 - 1 - *i as i64;
+            match names.get(n as usize) {
+                Some(x) if n >= 0 => s.push_str(x),
+                _ => {
+                    let _ = write!(s, "#{i}");
+                }
+            }
+        }
+        Term::Global(g) => s.push_str(p.short_name(*g)),
+        Term::Type => s.push_str("Type"),
+        Term::LType => s.push_str("LType"),
+        Term::Lit(l) => {
+            let _ = write!(s, "{l}");
+        }
+        Term::Meta(m) | Term::InsertedMeta(m, _) => {
+            let _ = write!(s, "?{m}");
+        }
+        Term::Error => s.push_str("<error>"),
+        Term::App(..) => {
+            let mut args = Vec::new();
+            let mut h = t;
+            while let Term::App(f, a, i) = h {
+                args.push((a, *i));
+                h = f;
+            }
+            args.reverse();
+            if args.iter().all(|(_, i)| *i == Icit::Impl) {
+                pt(p, names, h, prec, s);
+                return;
+            }
+            paren(s, prec > 1);
+            // Hide implicit arguments in the printed form.
+            pt(p, names, h, 2, s);
+            for (a, i) in args {
+                if i == Icit::Impl {
+                    continue;
+                }
+                s.push(' ');
+                pt(p, names, a, 2, s);
+            }
+            if prec > 1 {
+                s.push(')');
+            }
+        }
+        Term::Pi(x, m, i, a, b) => {
+            paren(s, prec > 0);
+            let dependent = term_mentions(b, 0);
+            let x2 = fresh_name(names, x);
+            match (i, dependent || *m != Mult::Many) {
+                (Icit::Impl, _) => {
+                    let _ = write!(s, "{{{}{x2} : ", mult_prefix_impl(*m));
+                    pt(p, names, a, 0, s);
+                    s.push_str("} -> ");
+                }
+                (Icit::Expl, true) => {
+                    let _ = write!(s, "({}{x2} : ", mult_prefix(*m));
+                    pt(p, names, a, 0, s);
+                    s.push_str(") -> ");
+                }
+                (Icit::Expl, false) => {
+                    pt(p, names, a, 1, s);
+                    s.push_str(" -> ");
+                }
+            }
+            names.push(x2);
+            pt(p, names, b, 0, s);
+            names.pop();
+            if prec > 0 {
+                s.push(')');
+            }
+        }
+        Term::Lam(x, _, i, _, b) => {
+            paren(s, prec > 0);
+            let x2 = fresh_name(names, x);
+            if *i == Icit::Impl {
+                let _ = write!(s, "\\{{{x2}}} => ");
+            } else {
+                let _ = write!(s, "\\{x2} => ");
+            }
+            names.push(x2);
+            pt(p, names, b, 0, s);
+            names.pop();
+            if prec > 0 {
+                s.push(')');
+            }
+        }
+        Term::Let(x, _, _, v, b) => {
+            paren(s, prec > 0);
+            let x2 = fresh_name(names, x);
+            let _ = write!(s, "let {x2} = ");
+            pt(p, names, v, 0, s);
+            s.push_str(" in ");
+            names.push(x2);
+            pt(p, names, b, 0, s);
+            names.pop();
+            if prec > 0 {
+                s.push(')');
+            }
+        }
+        Term::Case(c) => {
+            paren(s, prec > 0);
+            s.push_str("case ");
+            pt(p, names, &c.scrut, 0, s);
+            s.push_str(" of {");
+            for (k, a) in c.alts.iter().enumerate() {
+                if k > 0 {
+                    s.push(';');
+                }
+                s.push(' ');
+                match a {
+                    Alt::Con {
+                        con, fields, body, ..
+                    } => {
+                        s.push_str(p.short_name(*con));
+                        let base = names.len();
+                        for (x, m, _) in fields {
+                            let x2 = fresh_name(names, x);
+                            if *m == Mult::Zero {
+                                let _ = write!(s, " {{{x2}}}");
+                            } else {
+                                let _ = write!(s, " {x2}");
+                            }
+                            names.push(x2);
+                        }
+                        s.push_str(" => ");
+                        pt(p, names, body, 0, s);
+                        names.truncate(base);
+                    }
+                    Alt::Lit { lit, body } => {
+                        let _ = write!(s, "{lit} => ");
+                        pt(p, names, body, 0, s);
+                    }
+                }
+            }
+            if let Some(d) = &c.default {
+                s.push_str("; _ => ");
+                pt(p, names, d, 0, s);
+            }
+            s.push_str(" }");
+            if prec > 0 {
+                s.push(')');
+            }
+        }
+    }
+}
+
+fn mult_prefix_impl(m: Mult) -> &'static str {
+    match m {
+        Mult::Zero => "",
+        Mult::One => "1 ",
+        Mult::Many => "ω ",
+    }
+}
+
+/// Does `t` mention the variable with index `i` (relative to `t`)?
+pub fn term_mentions(t: &Term, i: u32) -> bool {
+    match t {
+        Term::Var(j) => *j == i,
+        Term::Global(_) | Term::Type | Term::LType | Term::Lit(_) | Term::Meta(_) | Term::Error => {
+            false
+        }
+        Term::InsertedMeta(..) => true,
+        Term::Pi(_, _, _, a, b) | Term::Lam(_, _, _, a, b) => {
+            term_mentions(a, i) || term_mentions(b, i + 1)
+        }
+        Term::App(f, a, _) => term_mentions(f, i) || term_mentions(a, i),
+        Term::Let(_, _, a, v, b) => {
+            term_mentions(a, i) || term_mentions(v, i) || term_mentions(b, i + 1)
+        }
+        Term::Case(c) => {
+            term_mentions(&c.scrut, i)
+                || term_mentions(&c.ret, i)
+                || c.default.as_ref().is_some_and(|d| term_mentions(d, i))
+                || c.alts.iter().any(|a| match a {
+                    Alt::Con { fields, body, .. } => {
+                        fields
+                            .iter()
+                            .enumerate()
+                            .any(|(k, (_, _, ty))| term_mentions(ty, i + k as u32))
+                            || term_mentions(body, i + fields.len() as u32)
+                    }
+                    Alt::Lit { body, .. } => term_mentions(body, i),
+                })
+        }
+    }
+}
+
+/// Prints a definition body for dumps (`--dump=tt`).
+pub fn print_program(p: &Program) -> String {
+    let mut s = String::new();
+    for g in &p.order {
+        let name = p.name(*g).to_string();
+        match p.get(*g) {
+            Global::Def { ty, body } => {
+                let _ = writeln!(s, "{name} : {}", print_term(p, &mut Vec::new(), ty));
+                if let Some(b) = body {
+                    let _ = writeln!(s, "{name} = {}", print_term(p, &mut Vec::new(), b));
+                }
+            }
+            Global::Data { ty, univ, .. } => {
+                let _ = writeln!(
+                    s,
+                    "data {name} : {} ({:?})",
+                    print_term(p, &mut Vec::new(), ty),
+                    univ
+                );
+            }
+            Global::Con { ty, .. } => {
+                let _ = writeln!(s, "  con {name} : {}", print_term(p, &mut Vec::new(), ty));
+            }
+            Global::Prim { ty, .. } => {
+                let _ = writeln!(s, "prim {name} : {}", print_term(p, &mut Vec::new(), ty));
+            }
+            Global::Missing => {}
+        }
+    }
+    s
+}

@@ -106,6 +106,8 @@ dependencies = [
  "cirka-driver",
  "cirka-mir",
  "cirka-testkit",
+ "cirkalang-resolve",
+ "cirkalang-syntax",
 ]
 
 [[package]]
