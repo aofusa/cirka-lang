@@ -70,6 +70,11 @@ fn panic(_info: &core::panic::PanicInfo<'_>) -> ! {
 #[cfg(test)]
 mod tests;
 
+/// The runtime state is single-threaded; every unit test touching it takes
+/// this lock.
+#[cfg(test)]
+pub(crate) static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// The precompiled `core` references the Rust personality routine from its
 /// unwind tables even with `panic = "abort"`; the runtime never unwinds
 /// through Rust frames, so a stub suffices.

@@ -1,8 +1,5 @@
 use crate::object::*;
-use std::sync::Mutex;
-
-/// The runtime state is single-threaded; serialize the tests.
-static LOCK: Mutex<()> = Mutex::new(());
+use crate::TEST_LOCK as LOCK;
 const N: usize = 1_000_000;
 
 unsafe fn con(tag: u16, fields: &[usize], nptr: u8) -> Obj {

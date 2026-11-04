@@ -215,6 +215,7 @@ mod tests {
 
     #[test]
     fn alloc_free_reuses_memory() {
+        let _g = crate::TEST_LOCK.lock().unwrap();
         // SAFETY: test of allocator internals on one thread.
         unsafe {
             let a = cirka_alloc(24);
