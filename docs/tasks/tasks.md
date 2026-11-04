@@ -17,10 +17,11 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | M3 Haskell 最小フロントエンド | 0 / 8 |
 | M4 Haskell 実用化 | 0 / 8 |
 | M5 線形性・一意性・RAII | 0 / 9 |
-| M6 FFI 拡張 | 0 / 3 |
+| M6 FFI 拡張 | 0 / 4 |
 | M7 互換性と性能 | 0 / 10 |
 | M8 並行性 | 0 / 2 |
-| P2 CirkaLang | 0 / 2 |
+| M9 検証機能 (別軸・優先度低) | 0 / 10 |
+| P2 CirkaLang | 0 / 5 |
 
 ## 機能チケット
 
@@ -101,6 +102,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0060](features/FEAT-0060-extern-block.md) | extern "C" ブロックと所有権付きポインタ | todo | P1 | 0046, 0052 |
 | [FEAT-0061](features/FEAT-0061-bindgen.md) | achc bindgen と import "C" | todo | P2 | 0060 |
 | [FEAT-0062](features/FEAT-0062-extern-structs-callbacks.md) | C 構造体とコールバック | todo | P2 | 0060 |
+| [FEAT-0063](features/FEAT-0063-math-linalg-wrappers.md) | cirka-math / cirka-linalg 安全ラッパーの試作 | todo | P2 | 0060, 0053 |
 
 ### M7 互換性と性能
 
@@ -124,12 +126,30 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0080](features/FEAT-0080-concurrency.md) | 並行性 (forkIO / MVar / アトミック RC) | todo | P2 | 0043 |
 | [FEAT-0081](features/FEAT-0081-allocator-tuning.md) | アロケータの改善 | todo | P2 | 0074 |
 
+### M9 検証機能 (別軸・優先度低)
+
+| ID | タイトル | 状態 | 優先度 | 依存 |
+|---|---|---|---|---|
+| [FEAT-0090](features/FEAT-0090-verify-infra.md) | 検証基盤 (cirka-verify・SMT 連携・achc verify) | todo | P1 | 0033, 0037 |
+| [FEAT-0091](features/FEAT-0091-refinement-types.md) | 洗練型 (Liquid Haskell 互換注釈 + .chs 構文) | todo | P1 | 0090 |
+| [FEAT-0092](features/FEAT-0092-refinement-ownership.md) | 洗練型と所有権・借用の統合 | todo | P2 | 0091, 0053 |
+| [FEAT-0093](features/FEAT-0093-liquid-inference.md) | Liquid 型推論 (述語抽象) | todo | P2 | 0091 |
+| [FEAT-0094](features/FEAT-0094-contracts.md) | 契約 (requires / ensures / invariant) と --contracts | todo | P1 | 0091 |
+| [FEAT-0095](features/FEAT-0095-termination.md) | 終了性・全域性の検査 | todo | P2 | 0090 |
+| [FEAT-0096](features/FEAT-0096-proof-based-check-elim.md) | 証明に基づく実行時検査の除去 | todo | P1 | 0091, 0053 |
+| [FEAT-0097](features/FEAT-0097-typelevel-nat.md) | 軽量依存型: 型レベル自然数と Cirka.Nat | todo | P2 | 0075 |
+| [FEAT-0098](features/FEAT-0098-capabilities.md) | ケイパビリティ (Cirka.Capability) | todo | P2 | 0043 |
+| [FEAT-0099](features/FEAT-0099-session-types.md) | セッション型 (Cirka.Session) | todo | P2 | 0080, 0052 |
+
 ### P2 CirkaLang
 
 | ID | タイトル | 状態 | 優先度 | 依存 |
 |---|---|---|---|---|
 | [FEAT-0100](features/FEAT-0100-cirkalang-design.md) | 第一段階の評価と CirkaLang 言語設計 | todo | P1 | 0071, 0074, 0058 |
 | [FEAT-0101](features/FEAT-0101-cirkalang-stdlib-design.md) | CirkaLang 標準ライブラリ設計 | todo | P2 | 0100 |
+| [FEAT-0102](features/FEAT-0102-qtt-dependent-core.md) | QTT に基づく依存型 Core の設計 (CirkaLang) | todo | P2 | 0100, 0097 |
+| [FEAT-0103](features/FEAT-0103-effect-system-design.md) | 効果システムの設計 (CirkaLang) | todo | P2 | 0100, 0098 |
+| [FEAT-0104](features/FEAT-0104-verification-integration.md) | 検証機能の言語統合 (CirkaLang) | todo | P2 | 0100, 0094 |
 
 ## バグチケット
 
