@@ -1,0 +1,12 @@
+type Pair { Pair = 0 { a: ptr, b: ptr } }
+type Box { Box = 0 { v: i64 } }
+fn main() -> i64 {
+entry:
+  let x = alloc Box.Box(1)
+  let y = alloc Box.Box(2)
+  let p = alloc Pair.Pair(x, y)
+  let a = proj p Pair.Pair.a
+  drop p
+  let v = proj a Box.Box.v
+  ret v
+}

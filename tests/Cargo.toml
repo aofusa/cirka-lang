@@ -14,6 +14,8 @@ path = "lib.rs"
 
 [dependencies]
 cirka-testkit.workspace = true
+cirka-diagnostics.workspace = true
+cirka-mir.workspace = true
 
 [[test]]
 name = "workspace"
@@ -22,3 +24,7 @@ path = "workspace.rs"
 [[test]]
 name = "harness_selftest"
 path = "harness_selftest.rs"
+
+[[test]]
+name = "mir"
+path = "mir.rs"

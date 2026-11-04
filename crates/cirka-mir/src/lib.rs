@@ -4,6 +4,7 @@
 pub mod ir;
 pub mod parse;
 pub mod print;
+pub mod verify;
 
 pub use ir::*;
 pub use parse::parse;

@@ -1,0 +1,2 @@
+error[M0100]: in function `f`, block `done`: owned `b` is not consumed before `ret` (missing drop / leak)
+error[M0100]: in function `f`, block `zero`: ownership of `b` differs between predecessors of block `done`

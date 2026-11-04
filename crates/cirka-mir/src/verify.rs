@@ -176,7 +176,10 @@ impl<'a> FnVerifier<'a> {
         }
         for (i, d) in defs.iter().enumerate() {
             if *d > 1 {
-                self.error(format!("variable `{}` is defined {} times", f.var_names[i], d));
+                self.error(format!(
+                    "variable `{}` is defined {} times",
+                    f.var_names[i], d
+                ));
             }
         }
 
@@ -224,8 +227,10 @@ impl<'a> FnVerifier<'a> {
                                     diffs.push(*v);
                                 }
                             }
-                            let names: Vec<String> =
-                                diffs.iter().map(|v| format!("`{}`", self.name(*v))).collect();
+                            let names: Vec<String> = diffs
+                                .iter()
+                                .map(|v| format!("`{}`", self.name(*v)))
+                                .collect();
                             if !names.is_empty() {
                                 let label = f.blocks[si].label.clone();
                                 self.error(format!(
@@ -521,9 +526,7 @@ impl<'a> FnVerifier<'a> {
             }
             Rhs::Apply { clo, args } => {
                 if args.is_empty() || args.len() > MAX_CLOSURE_ARITY {
-                    self.error(format!(
-                        "`apply` takes 1 to {MAX_CLOSURE_ARITY} arguments"
-                    ));
+                    self.error(format!("`apply` takes 1 to {MAX_CLOSURE_ARITY} arguments"));
                 }
                 self.operand(st, &Operand::Var(*clo), Some(Ty::Ptr), true);
                 let tys = vec![Ty::Ptr; args.len()];
@@ -550,9 +553,7 @@ impl<'a> FnVerifier<'a> {
                         if rest.iter().any(|t| !t.is_ptr())
                             || owns[args.len()..].iter().any(|o| *o != Own::Owned)
                         {
-                            self.error(format!(
-                                "closure parameters of `{func}` must be owned ptr"
-                            ));
+                            self.error(format!("closure parameters of `{func}` must be owned ptr"));
                         }
                     }
                     if ret != Ty::Ptr {
@@ -728,7 +729,11 @@ impl<'a> FnVerifier<'a> {
                     if let (Case::Ctor(c), true) = (case, single) {
                         out.known.insert(*scrut, *c);
                     }
-                    if !f.blocks.get(b.0 as usize).is_some_and(|x| x.params.is_empty()) {
+                    if !f
+                        .blocks
+                        .get(b.0 as usize)
+                        .is_some_and(|x| x.params.is_empty())
+                    {
                         self.error("switch targets must not have block parameters");
                     }
                     outs.push((*b, out));

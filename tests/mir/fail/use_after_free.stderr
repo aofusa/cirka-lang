@@ -1,0 +1,1 @@
+error[M0100]: in function `main`, block `entry`: use of `a` after its source `p` was consumed

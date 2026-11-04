@@ -1,0 +1,2 @@
+error[M0100]: in function `f`, block `entry`: type mismatch: `x` has type f64, expected i64
+error[M0100]: in function `f`, block `entry`: `g` expects 2 arguments, got 1

@@ -1,0 +1,1 @@
+error[M0100]: in function `main`, block `entry`: owned `b` is not consumed before `ret` (missing drop / leak)

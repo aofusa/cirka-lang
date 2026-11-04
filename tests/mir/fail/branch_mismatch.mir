@@ -1,0 +1,12 @@
+type Box { Box = 0 { v: i64 } }
+fn f(b: ptr @owned, n: i64) -> i64 {
+entry:
+  switch n { 0 => zero, default => other }
+zero:
+  drop b
+  jump done
+other:
+  jump done
+done:
+  ret n
+}

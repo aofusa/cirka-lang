@@ -1,0 +1,11 @@
+fn g(a: i64, b: f64) -> i64 {
+entry:
+  ret a
+}
+fn f() -> i64 {
+entry:
+  let x = lit 1.5
+  let y = call g(x, 2)
+  let z = call g(1)
+  ret y
+}

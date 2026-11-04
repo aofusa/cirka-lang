@@ -1,0 +1,11 @@
+type T { One = 0 { a: i64 }, Two = 1 { a: i64, b: i64 } }
+fn f(x: ptr @owned) -> ptr {
+entry:
+  switch x { T.One => one, T.Two => two }
+one:
+  let tok = drop_reuse x
+  let r = alloc T.Two(1, 2) reuse tok
+  ret r
+two:
+  ret x
+}

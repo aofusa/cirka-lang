@@ -100,6 +100,8 @@ dependencies = [
 name = "cirka-integration"
 version = "0.0.1-dev"
 dependencies = [
+ "cirka-diagnostics",
+ "cirka-mir",
  "cirka-testkit",
 ]
 

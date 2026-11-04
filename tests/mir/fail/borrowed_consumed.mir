@@ -1,0 +1,13 @@
+type Box { Box = 0 { v: i64 } }
+fn keep(b: ptr @borrowed) -> ptr {
+entry:
+  ret b
+}
+fn main() -> i64 {
+entry:
+  let b = alloc Box.Box(1)
+  let c = call keep(b)
+  drop c
+  drop b
+  ret 0
+}

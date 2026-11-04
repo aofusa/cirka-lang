@@ -296,3 +296,10 @@ fn roundtrip_property() {
         assert_eq!(print_module(&parsed), text);
     }
 }
+
+#[test]
+fn verifier_accepts_design_example() {
+    let m = parse(FileId(0), MAP_EXAMPLE).unwrap();
+    let errs = crate::verify::verify_module(&m);
+    assert!(errs.is_empty(), "{}", crate::verify::render_errors(&errs));
+}

@@ -1,0 +1,1 @@
+error[M0100]: in function `keep`, block `entry`: borrowed variable `b` is consumed without `dup`
