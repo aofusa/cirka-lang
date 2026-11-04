@@ -83,7 +83,12 @@ fn cirkalang_spec_for_current_version() {
     let p = root().join(format!("docs/design/cirkalang/spec-v{v}.md"));
     let text = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
     assert!(text.contains(&format!("CirkaLang v{v}")));
-    for section in ["## 3. 構文 (EBNF)", "## 4. 型システム", "## 6. 共通 Core への変換", "対象外"] {
+    for section in [
+        "## 3. 構文 (EBNF)",
+        "## 4. 型システム",
+        "## 6. 共通 Core への変換",
+        "対象外",
+    ] {
         assert!(text.contains(section), "spec lacks `{section}`");
     }
 }

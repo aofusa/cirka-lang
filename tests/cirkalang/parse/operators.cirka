@@ -1,0 +1,10 @@
+-- Operators, sections, backticks, negation, qualified names.
+infixr 5 ++
+infixl 7 `div`
+
+xs ++ ys = append xs ys
+a = - x + y * (- 1)
+b = (+ 1) . (2 *) . (`div` 3) . (- 4) . (x `mod`)
+c = Core.List.map f xs Core.List.++ Prelude.Nil
+d = (-) 1 2
+e = f $ \x => x >>= \y => pure y

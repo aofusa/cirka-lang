@@ -1,0 +1,22 @@
+-- Layout: nested blocks, explicit braces, `in` closing `let`, brackets
+-- closing blocks, `else` at the start of a line in `do`.
+module Layout
+
+f : Int -> IO ()
+f x = do
+  let a = x + 1
+      b = a * 2
+  y <- g a
+  if b > 0
+    then printInt b
+    else do
+      printInt y
+      pure ()
+
+g = \x => case x of
+  0 => pure 0
+  n => let m = n - 1 in pure m
+
+h = (case 1 of { 1 => 2; _ => 3 }, let z = 4 in z)
+k = [do { pure 1 }, do
+       pure 2]

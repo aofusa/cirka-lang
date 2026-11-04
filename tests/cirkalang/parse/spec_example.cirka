@@ -1,0 +1,25 @@
+-- The example of spec-v0.0.1.md §8.
+module Main
+
+data Tree = Leaf | Node Tree Tree
+
+make : Int -> Tree
+make 0 = Node Leaf Leaf
+make d = Node (make (d - 1)) (make (d - 1))
+
+check : Tree -> Int
+check Leaf = 0
+check (Node l r) = 1 + check l + check r
+
+append : Vect n a -> Vect m a -> Vect (n + m) a
+append VNil ys = ys
+append (VCons x xs) ys = VCons x (append xs ys)
+
+swap : (1 p : (a, b)) -> (b, a)
+swap (x, y) = (y, x)
+
+main : IO ()
+main = do
+  printInt (check (make 10))
+  let v = append (VCons 1 VNil) (VCons 2 (VCons 3 VNil))
+  printInt (vlength v)

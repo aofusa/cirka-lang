@@ -14,6 +14,7 @@ path = "lib.rs"
 
 [dependencies]
 cirka-core.workspace = true
+cirkalang-syntax.workspace = true
 cirka-testkit.workspace = true
 cirka-diagnostics.workspace = true
 cirka-mir.workspace = true
@@ -39,3 +40,7 @@ path = "mir.rs"
 [[test]]
 name = "driver"
 path = "driver.rs"
+
+[[test]]
+name = "cirkalang"
+path = "cirkalang.rs"

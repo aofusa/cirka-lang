@@ -1,0 +1,15 @@
+error[E1005]: a definition must start with the name being defined
+ --> bad_lhs.cirka:1:1
+  |
+1 | x :: xs = 1
+  | ^^^^^^^ put constructor patterns in parentheses
+error[E1005]: more than one operator on the left-hand side
+ --> bad_lhs.cirka:2:1
+  |
+2 | a + b * c = 2
+  | ^^^^^^^^^ put patterns with operators in parentheses
+error[E1005]: a definition must start with the name being defined
+ --> bad_lhs.cirka:3:1
+  |
+3 | Just x = 3
+  | ^^^^^^ expected `name patterns = expression`

@@ -1,0 +1,5 @@
+error[E1002]: expected `)`, found new line
+ --> unclosed_paren.cirka:2:1
+  |
+2 | g = 3
+  | ^ expected `)`

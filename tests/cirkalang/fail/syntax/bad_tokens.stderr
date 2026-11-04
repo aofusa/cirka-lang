@@ -1,0 +1,15 @@
+error[E1001]: unterminated character literal
+ --> bad_tokens.cirka:1:5
+  |
+1 | f = 'ab'
+  |     ^^ expected `'`
+error[E1001]: unterminated string literal
+ --> bad_tokens.cirka:2:5
+  |
+2 | g = "unterminated
+  |     ^^^^^^^^^^^^^ string starts here
+error[E1001]: invalid number literal
+ --> bad_tokens.cirka:3:5
+  |
+3 | h = 1x
+  |     ^^ unexpected characters after the number

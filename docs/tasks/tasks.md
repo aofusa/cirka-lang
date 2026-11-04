@@ -24,7 +24,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | aCHC | H5 高度な型システム (CirkaLang v0.0.4 の後) | 0 / 5 |
 | aCHC | H6 依存型と検証 (CirkaLang v0.0.4 の後) | 0 / 5 |
 | aCHC | H7 効果・能力・セッション型 (CirkaLang v0.0.7 の後) | 0 / 5 |
-| CirkaLang | CirkaLang v0.0.1 最小の正格言語・所有権・ネイティブ | 1 / 8 |
+| CirkaLang | CirkaLang v0.0.1 最小の正格言語・所有権・ネイティブ | 2 / 8 |
 | CirkaLang | CirkaLang v0.0.2 実用 CUI | 0 / 6 |
 | CirkaLang | CirkaLang v0.0.3 借用・リージョン・性能 | 0 / 4 |
 | CirkaLang | CirkaLang v0.0.4 証明と検証 | 0 / 6 |
@@ -183,7 +183,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | ID | タイトル | 状態 | 優先度 | 依存 |
 |---|---|---|---|---|
 | [FEAT-0200](features/FEAT-0200-cl-spec-v001.md) | CirkaLang v0.0.1 言語仕様 | done | P0 | - |
-| [FEAT-0201](features/FEAT-0201-cl-syntax.md) | CirkaLang 字句・構文解析 | todo | P0 | 0005, 0200 |
+| [FEAT-0201](features/FEAT-0201-cl-syntax.md) | CirkaLang 字句・構文解析 | done | P0 | 0005, 0200 |
 | [FEAT-0202](features/FEAT-0202-cl-resolve.md) | CirkaLang 名前解決とモジュール | todo | P0 | 0201 |
 | [FEAT-0203](features/FEAT-0203-cl-elab-qtt.md) | CirkaLang エラボレータ (QTT 型検査) | todo | P0 | 0202 |
 | [FEAT-0204](features/FEAT-0204-cl-erase-lower.md) | 消去と共通 Core への変換 | todo | P0 | 0203, 0030 |

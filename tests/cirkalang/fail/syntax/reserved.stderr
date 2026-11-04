@@ -1,0 +1,10 @@
+error[E1004]: `total` is not supported in CirkaLang v0.0.1
+ --> reserved.cirka:1:1
+  |
+1 | total f : Int -> Int
+  | ^^^^^ reserved for a later version
+error[E1004]: `trait` is not supported in CirkaLang v0.0.1
+ --> reserved.cirka:2:1
+  |
+2 | trait Eq a where
+  | ^^^^^ reserved for a later version

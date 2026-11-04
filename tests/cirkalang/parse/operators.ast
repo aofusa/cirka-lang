@@ -1,0 +1,8 @@
+(infixr 5 ++)
+(infixl 7 div)
+(def ++ (xs ys) (append xs ys))
+(def a () (ops neg x + y * (ops neg 1)))
+(def b () (ops (section + 1) . (section 2 *) . (section `div` 3) . (ops neg 4) . (section x `mod`)))
+(def c () (ops (Core.List.map f xs) Core.List.++ Prelude.Nil))
+(def d () (- 1 2))
+(def e () (ops f $ (\ (x) (ops x >>= (\ (y) (pure y))))))

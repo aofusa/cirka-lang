@@ -1,0 +1,5 @@
+error[E1002]: expected `then`, found keyword `else`
+ --> missing_then.cirka:1:23
+  |
+1 | f x = if x printInt 1 else printInt 2
+  |                       ^^^^ expected `then`

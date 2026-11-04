@@ -1,0 +1,6 @@
+(module Layout)
+(sig (f) (-> Int (IO ())))
+(def f (x) (do (let (a = (ops x + 1)) (b = (ops a * 2))) (y <- (g a)) (if (ops b > 0) (printInt b) (do (printInt y) (pure ())))))
+(def g () (\ (x) (case x (0 => (pure 0)) (n => (let ((m = (ops n - 1))) (pure m))))))
+(def h () (tuple (case 1 (1 => 2) (_ => 3)) (let ((z = 4)) z)))
+(def k () [(do (pure 1)) (do (pure 2))])
