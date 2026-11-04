@@ -2,5 +2,6 @@
 //! used by both `achc` and `cirka`.
 
 pub mod config;
+pub mod native;
 
 pub use config::Config;

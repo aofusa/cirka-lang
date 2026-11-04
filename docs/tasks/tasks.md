@@ -13,7 +13,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | トラック | マイルストーン | 完了 / 全体 |
 |---|---|---|
 | 共通基盤 | M0 基盤整備 | 5 / 5 |
-| 共通基盤 | M1 バックエンド基盤 | 4 / 7 |
+| 共通基盤 | M1 バックエンド基盤 | 5 / 7 |
 | 共通基盤 | M2 Perceus | 0 / 3 |
 | 共通基盤 | M3 共通 Core と Core→MIR | 0 / 4 |
 | 共通基盤 | SX 共通基盤の拡張 (各トラックの必要に応じて) | 0 / 15 |
@@ -54,7 +54,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0011](features/FEAT-0011-mir-verifier.md) | MIR 所有権検証器 | done | P0 | 0010 |
 | [FEAT-0012](features/FEAT-0012-mir-interp.md) | MIR インタプリタ | done | P0 | 0010 |
 | [FEAT-0013](features/FEAT-0013-runtime-core.md) | ランタイム最小版 | done | P0 | 0001 |
-| [FEAT-0014](features/FEAT-0014-llvm-codegen.md) | LLVM IR 生成とリンク | todo | P0 | 0010, 0013 |
+| [FEAT-0014](features/FEAT-0014-llvm-codegen.md) | LLVM IR 生成とリンク | done | P0 | 0010, 0013 |
 | [FEAT-0015](features/FEAT-0015-calls-closures-thunks.md) | 末尾呼び出し・クロージャ・サンク | todo | P0 | 0014 |
 | [FEAT-0016](features/FEAT-0016-m1-baseline-bench.md) | M1 ベースライン性能検証 | todo | P1 | 0015, 0011, 0012 |
 
