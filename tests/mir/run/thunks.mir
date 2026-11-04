@@ -1,0 +1,55 @@
+// Thunks: sharing (evaluated once), blackholing, and a CAF global.
+type Int { I = 0 { v: i64 } }
+extern fn cirka_write_i64(i64) -> void
+extern fn cirka_write_char(i64) -> void
+global answer = answer_init
+
+fn say(n: i64) -> i64 {
+entry:
+  let _ = extern cirka_write_i64(n)
+  let _ = extern cirka_write_char(10)
+  ret 0
+}
+
+fn expensive(x: ptr @owned) -> ptr {
+entry:
+  let v = proj x Int.I.v
+  drop x
+  let _ = call say(999)
+  let w = prim mul(v, v)
+  let r = alloc Int.I(w)
+  ret r
+}
+
+fn answer_init() -> ptr {
+entry:
+  let _ = call say(777)
+  let r = alloc Int.I(42)
+  ret r
+}
+
+fn main() -> i64 {
+entry:
+  let x = alloc Int.I(12)
+  let t = mkthunk expensive(x)
+  dup t
+  let a = force t
+  let b = force t
+  let av = proj a Int.I.v
+  let bv = proj b Int.I.v
+  let _ = call say(av)
+  let _ = call say(bv)
+  drop a
+  drop b
+  let g1 = global answer
+  let v1 = force g1
+  let g2 = global answer
+  let v2 = force g2
+  let x1 = proj v1 Int.I.v
+  let x2 = proj v2 Int.I.v
+  let s = prim add(x1, x2)
+  drop v1
+  drop v2
+  let _ = call say(s)
+  ret 0
+}

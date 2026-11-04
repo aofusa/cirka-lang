@@ -1,0 +1,87 @@
+// Closures: exact, partial (PAP) and over-application.
+type Int { I = 0 { v: i64 } }
+extern fn cirka_write_i64(i64) -> void
+extern fn cirka_write_char(i64) -> void
+
+fn print_int(x: ptr @owned) -> i64 {
+entry:
+  let v = proj x Int.I.v
+  drop x
+  let _ = extern cirka_write_i64(v)
+  let _ = extern cirka_write_char(10)
+  ret 0
+}
+
+// add3 k a b c = k + a + b + c   (k captured)
+fn add3(k: i64, a: ptr @owned, b: ptr @owned, c: ptr @owned) -> ptr {
+entry:
+  let x = proj a Int.I.v
+  let y = proj b Int.I.v
+  let z = proj c Int.I.v
+  drop a
+  drop b
+  drop c
+  let s1 = prim add(k, x)
+  let s2 = prim add(s1, y)
+  let s3 = prim add(s2, z)
+  let r = alloc Int.I(s3)
+  ret r
+}
+
+// adder n = \x -> \y -> n + x + y  : returns a closure that returns a closure
+fn mk_adder(n: ptr @owned, x: ptr @owned) -> ptr {
+entry:
+  let c = mkclosure add_two(n, x)
+  ret c
+}
+fn add_two(n: ptr @owned, x: ptr @owned, y: ptr @owned) -> ptr {
+entry:
+  let a = proj n Int.I.v
+  let b = proj x Int.I.v
+  let c = proj y Int.I.v
+  drop n
+  drop x
+  drop y
+  let s = prim add(a, b)
+  let s2 = prim add(s, c)
+  let r = alloc Int.I(s2)
+  ret r
+}
+
+fn main() -> i64 {
+entry:
+  let one = alloc Int.I(1)
+  let two = alloc Int.I(2)
+  let three = alloc Int.I(3)
+  let f = mkclosure add3(100)
+  // exact application
+  dup f
+  dup one
+  dup two
+  dup three
+  let r1 = apply f(one, two, three)
+  let _ = call print_int(r1)
+  // partial application twice, then saturate
+  dup f
+  dup one
+  let p1 = apply f(one)
+  dup p1
+  dup two
+  let p2 = apply p1(two)
+  dup three
+  let r2 = apply p2(three)
+  let _ = call print_int(r2)
+  // the PAP p1 is shared: apply it again
+  dup three
+  dup three
+  let r3 = apply p1(three, three)
+  let _ = call print_int(r3)
+  drop f
+  // over-application: mk_adder takes 2 args and returns a closure of 1
+  let g = mkclosure mk_adder()
+  let ten = alloc Int.I(10)
+  let r4 = apply g(ten, one, two)
+  let _ = call print_int(r4)
+  drop three
+  ret 0
+}

@@ -303,3 +303,51 @@ fn verifier_accepts_design_example() {
     let errs = crate::verify::verify_module(&m);
     assert!(errs.is_empty(), "{}", crate::verify::render_errors(&errs));
 }
+
+fn interp(src: &str) -> Result<crate::interp::RunResult, String> {
+    let m = parse(FileId(0), src).unwrap();
+    crate::interp::run(&m, b"", 1_000_000)
+}
+
+#[test]
+fn interp_detects_double_free() {
+    let e = interp("type B { B = 0 { v: i64 } }\nfn main() -> i64 { entry: let b = alloc B.B(1) drop b drop b ret 0 }").unwrap_err();
+    assert!(e.contains("double free"), "{e}");
+}
+
+#[test]
+fn interp_detects_use_after_free() {
+    let e = interp("type B { B = 0 { v: i64 } }\nfn main() -> i64 { entry: let b = alloc B.B(1) drop b let v = proj b B.B.v ret v }").unwrap_err();
+    assert!(e.contains("use after free"), "{e}");
+}
+
+#[test]
+fn interp_reports_leaks_and_stats() {
+    let r = interp("type B { B = 0 { v: i64 } }\nfn main() -> i64 { entry: let b = alloc B.B(1) let c = alloc B.B(2) drop c ret 0 }").unwrap();
+    assert_eq!(r.leaked, 1);
+    assert_eq!(r.stats.allocs, 2);
+    assert_eq!(r.stats.frees, 1);
+}
+
+#[test]
+fn interp_reuse_map_has_no_new_allocations() {
+    let src = format!(
+        "{MAP_EXAMPLE}\nextern fn cirka_write_i64(i64) -> void
+fn id(x: ptr @owned) -> ptr {{ entry: ret x }}
+fn main() -> i64 {{
+entry:
+  let n = alloc List.Nil()
+  let a = alloc List.Cons(n, n)
+  let b = alloc List.Cons(n, a)
+  let f = mkclosure id()
+  let r = call map(f, b)
+  drop r
+  ret 0
+}}"
+    );
+    let r = interp(&src).unwrap();
+    // 2 cells + 1 closure; map reuses both cells in place.
+    assert_eq!(r.stats.allocs, 3, "{:?}", r.stats);
+    assert_eq!(r.stats.reuses, 2);
+    assert_eq!(r.leaked, 0);
+}

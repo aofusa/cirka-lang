@@ -1,0 +1,6 @@
+extern fn cirka_write_bytes(ptr) -> void
+fn main() -> i64 {
+entry:
+  let _ = extern cirka_write_bytes("before\n")
+  panic "pattern match failure"
+}

@@ -1,0 +1,31 @@
+// Mutually recursive tail calls must not consume stack.
+extern fn cirka_write_i64(i64) -> void
+extern fn cirka_write_char(i64) -> void
+
+fn even(n: i64) -> i64 {
+entry:
+  switch n { 0 => yes, default => no }
+yes:
+  ret 1
+no:
+  let m = prim sub(n, 1)
+  tailcall odd(m)
+}
+
+fn odd(n: i64) -> i64 {
+entry:
+  switch n { 0 => yes, default => no }
+yes:
+  ret 0
+no:
+  let m = prim sub(n, 1)
+  tailcall even(m)
+}
+
+fn main() -> i64 {
+entry:
+  let r = call even(1000001)
+  let _ = extern cirka_write_i64(r)
+  let _ = extern cirka_write_char(10)
+  ret 3
+}

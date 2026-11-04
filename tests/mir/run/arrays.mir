@@ -1,0 +1,43 @@
+type Int { I = 0 { v: i64 } }
+extern fn cirka_write_i64(i64) -> void
+extern fn cirka_write_bytes(ptr) -> void
+extern fn cirka_write_char(i64) -> void
+
+fn fill(a: ptr @borrowed, i: i64, n: i64) -> i64 {
+entry:
+  let c = prim ge(i, n)
+  switch c { 1 => done, default => more }
+done:
+  ret 0
+more:
+  let sq = prim mul(i, i)
+  let b = alloc Int.I(sq)
+  let _ = prim array_set(a, i, b)
+  let i1 = prim add(i, 1)
+  tailcall fill(a, i1, n)
+}
+
+fn main() -> i64 {
+entry:
+  let z = alloc Int.I(0)
+  let a = prim array_new(10, z)
+  let _ = call fill(a, 0, 10)
+  let e = prim array_get(a, 7)
+  let v = proj e Int.I.v
+  let _ = extern cirka_write_i64(v)
+  let _ = extern cirka_write_char(10)
+  let n = prim array_len(a)
+  let _ = extern cirka_write_i64(n)
+  let _ = extern cirka_write_char(10)
+  drop a
+  let s = prim bytes_new(3)
+  let _ = prim bytes_set(s, 0, 79)
+  let _ = prim bytes_set(s, 1, 75)
+  let _ = prim bytes_set(s, 2, 10)
+  let _ = extern cirka_write_bytes(s)
+  let l = prim bytes_len(s)
+  let _ = extern cirka_write_i64(l)
+  drop s
+  let _ = extern cirka_write_char(10)
+  ret 0
+}

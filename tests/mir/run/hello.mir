@@ -1,0 +1,23 @@
+extern fn cirka_write_bytes(ptr) -> void
+extern fn cirka_write_i64(i64) -> void
+extern fn cirka_write_char(i64) -> void
+extern fn cirka_write_f64(f64) -> void
+
+fn main() -> i64 {
+entry:
+  let _ = extern cirka_write_bytes("hello, world\n")
+  let x = prim mul(6, 7)
+  let _ = extern cirka_write_i64(x)
+  let _ = extern cirka_write_char(10)
+  let y = prim sub(0, 12345678901)
+  let _ = extern cirka_write_i64(y)
+  let _ = extern cirka_write_char(10)
+  let d = prim fdiv(1.0, 3.0)
+  let _ = extern cirka_write_f64(d)
+  let _ = extern cirka_write_char(10)
+  let _ = extern cirka_write_f64(0.1)
+  let _ = extern cirka_write_char(10)
+  let _ = extern cirka_write_char(12354)
+  let _ = extern cirka_write_char(10)
+  ret 0
+}

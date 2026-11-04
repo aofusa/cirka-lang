@@ -1,0 +1,64 @@
+// Build [1..n], map (+1) with in-place reuse, sum, and free everything.
+type List { Nil = 0 {}, Cons = 1 { head: ptr, tail: ptr } }
+type Int { I = 0 { v: i64 } }
+extern fn cirka_write_i64(i64) -> void
+extern fn cirka_write_char(i64) -> void
+
+fn range(i: i64, n: i64) -> ptr {
+entry:
+  let c = prim gt(i, n)
+  switch c { 1 => done, default => more }
+done:
+  let nil = alloc List.Nil()
+  ret nil
+more:
+  let i1 = prim add(i, 1)
+  let rest = call range(i1, n)
+  let b = alloc Int.I(i)
+  let r = alloc List.Cons(b, rest)
+  ret r
+}
+
+fn inc_all(xs: ptr @owned) -> ptr {
+entry:
+  switch xs { List.Nil => nil, List.Cons => cons }
+nil:
+  ret xs
+cons:
+  let h = proj xs List.Cons.head
+  let t = proj xs List.Cons.tail
+  dup h
+  dup t
+  let tok = drop_reuse xs
+  let v = proj h Int.I.v
+  drop h
+  let v1 = prim add(v, 1)
+  let b = alloc Int.I(v1)
+  let t2 = call inc_all(t)
+  let r = alloc List.Cons(b, t2) reuse tok
+  ret r
+}
+
+fn sum(xs: ptr @borrowed, acc: i64) -> i64 {
+entry:
+  switch xs { List.Nil => nil, List.Cons => cons }
+nil:
+  ret acc
+cons:
+  let h = proj xs List.Cons.head
+  let t = proj xs List.Cons.tail
+  let v = proj h Int.I.v
+  let acc2 = prim add(acc, v)
+  tailcall sum(t, acc2)
+}
+
+fn main() -> i64 {
+entry:
+  let xs = call range(1, 1000)
+  let ys = call inc_all(xs)
+  let s = call sum(ys, 0)
+  drop ys
+  let _ = extern cirka_write_i64(s)
+  let _ = extern cirka_write_char(10)
+  ret 0
+}
