@@ -12,7 +12,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 
 | トラック | マイルストーン | 完了 / 全体 |
 |---|---|---|
-| 共通基盤 | M0 基盤整備 | 1 / 5 |
+| 共通基盤 | M0 基盤整備 | 2 / 5 |
 | 共通基盤 | M1 バックエンド基盤 | 0 / 7 |
 | 共通基盤 | M2 Perceus | 0 / 3 |
 | 共通基盤 | M3 共通 Core と Core→MIR | 0 / 4 |
@@ -44,7 +44,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0002](features/FEAT-0002-docker-dev-env.md) | Docker 開発環境と .env 読み込み | todo | P0 | 0001 |
 | [FEAT-0003](features/FEAT-0003-test-harness.md) | 統合テストハーネス | todo | P0 | 0001 |
 | [FEAT-0004](features/FEAT-0004-ci-scripts.md) | CI スクリプト | todo | P1 | 0003 |
-| [FEAT-0005](features/FEAT-0005-diagnostics.md) | 診断基盤 (cirka-diagnostics) | todo | P0 | 0001 |
+| [FEAT-0005](features/FEAT-0005-diagnostics.md) | 診断基盤 (cirka-diagnostics) | done | P0 | 0001 |
 
 ### M1 バックエンド基盤
 

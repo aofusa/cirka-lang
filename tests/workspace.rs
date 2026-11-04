@@ -3,11 +3,15 @@
 use std::path::{Path, PathBuf};
 
 fn root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf()
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .to_path_buf()
 }
 
 fn deps_of(krate: &str) -> Vec<String> {
-    let text = std::fs::read_to_string(root().join("crates").join(krate).join("Cargo.toml")).unwrap();
+    let text =
+        std::fs::read_to_string(root().join("crates").join(krate).join("Cargo.toml")).unwrap();
     let mut in_deps = false;
     let mut out = Vec::new();
     for line in text.lines() {
@@ -53,7 +57,11 @@ fn run_bin(name: &str, args: &[&str]) -> String {
         .current_dir(root())
         .output()
         .unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     String::from_utf8(out.stdout).unwrap()
 }
 
