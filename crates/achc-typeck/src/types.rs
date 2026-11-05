@@ -287,7 +287,8 @@ impl Kind {
 
     pub fn from_sig(k: &achc_syntax::ast::KindSig) -> Kind {
         match k {
-            achc_syntax::ast::KindSig::Star => Kind::Star,
+            // `Type ⊑ LType`: linearity is tracked apart from kinds.
+            achc_syntax::ast::KindSig::Star | achc_syntax::ast::KindSig::LType => Kind::Star,
             achc_syntax::ast::KindSig::Arrow(a, b) => {
                 Kind::Arrow(Box::new(Kind::from_sig(a)), Box::new(Kind::from_sig(b)))
             }

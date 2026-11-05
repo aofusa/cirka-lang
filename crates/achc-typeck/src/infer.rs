@@ -160,6 +160,29 @@ pub struct Tc {
     /// parameter pattern (by its span) is bound by, when it is not `Many`.
     pub(crate) lin_args: HashMap<Span, Ty>,
     pub(crate) lin_pats: HashMap<Span, Ty>,
+    /// Uniqueness (FEAT-0121, 03-type-system.md §2.2). Set when the
+    /// program declares linear-only types or `LType` type variables; the
+    /// records below are kept only then.
+    pub(crate) has_ltype: bool,
+    /// Data types declared `type T :: k1 -> .. -> LType` (with the arity).
+    pub(crate) ltype_datas: HashMap<String, usize>,
+    /// Type variables (unique names) declared `:: LType`.
+    pub(crate) ltype_vars: HashSet<String>,
+    /// The type of each pattern and of each let-bound name (by span).
+    pub(crate) pat_tys: HashMap<Span, Ty>,
+    /// Arguments passed to unrestricted arrows (U-Bind, E0301).
+    pub(crate) omega_args: Vec<(Span, Ty)>,
+    /// The type of each argument (by span).
+    pub(crate) arg_tys: HashMap<Span, Ty>,
+    /// Instantiations of `Type` variables of a referenced name (E0310):
+    /// (use site, name, variable, its instance).
+    pub(crate) inst_checks: Vec<(Span, String, String, Ty)>,
+    /// Metas created by those instantiations (E0310 reports them, not
+    /// E0301).
+    inst_metas: HashSet<u32>,
+    /// The type of each `do` block (by span): `IO` blocks run their
+    /// statements once.
+    pub(crate) do_tys: HashMap<Span, Ty>,
     /// Top-level value names of all modules (for deriving helpers).
     pub(crate) top_names: HashSet<String>,
     /// Source files and their modules, for the call stack of `error`
@@ -198,6 +221,15 @@ impl Tc {
             scoped: Vec::new(),
             lin_args: HashMap::new(),
             lin_pats: HashMap::new(),
+            has_ltype: false,
+            ltype_datas: HashMap::new(),
+            ltype_vars: HashSet::new(),
+            pat_tys: HashMap::new(),
+            omega_args: Vec::new(),
+            arg_tys: HashMap::new(),
+            inst_checks: Vec::new(),
+            inst_metas: HashSet::new(),
+            do_tys: HashMap::new(),
             top_names: HashSet::new(),
             sources: None,
         };
@@ -323,7 +355,14 @@ impl Tc {
 
     pub fn zonk(&self, t: &Ty) -> Ty {
         match self.shallow(t) {
-            Ty::App(f, a) => Ty::App(Box::new(self.zonk(&f)), Box::new(self.zonk(&a))),
+            Ty::App(f, a) => {
+                let t = Ty::App(Box::new(self.zonk(&f)), Box::new(self.zonk(&a)));
+                // `#FUN #Many a b` is `a -> b`.
+                match as_mul_fun(&t) {
+                    Some((m, a, b)) if *m == mult_many() => Ty::fun(a.clone(), b.clone()),
+                    _ => t,
+                }
+            }
             Ty::Fun(a, b) => Ty::Fun(Box::new(self.zonk(&a)), Box::new(self.zonk(&b))),
             Ty::Forall(vs, b) => Ty::Forall(vs, Box::new(self.zonk(&b))),
             t => t,
@@ -647,8 +686,9 @@ impl Tc {
                 // or field.
                 let n0 = tvs.len();
                 let mut names = Vec::new();
-                for v in vs {
+                for (v, k) in vs {
                     let n = self.fresh_name(&format!("{}#", v.name));
+                    self.note_tyvar_kind(&n, k.as_ref());
                     tvs.push((v.name.clone(), Ty::Var(n.clone())));
                     names.push(n);
                 }
@@ -722,8 +762,10 @@ impl Tc {
         match &t.kind {
             TypeKind::Forall(vs, b) => {
                 let mut bound = Vec::new();
-                for v in vs {
-                    let ty = Ty::Var(self.fresh_name(&format!("{}#", v.name)));
+                for (v, k) in vs {
+                    let n = self.fresh_name(&format!("{}#", v.name));
+                    self.note_tyvar_kind(&n, k.as_ref());
+                    let ty = Ty::Var(n);
                     tvs.push((v.name.clone(), ty.clone()));
                     bound.push((v.name.clone(), ty));
                 }
@@ -794,6 +836,34 @@ impl Tc {
                     }
                     Decl::Class(c) => self.declare_class_name(m, c),
                     _ => {}
+                }
+            }
+        }
+        for (m, decls) in modules {
+            for d in decls {
+                if let Decl::KindSig(n, k, sp) = d {
+                    let name = format!("{m}.{}", n.name);
+                    if !self.datas.contains_key(&name) {
+                        self.error(err(
+                            "E0201",
+                            *sp,
+                            format!(
+                                "the kind signature is for `{}`, which is not a data type of this module",
+                                n.name
+                            ),
+                        ));
+                        continue;
+                    }
+                    let mut arity = 0;
+                    let mut r = k;
+                    while let ast::KindSig::Arrow(_, b) = r {
+                        arity += 1;
+                        r = b;
+                    }
+                    if *r == ast::KindSig::LType {
+                        self.ltype_datas.insert(name, arity);
+                        self.has_ltype = true;
+                    }
                 }
             }
         }
@@ -1422,8 +1492,25 @@ impl Tc {
         let mut args = Vec::new();
         let mut res = ty.clone();
         let mut mults = Vec::new();
-        for _ in 0..arity {
+        if self.has_ltype
+            && let Decl::Fun(f, ..) = clauses[0]
+        {
+            self.pat_tys.insert(f.span, ty.clone());
+        }
+        // U-Arg (03-type-system.md §2.2): an arrow of a binding without a
+        // signature becomes linear when its argument is linear-only.
+        let mut open_mults = Vec::new();
+        for i in 0..arity {
             let r = self.shallow(&res);
+            if self.has_ltype && matches!(r, Ty::Meta(_)) {
+                let (m, a, b) = (self.fresh(), self.fresh(), self.fresh());
+                self.unify(span, &r, &mul_fun(m.clone(), a.clone(), b.clone()));
+                open_mults.push((i, m.clone()));
+                mults.push(Some(m));
+                args.push(a);
+                res = b;
+                continue;
+            }
             if let Some((m, a, b)) = as_mul_fun(&r) {
                 mults.push(Some(m.clone()));
                 args.push(a.clone());
@@ -1474,6 +1561,12 @@ impl Tc {
                     rhs,
                     span: *sp,
                 });
+            }
+        }
+        for (i, m) in open_mults {
+            if matches!(self.shallow(&m), Ty::Meta(_)) {
+                let lin = self.is_ltype(&args[i]);
+                self.unify(span, &m, &if lin { mult_one() } else { mult_many() });
             }
         }
         let mut e = tast::Expr::Match(vars.clone(), tclauses, res);
@@ -1767,6 +1860,9 @@ impl Tc {
                     self.lin_args.insert(a.span, m.clone());
                     let (at, rt) = (at.clone(), rt.clone());
                     let at = self.con_arg_ty(a, at);
+                    if self.has_ltype {
+                        self.arg_tys.insert(a.span, at.clone());
+                    }
                     let ta = self.expr(a, &at);
                     return (tast::Expr::App(Box::new(tf), Box::new(ta)), rt);
                 }
@@ -1782,6 +1878,16 @@ impl Tc {
                     }
                 };
                 let at = self.con_arg_ty(a, at);
+                if self.has_ltype {
+                    self.arg_tys.insert(a.span, at.clone());
+                }
+                if self.has_ltype && !con_headed(f) {
+                    let from_inst =
+                        matches!(self.shallow(&at), Ty::Meta(id) if self.inst_metas.contains(&id));
+                    if !from_inst {
+                        self.omega_args.push((a.span, at.clone()));
+                    }
+                }
                 let ta = self.expr(a, &at);
                 (tast::Expr::App(Box::new(tf), Box::new(ta)), rt)
             }
@@ -1947,7 +2053,13 @@ impl Tc {
                     mul_fun(mult, st, res),
                 )
             }
-            ExprKind::Do(ss) => self.do_stmts(ss, sp),
+            ExprKind::Do(ss) => {
+                let (e, t) = self.do_stmts(ss, sp);
+                if self.has_ltype {
+                    self.do_tys.insert(sp, t.clone());
+                }
+                (e, t)
+            }
             ExprKind::Tuple(es) => {
                 let tc = self.ensure_tuple(es.len());
                 let (mut f, mut ft) = self.con_expr(&tc);
@@ -2054,13 +2166,6 @@ impl Tc {
     /// its linear arrows made unrestricted (the multiplicity is erased and
     /// the linearity checker treats constructor fields as linear).
     fn con_arg_ty(&self, a: &ast::Expr, t: Ty) -> Ty {
-        fn con_headed(e: &ast::Expr) -> bool {
-            match &e.kind {
-                ExprKind::Con(_) => true,
-                ExprKind::App(f, _) | ExprKind::Paren(f) => con_headed(f),
-                _ => false,
-            }
-        }
         if !con_headed(a) {
             return t;
         }
@@ -2176,7 +2281,128 @@ impl Tc {
                 s.ty.clone(),
             );
         }
-        self.global_ref(name, s, span)
+        let (e, t) = self.global_ref(name, s, span);
+        if self.has_ltype
+            && let tast::Expr::Global(_, inst) = head_global(&e)
+        {
+            for (v, m) in s.vars.iter().zip(inst.clone()) {
+                if !self.ltype_vars.contains(v) {
+                    if let Ty::Meta(id) = m {
+                        self.inst_metas.insert(id);
+                    }
+                    self.inst_checks
+                        .push((span, name.to_string(), v.clone(), m));
+                }
+            }
+        }
+        (e, t)
+    }
+
+    /// Records the kind annotation of a type variable (`LType`).
+    fn note_tyvar_kind(&mut self, v: &str, k: Option<&ast::KindSig>) {
+        if k == Some(&ast::KindSig::LType) {
+            self.ltype_vars.insert(v.to_string());
+            self.has_ltype = true;
+        }
+    }
+
+    /// Whether values of a type are linear-only (kind `LType`): `Unique`
+    /// and types declared `:: LType`, data types with such a field (the lub
+    /// of the field kinds, 03-type-system.md §1.1) and `LType` variables.
+    pub fn is_ltype(&self, t: &Ty) -> bool {
+        if !self.has_ltype {
+            return false;
+        }
+        self.is_ltype_in(&self.zonk(t), &mut Vec::new())
+    }
+
+    /// Whether a value of a type may hold a closure (and so use the
+    /// variables it captures more than once): functions, `IO` actions,
+    /// type variables and data types with such a field.
+    pub fn may_hold_closure(&self, t: &Ty) -> bool {
+        self.closure_in(&self.zonk(t), &mut Vec::new())
+    }
+
+    fn closure_in(&self, t: &Ty, visiting: &mut Vec<String>) -> bool {
+        match t {
+            Ty::Fun(..) | Ty::Forall(..) | Ty::Var(_) | Ty::Meta(_) => true,
+            Ty::Con(_) | Ty::App(..) => {
+                let (h, args) = t.spine();
+                let Ty::Con(n) = h else {
+                    return true;
+                };
+                if *n == fun_tc() || *n == prim("IO") {
+                    return true;
+                }
+                if visiting.contains(n) {
+                    return false;
+                }
+                let Some(d) = self.datas.get(n) else {
+                    // Primitive types.
+                    return args.iter().any(|a| self.closure_in(a, visiting));
+                };
+                if args.len() != d.params.len() {
+                    return true;
+                }
+                let sub: Vec<(String, Ty)> = d
+                    .params
+                    .iter()
+                    .cloned()
+                    .zip(args.iter().map(|a| (*a).clone()))
+                    .collect();
+                visiting.push(n.clone());
+                let r = d.cons.iter().any(|c| {
+                    self.cons.get(c).is_none_or(|ci| {
+                        ci.fields
+                            .iter()
+                            .any(|f| self.closure_in(&f.subst(&sub), visiting))
+                    })
+                });
+                visiting.pop();
+                r
+            }
+        }
+    }
+
+    fn is_ltype_in(&self, t: &Ty, visiting: &mut Vec<String>) -> bool {
+        match t {
+            Ty::Var(v) => self.ltype_vars.contains(v),
+            Ty::Fun(..) | Ty::Forall(..) | Ty::Meta(_) => false,
+            Ty::Con(_) | Ty::App(..) => {
+                let (h, args) = t.spine();
+                let Ty::Con(n) = h else {
+                    return false;
+                };
+                if let Some(&k) = self.ltype_datas.get(n) {
+                    return args.len() >= k;
+                }
+                if visiting.contains(n) {
+                    return false;
+                }
+                let Some(d) = self.datas.get(n) else {
+                    return false;
+                };
+                if args.len() != d.params.len() {
+                    return false;
+                }
+                let sub: Vec<(String, Ty)> = d
+                    .params
+                    .iter()
+                    .cloned()
+                    .zip(args.iter().map(|a| (*a).clone()))
+                    .collect();
+                visiting.push(n.clone());
+                let r = d.cons.iter().any(|c| {
+                    self.cons.get(c).is_some_and(|ci| {
+                        ci.fields
+                            .iter()
+                            .any(|f| self.is_ltype_in(&f.subst(&sub), visiting))
+                    })
+                });
+                visiting.pop();
+                r
+            }
+        }
     }
 
     fn lit(&mut self, l: &ast::Lit, sp: Span) -> (tast::Expr, Ty) {
@@ -2717,6 +2943,9 @@ impl Tc {
 
     pub fn pat(&mut self, p: &ast::Pat, t: &Ty) -> tast::Pat {
         let sp = p.span;
+        if self.has_ltype {
+            self.pat_tys.insert(sp, t.clone());
+        }
         match &p.kind {
             PatKind::Var(v) => {
                 self.locals
@@ -3297,6 +3526,23 @@ fn stmt_free_vars(s: &Stmt, out: &mut HashSet<String>) {
                 decl_free_vars(d, out);
             }
         }
+    }
+}
+
+/// Whether an expression is a (partially applied) data constructor.
+fn con_headed(e: &ast::Expr) -> bool {
+    match &e.kind {
+        ExprKind::Con(_) => true,
+        ExprKind::App(f, _) | ExprKind::Paren(f) => con_headed(f),
+        _ => false,
+    }
+}
+
+/// The `Global` at the head of a reference applied to dictionaries.
+fn head_global(e: &tast::Expr) -> &tast::Expr {
+    match e {
+        tast::Expr::App(f, _) => head_global(f),
+        _ => e,
     }
 }
 

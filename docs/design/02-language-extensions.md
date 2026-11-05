@@ -116,6 +116,10 @@ dup :: a -> (a, a)      -- a :: Type なので Unique X では呼べない (型�
 組み込みのタプル・`Maybe`・`Either`・リストは **種多相** で、要素の種の上限が全体の種になる
 (`Maybe (Unique X) :: LType`)。
 
+前期の実装 (FEAT-0121) では、種の注釈は `type T :: k` (StandaloneKindSignatures の形)・`forall (a :: LType)`・
+クラス引数の `(a :: LType)` で書く。`LType` は `Data.Kind` からも import できる (書かなくてもよい)。
+線形専用かどうかの判定と検査の方式は [03-type-system.md](03-type-system.md) §2.5。
+
 ## 4. RAII: `Drop` と `Release` (`CirkaDrop`)
 
 ```haskell

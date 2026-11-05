@@ -1,0 +1,55 @@
+error[E0301]: a value of the linear-only type `Res` is bound with multiplicity ω
+  --> tests/achc/typeck/fail/unique.hs:24:19
+   |
+24 | unrestrictedParam r = close r
+   |                   ^ bound by an unrestricted arrow (`->`)
+   = help: use a linear arrow (`%1 ->`) for this argument
+error[E0301]: a value of the linear-only type `Res` is passed to an unrestricted argument
+  --> tests/achc/typeck/fail/unique.hs:27:25
+   |
+27 | unrestrictedArg = keep (open 1)
+   |                         ^^^^^^ this argument may be used many times
+   = help: the function must take this argument with a linear arrow (`%1 ->`)
+error[E0301]: a value of the linear-only type `Res` is bound with multiplicity ω
+  --> tests/achc/typeck/fail/unique.hs:30:10
+   |
+30 |     keep _ = 0
+   |          ^ bound by an unrestricted arrow (`->`)
+   = help: use a linear arrow (`%1 ->`) for this argument
+error[E0301]: a top-level binding cannot have the linear-only type `(Res, Res)`
+  --> tests/achc/typeck/fail/unique.hs:33:1
+   |
+33 | copied = dupl (open 2)
+   | ^^^^^^ a top-level value may be used many times
+   = help: make it a function, e.g. of `()`, that creates the value
+error[E0310]: the type variable `a` of `dupl` has kind `Type`, but is instantiated with the linear-only type `Res`
+  --> tests/achc/typeck/fail/unique.hs:33:10
+   |
+33 | copied = dupl (open 2)
+   |          ^^^^ used here
+   = help: a polymorphic function may copy values of kind `Type`; declare the variable `forall (a :: LType)` if it is used linearly
+error[E0303]: linear variable `b` is used more than once
+  --> tests/achc/typeck/fail/unique.hs:36:15
+   |
+36 | boxTwice b = (b, b)
+   |          - bound linearly here
+   |               ^ first use
+   |                  - second use
+error[E0302]: linear variable `r` is not consumed
+  --> tests/achc/typeck/fail/unique.hs:39:16
+   |
+39 | leaked n = let r = open n in n
+   |                ^ bound linearly here
+   = note: a linear value must be used exactly once
+error[E0301]: a top-level binding cannot have the linear-only type `Res`
+  --> tests/achc/typeck/fail/unique.hs:42:1
+   |
+42 | global = open 3
+   | ^^^^^^ a top-level value may be used many times
+   = help: make it a function, e.g. of `()`, that creates the value
+error[E0301]: a value of the linear-only type `Res` is passed to an unrestricted argument
+  --> tests/achc/typeck/fail/unique.hs:45:27
+   |
+45 | lambda = (\r -> close r) (open 4)
+   |                           ^^^^^^ this argument may be used many times
+   = help: the function must take this argument with a linear arrow (`%1 ->`)

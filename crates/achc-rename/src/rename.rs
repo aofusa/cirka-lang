@@ -667,6 +667,7 @@ impl Renamer {
                 })
             }
             Decl::TypeSyn(n, ps, t, sp) => Decl::TypeSyn(n.clone(), ps.clone(), self.ty(t), *sp),
+            Decl::KindSig(..) => d.clone(),
             Decl::Class(c) => {
                 let context = c.context.iter().map(|x| self.constraint(x)).collect();
                 let decls = c.decls.iter().map(|d| self.top_decl(d)).collect();

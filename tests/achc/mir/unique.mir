@@ -1,0 +1,105 @@
+fn Main.chain(a: ptr @owned) -> ptr {
+entry:
+  let thk%1 = mkthunk Main.chain$thk27(a)
+  tailcall Main.total(thk%1)
+}
+
+fn Main.chain$thk27(a: ptr @owned) -> ptr {
+entry:
+  tailcall Main.pass(a)
+}
+
+fn Main.main$init() -> ptr {
+entry:
+  let caf%0 = global Cirka.Base.$fShow112
+  let thk%1 = mkthunk Main.main$init$thk21()
+  tailcall Cirka.Base.print(caf%0, thk%1)
+}
+
+fn Main.main$init$thk21() -> ptr {
+entry:
+  let caf%0 = global Cirka.Base.$fNum34
+  let r%1 = call Cirka.Base.+(caf%0)
+  let thk%2 = mkthunk Main.main$init$thk21$thk22()
+  let thk%3 = mkthunk Main.main$init$thk21$thk23()
+  let ap%4 = apply r%1(thk%2, thk%3)
+  ret ap%4
+}
+
+fn Main.main$init$thk21$thk22() -> ptr {
+entry:
+  let thk%0 = mkthunk Main.main$init$thk21$thk22$thk24()
+  tailcall Main.chain(thk%0)
+}
+
+fn Main.main$init$thk21$thk22$thk24() -> ptr {
+entry:
+  let con%0 = alloc Int.I#(1)
+  let con%1 = alloc Int.I#(2)
+  let con%2 = alloc Int.I#(3)
+  let con%3 = alloc List.Nil()
+  let con%4 = alloc List.Cons(con%2, con%3)
+  let con%5 = alloc List.Cons(con%1, con%4)
+  let con%6 = alloc List.Cons(con%0, con%5)
+  tailcall Cirka.Ownership.unique(con%6)
+}
+
+fn Main.main$init$thk21$thk23() -> ptr {
+entry:
+  let con%0 = alloc Int.I#(4)
+  let con%1 = alloc Int.I#(5)
+  let con%2 = alloc List.Nil()
+  let con%3 = alloc List.Cons(con%1, con%2)
+  let con%4 = alloc List.Cons(con%0, con%3)
+  tailcall Main.shared(con%4)
+}
+
+fn Main.pass(a: ptr @owned) -> ptr {
+entry:
+  let ev%1 = force a
+  ret ev%1
+}
+
+fn Main.shared(a: ptr @owned) -> ptr {
+entry:
+  let caf%1 = global Cirka.Base.$fNum34
+  let r%2 = call Cirka.Base.+(caf%1)
+  dup a
+  let thk%3 = mkthunk Main.shared$thk25(a)
+  let thk%4 = mkthunk Main.shared$thk26(a)
+  let ap%5 = apply r%2(thk%3, thk%4)
+  ret ap%5
+}
+
+fn Main.shared$thk25(a: ptr @owned) -> ptr {
+entry:
+  let caf%1 = global Cirka.Base.$fFoldable105
+  let r%2 = call Cirka.Base.sum(caf%1)
+  let caf%3 = global Cirka.Base.$fNum34
+  let ap%4 = apply r%2(caf%3, a)
+  ret ap%4
+}
+
+fn Main.shared$thk26(a: ptr @owned) -> ptr {
+entry:
+  let caf%1 = global Cirka.Base.$fFoldable105
+  let r%2 = call Cirka.Base.length(caf%1)
+  let ap%3 = apply r%2(a)
+  ret ap%3
+}
+
+fn Main.total(a: ptr @owned) -> ptr {
+entry:
+  let caf%1 = global Cirka.Base.$fFoldable105
+  let r%2 = call Cirka.Base.sum(caf%1)
+  let caf%3 = global Cirka.Base.$fNum34
+  let thk%4 = mkthunk Main.total$thk28(a)
+  let ap%5 = apply r%2(caf%3, thk%4)
+  ret ap%5
+}
+
+fn Main.total$thk28(a: ptr @owned) -> ptr {
+entry:
+  tailcall Cirka.Ownership.freeze(a)
+}
+

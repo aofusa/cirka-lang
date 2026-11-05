@@ -167,27 +167,97 @@ struct Checker<'a> {
     errors: Vec<Diagnostic>,
     /// The linear variables in scope.
     linear: HashSet<String>,
+    /// Those of them whose type is linear-only (`LType`).
+    unique: HashSet<String>,
 }
 
 /// Checks the linearity of the program's bindings.
 pub(crate) fn check(tc: &Tc, modules: &[(String, Vec<Decl>)]) -> Vec<Diagnostic> {
-    if tc.lin_pats.is_empty() {
+    if tc.lin_pats.is_empty() && !tc.has_ltype {
         return Vec::new();
     }
     let mut c = Checker {
         tc,
         errors: Vec::new(),
         linear: HashSet::new(),
+        unique: HashSet::new(),
     };
     for (_, ds) in modules {
         for d in ds {
             c.top_decl(d);
         }
     }
+    c.uniqueness();
     c.errors
 }
 
 impl Checker<'_> {
+    /// Whether the pattern or binder at `sp` has a linear-only type.
+    fn ltype_at(&self, sp: Span) -> bool {
+        self.tc
+            .pat_tys
+            .get(&sp)
+            .is_some_and(|t| self.tc.is_ltype(t))
+    }
+
+    fn show_at(&self, sp: Span) -> String {
+        self.tc
+            .pat_tys
+            .get(&sp)
+            .map(|t| show(&self.tc.zonk(t)))
+            .unwrap_or_default()
+    }
+
+    /// U-Bind: a linear-only value bound with multiplicity ω (E0301).
+    fn omega_binder(&mut self, sp: Span) {
+        let t = self.show_at(sp);
+        self.errors.push(
+            Diagnostic::error(format!(
+                "a value of the linear-only type `{t}` is bound with multiplicity ω"
+            ))
+            .with_code("E0301")
+            .with_label(sp, "bound by an unrestricted arrow (`->`)")
+            .with_help("use a linear arrow (`%1 ->`) for this argument"),
+        );
+    }
+
+    /// E0301 for arguments and E0310 for instantiations (03-type-system.md
+    /// §2.2): linear-only values must not reach unrestricted positions.
+    fn uniqueness(&mut self) {
+        let tc = self.tc;
+        let mut seen: HashSet<Span> = HashSet::new();
+        for (sp, name, v, t) in &tc.inst_checks {
+            if tc.is_ltype(t) && seen.insert(*sp) {
+                self.errors.push(
+                    Diagnostic::error(format!(
+                        "the type variable `{}` of `{}` has kind `Type`, but is instantiated with the linear-only type `{}`",
+                        display(v),
+                        short(name),
+                        show(&tc.zonk(t))
+                    ))
+                    .with_code("E0310")
+                    .with_label(*sp, "used here")
+                    .with_help(
+                        "a polymorphic function may copy values of kind `Type`; declare the variable `forall (a :: LType)` if it is used linearly",
+                    ),
+                );
+            }
+        }
+        for (sp, t) in &tc.omega_args {
+            if tc.is_ltype(t) {
+                self.errors.push(
+                    Diagnostic::error(format!(
+                        "a value of the linear-only type `{}` is passed to an unrestricted argument",
+                        show(&tc.zonk(t))
+                    ))
+                    .with_code("E0301")
+                    .with_label(*sp, "this argument may be used many times")
+                    .with_help("the function must take this argument with a linear arrow (`%1 ->`)"),
+                );
+            }
+        }
+    }
+
     fn mult(&self, t: &Ty) -> Mult {
         let t = self.tc.zonk(t);
         // An unconstrained multiplicity defaults to many (as in GHC); a
@@ -211,7 +281,18 @@ impl Checker<'_> {
     fn top_decl(&mut self, d: &Decl) {
         match d {
             // Top-level bindings have no free locals.
-            Decl::Fun(_, ps, rhs, _) => {
+            Decl::Fun(f, ps, rhs, _) => {
+                if ps.is_empty() && self.ltype_at(f.span) {
+                    let t = self.show_at(f.span);
+                    self.errors.push(
+                        Diagnostic::error(format!(
+                            "a top-level binding cannot have the linear-only type `{t}`"
+                        ))
+                        .with_code("E0301")
+                        .with_label(f.span, "a top-level value may be used many times")
+                        .with_help("make it a function, e.g. of `()`, that creates the value"),
+                    );
+                }
                 self.clause(ps, rhs);
             }
             Decl::PatBind(_, rhs, _) => {
@@ -234,18 +315,29 @@ impl Checker<'_> {
     /// One clause: parameters bound by linear arrows are checked; the
     /// usage of the other (free) variables is returned.
     fn clause(&mut self, ps: &[ast::Pat], rhs: &Rhs) -> Usage {
-        let mut bound = Vec::new();
-        for p in ps {
-            if let Some(m) = self.tc.lin_pats.get(&p.span) {
-                let m = self.mult(m);
-                if m != Mult::Many {
-                    self.pat_vars(p, m, true, &mut bound);
-                }
-            }
-        }
+        let bound = self.params(ps);
         self.enter(&bound);
         let u = self.rhs(rhs);
         self.close(u, &bound)
+    }
+
+    /// The variables bound by the parameters of a clause or lambda.
+    fn params(&mut self, ps: &[ast::Pat]) -> Vec<(String, Mult, Span)> {
+        let mut bound = Vec::new();
+        for p in ps {
+            let m = match self.tc.lin_pats.get(&p.span) {
+                Some(m) => self.mult(m),
+                None => Mult::Many,
+            };
+            if m != Mult::Many {
+                self.pat_vars(p, m, true, &mut bound);
+            } else if self.ltype_at(p.span) {
+                self.omega_binder(p.span);
+            } else {
+                self.pat_vars(p, m, false, &mut bound);
+            }
+        }
+        bound
     }
 
     /// The variables of a pattern matched against a value of multiplicity
@@ -262,10 +354,12 @@ impl Checker<'_> {
             PatKind::Var(v) => {
                 if linear {
                     out.push((v.name.clone(), m, v.span));
+                } else if self.ltype_at(p.span) {
+                    out.push((v.name.clone(), Mult::One, v.span));
                 }
             }
             PatKind::Wild => {
-                if linear && m == Mult::One {
+                if (linear && m == Mult::One) || self.ltype_at(p.span) {
                     self.errors.push(
                         Diagnostic::error("linear value is not consumed")
                             .with_code("E0302")
@@ -293,10 +387,13 @@ impl Checker<'_> {
                     self.pat_vars(p, m, linear, out);
                 }
             }
-            PatKind::As(v, p) => {
+            PatKind::As(v, inner) => {
                 if linear {
                     out.push((v.name.clone(), m, v.span));
+                } else if self.ltype_at(p.span) {
+                    out.push((v.name.clone(), Mult::One, v.span));
                 }
+                let p = inner;
                 self.pat_vars(p, m, linear, out);
             }
             PatKind::Lazy(p) | PatKind::Bang(p) | PatKind::Paren(p) | PatKind::Typed(p, _) => {
@@ -318,6 +415,7 @@ impl Checker<'_> {
     fn close(&mut self, mut u: Usage, bound: &[(String, Mult, Span)]) -> Usage {
         for (x, m, sp) in bound {
             self.linear.remove(x);
+            self.unique.remove(x);
             let used = u.remove(x);
             let count = used.as_ref().map(|u| u.count).unwrap_or(Count::Zero);
             let name = display(x);
@@ -364,16 +462,18 @@ impl Checker<'_> {
                                 .with_secondary(*b, "second use");
                         }
                         [a] => {
-                            d = d.with_label(
-                                *a,
-                                "used here, in a position that may run more than once",
-                            );
+                            d = d
+                                .with_label(
+                                    *a,
+                                    "used here, in a position that may run more than once",
+                                )
+                                .with_note(
+                                    "an unrestricted argument (`a -> b`), a `let` binding used several times or a recursive binding may run many times",
+                                );
                         }
                         [] => {}
                     }
-                    d = d
-                        .with_secondary(*sp, "bound linearly here")
-                        .with_note("a value passed to an unrestricted argument (`a -> b`) may be used many times");
+                    d = d.with_secondary(*sp, "bound linearly here");
                     self.errors.push(d)
                 }
             }
@@ -383,14 +483,39 @@ impl Checker<'_> {
 
     /// Brings linearly bound variables into scope.
     fn enter(&mut self, bound: &[(String, Mult, Span)]) {
-        for (x, m, _) in bound {
+        for (x, m, sp) in bound {
             if *m == Mult::One {
                 self.linear.insert(x.clone());
+                if self.ltype_at(*sp) {
+                    self.unique.insert(x.clone());
+                }
             }
         }
     }
 
+    /// Brings the linear-only names bound by `let`/`where` declarations
+    /// into scope before the body is checked (`decls` closes them).
+    fn enter_let(&mut self, ds: &[Decl]) {
+        let mut bound = Vec::new();
+        for d in ds {
+            match d {
+                Decl::Fun(f, ps, ..) if ps.is_empty() && self.ltype_at(f.span) => {
+                    bound.push((f.name.clone(), Mult::One, f.span));
+                }
+                Decl::PatBind(p, ..) => {
+                    let mut errs = std::mem::take(&mut self.errors);
+                    self.pat_vars(p, Mult::Many, false, &mut bound);
+                    // Reported again by `decls`.
+                    std::mem::swap(&mut errs, &mut self.errors);
+                }
+                _ => {}
+            }
+        }
+        self.enter(&bound);
+    }
+
     fn rhs(&mut self, r: &Rhs) -> Usage {
+        self.enter_let(&r.wheres);
         let body = match &r.body {
             RhsBody::Plain(e) => self.expr(e),
             RhsBody::Guarded(gs) => self.guarded(gs),
@@ -421,12 +546,11 @@ impl Checker<'_> {
             Stmt::Expr(e) => self.expr(e),
             Stmt::Bind(p, e, _) => {
                 let u = self.expr(e);
-                if self.consumes_linear(&u) {
-                    let start = bound.len();
-                    self.pat_vars(p, Mult::One, true, bound);
-                    let new = bound[start..].to_vec();
-                    self.enter(&new);
-                }
+                let lin = self.consumes_linear(&u);
+                let start = bound.len();
+                self.pat_vars(p, Mult::One, lin, bound);
+                let new = bound[start..].to_vec();
+                self.enter(&new);
                 u
             }
             Stmt::Let(ds, _) => {
@@ -449,9 +573,14 @@ impl Checker<'_> {
         }
         let mut rhss: Vec<(Vec<String>, Usage)> = Vec::new();
         let mut funs: HashMap<String, usize> = HashMap::new();
+        // Let-bound names of linear-only types must be used exactly once.
+        let mut lin_binders: Vec<(String, Mult, Span)> = Vec::new();
         for d in ds {
             match d {
-                Decl::Fun(f, ..) => {
+                Decl::Fun(f, ps, ..) => {
+                    if ps.is_empty() && !funs.contains_key(&f.name) && self.ltype_at(f.span) {
+                        lin_binders.push((f.name.clone(), Mult::One, f.span));
+                    }
                     let u = self.decl_rhs(d);
                     match funs.get(&f.name) {
                         // Further clauses of the same function: one of them
@@ -467,10 +596,13 @@ impl Checker<'_> {
                     }
                 }
                 Decl::PatBind(p, ..) => {
+                    let mut lvs = Vec::new();
+                    self.pat_vars(p, Mult::Many, false, &mut lvs);
+                    lin_binders.extend(lvs);
                     let mut vs = Vec::new();
-                    self.pat_vars(p, Mult::Many, true, &mut vs);
+                    pat_names(p, &mut vs);
                     let u = self.decl_rhs(d);
-                    rhss.push((vs.into_iter().map(|v| v.0).collect(), u));
+                    rhss.push((vs, u));
                 }
                 _ => {}
             }
@@ -499,10 +631,18 @@ impl Checker<'_> {
                 None => break,
             };
             let (vs, u) = pending.remove(i);
-            let c = vs
-                .iter()
-                .map(|v| total.remove(v).map(|u| u.count).unwrap_or(Count::Zero))
-                .fold(Count::Zero, Count::add);
+            let mut c = Count::Zero;
+            for v in &vs {
+                let used = total.remove(v);
+                c = c.add(used.as_ref().map(|u| u.count).unwrap_or(Count::Zero));
+                if let Some(b) = lin_binders.iter().find(|b| b.0 == *v).cloned() {
+                    let mut one = Usage::new();
+                    if let Some(used) = used {
+                        one.insert(v.clone(), used);
+                    }
+                    self.close(one, &[b]);
+                }
+            }
             let mut u = u;
             for v in &vs {
                 if u.remove(v).is_some() {
@@ -567,7 +707,7 @@ impl Checker<'_> {
                     None => self.arg_mult(a),
                 };
                 let au = self.expr(a);
-                add(fu, scale(au, m))
+                add(fu, self.scale_arg(au, m, a.span))
             }
             ExprKind::OpSeq(items) => {
                 let mut u = Usage::new();
@@ -581,20 +721,13 @@ impl Checker<'_> {
                 u
             }
             ExprKind::Lam(ps, b) => {
-                let mut bound = Vec::new();
-                for p in ps {
-                    if let Some(m) = self.tc.lin_pats.get(&p.span) {
-                        let m = self.mult(m);
-                        if m != Mult::Many {
-                            self.pat_vars(p, m, true, &mut bound);
-                        }
-                    }
-                }
+                let bound = self.params(ps);
                 self.enter(&bound);
                 let u = self.expr(b);
                 self.close(u, &bound)
             }
             ExprKind::Let(ds, b) => {
+                self.enter_let(ds);
                 let bu = self.expr(b);
                 self.decls(ds, bu)
             }
@@ -622,7 +755,15 @@ impl Checker<'_> {
                 join(bs)
             }
             ExprKind::Do(ss) => {
-                // `>>=` / `>>` of the standard monads are unrestricted.
+                // The statements of an `IO` block run once, in order
+                // (FEAT-0122 releases resources at its end); `>>=` / `>>`
+                // of the other monads are unrestricted.
+                let io = self.tc.do_tys.get(&e.span).is_some_and(
+                    |t| matches!(self.tc.zonk(t).spine().0, Ty::Con(c) if *c == prim("IO")),
+                );
+                if io {
+                    return self.io_stmts(ss);
+                }
                 let mut u = Usage::new();
                 for s in ss {
                     u = add(u, self.stmt_unrestricted(s));
@@ -682,11 +823,35 @@ impl Checker<'_> {
         }
     }
 
+    /// Scales an argument's usage by its arrow's multiplicity. A
+    /// first-order argument (no closure inside, not linear-only) of an
+    /// unrestricted arrow is a thunk evaluated at most once that cannot
+    /// carry a reference to a linear-only value: the linear-only variables
+    /// it uses keep their count (U-Bind is checked on the argument's type,
+    /// E0301). Other linear variables follow Linear Haskell.
+    fn scale_arg(&self, mut u: Usage, m: Mult, sp: Span) -> Usage {
+        if m != Mult::Many || !u.keys().any(|k| self.unique.contains(k)) {
+            return scale(u, m);
+        }
+        let first_order = self
+            .tc
+            .arg_tys
+            .get(&sp)
+            .is_some_and(|t| !self.tc.may_hold_closure(t) && !self.tc.is_ltype(t));
+        if !first_order {
+            return scale(u, m);
+        }
+        for (k, x) in u.iter_mut() {
+            if !self.unique.contains(k) {
+                x.count = x.count.scale(m);
+            }
+        }
+        u
+    }
+
     fn alt(&mut self, a: &ast::Alt, linear: bool) -> Usage {
         let mut bound = Vec::new();
-        if linear {
-            self.pat_vars(&a.pat, Mult::One, true, &mut bound);
-        }
+        self.pat_vars(&a.pat, Mult::One, linear, &mut bound);
         self.enter(&bound);
         let u = self.rhs(&a.rhs);
         self.close(u, &bound)
@@ -697,6 +862,33 @@ impl Checker<'_> {
     fn consumes_linear(&self, u: &Usage) -> bool {
         u.iter()
             .any(|(x, n)| n.count == Count::One && self.linear.contains(x))
+    }
+
+    /// The statements of an `IO` `do` block, each run once.
+    fn io_stmts(&mut self, ss: &[Stmt]) -> Usage {
+        let Some((s, rest)) = ss.split_first() else {
+            return Usage::new();
+        };
+        match s {
+            Stmt::Expr(e) => {
+                let u = self.expr(e);
+                add(u, self.io_stmts(rest))
+            }
+            Stmt::Bind(p, e, _) => {
+                let u = self.expr(e);
+                let mut bound = Vec::new();
+                self.pat_vars(p, Mult::One, false, &mut bound);
+                self.enter(&bound);
+                let r = self.io_stmts(rest);
+                let r = self.close(r, &bound);
+                add(u, r)
+            }
+            Stmt::Let(ds, _) => {
+                self.enter_let(ds);
+                let r = self.io_stmts(rest);
+                self.decls(ds, r)
+            }
+        }
     }
 
     fn stmt_unrestricted(&mut self, s: &Stmt) -> Usage {
@@ -710,6 +902,41 @@ impl Checker<'_> {
                 u
             }
         }
+    }
+}
+
+/// The variables a pattern binds.
+fn pat_names(p: &ast::Pat, out: &mut Vec<String>) {
+    match &p.kind {
+        PatKind::Var(v) => out.push(v.name.clone()),
+        PatKind::As(v, p) => {
+            out.push(v.name.clone());
+            pat_names(p, out);
+        }
+        PatKind::Con(_, ps) | PatKind::Tuple(ps) | PatKind::List(ps) => {
+            for p in ps {
+                pat_names(p, out);
+            }
+        }
+        PatKind::OpSeq(items) => {
+            for i in items {
+                if let ast::OpItem::Operand(p) = i {
+                    pat_names(p, out);
+                }
+            }
+        }
+        PatKind::Lazy(p) | PatKind::Bang(p) | PatKind::Paren(p) | PatKind::Typed(p, _) => {
+            pat_names(p, out)
+        }
+        PatKind::Record(_, fs) => {
+            for (f, p) in fs {
+                match p {
+                    Some(p) => pat_names(p, out),
+                    None => out.push(f.name.clone()),
+                }
+            }
+        }
+        PatKind::Wild | PatKind::Lit(_) | PatKind::NegLit(_) | PatKind::Error => {}
     }
 }
 

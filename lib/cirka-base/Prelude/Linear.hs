@@ -1,10 +1,13 @@
 {-# LANGUAGE LinearTypes #-}
 {-# LANGUAGE NoImplicitPrelude #-}
+{-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 -- | A minimal subset of linear-base's Prelude.Linear (FEAT-0120): linear
 -- versions of the function combinators, unrestricted values (`Ur`) and the
 -- classes for consuming, duplicating and moving values of ordinary types.
 -- Import it next to (or instead of) the Prelude; the names below that the
 -- Prelude also defines are ambiguous when both are imported unqualified.
+-- The combinators and classes take linear-only types (`LType`, FEAT-0121).
 module Prelude.Linear
   ( Ur (..)
   , unur
@@ -40,38 +43,38 @@ unur (Ur a) = a
 forget :: (a %1 -> b) %1 -> a -> b
 forget f x = f x
 
-id :: a %1 -> a
+id :: forall (a :: LType). a %1 -> a
 id x = x
 
-const :: a %1 -> b -> a
+const :: forall (a :: LType) b. a %1 -> b -> a
 const x _ = x
 
-($) :: (a %p -> b) %1 -> a %p -> b
+($) :: forall (a :: LType) (b :: LType) p. (a %p -> b) %1 -> a %p -> b
 f $ x = f x
 
-(&) :: a %p -> (a %p -> b) %1 -> b
+(&) :: forall (a :: LType) (b :: LType) p. a %p -> (a %p -> b) %1 -> b
 x & f = f x
 
-(.) :: (b %1 -> c) %1 -> (a %1 -> b) %1 -> a %1 -> c
+(.) :: forall (a :: LType) (b :: LType) (c :: LType). (b %1 -> c) %1 -> (a %1 -> b) %1 -> a %1 -> c
 (f . g) x = f (g x)
 
-swap :: (a, b) %1 -> (b, a)
+swap :: forall (a :: LType) (b :: LType). (a, b) %1 -> (b, a)
 swap (x, y) = (y, x)
 
 -- | Consumes the first argument, then returns the second.
-lseq :: Consumable a => a %1 -> b %1 -> b
+lseq :: forall (a :: LType) (b :: LType). Consumable a => a %1 -> b %1 -> b
 lseq a b = consumeThen (consume a) b
 
-consumeThen :: () %1 -> b %1 -> b
+consumeThen :: forall (b :: LType). () %1 -> b %1 -> b
 consumeThen () b = b
 
-class Consumable a where
+class Consumable (a :: LType) where
   consume :: a %1 -> ()
 
-class Consumable a => Dupable a where
+class Consumable a => Dupable (a :: LType) where
   dup2 :: a %1 -> (a, a)
 
-class Dupable a => Movable a where
+class Dupable a => Movable (a :: LType) where
   move :: a %1 -> Ur a
 
 instance Consumable () where

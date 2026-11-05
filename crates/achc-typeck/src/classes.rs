@@ -223,6 +223,10 @@ impl Tc {
                 for (i, (v, kind)) in info.vars.iter().zip(kinds.iter_mut()).enumerate() {
                     if let Some(Some(k)) = c.param_kinds.get(i) {
                         *kind = Kind::from_sig(k);
+                        if *k == achc_syntax::ast::KindSig::LType {
+                            self.ltype_vars.insert(v.clone());
+                            self.has_ltype = true;
+                        }
                         continue;
                     }
                     for (_, s) in &methods {

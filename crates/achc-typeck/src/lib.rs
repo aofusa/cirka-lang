@@ -49,6 +49,7 @@ pub fn typecheck_in(
         .iter()
         .map(|m| (m.name.clone(), m.ast.decls.clone()))
         .collect();
+    tc.has_ltype = modules.iter().any(|(_, ds)| ds.iter().any(mentions_ltype));
     tc.declare_types(&modules);
     let mut binds = tc.field_selectors();
     let (mut values, class_binds) = tc.declare_classes(&modules);
@@ -100,6 +101,38 @@ pub fn typecheck_in(
     out.binds = binds;
     out.main = main;
     Ok(out)
+}
+
+/// Whether a declaration uses the kind `LType` (then uniqueness is
+/// checked, FEAT-0121).
+fn mentions_ltype(d: &Decl) -> bool {
+    use achc_syntax::ast::{KindSig, Type, TypeKind};
+    fn kind(k: &KindSig) -> bool {
+        match k {
+            KindSig::LType => true,
+            KindSig::Star => false,
+            KindSig::Arrow(a, b) => kind(a) || kind(b),
+        }
+    }
+    fn ty(t: &Type) -> bool {
+        match &t.kind {
+            TypeKind::Forall(vs, b) => {
+                vs.iter().any(|(_, k)| k.as_ref().is_some_and(kind)) || ty(b)
+            }
+            TypeKind::Kinded(b, k) => kind(k) || ty(b),
+            TypeKind::Qual(_, b) => ty(b),
+            _ => false,
+        }
+    }
+    match d {
+        Decl::KindSig(_, k, _) => kind(k),
+        Decl::TypeSig(_, t, _) => ty(t),
+        Decl::Class(c) => {
+            c.param_kinds.iter().flatten().any(kind) || c.decls.iter().any(mentions_ltype)
+        }
+        Decl::Instance(i) => i.decls.iter().any(mentions_ltype),
+        _ => false,
+    }
 }
 
 fn main_span(ds: &[Decl]) -> Option<Span> {

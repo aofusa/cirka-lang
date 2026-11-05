@@ -5,7 +5,6 @@ error[E0303]: linear variable `x` is used more than once
   |     - bound linearly here
   |          ^ first use
   |             - second use
-  = note: a value passed to an unrestricted argument (`a -> b`) may be used many times
 error[E0302]: linear value is not consumed
  --> tests/achc/typeck/fail/linear.hs:9:7
   |
@@ -24,7 +23,7 @@ error[E0303]: linear variable `n` is used more than once
 15 | viaUnrestricted n = negate n
    |                 - bound linearly here
    |                            ^ used here, in a position that may run more than once
-   = note: a value passed to an unrestricted argument (`a -> b`) may be used many times
+   = note: an unrestricted argument (`a -> b`), a `let` binding used several times or a recursive binding may run many times
 error[E0302]: linear variable `x` is not consumed on every path
   --> tests/achc/typeck/fail/linear.hs:18:12
    |
@@ -44,7 +43,6 @@ error[E0303]: linear variable `v` is used more than once
    |             - bound linearly here
    |                   ^ first use
    |                      - second use
-   = note: a value passed to an unrestricted argument (`a -> b`) may be used many times
 error[E0302]: linear value is not consumed
   --> tests/achc/typeck/fail/linear.hs:25:7
    |
@@ -63,4 +61,4 @@ error[E0303]: linear variable `x` is used more than once
 31 | letTwice x = let y = x in (y, y)
    |          - bound linearly here
    |                      ^ used here, in a position that may run more than once
-   = note: a value passed to an unrestricted argument (`a -> b`) may be used many times
+   = note: an unrestricted argument (`a -> b`), a `let` binding used several times or a recursive binding may run many times

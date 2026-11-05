@@ -200,6 +200,76 @@ fn achc_desugar() {
     assert!(failed.is_empty(), "{}", failed.join("\n"));
 }
 
+/// MIR snapshots under tests/achc/mir/ (FEAT-0121): the MIR of the `Main`
+/// functions after Perceus at -O0 matches `.mir`. A `-- no-rc: f g` header
+/// line asserts that those functions (and the thunks and lambdas lifted
+/// out of them) contain no `dup` / `drop`.
+#[test]
+fn achc_mir() {
+    let dir = repo_root().join("tests/achc/mir");
+    let root = format!("{}/", repo_root().display());
+    let mut failed = Vec::new();
+    for c in discover(&dir, &["hs"]) {
+        let mut sm = SourceMap::new();
+        let opts = cirka_driver::pipeline::Options::new(&c.name);
+        let roots = vec![dir.clone(), achc::lib_dir()];
+        let mut core = match achc::compile(&mut sm, &c.path, &roots, &opts, "test") {
+            Ok(x) => x.core,
+            Err(ds) => {
+                let text: String = ds.iter().map(|d| render(d, &sm, Style::Plain)).collect();
+                failed.push(format!("{}: {}", c.name, text.replace(&root, "")));
+                continue;
+            }
+        };
+        cirka_core::opt::dce_globals(&mut core);
+        let mut m = match cirka_mir::lower::lower_program(&core) {
+            Ok(m) => m,
+            Err(e) => {
+                failed.push(format!("{}: lowering failed: {e:?}", c.name));
+                continue;
+            }
+        };
+        cirka_mir::perceus::run(&mut m);
+        let funcs: Vec<_> = m
+            .funcs
+            .iter()
+            .filter(|f| f.name.starts_with("Main."))
+            .collect();
+        let text: String = funcs
+            .iter()
+            .map(|f| cirka_mir::print::print_function(&m, f) + "\n")
+            .collect();
+        let src = c.source();
+        let no_rc: Vec<&str> = src
+            .lines()
+            .filter_map(|l| l.strip_prefix("-- no-rc:"))
+            .flat_map(|l| l.split_whitespace())
+            .collect();
+        for name in no_rc {
+            let main = format!("Main.{name}");
+            for f in funcs
+                .iter()
+                .filter(|f| f.name == main || f.name.starts_with(&format!("{main}$")))
+            {
+                let body = cirka_mir::print::print_function(&m, f);
+                if body.lines().any(|l| {
+                    let l = l.trim_start();
+                    l.starts_with("dup ") || l.starts_with("drop ")
+                }) {
+                    failed.push(format!(
+                        "{}: `{}` has RC operations:\n{body}",
+                        c.name, f.name
+                    ));
+                }
+            }
+        }
+        if let Err(e) = check_expect(&c.sibling("mir"), &text) {
+            failed.push(format!("{}: {e}", c.name));
+        }
+    }
+    assert!(failed.is_empty(), "{}", failed.join("\n"));
+}
+
 /// Haskell programs under tests/achc/run/<milestone>/ (FEAT-0105): the
 /// interpreter prints `.stdout` (exit code `.exitcode`, default 0) at -O0
 /// and -O2 without leaks, native code with both runtimes agrees, the

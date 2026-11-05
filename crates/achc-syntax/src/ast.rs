@@ -107,6 +107,8 @@ pub enum Decl {
     PatBind(Pat, Rhs, Span),
     Data(DataDecl),
     TypeSyn(Ident, Vec<Ident>, Type, Span),
+    /// A standalone kind signature `type T :: k`.
+    KindSig(Ident, KindSig, Span),
     Class(ClassDecl),
     Instance(InstDecl),
     Default(Vec<Type>, Span),
@@ -121,6 +123,7 @@ impl Decl {
             | Decl::Fun(_, _, _, s)
             | Decl::PatBind(_, _, s)
             | Decl::TypeSyn(_, _, _, s)
+            | Decl::KindSig(_, _, s)
             | Decl::Default(_, s) => *s,
             Decl::Data(d) => d.span,
             Decl::Class(c) => c.span,
@@ -211,7 +214,8 @@ pub enum TypeKind {
     /// `ctx => t` (in signatures).
     Qual(Vec<Constraint>, Box<Type>),
     /// `forall a b. t` (RankNTypes / ScopedTypeVariables).
-    Forall(Vec<Ident>, Box<Type>),
+    /// `forall a (b :: k). t`; the kinds are optional.
+    Forall(Vec<(Ident, Option<KindSig>)>, Box<Type>),
     /// `(t :: k)` (KindSignatures).
     Kinded(Box<Type>, KindSig),
     /// `a %m -> b` / `a ⊸ b` (LinearTypes).
@@ -235,6 +239,8 @@ pub enum Multiplicity {
 #[derive(Clone, Debug, PartialEq)]
 pub enum KindSig {
     Star,
+    /// `LType`: linear-only value types (03-type-system.md §1).
+    LType,
     Arrow(Box<KindSig>, Box<KindSig>),
 }
 

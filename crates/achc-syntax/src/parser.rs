@@ -693,6 +693,11 @@ impl Parser {
             Tok::Kw(Kw::Type) => {
                 self.bump();
                 let name = self.conid()?;
+                if self.eat(&Tok::DColon) {
+                    // StandaloneKindSignatures: `type T :: k`.
+                    let k = self.kind_sig()?;
+                    return Ok(vec![Decl::KindSig(name, k, start.to(self.prev_span()))]);
+                }
                 let params = self.tyvars();
                 self.expect(&Tok::Equals)?;
                 let ty = self.ty()?;
@@ -876,14 +881,22 @@ impl Parser {
 
     /// Type variable binders; `(v :: k)` binders drop their kind.
     fn tyvars(&mut self) -> Vec<Ident> {
+        self.tyvars_kinded().into_iter().map(|(v, _)| v).collect()
+    }
+
+    /// Type variable binders, each with an optional kind `(v :: k)`.
+    fn tyvars_kinded(&mut self) -> Vec<(Ident, Option<KindSig>)> {
         let mut v = Vec::new();
         loop {
             match self.cur() {
                 Tok::VarId(None, n) => {
-                    v.push(Ident {
-                        name: n,
-                        span: self.span(),
-                    });
+                    v.push((
+                        Ident {
+                            name: n,
+                            span: self.span(),
+                        },
+                        None,
+                    ));
                     self.bump();
                 }
                 Tok::LParen
@@ -894,14 +907,15 @@ impl Parser {
                     let Tok::VarId(None, n) = self.cur() else {
                         unreachable!()
                     };
-                    v.push(Ident {
+                    let id = Ident {
                         name: n,
                         span: self.span(),
-                    });
+                    };
                     self.bump();
                     self.bump();
-                    if self.kind_sig().is_err() || !self.eat(&Tok::RParen) {
-                        break;
+                    match self.kind_sig() {
+                        Ok(k) if self.eat(&Tok::RParen) => v.push((id, Some(k))),
+                        _ => break,
                     }
                 }
                 _ => break,
@@ -920,6 +934,10 @@ impl Parser {
             Tok::ConId(_, ref n) if n == "Type" => {
                 self.bump();
                 KindSig::Star
+            }
+            Tok::ConId(_, ref n) if n == "LType" => {
+                self.bump();
+                KindSig::LType
             }
             Tok::LParen => {
                 self.bump();
@@ -1467,7 +1485,7 @@ impl Parser {
         let start = self.span();
         if matches!(self.cur(), Tok::VarId(None, ref s) if s == "forall") {
             self.bump();
-            let vs = self.tyvars();
+            let vs = self.tyvars_kinded();
             if !self.at_varsym(".") {
                 return self.expected("`.`");
             }

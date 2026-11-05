@@ -85,7 +85,13 @@ pub fn ty(t: &Type) -> String {
         }
         TypeKind::Qual(ctx, b) => format!("(=> ({}) {})", context(ctx), ty(b)),
         TypeKind::Forall(vs, b) => {
-            let v: Vec<&str> = vs.iter().map(|v| v.name.as_str()).collect();
+            let v: Vec<String> = vs
+                .iter()
+                .map(|(v, k)| match k {
+                    Some(k) => format!("(:: {} {})", v.name, kind(k)),
+                    None => v.name.clone(),
+                })
+                .collect();
             format!("(forall ({}) {})", v.join(" "), ty(b))
         }
         TypeKind::Kinded(t, k) => format!("(:: {} {})", ty(t), kind(k)),
@@ -104,6 +110,7 @@ pub fn ty(t: &Type) -> String {
 pub fn kind(k: &KindSig) -> String {
     match k {
         KindSig::Star => "*".into(),
+        KindSig::LType => "LType".into(),
         KindSig::Arrow(a, b) => format!("(-> {} {})", kind(a), kind(b)),
     }
 }
@@ -261,6 +268,9 @@ impl P {
                 }
                 self.depth -= 1;
                 self.line(")");
+            }
+            Decl::KindSig(n, k, _) => {
+                self.line(&format!("(kind {} {})", n.name, kind(k)));
             }
             Decl::TypeSyn(n, ps, t, _) => {
                 let v: Vec<&str> = ps.iter().map(|n| n.name.as_str()).collect();
