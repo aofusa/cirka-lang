@@ -120,7 +120,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0113](features/FEAT-0113-hs-io-exceptions.md) | IO・IORef・ハンドル・例外 | done | P0 | 0111 |
 | [FEAT-0114](features/FEAT-0114-hs-numerics.md) | 数値型と Integer | done | P0 | 0111 |
 | [FEAT-0115](features/FEAT-0115-hs-records-modules.md) | レコード構文とモジュールの完成 | done | P1 | 0110 |
-| [FEAT-0116](features/FEAT-0116-hs-ffi-h2010.md) | Haskell 2010 FFI (foreign import ccall) | todo | P1 | 0113 |
+| [FEAT-0116](features/FEAT-0116-hs-ffi-h2010.md) | Haskell 2010 FFI (foreign import ccall) | done | P1 | 0113 |
 | [FEAT-0117](features/FEAT-0117-hs-diff-corpus.md) | 差分テスト集 | todo | P1 | 0113, 0003 |
 | [FEAT-0118](features/FEAT-0118-hs-extensions.md) | GHC 拡張 (初期分) | todo | P1 | 0110 |
 | [FEAT-0119](features/FEAT-0119-hs-compat-measure.md) | 互換性の計測 (GHC testsuite / nofib の一部) | todo | P2 | 0117 |

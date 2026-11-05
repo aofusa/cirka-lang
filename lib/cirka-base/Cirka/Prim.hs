@@ -96,3 +96,14 @@ foreign import prim "flt_round" primFloatRound :: Double -> Double
 foreign import prim "flt_show_hs" primShowFloatHs :: Double -> [Char]
 foreign import prim "dbl_bits" primDoubleBits :: Double -> Int
 foreign import prim "dbl_from_bits" primDoubleFromBits :: Int -> Double
+
+-- Bits and raw memory (FEAT-0116).
+foreign import prim "int_and" primIntAnd :: Int -> Int -> Int
+foreign import prim "int_or" primIntOr :: Int -> Int -> Int
+foreign import prim "int_xor" primIntXor :: Int -> Int -> Int
+foreign import prim "int_shl" primIntShl :: Int -> Int -> Int
+foreign import prim "int_shr" primIntShr :: Int -> Int -> Int
+foreign import prim "mem_read" primMemRead :: Int -> Int -> IO Int
+foreign import prim "mem_write" primMemWrite :: Int -> Int -> Int -> IO ()
+foreign import prim "mem_read_f" primMemReadF :: Int -> Int -> IO Double
+foreign import prim "mem_write_f" primMemWriteF :: Int -> Int -> Double -> IO ()

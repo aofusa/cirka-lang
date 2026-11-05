@@ -14,6 +14,7 @@
 //!   `prims.core`; the declared type must equal the primitive's type.
 
 mod exhaust;
+mod ffi;
 
 use achc_typeck::infer::kind_of;
 use achc_typeck::tast::{self, BindGroup, Clause, Guard, Pat};
@@ -387,17 +388,25 @@ impl Ds {
             .map(|b| (b.name.clone(), b.ty.clone()))
             .collect();
         out.binds.extend(prims.binds);
+        let datas: HashMap<&str, &tast::DataDecl> =
+            p.datas.iter().map(|d| (d.name.as_str(), d)).collect();
         for f in &p.foreigns {
+            if matches!(f.callconv.as_str(), "ccall" | "capi") {
+                if let Err(d) = self.ccall(f, &datas, &mut out) {
+                    self.errors.push(d);
+                }
+                continue;
+            }
             let ty = self.scheme(&f.tvs, &f.ty);
             if f.callconv != "prim" {
                 self.errors.push(
                     Diagnostic::error(format!(
-                        "`foreign import {}` is not supported yet",
+                        "calling convention `{}` is not supported",
                         f.callconv
                     ))
-                    .with_code("E0001")
+                    .with_code("E0618")
                     .with_label(f.span, "")
-                    .with_note("only `foreign import prim` is available in aCHC H1"),
+                    .with_note("use `ccall` (or `prim` inside the base library)"),
                 );
                 continue;
             }

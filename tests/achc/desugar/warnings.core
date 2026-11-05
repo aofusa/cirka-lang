@@ -9,7 +9,7 @@
   (tlam (a)
     (lam ((a (List a)))
       (case a (s (List a)) a
-        ((Cons f~523 f~524) f~523)
+        ((Cons f~591 f~592) f~591)
         (_ (panic "non-exhaustive patterns" a))))))
 
 (def Main.dup (-> Bool Int)
@@ -18,14 +18,14 @@
 
 (def Main.both (forall (a) (-> (Prelude.Maybe a) (Prelude.Maybe a) Int))
   (tlam (a)
-    (lam ((a~536 (Prelude.Maybe a)) (a~537 (Prelude.Maybe a)))
-      (case a~536 (s~543 (Prelude.Maybe a)) Int
+    (lam ((a~604 (Prelude.Maybe a)) (a~605 (Prelude.Maybe a)))
+      (case a~604 (s~611 (Prelude.Maybe a)) Int
         ((Prelude.Nothing) (con I# () 0))
-        (_ (case a~537 (s~548 (Prelude.Maybe a)) Int
+        (_ (case a~605 (s~616 (Prelude.Maybe a)) Int
             ((Prelude.Nothing) (con I# () 1))
-            (_ (case a~536 (s~558 (Prelude.Maybe a)) Int
-                ((Prelude.Just f~550) (case a~537 (s~557 (Prelude.Maybe a)) Int
-                    ((Prelude.Just f~553) (con I# () 2))
+            (_ (case a~604 (s~626 (Prelude.Maybe a)) Int
+                ((Prelude.Just f~618) (case a~605 (s~625 (Prelude.Maybe a)) Int
+                    ((Prelude.Just f~621) (con I# () 2))
                     (_ (panic "non-exhaustive patterns" Int))))
                 (_ (panic "non-exhaustive patterns" Int))))))))))
 

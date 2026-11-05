@@ -1,0 +1,34 @@
+error[E0618]: address imports (`&name`) are not supported yet
+ --> tests/achc/desugar/ffi_errors.hs:3:1
+  |
+3 | foreign import ccall "&free" pFree :: Int
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  = note: only static imports of C functions are available (FEAT-0047)
+error[E0618]: `dynamic` imports (calling and creating function pointers) are not supported yet
+ --> tests/achc/desugar/ffi_errors.hs:4:1
+  |
+4 | foreign import ccall "dynamic" callIt :: Int -> Int
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  = note: only static imports of C functions are available (FEAT-0047)
+error[E0618]: `[Int]` cannot be passed to a C function
+ --> tests/achc/desugar/ffi_errors.hs:5:1
+  |
+5 | foreign import ccall "f" takesList :: [Int] -> Int
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  = note: marshallable types are Int, Word, Double, Float, Char, Int8..Word64, the C types of Foreign.C.Types, Ptr and FunPtr, and newtypes of them
+error[E0618]: `Maybe Int` cannot be returned from a C function
+ --> tests/achc/desugar/ffi_errors.hs:6:1
+  |
+6 | foreign import ccall "g" returnsMaybe :: Int -> Maybe Int
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+error[E0618]: `h1` is imported with two different C types
+ --> tests/achc/desugar/ffi_errors.hs:8:1
+  |
+8 | foreign import ccall "h1" h2 :: Double -> Int
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+error[E0618]: calling convention `stdcall` is not supported
+ --> tests/achc/desugar/ffi_errors.hs:9:1
+  |
+9 | foreign import stdcall "k" k :: Int -> Int
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  = note: use `ccall` (or `prim` inside the base library)

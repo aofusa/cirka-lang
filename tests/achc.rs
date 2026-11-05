@@ -160,8 +160,20 @@ fn achc_desugar() {
         let out = match r {
             Ok(o) => o,
             Err(errs) => {
-                let text: String = errs.iter().map(|d| render(d, &sm, Style::Plain)).collect();
-                failed.push(format!("{}: {text}", c.name));
+                let text: String = errs
+                    .iter()
+                    .map(|d| render(d, &sm, Style::Plain))
+                    .collect::<String>()
+                    .replace(&root, "");
+                // A `.stderr` file expects the program to be rejected.
+                let epath = c.sibling("stderr");
+                if epath.exists() {
+                    if let Err(e) = check_expect(&epath, &text) {
+                        failed.push(format!("{}: {e}", c.name));
+                    }
+                } else {
+                    failed.push(format!("{}: {text}", c.name));
+                }
                 continue;
             }
         };
