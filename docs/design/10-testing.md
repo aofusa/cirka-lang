@@ -85,6 +85,9 @@ bench/binary-trees/
   CirkaLang の実用版の題材: CUI ツール (v0.0.2)、HTTP サーバ (v0.0.5)。
 - 目標 (00-overview G3): `main.cirka` と `own.chs` が Rust の 1.5 倍以内、`plain.hs` が GHC -O2 と同等。
 - 計測値 (時間・最大 RSS) はチケットと `docs/design/bench-report.md` に記録する。CirkaLang は版ごとの推移も記録する。
+- 正しさ: `bench/<name>/check` (1 行目が小さい引数、続きが期待出力 = Rust 版の出力) に対し、`tests/bench.rs` が各実装を
+  `-O2` の MIR インタプリタでリークなしに実行して比較する (`rust/main.rs` と、`CIRKA_GHC` があれば GHC の `plain.hs` も)。
+  aCHC で作れない `plain.hs` (例: `Data.Array.ST` を使う GHC 専用の基準) は先頭に `-- achc: skip` と書く (FEAT-0043)。
 - v0.0.4 以降は、証明付きコードと証明なしコードの性能が同じであること (消去の確認) も計測する。
 
 ## 6. CI スクリプト (`scripts/ci.sh`)

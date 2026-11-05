@@ -82,7 +82,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0040](features/FEAT-0040-unwinding.md) | 例外/パニックのアンワインド | todo | P1 | 0031 |
 | [FEAT-0041](features/FEAT-0041-core-optimizations.md) | Core 最適化の強化 | done | P0 | 0033 |
 | [FEAT-0042](features/FEAT-0042-escape-analysis.md) | エスケープ解析とスタック割り当て | todo | P2 | 0041 |
-| [FEAT-0043](features/FEAT-0043-benchmarks.md) | ベンチマーク集と性能レポート | todo | P1 | 0016 |
+| [FEAT-0043](features/FEAT-0043-benchmarks.md) | ベンチマーク集と性能レポート | done | P1 | 0016 |
 | [FEAT-0044](features/FEAT-0044-debug-info.md) | DWARF デバッグ情報 | todo | P2 | 0032 |
 | [FEAT-0045](features/FEAT-0045-concurrency-runtime.md) | 並行性ランタイム (スレッド・アトミック RC) | todo | P1 | 0031 |
 | [FEAT-0046](features/FEAT-0046-async-io-runtime.md) | 非同期 I/O ランタイム (epoll) | todo | P1 | 0045 |
@@ -95,6 +95,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0053](features/FEAT-0053-target-macos.md) | macOS ターゲットへの移植 | todo | P2 | 0052, 0045 |
 | [FEAT-0054](features/FEAT-0054-target-windows.md) | Windows ターゲットへの移植 | todo | P2 | 0052, 0045 |
 | [FEAT-0055](features/FEAT-0055-list-fusion.md) | リスト融合 (foldr/build) | todo | P2 | 0112 |
+| [FEAT-0056](features/FEAT-0056-ww-call-by-value-local.md) | worker/wrapper の拡張 (値渡しの引数・局所関数) | todo | P1 | 0041 |
 
 
 ## aCHC
@@ -280,5 +281,6 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [BUG-0008](bugs/BUG-0008-newtype-pattern-forces.md) | newtype の構築子パターンが値を評価してしまう | todo | major | FEAT-0119 |
 | [BUG-0009](bugs/BUG-0009-strict-linear-tuple.md) | タプルの成分の線形専用値が正格に評価されない | done | major | FEAT-0123 |
 | [BUG-0010](bugs/BUG-0010-test-header-after-pragma.md) | テストのヘッダが `{-# LANGUAGE #-}` の後にあると読まれない | done | major | FEAT-0125 |
+| [BUG-0011](bugs/BUG-0011-borrow-monad-overhead.md) | Borrow モナドのループが線形な受け渡しより約 130 倍遅い | todo | major | FEAT-0043 |
 
 新しいチケットは `features/_TEMPLATE.md` / `bugs/_TEMPLATE.md` をコピーして作成する。

@@ -22,14 +22,14 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # - llvm-*-dev / libclang-*-dev   : LLVM tools, and libclang for `achc bindgen`
 # - ghc / libgmp-dev              : reference implementation for differential tests
 # - z3                            : SMT solver for `achc verify` (refinement types)
-# - valgrind / hyperfine          : memory-safety checks and benchmarks
+# - valgrind / hyperfine / time   : memory-safety checks, benchmarks, peak RSS
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential ca-certificates curl git pkg-config python3 sudo \
         clang-${LLVM_VERSION} llvm-${LLVM_VERSION} llvm-${LLVM_VERSION}-dev \
         lld-${LLVM_VERSION} libclang-${LLVM_VERSION}-dev \
         ghc libgmp-dev \
         z3 \
-        valgrind hyperfine \
+        valgrind hyperfine time \
     && rm -rf /var/lib/apt/lists/*
 
 # Rust toolchain (pinned; keep in sync with rust-toolchain.toml)

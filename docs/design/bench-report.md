@@ -103,3 +103,78 @@
 - binary-trees は数値の箱がほぼ消え、手書き MIR より速くなった (手書き MIR は `check` の結果を毎回箱に入れる書き方のまま)。
 - n-body の残りの割り当ては、1 組の相互作用ごとの `Pair` (戻り値の組) とリストのセル。組を返す関数の CPR には複数値の戻り (unboxed タプル) が要るので、
   配列と破壊的更新 (FEAT-0211, v0.0.2) で Rust と同じデータ構造に書き直すのと合わせて再計測する。
+
+## ベンチマーク集 (FEAT-0043)
+
+計測: `scripts/bench.sh` (Docker コンテナ内、`CIRKA_BENCH_RUNS=3`、2026-11-05)。aCHC は `achc build -O2`、CirkaLang は `cirka build -O2`、
+GHC は 9.4 の `-O2`、Rust は `rustc -C opt-level=3`。すべての実装が Rust 版と同じ出力を返すことを `tests/bench.rs` が小さい引数で確認する
+(各 `bench/<name>/check`)。
+
+今回の計測は以前の節よりマシンの負荷が高く、Rust の binary-trees が 48.1 s (以前は 22–23 s) と遅く出ている。
+同じ回の比で比較すること。
+
+### 実装と題材
+
+| 題材 | 引数 | `plain.hs` | `own.chs` | `main.cirka` | Rust | 備考 |
+|------|-----:|:-:|:-:|:-:|:-:|------|
+| binary-trees | 21 | ✓ | ✓ (木は `LType`、`check` が消費) | ✓ | ✓ | |
+| n-body | 5,000,000 | ✓ (正格フィールドのリスト) | ✓ (一意な `UArray Double` を線形に受け渡す) | ✓ (リスト) | ✓ | |
+| spectral-norm | 1000 | ✓ (リスト) | ✓ (`UArray Double`) | ✓ (リスト) | ✓ | |
+| mandelbrot | 1000 | ✓ | — | ✓ | ✓ | PBM の代わりに集合内の点の数を出力 |
+| fannkuch-redux | 9 | ✓ (リスト) | — | — | ✓ | |
+| array-sort | 1,000,000 | GHC のみ (`STUArray`) | ✓ (一意な配列のその場のクイックソート、FEAT-0123) | — | ✓ | |
+
+未実装の題材 (10-testing.md §5): fasta と文字列処理。CirkaLang の配列 (FEAT-0211, v0.0.2) の後に追加する。
+
+### 時間 (平均、比は Rust=1)
+
+| 題材 | aCHC `plain.hs` | aCHC `own.chs` | CirkaLang | GHC -O2 | Rust |
+|------|------:|------:|------:|------:|------:|
+| binary-trees | 43.94 s (0.91) | 18.42 s (**0.38**) | 19.17 s (**0.40**) | 15.95 s (0.33) | 48.14 s |
+| n-body | 25.02 s (38.0) | 6.36 s (9.65) | 26.64 s (40.4) | 7.76 s (11.8) | 0.659 s |
+| spectral-norm | 3.51 s (17.5) | 3.01 s (15.0) | 5.06 s (25.2) | 0.655 s (3.26) | 0.201 s |
+| mandelbrot | 4.68 s (38.6) | — | 3.51 s (29.0) | 0.894 s (7.37) | 0.121 s |
+| fannkuch-redux | 6.04 s (184) | — | — | 1.01 s (30.8) | 0.033 s |
+| array-sort | — | 2.14 s (17.2) | — | 0.725 s (5.83) | 0.124 s |
+
+参考: 手書き MIR の binary-trees は 23.63 s (`--perceus` 24.06 s)。
+
+### 最大 RSS
+
+コンテナに GNU time がなかったため、Python の `getrusage` で計測した (fork した Python 自身を含むので約 11 MB が下限。
+FEAT-0043 で image に `time` を追加した)。下限を超えたものだけを示す (他はすべて約 11 MB 以下)。
+
+| 題材 | aCHC `plain.hs` | aCHC `own.chs` | CirkaLang | GHC -O2 | Rust |
+|------|------:|------:|------:|------:|------:|
+| binary-trees | ≤ 11 MB | 194 MB | 194 MB | 13 MB | 258 MB |
+| array-sort | — | 216 MB | — | 103 MB | ≤ 11 MB |
+
+- binary-trees: 正格な版 (`own.chs`・CirkaLang・Rust) は長寿命の木 (深さ 21) を実体化するので約 200 MB。遅延評価の `plain.hs` と GHC は
+  木の構築と `check` が交互に進み、木全体を持たない。
+- array-sort の `own.chs` は要素数に比例するサンク (`CIRKA_STATS`: 10 万要素で forced 100 万、max_live 40 万) を持つ。
+
+### G3 (00-overview) の達成状況
+
+- **`own.chs` / CirkaLang が Rust の 1.5 倍以内**: binary-trees のみ達成 (0.38 / 0.40)。数値計算 (n-body, spectral-norm, mandelbrot) と
+  配列 (array-sort) は 10–40 倍で **未達成**。
+- **`plain.hs` が GHC -O2 と同等**: **未達成**。GHC 比で binary-trees 2.8 倍、n-body 3.2 倍、spectral-norm 5.4 倍、mandelbrot 5.2 倍、
+  fannkuch-redux 6.0 倍。
+
+### 分析 (`CIRKA_STATS=1` の確保回数)
+
+- **箱に入った浮動小数点数** (FEAT-0056): worker/wrapper は正格性解析で正格と分かった引数しか unboxing しない。mandelbrot の
+  CirkaLang 版の `go k zr zi cr ci` は `k >= 50` の枝で `zr` などを使わないので箱のまま渡され、反復ごとに `F#` を 2 つ確保する
+  (n=200 で 413 万回)。CirkaLang は値渡しなので本来は常に unboxing できる。aCHC の `where` の局所ループは worker/wrapper の対象外で、
+  mandelbrot の `plain.hs` は反復ごとにサンクも作る (forced 約 200 万)。
+- **配列の要素の箱**: `Cirka.Array.Unboxed` の読み書きは `UElem` クラスのメソッドを通るため、要素が箱に入って返る。
+  spectral-norm の `own.chs` は内側の反復 1 回あたり約 3 回確保する (n=300 で 543 万回)。クラスメソッドの特殊化が必要。
+- **リストによる代用**: CirkaLang v0.0.1 には配列がないので n-body・spectral-norm はリストで書いている (v0.0.2 の FEAT-0211 で書き直す)。
+- **遅延評価**: `plain.hs` は局所ループの累積引数・`where` の束縛がサンクになる (GHC は正格性解析と unboxing で除く)。
+  fannkuch-redux は要素を強制しないと `take`/`zip` のサンクの連鎖が際限なく伸び、1 GB を使っていた (ベンチ側で強制するよう修正)。
+- **借用の抽象化のコスト** (BUG-0011): n-body の `own.chs` を `borrowMut` と `Borrow` モナドで書くと、線形に受け渡す版の約 130 倍遅い。
+  現在の `own.chs` は線形版。
+- binary-trees が Rust より速いのは、M1 から変わらず本ランタイムのサイズクラス別フリーリストが glibc malloc より軽いため。
+
+### 次の作業
+
+FEAT-0056 (値渡しの引数・局所関数の unboxing)、BUG-0011、`UElem` の特殊化、CirkaLang v0.0.2 の配列 (FEAT-0211) の後に再計測する。

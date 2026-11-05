@@ -58,11 +58,17 @@ for name in "${names[@]}"; do
   fi
   echo "== $name"
   hyperfine -N -w 1 -r "$runs" --export-markdown "$out/$name.md" --export-json "$out/$name.json" "${cmds[@]}"
-  # peak RSS of each implementation (needs GNU time)
-  [ -x /usr/bin/time ] || continue
+  # peak RSS of each implementation: GNU time, or getrusage from python3
+  # (whose values include the forked interpreter: about 11 MB at least)
   for ((i = 1; i < ${#cmds[@]}; i += 3)); do
     label="${cmds[$i]}"; cmd="${cmds[$((i + 1))]}"
-    rss=$( { /usr/bin/time -f '%M' $cmd >/dev/null; } 2>&1 | tail -1 )
+    if [ -x /usr/bin/time ]; then
+      rss=$( { /usr/bin/time -f '%M' $cmd >/dev/null; } 2>&1 | tail -1 )
+    else
+      rss=$(python3 -c 'import resource, subprocess, sys
+subprocess.run(sys.argv[1:], stdout=subprocess.DEVNULL, check=True)
+print(resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss)' $cmd)
+    fi
     echo "max RSS $label: ${rss} KiB" | tee -a "$out/$name.md"
   done
 done

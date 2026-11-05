@@ -1,0 +1,33 @@
+module Main
+
+-- mandelbrot (Benchmarks Game algorithm), single-threaded. Prints the
+-- number of points of the n x n grid in the set instead of the PBM bitmap
+-- (as rust/main.rs).
+
+go : Int -> Float -> Float -> Float -> Float -> Bool
+go k zr zi cr ci =
+  if k >= 50 then True
+  else
+    let tr = zr *. zr in
+    let ti = zi *. zi in
+    if tr +. ti >. 4.0 then False
+    else go (k + 1) (tr -. ti +. cr) (2.0 *. zr *. zi +. ci) cr ci
+
+cols : Int -> Float -> Float -> Int -> Int -> Int
+cols n fn ci x acc =
+  if x >= n then acc
+  else
+    let cr = 2.0 *. toFloat x /. fn -. 1.5 in
+    cols n fn ci (x + 1) (if go 0 0.0 0.0 cr ci then acc + 1 else acc)
+
+rows : Int -> Float -> Int -> Int -> Int
+rows n fn y acc =
+  if y >= n then acc
+  else rows n fn (y + 1) (cols n fn (2.0 *. toFloat y /. fn -. 1.0) 0 acc)
+
+main : IO ()
+main = do
+  argc <- argCount
+  arg <- if argc > 0 then getArg 0 else pure "200"
+  let n = parseInt arg
+  putStrLn (showInt (rows n (toFloat n) 0 0))

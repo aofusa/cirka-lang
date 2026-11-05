@@ -1,5 +1,6 @@
 -- In-place quicksort with GHC's STUArray (the GHC -O2 baseline of own.chs;
 -- aCHC has no Data.Array.ST, so only GHC builds this one).
+-- achc: skip
 module Main where
 
 import Control.Monad (when)

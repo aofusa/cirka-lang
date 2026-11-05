@@ -1,0 +1,56 @@
+module Main
+
+-- spectral-norm (Benchmarks Game), single-threaded. v0.0.1 has no arrays,
+-- so the vectors are lists. Same output as rust/main.rs.
+
+a : Int -> Int -> Float
+a i j = 1.0 /. toFloat ((i + j) * (i + j + 1) / 2 + i + 1)
+
+-- The coefficient (i, k) of A, or of its transpose when `t`.
+coef : Bool -> Int -> Int -> Float
+coef True i k = a k i
+coef False i k = a i k
+
+-- Sum over k of (row i, column k) times u[k]; `t` transposes A.
+dot : Bool -> Int -> Int -> List Float -> Float -> Float
+dot t i k Nil s = s
+dot t i k (x :: xs) s =
+  dot t i (k + 1) xs (s +. coef t i k *. x)
+
+mulRows : Bool -> Int -> Int -> List Float -> List Float
+mulRows t i n u = if i >= n then Nil else dot t i 0 u 0.0 :: mulRows t (i + 1) n u
+
+mulAtAv : Int -> List Float -> List Float
+mulAtAv n u = mulRows True 0 n (mulRows False 0 n u)
+
+ones : Int -> List Float
+ones 0 = Nil
+ones n = 1.0 :: ones (n - 1)
+
+power : Int -> Int -> List Float -> Pair (List Float) (List Float)
+power n k u =
+  let v = mulAtAv n u in
+  let u2 = mulAtAv n v in
+  if k <= 1 then (u2, v) else power n (k - 1) u2
+
+dot2 : List Float -> List Float -> Float -> Float
+dot2 (x :: xs) (y :: ys) s = dot2 xs ys (s +. x *. y)
+dot2 _ _ s = s
+
+pad9 : String -> String
+pad9 s = if strLength s < 9 then pad9 ("0" ++ s) else s
+
+fixed9 : Float -> String
+fixed9 x =
+  if x <. 0.0 then "-" ++ fixed9 (negateF x)
+  else
+    let n = truncate (x *. 1000000000.0 +. 0.5) in
+    showInt (n / 1000000000) ++ "." ++ pad9 (showInt (n % 1000000000))
+
+main : IO ()
+main = do
+  argc <- argCount
+  arg <- if argc > 0 then getArg 0 else pure "100"
+  let n = parseInt arg
+  case power n 10 (ones n) of
+    (u, v) => putStrLn (fixed9 (sqrt (dot2 u v 0.0 /. dot2 v v 0.0)))
