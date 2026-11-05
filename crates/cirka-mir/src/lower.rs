@@ -29,6 +29,7 @@ use std::collections::{HashMap, HashSet};
 pub fn lower_program(p: &Program) -> Result<Module, Vec<Diagnostic>> {
     let mut l = Lowerer::new(p);
     l.run();
+    l.m.collect_cycles = p.collect_cycles;
     if l.errors.is_empty() {
         Ok(l.m)
     } else {
@@ -1159,14 +1160,9 @@ impl<'p> Lowerer<'p> {
     }
 
     fn letrec(&mut self, fb: &mut Fb, env: &mut Env, bs: &[(core::Binder, Expr)]) {
-        for (b, rhs) in bs {
-            if lam_chain(rhs).0.is_empty() {
-                self.error(format!(
-                    "recursive non-function binding `{}` is not supported (cyclic data)",
-                    b.id.name
-                ));
-                return;
-            }
+        if bs.iter().any(|(_, rhs)| lam_chain(rhs).0.is_empty()) {
+            self.letrec_values(fb, env, bs);
+            return;
         }
         // Free variables of the whole group (excluding the group itself).
         let group: HashSet<u32> = bs.iter().map(|(b, _)| b.id.id).collect();
@@ -1221,6 +1217,111 @@ impl<'p> Lowerer<'p> {
                 body: body.clone(),
                 closure: false,
             });
+        }
+    }
+
+    /// A recursive group with value bindings (knot-tying, e.g.
+    /// `let xs = 1 : xs`; 04-memory-model.md §5, FEAT-0126): every member
+    /// becomes a thunk. The thunks are allocated with placeholders for the
+    /// members they capture, which `thunk_init` then fills in, and are
+    /// recorded as roots of the cycle collector.
+    fn letrec_values(&mut self, fb: &mut Fb, env: &mut Env, bs: &[(core::Binder, Expr)]) {
+        for (b, _) in bs {
+            if self.rep(&b.ty) != Ty::Ptr {
+                self.error(format!(
+                    "recursive binding `{}` of an unboxed type is not supported",
+                    b.id.name
+                ));
+                return;
+            }
+        }
+        let group: HashSet<u32> = bs.iter().map(|(b, _)| b.id.id).collect();
+        // Placeholder variables (never defined) stand for the members while
+        // the thunks are built.
+        let mut holders: HashMap<Var, usize> = HashMap::new();
+        for (j, (b, _)) in bs.iter().enumerate() {
+            let v = fb.f.fresh_var(&b.id.name, Ty::Ptr);
+            holders.insert(v, j);
+            env.insert(
+                b.id.id,
+                Bound::Val {
+                    op: Operand::Var(v),
+                    ty: b.ty.clone(),
+                    whnf: false,
+                },
+            );
+        }
+        let base = fb.f.name.clone();
+        let mut thunks = Vec::new();
+        let mut inits = Vec::new();
+        for (i, (b, rhs)) in bs.iter().enumerate() {
+            // Members first: their slots are then preceded by pointers only.
+            let mut fvs = self.free_vars(env, rhs);
+            fvs.sort_by_key(|f| !group.contains(&f.id));
+            let (new_env, caps, mut ops) = self.lifted_env(env, &fvs);
+            for (k, op) in ops.iter_mut().enumerate() {
+                if let Operand::Var(v) = op
+                    && let Some(&j) = holders.get(v)
+                {
+                    // A static immortal object: nothing to count.
+                    *op = Operand::Const(Const::Str(Vec::new()));
+                    inits.push((i, k, j));
+                }
+            }
+            let name = self.fresh_name(&base, &b.id.name);
+            let params: Vec<Ty> = caps.iter().map(|(_, t)| self.rep(t)).collect();
+            self.sigs.insert(
+                name.clone(),
+                Sig {
+                    params,
+                    ret: Ty::Ptr,
+                },
+            );
+            self.pending.push(Pending {
+                name: name.clone(),
+                env: new_env,
+                fvs: caps,
+                params: vec![],
+                body: rhs.clone(),
+                closure: false,
+            });
+            thunks.push(fb.let_(
+                &b.id.name,
+                Ty::Ptr,
+                Rhs::MkThunk {
+                    func: name,
+                    args: ops,
+                },
+            ));
+        }
+        for (i, k, j) in inits {
+            fb.let_(
+                "init",
+                Ty::I64,
+                Rhs::Prim(
+                    ir::Prim::ThunkInit,
+                    vec![
+                        Operand::Var(thunks[i]),
+                        Operand::Const(Const::Int(k as i64, Ty::I64)),
+                        Operand::Var(thunks[j]),
+                    ],
+                ),
+            );
+        }
+        for (t, (b, _)) in thunks.iter().zip(bs) {
+            fb.let_(
+                "cand",
+                Ty::I64,
+                Rhs::Prim(ir::Prim::CycleCandidate, vec![Operand::Var(*t)]),
+            );
+            env.insert(
+                b.id.id,
+                Bound::Val {
+                    op: Operand::Var(*t),
+                    ty: b.ty.clone(),
+                    whnf: false,
+                },
+            );
         }
     }
 

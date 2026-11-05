@@ -118,9 +118,17 @@ pub struct Interp<'m> {
     args: Vec<Vec<u8>>,
     /// Per function: variables that hold reuse tokens.
     tokens: Vec<Vec<bool>>,
+    /// Roots of the cycle collector (each holds a reference), and the
+    /// buffer length that triggers a collection (04-memory-model.md §5).
+    cycle_roots: Vec<u32>,
+    cycle_limit: usize,
 }
 
 const STATIC: i64 = 0;
+
+/// Initial number of cycle collector roots that triggers a collection
+/// (the same as the native runtime).
+const CYCLE_BUFFER: usize = 1024;
 
 impl<'m> Interp<'m> {
     pub fn new(m: &'m Module) -> Interp<'m> {
@@ -141,6 +149,8 @@ impl<'m> Interp<'m> {
             stdin_pos: 0,
             args: Vec::new(),
             tokens: m.funcs.iter().map(token_vars).collect(),
+            cycle_roots: Vec::new(),
+            cycle_limit: CYCLE_BUFFER,
         }
     }
 
@@ -285,6 +295,11 @@ impl<'m> Interp<'m> {
                 ));
             }
         };
+        if self.m.collect_cycles
+            && (self.collect_cycles().is_err() || self.release_cycle_roots().is_err())
+        {
+            return Err("memory fault in the cycle collector".into());
+        }
         let leaked = self.count_leaks();
         Ok(RunResult {
             stdout: String::from_utf8_lossy(&self.out).into_owned(),
@@ -296,6 +311,117 @@ impl<'m> Interp<'m> {
             },
             leaked,
         })
+    }
+
+    /// Records a root of the cycle collector (`cycle_candidate`).
+    fn cycle_candidate(&mut self, v: Val) -> R<()> {
+        let Val::P(p) = v else { return Ok(()) };
+        if !self.m.collect_cycles || self.heap[p as usize].rc == STATIC {
+            return Ok(());
+        }
+        self.heap[p as usize].rc += 1;
+        self.cycle_roots.push(p);
+        if self.cycle_roots.len() >= self.cycle_limit {
+            self.collect_cycles()?;
+            self.cycle_limit = CYCLE_BUFFER.max(2 * self.cycle_roots.len());
+        }
+        Ok(())
+    }
+
+    /// Trial deletion (Bacon–Rajan) over the subgraph reachable from the
+    /// roots: frees the garbage cycles; the surviving roots stay roots
+    /// (the same algorithm as `cirka-runtime`'s `cycles.rs`).
+    fn collect_cycles(&mut self) -> R<()> {
+        #[derive(Clone, Copy, PartialEq)]
+        enum C {
+            Gray,
+            White,
+            Black,
+        }
+        let roots = std::mem::take(&mut self.cycle_roots);
+        let mut color: HashMap<u32, C> = HashMap::new();
+        // Static objects (count 0, never colored) take no part; a colored
+        // object may reach count 0 while marking.
+        let children = |h: &Vec<Obj>, color: &HashMap<u32, C>, p: u32| -> Vec<u32> {
+            h[p as usize]
+                .fields
+                .iter()
+                .filter_map(|f| match f {
+                    Val::P(c) if color.contains_key(c) || h[*c as usize].rc != STATIC => Some(*c),
+                    _ => None,
+                })
+                .collect()
+        };
+        // The roots' own references.
+        for &r in &roots {
+            if self.heap[r as usize].freed {
+                return fault(format!("cycle root #{r} was freed"));
+            }
+            self.heap[r as usize].rc -= 1;
+        }
+        // Mark gray: remove the internal references.
+        let mut work: Vec<u32> = Vec::new();
+        for &r in &roots {
+            if color.insert(r, C::Gray).is_none() {
+                work.push(r);
+            }
+        }
+        while let Some(p) = work.pop() {
+            for c in children(&self.heap, &color, p) {
+                self.heap[c as usize].rc -= 1;
+                if color.insert(c, C::Gray).is_none() {
+                    work.push(c);
+                }
+            }
+        }
+        // Scan: externally referenced objects (and all they reach) are
+        // black with their counts restored; the rest is white.
+        let mut scan: Vec<u32> = roots.clone();
+        while let Some(p) = scan.pop() {
+            if color[&p] != C::Gray {
+                continue;
+            }
+            if self.heap[p as usize].rc > 0 {
+                let mut black = vec![p];
+                color.insert(p, C::Black);
+                while let Some(b) = black.pop() {
+                    for c in children(&self.heap, &color, b) {
+                        self.heap[c as usize].rc += 1;
+                        if color[&c] != C::Black {
+                            color.insert(c, C::Black);
+                            black.push(c);
+                        }
+                    }
+                }
+            } else {
+                color.insert(p, C::White);
+                let cs = children(&self.heap, &color, p);
+                scan.extend(cs);
+            }
+        }
+        // Free the white objects; their references to black objects were
+        // removed when marking.
+        for (&p, &c) in &color {
+            if c == C::White {
+                self.free_raw(p);
+            }
+        }
+        for r in roots {
+            if !self.heap[r as usize].freed {
+                self.heap[r as usize].rc += 1;
+                self.cycle_roots.push(r);
+            }
+        }
+        Ok(())
+    }
+
+    /// Releases the collector's references to the surviving roots (at exit,
+    /// after the last collection).
+    fn release_cycle_roots(&mut self) -> R<()> {
+        for r in std::mem::take(&mut self.cycle_roots) {
+            self.drop_val(Val::P(r))?;
+        }
+        Ok(())
     }
 
     fn count_leaks(&self) -> u64 {
@@ -976,6 +1102,23 @@ impl<'m> Interp<'m> {
                 }
                 o.fields[k as usize]
             }
+            ThunkInit => {
+                let Val::P(t) = a[0] else {
+                    return fault("thunk_init on a non-pointer");
+                };
+                let k = i(1) as usize;
+                let o = self.obj_mut(t)?;
+                if o.kind != kind::THUNK || k >= o.fields.len() {
+                    return fault("thunk_init on a bad thunk slot");
+                }
+                let old = std::mem::replace(&mut o.fields[k], a[2]);
+                self.drop_val(old)?;
+                Val::I(0)
+            }
+            CycleCandidate => {
+                self.cycle_candidate(a[0])?;
+                Val::I(0)
+            }
             ArraySet | ArraySetShared => {
                 let shared_ok = p == ArraySetShared;
                 let Val::P(p) = a[0] else {
@@ -1217,13 +1360,10 @@ impl<'m> Interp<'m> {
             }
             "cirka_mutvar_new" => {
                 self.dup(a[0])?;
-                Ok(Val::P(self.alloc(
-                    kind::MUTVAR,
-                    0,
-                    vec![a[0]],
-                    Payload::Con,
-                    16,
-                )))
+                let r = Val::P(self.alloc(kind::MUTVAR, 0, vec![a[0]], Payload::Con, 16));
+                // A reference may come to point to itself.
+                self.cycle_candidate(r)?;
+                Ok(r)
             }
             "cirka_mutvar_read" => {
                 let Val::P(r) = a[0] else {

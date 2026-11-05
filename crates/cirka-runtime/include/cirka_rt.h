@@ -61,6 +61,9 @@ void   *cirka_bytes_new(int64_t len);
 void   *cirka_array_new(int64_t len, void *init);
 void   *cirka_array_unique(void *a);
 void   *cirka_bytes_unique(void *b);
+/* Cycle collector (--cycles=collect, 04-memory-model.md §5). */
+void    cirka_cycles_enable(void);
+void    cirka_cycle_candidate(void *o);
 void   *cirka_f32_show_hs(double x);
 double  cirka_f32_round(double x);
 int64_t cirka_f64_bits(double x);

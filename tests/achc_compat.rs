@@ -37,8 +37,9 @@ enum Category {
     Ownership,
     /// Other compile-time diagnostics (FFI, packages).
     OtherCompile,
-    /// A recursive value binding (cyclic data such as `ones = 1 : ones`):
-    /// rejected because reference counting cannot reclaim it.
+    /// Recursive value bindings (cyclic data such as `let xs = 1 : xs`,
+    /// W0401): runs correctly with the cycle collector (`--cycles=collect`,
+    /// FEAT-0126), which reference counting alone cannot do.
     Cyclic,
     /// The compiler panicked or a later stage failed (internal error).
     Ice,
@@ -308,6 +309,13 @@ fn measure(cfg: &cirka_driver::Config, p: &Program) -> (Category, String) {
         }
         Ok(Ok(c)) => c,
     };
+    // Programs with cyclic data (W0401) run with the cycle collector.
+    let cyclic = compiled
+        .warnings
+        .iter()
+        .any(|d| d.code.as_deref() == Some("W0401"));
+    let mut compiled = compiled;
+    compiled.core.collect_cycles = cyclic;
     let mut opts = cirka_driver::pipeline::Options::new(&p.name);
     opts.opt_level = 2;
     let work = cirka_testkit::work_dir("achc-compat", &p.name.replace('/', "_"));
@@ -317,15 +325,7 @@ fn measure(cfg: &cirka_driver::Config, p: &Program) -> (Category, String) {
     }));
     let mir = match out {
         Err(_) => return (Category::Ice, "back end panicked".into()),
-        Ok(Err(ds)) => {
-            let m = &ds[0].message;
-            let c = if m.contains("(cyclic data)") {
-                Category::Cyclic
-            } else {
-                Category::Ice
-            };
-            return (c, first_line(m));
-        }
+        Ok(Err(ds)) => return (Category::Ice, first_line(&ds[0].message)),
         Ok(Ok(o)) => o.mir,
     };
     let exe = work.join("prog");
@@ -356,9 +356,13 @@ fn measure(cfg: &cirka_driver::Config, p: &Program) -> (Category, String) {
         &stdin,
         Duration::from_secs(secs),
     );
-    let cat = classify_run(&want_out, want_code, &out, code, &err);
+    let mut cat = classify_run(&want_out, want_code, &out, code, &err);
+    if cat == Category::Pass && cyclic {
+        cat = Category::Cyclic;
+    }
     let detail = match cat {
         Category::Pass => String::new(),
+        Category::Cyclic => "passes with --cycles=collect".into(),
         Category::Timeout => format!("no result in {secs} s"),
         Category::Crash => format!("exit {:?}: {}", code, first_line(&err)),
         Category::Output => {

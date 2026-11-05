@@ -186,6 +186,35 @@ fn exhaustiveness_warnings() {
     );
 }
 
+/// Recursive value bindings warn (W0401, FEAT-0126); recursive functions
+/// and top-level values do not.
+#[test]
+fn recursive_value_warnings() {
+    assert_eq!(
+        warnings("main = print (h xs)\n  where xs = 1 : xs\nh (x : _) = x\nh [] = 0\n"),
+        vec!["W0401"]
+    );
+    assert_eq!(
+        warnings("main = let { e = 0 : o; o = e } in print (h e)\nh (x : _) = x\nh [] = 0\n"),
+        vec!["W0401", "W0401"]
+    );
+    assert_eq!(
+        warnings(
+            "main = print (go 3)\n  where go n = if n == 0 then 0 else go (n - 1)\nh (x : _) = x\nh [] = 0\n"
+        ),
+        Vec::<String>::new()
+    );
+    // A function defined without arguments is not a cyclic value.
+    assert_eq!(
+        warnings("main = print (f 3)\n  where f = g where g n = if n == 0 then 0 else f (n - 1)\n"),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        warnings("xs = 1 : xs\nmain = print (h xs)\nh (x : _) = x\nh [] = 0\n"),
+        Vec::<String>::new()
+    );
+}
+
 #[test]
 fn lazy_pattern_with_several_variables() {
     // Regression: the selector of `b` re-bound `a` to its own field.

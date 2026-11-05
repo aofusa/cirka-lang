@@ -357,6 +357,7 @@ impl Ds {
             datas: prims.datas.clone(),
             externs: prims.externs.clone(),
             binds: Vec::new(),
+            collect_cycles: false,
         };
         let builtin = |n: &str| {
             matches!(
@@ -703,7 +704,36 @@ impl Ds {
                 let (b, e) = out.pop().unwrap();
                 c::Bind::NonRec(b, Box::new(e))
             }
-            BindGroup::Rec(_) => c::Bind::Rec(out),
+            BindGroup::Rec(bs) => {
+                // A value (not a function) that refers to its own group
+                // makes a cycle (knot-tying, 04-memory-model.md §5). A
+                // function-typed binding defined without arguments (`f = g
+                // where g x = ..`) becomes a function once optimized.
+                for ((_, e), b) in out.iter().zip(bs) {
+                    if !matches!(strip_tylams(e), c::Expr::Lam(..))
+                        && !is_fun_type(&b.ty)
+                        && !b.span.is_dummy()
+                    {
+                        self.warnings.push(
+                            Diagnostic::warning(format!(
+                                "the recursive value binding `{}` may form a cycle",
+                                display_name(&b.name)
+                            ))
+                            .with_code("W0401")
+                            .with_label(b.span, "refers to itself (through its group)")
+                            .with_note(
+                                "reference counting cannot free a cycle: it leaks \
+                                 unless the program is built with `--cycles=collect`",
+                            )
+                            .with_help(
+                                "build it with `--cycles=collect`, or write it without \
+                                 sharing (e.g. a recursive function)",
+                            ),
+                        );
+                    }
+                }
+                c::Bind::Rec(out)
+            }
         }
     }
 
@@ -1416,4 +1446,30 @@ fn prune(p: &mut c::Program) {
     }
     p.binds.retain(|b| live.contains(&b.name));
     p.externs.retain(|e| externs.contains(&e.name));
+}
+
+/// `e` without its type abstractions.
+fn strip_tylams(mut e: &c::Expr) -> &c::Expr {
+    while let c::Expr::TyLam(_, _, b) = e {
+        e = b;
+    }
+    e
+}
+
+/// A local name as written (without the renamer's `#n` suffix).
+fn display_name(n: &str) -> &str {
+    n.split('#').next().unwrap_or(n)
+}
+
+/// Whether `t` is a function type (with any multiplicity).
+fn is_fun_type(t: &achc_typeck::types::Ty) -> bool {
+    use achc_typeck::types::{Ty, fun_tc};
+    match t {
+        Ty::Fun(..) => true,
+        Ty::Forall(_, b) => is_fun_type(b),
+        Ty::App(f, _) => {
+            matches!(&**f, Ty::App(g, _) if matches!(&**g, Ty::App(h, _) if matches!(&**h, Ty::Con(c) if *c == fun_tc())))
+        }
+        _ => false,
+    }
 }

@@ -360,6 +360,9 @@ pub struct Module {
     pub externs: Vec<ExternDecl>,
     pub globals: Vec<GlobalDecl>,
     pub funcs: Vec<Function>,
+    /// Run the cycle collector (`--cycles=collect`, 04-memory-model.md §5):
+    /// otherwise `cycle_candidate` does nothing.
+    pub collect_cycles: bool,
 }
 
 impl Module {
@@ -462,6 +465,14 @@ pub enum Prim {
     ArraySetShared,
     BytesSetI64Shared,
     BytesSetF64Shared,
+    /// `thunk_init(t, k, v)`: stores `v` in the `k`-th captured variable of
+    /// the thunk `t` just allocated by `letrec` of values (knot-tying,
+    /// FEAT-0126), replacing a placeholder. The captures before `k` must
+    /// all be pointers.
+    ThunkInit,
+    /// `cycle_candidate(x)`: records `x` as a root of the cycle collector
+    /// (04-memory-model.md §5); a no-op unless the program collects cycles.
+    CycleCandidate,
 }
 
 impl Prim {
@@ -523,6 +534,8 @@ impl Prim {
         Prim::ArraySetShared,
         Prim::BytesSetI64Shared,
         Prim::BytesSetF64Shared,
+        Prim::ThunkInit,
+        Prim::CycleCandidate,
     ];
 
     pub fn name(self) -> &'static str {
@@ -585,6 +598,8 @@ impl Prim {
             ArraySetShared => "array_set_shared",
             BytesSetI64Shared => "bytes_set_i64_shared",
             BytesSetF64Shared => "bytes_set_f64_shared",
+            ThunkInit => "thunk_init",
+            CycleCandidate => "cycle_candidate",
         }
     }
 
@@ -645,6 +660,8 @@ impl Prim {
             ArraySetShared => (&[Ptr, I64, Ptr], I64),
             BytesSetI64Shared => (&[Ptr, I64, I64], I64),
             BytesSetF64Shared => (&[Ptr, I64, F64], I64),
+            ThunkInit => (&[Ptr, I64, Ptr], I64),
+            CycleCandidate => (&[Ptr], I64),
         }
     }
 
@@ -657,7 +674,7 @@ impl Prim {
     pub fn consumes(self) -> &'static [usize] {
         match self {
             Prim::ArrayNew => &[1],
-            Prim::ArraySet | Prim::ArraySetShared => &[2],
+            Prim::ArraySet | Prim::ArraySetShared | Prim::ThunkInit => &[2],
             Prim::ArrayUnique | Prim::BytesUnique => &[0],
             _ => &[],
         }

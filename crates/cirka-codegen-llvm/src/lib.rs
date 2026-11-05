@@ -80,6 +80,8 @@ const RUNTIME_DECLS: &[(&str, &str)] = &[
     ("cirka_array_new", "ptr @cirka_array_new(i64, ptr)"),
     ("cirka_array_unique", "ptr @cirka_array_unique(ptr)"),
     ("cirka_bytes_unique", "ptr @cirka_bytes_unique(ptr)"),
+    ("cirka_cycle_candidate", "void @cirka_cycle_candidate(ptr)"),
+    ("cirka_cycles_enable", "void @cirka_cycles_enable()"),
     (
         "llvm.fptosi.sat.i64.f64",
         "i64 @llvm.fptosi.sat.i64.f64(double)",
@@ -1045,6 +1047,26 @@ impl<'m> Gen<'m> {
                 let l = Self::load_field(c, &a[0], 0, Ty::I64);
                 c.line(&format!("{dst} = add i64 {l}, 0"));
             }
+            ThunkInit => {
+                // Captured variable `k` (preceded by pointers only) is
+                // field 1 + k, after the code pointer.
+                let idx = c.t();
+                c.line(&format!("{idx} = add i64 {}, 2", a[1]));
+                let ep = c.t();
+                c.line(&format!(
+                    "{ep} = getelementptr inbounds ptr, ptr {}, i64 {idx}",
+                    a[0]
+                ));
+                let old = c.t();
+                c.line(&format!("{old} = load ptr, ptr {ep}, align 8"));
+                c.line(&format!("store ptr {}, ptr {ep}, align 8", a[2]));
+                self.emit_drop(c, &old);
+                c.line(&format!("{dst} = add i64 0, 0"));
+            }
+            CycleCandidate => {
+                c.line(&format!("call void @cirka_cycle_candidate(ptr {})", a[0]));
+                c.line(&format!("{dst} = add i64 0, 0"));
+            }
             ArrayGet | ArraySet | ArraySetShared => {
                 let len = Self::load_field(c, &a[0], 0, Ty::I64);
                 self.bounds(c, &len, &a[1]);
@@ -1416,6 +1438,9 @@ impl<'m> Gen<'m> {
         if let Some(main) = self.funcs.get("main") {
             let ret = main.ret;
             let _ = writeln!(self.out, "define i64 @cirka_main() {{\nentry:");
+            if m.collect_cycles {
+                self.out.push_str("  call void @cirka_cycles_enable()\n");
+            }
             let _ = writeln!(
                 self.out,
                 "  %r = call tailcc {} {}()",

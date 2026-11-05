@@ -1,0 +1,7 @@
+warning[W0401]: the recursive value binding `xs` may form a cycle
+ --> tests/achc/run/h3/cycles_warn.hs:8:7
+  |
+8 |   let xs = 1 : 2 : xs :: [Int]
+  |       ^^^^^^^^^^^^^^^^^^^^^^^^ refers to itself (through its group)
+  = note: reference counting cannot free a cycle: it leaks unless the program is built with `--cycles=collect`
+  = help: build it with `--cycles=collect`, or write it without sharing (e.g. a recursive function)

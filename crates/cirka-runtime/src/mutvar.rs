@@ -1,7 +1,8 @@
 //! Mutable references (`MUTVAR`, 05-runtime.md §1): `IORef` / `STRef`.
 //! One RC-managed word holds the current value. A reference that (through
 //! its value) points to itself forms a cycle and leaks (04-memory-model.md
-//! §5); that is not a safety violation.
+//! §5), which is not a safety violation, unless the program collects cycles
+//! (`--cycles=collect`): then every reference is a root of the collector.
 
 use crate::alloc;
 use crate::object::{self, Obj};
@@ -22,6 +23,8 @@ pub unsafe extern "C" fn cirka_mutvar_new(v: Obj) -> Obj {
         (*o).nptr = 1;
         (*o).kind = object::MUTVAR;
         *object::word(o, 0) = v as usize;
+        // A reference may come to point to itself (04-memory-model.md §5).
+        crate::cycles::cirka_cycle_candidate(o);
         o
     }
 }

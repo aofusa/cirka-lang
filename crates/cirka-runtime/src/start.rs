@@ -172,6 +172,7 @@ unsafe extern "C" {
 
 fn exit_sequence(code: i32) -> ! {
     io::flush();
+    crate::cycles::finish();
     // SAFETY: single-threaded at exit; statistics and debug state.
     unsafe {
         if matches!(sys::env(c"CIRKA_STATS"), Some(b"1")) {

@@ -135,7 +135,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0123](features/FEAT-0123-hs-unique-arrays.md) | 一意配列 (Cirka.Array) | done | P1 | 0121, 0022 |
 | [FEAT-0124](features/FEAT-0124-hs-borrowing.md) | 借用 (Ref / MutRef / Borrow モナド) | done | P1 | 0121 |
 | [FEAT-0125](features/FEAT-0125-hs-chs-mode.md) | .chs モード・CirkaOwnership・ownership レベル | done | P1 | 0122 |
-| [FEAT-0126](features/FEAT-0126-hs-cycles.md) | 循環の検出と局所回収器 | todo | P2 | 0112 |
+| [FEAT-0126](features/FEAT-0126-hs-cycles.md) | 循環の検出と局所回収器 | done | P2 | 0112 |
 | [FEAT-0127](features/FEAT-0127-hs-regions.md) | リージョン (aCHC) | todo | P2 | 0124, 0049 |
 | [FEAT-0128](features/FEAT-0128-hs-linearity-inference.md) | 線形性の推論 (LType 一般化) | todo | P2 | 0121 |
 

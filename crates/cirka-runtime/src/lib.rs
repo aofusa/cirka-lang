@@ -10,6 +10,7 @@
 
 pub mod alloc;
 pub mod bigint;
+pub mod cycles;
 pub mod debug;
 pub mod fs;
 pub mod io;

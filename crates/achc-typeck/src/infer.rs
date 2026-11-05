@@ -1370,12 +1370,16 @@ impl Tc {
                             .map(|v| (v.clone(), self.kind_in(v, &full)))
                             .collect();
                         let strict = !recursive && self.strict_locals.contains(&name);
+                        let span = binds
+                            .iter()
+                            .find(|b| b.name == name)
+                            .map_or(Span::DUMMY, |b| b.span);
                         results.push(tast::Bind {
                             name,
                             tvs: ktvs,
                             ty: full,
                             rhs: e,
-                            span: Span::DUMMY,
+                            span,
                             strict,
                         });
                     }

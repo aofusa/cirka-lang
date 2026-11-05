@@ -91,6 +91,7 @@ fn dsl_builds_linted_programs() {
     let prog = |e: Expr, m: Mult| Program {
         datas: vec![handle.clone()],
         externs: vec![],
+        collect_cycles: false,
         binds: vec![
             TopBind {
                 name: "close".into(),

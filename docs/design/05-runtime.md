@@ -58,6 +58,10 @@ void   cirka_mark_shared(void* obj);             // 到達可能な全オブジ�
 // 評価
 void*  cirka_force(void* thunk);                 // サンク評価 (ブラックホール・IND 書き換え)
 void*  cirka_array_unique(void* a);              // 一意なら a、共有ならコピー (in-place 更新の前。FEAT-0123)
+
+// 循環回収器 (--cycles=collect。04-memory-model.md §5、FEAT-0126)
+void   cirka_cycles_enable(void);                // 生成した cirka_main が最初に呼ぶ
+void   cirka_cycle_candidate(void* o);           // o (借用) を根に記録 (根のバッファが参照を 1 つ持つ)。有効でなければ何もしない
 void*  cirka_bytes_unique(void* b);              // 同上 (BYTES)
 void*  cirka_apply_n(void* fun, size_t n, void** args);   // 未知関数の適用 (eval/apply)
 

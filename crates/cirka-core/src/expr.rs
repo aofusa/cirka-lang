@@ -518,6 +518,9 @@ pub struct Program {
     pub datas: Vec<DataDecl>,
     pub externs: Vec<ExternDecl>,
     pub binds: Vec<TopBind>,
+    /// Collect garbage cycles at run time (`--cycles=collect`,
+    /// 04-memory-model.md §5). Set by the frontend; not part of the text form.
+    pub collect_cycles: bool,
 }
 
 impl Program {

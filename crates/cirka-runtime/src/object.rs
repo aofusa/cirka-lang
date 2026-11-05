@@ -130,16 +130,29 @@ pub unsafe extern "C" fn cirka_free_object(o: Obj) {
                     head = c;
                 }
             }
-            if kind == FOREIGN {
-                let fin = *word(x, 1);
-                if fin != 0 {
-                    let f: extern "C" fn(usize) = core::mem::transmute(fin);
-                    f(*word(x, 0));
-                }
-            }
-            stat_free();
-            dealloc(x);
+            release(x, kind);
         }
+    }
+}
+
+/// Releases the memory of a dead object of kind `kind` whose pointer
+/// fields have been dealt with (running a `FOREIGN` finalizer first).
+///
+/// # Safety
+/// `x` must be a dead heap object that nothing refers to any more.
+pub(crate) unsafe fn release(x: Obj, kind: u8) {
+    // SAFETY: guaranteed by the caller; a FOREIGN object stores its
+    // pointer in word 0 and its finalizer (or 0) in word 1.
+    unsafe {
+        if kind == FOREIGN {
+            let fin = *word(x, 1);
+            if fin != 0 {
+                let f: extern "C" fn(usize) = core::mem::transmute(fin);
+                f(*word(x, 0));
+            }
+        }
+        stat_free();
+        dealloc(x);
     }
 }
 

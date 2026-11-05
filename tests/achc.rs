@@ -406,6 +406,7 @@ fn run_programs(suite: &str, sub: &str, default_levels: &[u8]) {
                 Err(e) => return Outcome::Fail(e),
             }
         }
+        let expect_leak = c.header.get("expect-leak").is_some();
         let mut reference = None;
         // `-- opt-levels: 2` limits a test to optimized builds (e.g. lazy
         // accumulators that need a deep stack at -O0, like GHC -O0).
@@ -455,7 +456,12 @@ fn run_programs(suite: &str, sub: &str, default_levels: &[u8]) {
                     return Outcome::Fail(format!("-O{level}: stderr: {e}"));
                 }
             }
-            if r.leaked != 0 && want_code == 0 {
+            // `-- expect-leak: 1`: the program leaks (e.g. cyclic data
+            // under `--cycles=warn`, FEAT-0126).
+            if expect_leak && r.leaked == 0 {
+                return Outcome::Fail(format!("-O{level}: no leak, but `expect-leak` is set"));
+            }
+            if r.leaked != 0 && want_code == 0 && !expect_leak {
                 return Outcome::Fail(format!("-O{level}: {} objects leaked", r.leaked));
             }
             reference = Some((out.mir, r));
@@ -469,9 +475,34 @@ fn run_programs(suite: &str, sub: &str, default_levels: &[u8]) {
             &stdin,
             &r,
             true,
-            want_code == 0,
+            want_code == 0 && !expect_leak,
         )
     });
+}
+
+/// `--cycles=error` (FEAT-0126) rejects a recursive value binding (W0401
+/// as an error); `--cycles=collect` accepts it without warnings.
+#[test]
+fn achc_cycles_flag() {
+    let path = repo_root().join("tests/achc/run/h3/cycles_warn.hs");
+    let roots = vec![path.parent().unwrap().to_path_buf(), achc::lib_dir()];
+    let compile = |flag: &str| {
+        let mut sm = SourceMap::new();
+        let mut opts = cirka_driver::pipeline::Options::new("cycles");
+        opts.frontend_flags = vec![flag.to_string()];
+        achc::compile(&mut sm, &path, &roots, &opts, "cycles")
+    };
+    let errs = compile("--cycles=error").err().expect("rejected");
+    assert!(
+        errs.iter()
+            .all(|d| d.code.as_deref() == Some("W0401") && d.is_error())
+    );
+    let ok = compile("--cycles=collect").unwrap_or_else(|_| panic!("rejected"));
+    assert!(ok.warnings.is_empty());
+    assert!(ok.core.collect_cycles);
+    let warn = compile("--cycles=warn").unwrap_or_else(|_| panic!("rejected"));
+    assert!(!warn.core.collect_cycles);
+    assert_eq!(warn.warnings.len(), 1);
 }
 
 /// `achc.toml` packages (FEAT-0105): tests/achc/pkg/hello compiles through

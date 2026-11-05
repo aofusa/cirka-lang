@@ -16,23 +16,59 @@ use std::path::{Path, PathBuf};
 /// Frontend stages accepted by `--dump=`.
 pub const DUMPS: &[&str] = &["rn", "tc"];
 
-/// The ownership level of `.hs` files given by the frontend options: the
-/// last `--ownership=off|warn|strict` (default `warn`, 02-language-extensions.md §1.3).
-pub fn ownership_level(opts: &Options) -> Result<achc_typeck::Ownership, Diagnostic> {
-    let mut level = achc_typeck::Ownership::Warn;
+/// What `--cycles=` does with recursive value bindings (04-memory-model.md §5).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Cycles {
+    /// Warn (W0401); the cycles leak.
+    Warn,
+    /// Reject the program (W0401 as an error).
+    Error,
+    /// Collect the cycles at run time (trial deletion); no warning.
+    Collect,
+}
+
+/// The frontend options (`--name=value`, the last one wins).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct FrontendOptions {
+    /// The ownership level of `.hs` files (default `warn`, 02-language-extensions.md §1.3).
+    pub ownership: achc_typeck::Ownership,
+    /// Default `warn`.
+    pub cycles: Cycles,
+}
+
+/// Parses the frontend options: `--ownership=off|warn|strict` and
+/// `--cycles=warn|error|collect`.
+pub fn frontend_options(opts: &Options) -> Result<FrontendOptions, Diagnostic> {
+    let mut o = FrontendOptions {
+        ownership: achc_typeck::Ownership::Warn,
+        cycles: Cycles::Warn,
+    };
+    let bad = |name: &str, v: &str, expected: &str| {
+        Diagnostic::error(format!(
+            "invalid value `{v}` for `--{name}` (expected {expected})"
+        ))
+    };
     for f in &opts.frontend_flags {
-        match f.strip_prefix("--ownership=") {
-            Some(v) => {
-                level = achc_typeck::Ownership::parse(v).ok_or_else(|| {
-                    Diagnostic::error(format!(
-                        "invalid value `{v}` for `--ownership` (expected off, warn or strict)"
-                    ))
-                })?
-            }
-            None => return Err(Diagnostic::error(format!("unknown option `{f}`"))),
+        if let Some(v) = f.strip_prefix("--ownership=") {
+            o.ownership = achc_typeck::Ownership::parse(v)
+                .ok_or_else(|| bad("ownership", v, "off, warn or strict"))?;
+        } else if let Some(v) = f.strip_prefix("--cycles=") {
+            o.cycles = match v {
+                "warn" => Cycles::Warn,
+                "error" => Cycles::Error,
+                "collect" => Cycles::Collect,
+                _ => return Err(bad("cycles", v, "warn, error or collect")),
+            };
+        } else {
+            return Err(Diagnostic::error(format!("unknown option `{f}`")));
         }
     }
-    Ok(level)
+    Ok(o)
+}
+
+/// The ownership level given by the frontend options.
+pub fn ownership_level(opts: &Options) -> Result<achc_typeck::Ownership, Diagnostic> {
+    frontend_options(opts).map(|o| o.ownership)
 }
 
 /// Directory of the base library: `ACHC_LIB_DIR`, else
@@ -78,7 +114,8 @@ pub fn compile(
             main_file.display()
         ))]
     })?;
-    let ownership = ownership_level(opts).map_err(|d| vec![d])?;
+    let fopts = frontend_options(opts).map_err(|d| vec![d])?;
+    let ownership = fopts.ownership;
     let chs = main_file.extension().is_some_and(|e| e == "chs");
     let id = sm.add(main_file.display().to_string(), src.clone());
     let mut loader = achc_rename::FsLoader {
@@ -127,7 +164,29 @@ pub fn compile(
                 .with_help("define `main :: IO ()`"),
         ]);
     }
-    let out = achc_desugar::desugar(&tp)?;
+    let mut out = achc_desugar::desugar(&tp)?;
+    // Recursive value bindings (W0401) under `--cycles=`.
+    let is_w0401 = |d: &Diagnostic| d.code.as_deref() == Some("W0401");
+    match fopts.cycles {
+        Cycles::Warn => {}
+        Cycles::Collect => out.warnings.retain(|d| !is_w0401(d)),
+        Cycles::Error => {
+            let errs: Vec<Diagnostic> = out
+                .warnings
+                .iter()
+                .filter(|d| is_w0401(d))
+                .map(|d| {
+                    let mut d = d.clone();
+                    d.severity = cirka_diagnostics::Severity::Error;
+                    d.with_note("an error under `--cycles=error`")
+                })
+                .collect();
+            if !errs.is_empty() {
+                return Err(errs);
+            }
+        }
+    }
+    out.program.collect_cycles = fopts.cycles == Cycles::Collect;
     Ok(Compiled {
         core: out.program,
         warnings: out.warnings,
@@ -155,10 +214,11 @@ pub fn frontend(
         if path.is_dir() || path.file_name().is_some_and(|f| f == "achc.toml") {
             match package::Package::load(path) {
                 Ok(p) => {
-                    // `--ownership=` on the command line overrides achc.toml.
+                    // `--ownership=` / `--cycles=` on the command line override achc.toml.
                     let mut o = opts.clone();
                     o.frontend_flags
                         .insert(0, format!("--ownership={}", p.ownership));
+                    o.frontend_flags.insert(1, format!("--cycles={}", p.cycles));
                     pkg_opts = Some(o);
                     (p.main_file(), p.source_dirs(), p.name)
                 }
@@ -205,6 +265,16 @@ mod tests {
             Strict
         );
         assert!(level(&["--ownership=loose"]).is_err());
-        assert!(level(&["--cycles=warn"]).is_err());
+        assert!(level(&["--cycles=bad"]).is_err());
+        assert!(level(&["--other=1"]).is_err());
+        let mut o = Options::new("t");
+        o.frontend_flags = vec!["--cycles=collect".into(), "--ownership=off".into()];
+        assert_eq!(
+            frontend_options(&o).unwrap(),
+            FrontendOptions {
+                ownership: Off,
+                cycles: Cycles::Collect
+            }
+        );
     }
 }
