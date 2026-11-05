@@ -54,6 +54,8 @@ lib/cirka-base/
   `Control.{Monad,Applicative}`、`Text.Read`、`System.IO` (標準入出力とハンドル名のみ。ファイルとハンドル操作・`IORef` は FEAT-0113)。
   GHC と同じ名前を同じ実体として再エクスポートするため、複数のモジュールにある関数 (`foldl'`・`find`・`void`・`forM` など) は
   `Cirka.Base` に一つだけ定義する。GHC の base から移植した部分は `LICENSE-GHC-BASE` に許諾条件を置き、ファイル先頭に記す。
+- 入出力 (FEAT-0113): `Data.IORef`、`System.Exit`、`System.Environment` (`getArgs`・`getProgName`)、
+  `System.IO` の `readFile`・`writeFile`・`appendFile`・`isEOF`・`hFlush`・`hPutStr stderr`。
 - 自己参照する値 (`let x = f x in x`) は循環データになり GC なしでは扱えないので、`fix`・`forever` は再帰関数で書く (共有はしない)。
 - `show :: Double` は GHC と同じ形式 (`0.1`・`1.0e-2`・`1.23456789e7`) をランタイムの `cirka_f64_show_hs` で出す。
 

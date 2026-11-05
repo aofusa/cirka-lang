@@ -232,6 +232,7 @@ fn achc_run() {
         let want_code: i32 = std::fs::read_to_string(c.sibling("exitcode"))
             .map(|s| s.trim().parse().unwrap())
             .unwrap_or(0);
+        let want_err = std::fs::read_to_string(c.sibling("stderr")).ok();
         if let Some(r) = cirka_testkit::ghc_reference(&c.path, Some(&stdin), &[]) {
             match r {
                 Ok(g) => {
@@ -242,6 +243,16 @@ fn achc_run() {
                             g.code,
                             cirka_testkit::line_diff(&want, &g.stdout)
                         ));
+                    }
+                    // GHC may print more call stack lines (from inside base).
+                    if let Some(w) = &want_err {
+                        let ge = normalize_stderr(&g.stderr, "prog: ", &root);
+                        if !ge.starts_with(w.as_str()) {
+                            return Outcome::Fail(format!(
+                                "GHC's stderr does not start with the expectation:\n{}",
+                                cirka_testkit::line_diff(w, &ge)
+                            ));
+                        }
                     }
                 }
                 // GHC is optional outside the Docker image.
@@ -282,6 +293,12 @@ fn achc_run() {
                     "-O{level}: exit code {} (expected {want_code})",
                     r.exit_code
                 ));
+            }
+            if want_err.is_some() {
+                let e = normalize_stderr(&r.stderr, "panic: ", &root);
+                if let Err(e) = check_expect(&c.sibling("stderr"), &e) {
+                    return Outcome::Fail(format!("-O{level}: stderr: {e}"));
+                }
             }
             if r.leaked != 0 && want_code == 0 {
                 return Outcome::Fail(format!("-O{level}: {} objects leaked", r.leaked));
@@ -325,4 +342,32 @@ fn achc_package() {
     assert_eq!(r.leaked, 0);
     // Not a Haskell file: left to the driver (`.core`) or rejected.
     assert!(achc::frontend(&mut sm, &dir.join("achc.toml.bak"), &opts).is_none());
+}
+
+/// Stderr of a run with the program name prefix (`prog: ` of GHC's
+/// binaries, `panic: ` of the interpreter) shown as `<prog>: ` and the
+/// repository root removed from paths. GHC results are cached and may come
+/// from a checkout elsewhere (`/work` in Docker), so any absolute path in
+/// front of `tests/` is removed as well.
+fn normalize_stderr(s: &str, prefix: &str, root: &str) -> String {
+    s.lines()
+        .map(|l| {
+            let l = strip_checkout_paths(&l.replace(root, ""));
+            match l.strip_prefix(prefix) {
+                Some(rest) => format!("<prog>: {rest}\n"),
+                None => format!("{l}\n"),
+            }
+        })
+        .collect()
+}
+
+/// `... at /any/where/tests/x.hs:1:2` becomes `... at tests/x.hs:1:2`.
+fn strip_checkout_paths(l: &str) -> String {
+    l.split(' ')
+        .map(|w| match w.find("/tests/") {
+            Some(i) if w.starts_with('/') => &w[i + 1..],
+            _ => w,
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }

@@ -80,6 +80,12 @@ asTypeOf = const
 error :: [Char] -> a
 error = primError
 
+-- | `error` called at a source location (the compiler rewrites calls of
+-- `error` to this): the message gets GHC's call stack line.
+cirkaErrorCalledAt :: [Char] -> [Char] -> a
+cirkaErrorCalledAt site msg =
+  primError (msg ++ "\nCallStack (from HasCallStack):\n  error, called at " ++ site)
+
 errorWithoutStackTrace :: [Char] -> a
 errorWithoutStackTrace = primError
 
@@ -1342,7 +1348,7 @@ putStrLn s = primBindIO (putStr s) (\_ -> putChar '\n')
 -- | Reads a UTF-8 encoded character; fails at the end of input.
 getChar :: IO Char
 getChar = primBindIO primGetByte (\b ->
-  if b < 0 then ioError (IOError "Prelude.getChar: end of file")
+  if b < 0 then ioError (IOError "<stdin>: hGetChar: end of file")
   else if b < 128 then return (primCharChr b)
   else let n = if b >= 240 then 3 else if b >= 224 then 2 else 1
            lead = if b >= 240 then b - 240 else if b >= 224 then b - 224 else b - 192
@@ -1352,10 +1358,10 @@ cirkaUtf8Cont :: Int -> Int -> IO Int
 cirkaUtf8Cont 0 acc = return acc
 cirkaUtf8Cont n acc = primBindIO primGetByte (\b -> cirkaUtf8Cont (n - 1) (acc * 64 + (b - 128)))
 
--- | Whether stdin is at its end (reads ahead one byte).
+-- | One line of stdin without its newline; fails at the end of input.
 getLine :: IO String
 getLine = primBindIO primGetByte (\b ->
-  if b < 0 then ioError (IOError "Prelude.getLine: end of file")
+  if b < 0 then ioError (IOError "<stdin>: hGetLine: end of file")
   else cirkaGetLine b)
 
 cirkaGetLine :: Int -> IO String
@@ -1383,6 +1389,16 @@ getContents = primBindIO primGetByte (\b ->
     c <- cirkaDecode b
     cs <- getContents
     return (c : cs))
+
+-- | Reads the whole file (strictly; GHC reads it lazily).
+readFile :: FilePath -> IO String
+readFile = primReadFile
+
+writeFile :: FilePath -> String -> IO ()
+writeFile p s = primWriteFile p s 0
+
+appendFile :: FilePath -> String -> IO ()
+appendFile p s = primWriteFile p s 1
 
 interact :: (String -> String) -> IO ()
 interact f = getContents >>= \s -> putStr (f s)

@@ -10,10 +10,20 @@
 (data List (a) (Nil) (Cons a (List a)))
 (data Unit () (Unit))
 (data IO (a) :newtype (IO# (-> Unit# a)))
+; A mutable reference (runtime MUTVAR) holding a value of type a.
+(data IORef (a) :newtype (IORef# Any))
 
 (extern cirka_write_char (Int#) Unit#)
 (extern cirka_write_bytes (Bytes) Unit#)
 (extern cirka_ewrite_bytes (Bytes) Unit#)
+(extern cirka_flush () Unit#)
+(extern cirka_peek_byte () Int#)
+(extern cirka_prog_name () Bytes)
+(extern cirka_mutvar_new (Any) Any)
+(extern cirka_mutvar_read (Any) Any)
+(extern cirka_mutvar_write (Any Any) Unit#)
+(extern cirka_file_read (Bytes) Bytes)
+(extern cirka_file_write (Bytes Bytes Int#) Unit#)
 (extern cirka_panic_bytes (Bytes) Unit#)
 (extern cirka_exit (Int#) Unit#)
 (extern cirka_read_byte () Int#)
@@ -315,6 +325,46 @@
 (def prim$get_arg (-> Int Unit# (List Char))
   (lam ((i Int) (w Unit#))
     (case i (i1 Int) (List Char) ((I# x) (prim$unpack (extern cirka_arg x))))))
+
+; ---- references and files ----
+
+(def prim$ioref_new (forall (a) (-> a Unit# (IORef a)))
+  (tlam (a)
+    (lam ((x a) (w Unit#))
+      (con IORef# (a) (extern cirka_mutvar_new (cast x Any))))))
+
+(def prim$ioref_read (forall (a) (-> (IORef a) Unit# a))
+  (tlam (a)
+    (lam ((r (IORef a)) (w Unit#))
+      (case r (r1 (IORef a)) a
+        ((IORef# m) (cast (extern cirka_mutvar_read m) a))))))
+
+(def prim$ioref_write (forall (a) (-> (IORef a) a Unit# Unit))
+  (tlam (a)
+    (lam ((r (IORef a)) (x a) (w Unit#))
+      (case r (r1 (IORef a)) Unit
+        ((IORef# m) (let! (u Unit# (extern cirka_mutvar_write m (cast x Any))) (con Unit ())))))))
+
+(def prim$read_file (-> (List Char) Unit# (List Char))
+  (lam ((p (List Char)) (w Unit#))
+    (let! (b Bytes (prim$pack p))
+      (prim$unpack (extern cirka_file_read b)))))
+
+(def prim$write_file (-> (List Char) (List Char) Int Unit# Unit)
+  (lam ((p (List Char)) (s (List Char)) (app Int) (w Unit#))
+    (let! (pb Bytes (prim$pack p))
+      (let! (sb Bytes (prim$pack s))
+        (case app (a1 Int) Unit
+          ((I# k) (let! (u Unit# (extern cirka_file_write pb sb k)) (con Unit ()))))))))
+
+(def prim$prog_name (-> Unit# (List Char))
+  (lam ((w Unit#)) (prim$unpack (extern cirka_prog_name))))
+
+(def prim$peek_byte (-> Unit# Int)
+  (lam ((w Unit#)) (con I# () (extern cirka_peek_byte))))
+
+(def prim$flush (-> Unit# Unit)
+  (lam ((w Unit#)) (let! (u Unit# (extern cirka_flush)) (con Unit ()))))
 
 ; ---- misc ----
 

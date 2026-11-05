@@ -308,6 +308,18 @@ pub extern "C" fn cirka_flush() {
     flush();
 }
 
+/// The next byte of stdin without consuming it; -1 at end of input.
+#[unsafe(no_mangle)]
+pub extern "C" fn cirka_peek_byte() -> i64 {
+    let c = cirka_read_byte();
+    if c >= 0 {
+        // SAFETY: stdin buffer used from one thread; the byte just read is
+        // still in the buffer.
+        unsafe { STDIN.get().pos -= 1 };
+    }
+    c
+}
+
 /// Reads one byte from stdin; -1 at end of input.
 #[unsafe(no_mangle)]
 pub extern "C" fn cirka_read_byte() -> i64 {

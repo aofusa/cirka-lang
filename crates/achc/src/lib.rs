@@ -81,7 +81,7 @@ pub fn compile(
             &achc_syntax::print::print_module(&m.ast),
         )?;
     }
-    let tp = achc_typeck::typecheck(&rn)?;
+    let tp = achc_typeck::typecheck_in(&rn, Some(sm))?;
     dump_frontend(
         opts,
         "tc",

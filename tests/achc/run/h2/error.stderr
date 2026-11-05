@@ -1,0 +1,3 @@
+<prog>: too big: 6
+CallStack (from HasCallStack):
+  error, called at tests/achc/run/h2/error.hs:7:22 in main:Main

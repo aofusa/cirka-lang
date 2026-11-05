@@ -1,11 +1,13 @@
--- | Standard input and output (base's System.IO, the part without file
--- handles; handles and files come with FEAT-0113).
+-- | Standard input and output (base's System.IO): the three standard
+-- handles and whole-file operations. Opening other handles is not
+-- supported yet.
 module System.IO
   ( IO, FilePath, putChar, putStr, putStrLn, print, getChar, getLine, getContents
-  , interact, readIO, readLn, module System.IO
+  , interact, readIO, readLn, readFile, writeFile, appendFile, module System.IO
   ) where
 
 import Cirka.Base
+import Cirka.Prim
 
 data Handle = Stdin | Stdout | Stderr
   deriving (Eq)
@@ -23,13 +25,17 @@ stderr = Stderr
 data BufferMode = NoBuffering | LineBuffering | BlockBuffering (Maybe Int)
   deriving (Eq, Ord, Show, Read)
 
--- | Output is flushed at exit and before reading input; buffering modes
--- are accepted and ignored.
+-- | Output is flushed at exit, before reading input and by `hFlush`;
+-- buffering modes are accepted and ignored.
 hSetBuffering :: Handle -> BufferMode -> IO ()
 hSetBuffering _ _ = return ()
 
 hFlush :: Handle -> IO ()
-hFlush _ = return ()
+hFlush _ = primFlush
+
+-- | Whether standard input is at its end.
+isEOF :: IO Bool
+isEOF = primPeekByte >>= \b -> return (b < 0)
 
 hPutStr :: Handle -> String -> IO ()
 hPutStr Stderr s = cirkaPutErr s

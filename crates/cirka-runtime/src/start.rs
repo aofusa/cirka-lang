@@ -130,6 +130,15 @@ pub extern "C" fn cirka_exit(code: i64) -> ! {
     exit_sequence(code as i32)
 }
 
+/// The program name (basename of `argv[0]`) as a fresh BYTES object.
+#[unsafe(no_mangle)]
+pub extern "C" fn cirka_prog_name() -> Obj {
+    // SAFETY: read-only start-up data.
+    let p = unsafe { STARTUP.get().prog };
+    // SAFETY: `p` is valid for its length.
+    unsafe { crate::cirka_bytes_from(p.as_ptr(), p.len()) }
+}
+
 /// Number of command line arguments (excluding the program name).
 #[unsafe(no_mangle)]
 pub extern "C" fn cirka_argc() -> i64 {

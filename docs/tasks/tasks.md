@@ -116,7 +116,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0110](features/FEAT-0110-hs-typeclasses.md) | 型クラスと deriving | done | P0 | 0105 |
 | [FEAT-0111](features/FEAT-0111-cirka-base.md) | cirka-base: Prelude と基本モジュール (縮小版) | done | P0 | 0110 |
 | [FEAT-0112](features/FEAT-0112-hs-strictness.md) | 正格性解析と Strict/StrictData | todo | P0 | 0033 |
-| [FEAT-0113](features/FEAT-0113-hs-io-exceptions.md) | IO・IORef・ハンドル・例外 | todo | P0 | 0111 |
+| [FEAT-0113](features/FEAT-0113-hs-io-exceptions.md) | IO・IORef・ハンドル・例外 | done | P0 | 0111 |
 | [FEAT-0114](features/FEAT-0114-hs-numerics.md) | 数値型と Integer | todo | P0 | 0111 |
 | [FEAT-0115](features/FEAT-0115-hs-records-modules.md) | レコード構文とモジュールの完成 | todo | P1 | 0110 |
 | [FEAT-0116](features/FEAT-0116-hs-ffi-h2010.md) | Haskell 2010 FFI (foreign import ccall) | todo | P1 | 0113 |

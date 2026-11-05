@@ -1045,6 +1045,9 @@ impl<'m> Interp<'m> {
             }
             "cirka_flush" => Ok(unit),
             "cirka_exit" => Err(Exit::Code(a[0].int() as i32)),
+            "cirka_peek_byte" => Ok(Val::I(
+                self.stdin.get(self.stdin_pos).map_or(-1, |b| *b as i64),
+            )),
             "cirka_read_byte" => {
                 let r = match self.stdin.get(self.stdin_pos) {
                     Some(b) => {
@@ -1073,6 +1076,78 @@ impl<'m> Interp<'m> {
                     Payload::Bytes(b),
                     size,
                 )))
+            }
+            "cirka_prog_name" => {
+                // GHC's test binaries are named `prog` too.
+                let b = b"prog".to_vec();
+                Ok(Val::P(self.alloc(
+                    kind::BYTES,
+                    0,
+                    vec![],
+                    Payload::Bytes(b),
+                    24,
+                )))
+            }
+            "cirka_mutvar_new" => {
+                self.dup(a[0])?;
+                Ok(Val::P(self.alloc(
+                    kind::MUTVAR,
+                    0,
+                    vec![a[0]],
+                    Payload::Con,
+                    16,
+                )))
+            }
+            "cirka_mutvar_read" => {
+                let Val::P(r) = a[0] else {
+                    return fault("expected a mutvar");
+                };
+                let v = self.obj(r)?.fields[0];
+                self.dup(v)?;
+                Ok(v)
+            }
+            "cirka_mutvar_write" => {
+                let Val::P(r) = a[0] else {
+                    return fault("expected a mutvar");
+                };
+                self.dup(a[1])?;
+                let old = std::mem::replace(&mut self.obj_mut(r)?.fields[0], a[1]);
+                self.drop_val(old)?;
+                Ok(unit)
+            }
+            "cirka_file_read" => {
+                let path = String::from_utf8_lossy(&self.bytes(a[0])?.clone()).into_owned();
+                match std::fs::read(&path) {
+                    Ok(b) => {
+                        let size = 16 + b.len().div_ceil(8) * 8;
+                        Ok(Val::P(self.alloc(
+                            kind::BYTES,
+                            0,
+                            vec![],
+                            Payload::Bytes(b),
+                            size,
+                        )))
+                    }
+                    Err(e) => Err(Exit::Panic(file_error(&path, "openFile", &e))),
+                }
+            }
+            "cirka_file_write" => {
+                let path = String::from_utf8_lossy(&self.bytes(a[0])?.clone()).into_owned();
+                let data = self.bytes(a[1])?.clone();
+                let r = if a[2].int() != 0 {
+                    use std::io::Write;
+                    std::fs::OpenOptions::new()
+                        .append(true)
+                        .create(true)
+                        .open(&path)
+                        .and_then(|mut f| f.write_all(&data))
+                } else {
+                    std::fs::write(&path, &data)
+                };
+                match r {
+                    Ok(()) => Ok(unit),
+                    Err(e) => Err(Exit::Panic(file_error(&path, "withFile", &e))),
+                }
             }
             "cirka_panic_bytes" => {
                 let b = self.bytes(a[0])?.clone();
@@ -1182,4 +1257,18 @@ pub fn run_with_args(
             .join()
             .unwrap_or_else(|_| Err("interpreter panicked".into()))
     })
+}
+
+/// GHC's message for an uncaught `IOError` of a file operation (the same
+/// text as the native runtime's `fs.rs`).
+fn file_error(path: &str, op: &str, e: &std::io::Error) -> String {
+    let (kind, text) = match e.raw_os_error() {
+        Some(2) => ("does not exist", "No such file or directory"),
+        Some(13) => ("permission denied", "Permission denied"),
+        Some(21) => ("inappropriate type", "is a directory"),
+        Some(20) => ("does not exist", "Not a directory"),
+        Some(28) => ("resource exhausted", "No space left on device"),
+        _ => ("failed", "I/O error"),
+    };
+    format!("{path}: {op}: {kind} ({text})")
 }

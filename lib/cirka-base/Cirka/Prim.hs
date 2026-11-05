@@ -8,6 +8,7 @@ data Int
 data Char
 data Double
 data IO a
+data IORef a
 data Bool = False | True
 
 foreign import prim "int_add" primIntAdd :: Int -> Int -> Int
@@ -60,6 +61,14 @@ foreign import prim "io_bind" primBindIO :: IO a -> (a -> IO b) -> IO b
 foreign import prim "put_char" primPutChar :: Char -> IO ()
 foreign import prim "put_str" primPutStr :: [Char] -> IO ()
 foreign import prim "put_err_str" primPutErrStr :: [Char] -> IO ()
+foreign import prim "flush" primFlush :: IO ()
+foreign import prim "peek_byte" primPeekByte :: IO Int
+foreign import prim "prog_name" primProgName :: IO [Char]
+foreign import prim "ioref_new" primNewIORef :: a -> IO (IORef a)
+foreign import prim "ioref_read" primReadIORef :: IORef a -> IO a
+foreign import prim "ioref_write" primWriteIORef :: IORef a -> a -> IO ()
+foreign import prim "read_file" primReadFile :: [Char] -> IO [Char]
+foreign import prim "write_file" primWriteFile :: [Char] -> [Char] -> Int -> IO ()
 foreign import prim "get_char" primGetByte :: IO Int
 foreign import prim "exit" primExit :: Int -> IO a
 foreign import prim "arg_count" primArgCount :: IO Int

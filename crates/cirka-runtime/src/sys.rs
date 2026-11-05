@@ -64,6 +64,9 @@ unsafe extern "C" {
     ) -> *mut c_void;
     pub fn write(fd: c_int, buf: *const c_void, n: size_t) -> ssize_t;
     pub fn read(fd: c_int, buf: *mut c_void, n: size_t) -> ssize_t;
+    pub fn open(path: *const c_char, flags: c_int, ...) -> c_int;
+    pub fn close(fd: c_int) -> c_int;
+    pub fn __errno_location() -> *mut c_int;
     pub fn getenv(name: *const c_char) -> *const c_char;
     pub fn _exit(code: c_int) -> !;
     pub fn abort() -> !;

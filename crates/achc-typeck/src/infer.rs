@@ -114,6 +114,9 @@ pub struct Tc {
     pub(crate) con_fixity: HashMap<String, (ast::Assoc, u8)>,
     /// Top-level value names of all modules (for deriving helpers).
     pub(crate) top_names: HashSet<String>,
+    /// Source files and their modules, for the call stack of `error`
+    /// (`file:line:col in main:Module`).
+    pub(crate) sources: Option<(cirka_diagnostics::SourceMap, HashMap<u32, String>)>,
 }
 
 impl Tc {
@@ -143,6 +146,7 @@ impl Tc {
             extra_sigs: HashMap::new(),
             con_fixity: HashMap::new(),
             top_names: HashSet::new(),
+            sources: None,
         };
         // Built-in syntax: lists and unit.
         let a = || Ty::Var("a".into());
@@ -1662,6 +1666,25 @@ impl Tc {
         self.var(q)
     }
 
+    /// `error` of the base library becomes `cirkaErrorCalledAt "<site>"`,
+    /// so that the message has GHC's `CallStack` line.
+    fn error_with_call_site(&mut self, name: &str, sp: Span) -> Option<(tast::Expr, Ty)> {
+        let base = achc_rename::BASE_MODULE;
+        if name != format!("{base}.error") {
+            return None;
+        }
+        let helper = format!("{base}.cirkaErrorCalledAt");
+        let s = self.globals.get(&helper)?.clone();
+        let (sm, mods) = self.sources.as_ref()?;
+        let file = sm.get(sp.file)?;
+        let (line, col) = file.line_col(sp.start);
+        let module = mods.get(&sp.file.0)?;
+        let site = format!("{}:{line}:{col} in main:{module}", file.name);
+        let f = self.let_ref(&helper, &s, sp);
+        let st = Ty::list(Ty::Con(prim("Char")));
+        Some(self.app(sp, f, tast::Expr::Lit(tast::Lit::Str(site)), &st))
+    }
+
     fn var(&mut self, q: &ast::QName) -> (tast::Expr, Ty) {
         let name = q.text();
         if q.qual.is_none() {
@@ -1690,6 +1713,9 @@ impl Tc {
             ));
             let t = self.fresh();
             return (tast::Expr::Error(name, t.clone()), t);
+        }
+        if let Some(e) = self.error_with_call_site(&name, q.span) {
+            return e;
         }
         match self.globals.get(&name).cloned() {
             Some(s) => self.let_ref(&name, &s, q.span),

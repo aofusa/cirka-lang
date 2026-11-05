@@ -82,14 +82,22 @@ int    main(int argc, char** argv);              // ランタイムが提供。c
 
 ## 5. I/O
 
-- `IO a` は GHC と同じく `State# RealWorld -> (# State# RealWorld, a #)` の newtype で、`State#` は MIR で消去する。
-- ハンドル (`stdin`/`stdout`/`stderr`/ファイル) はランタイムが持つバッファ付き構造体。`hFlush` とプロセス終了時にフラッシュ。
+- `IO a` は Core では `Unit# -> a` の newtype (`Unit#` は GHC の `State# RealWorld` にあたる消去されるトークン。ADR-032)。
+- 標準出力はランタイムのバッファに書き、`hFlush`・標準入力の読み込み前・stderr への書き込み前・プロセス終了時にフラッシュする。
+  標準入力もバッファ付きで、`cirka_read_byte` / `cirka_peek_byte` (`isEOF`) で読む。
+- ファイルは H2 では丸ごとの読み書きだけ (`cirka_file_read` / `cirka_file_write`: `readFile`・`writeFile`・`appendFile`)。
+  失敗すると GHC の未捕捉 `IOError` と同じ形式 (`prog: PATH: openFile: does not exist (No such file or directory)`) で終了コード 1。
+  任意のハンドル (`openFile`・`hGetLine` …) は例外 (FEAT-0040) の後で扱う。
+- `IORef` は `MUTVAR` オブジェクト (1 ワードの RC 管理フィールド)。`cirka_mutvar_new` / `read` (dup して返す) / `write`
+  (新しい値を dup し、古い値を drop)。外部関数のポインタ引数は借用なので、所有権の受け渡しはランタイム側で数える。
 - システムコールは libc 経由(`read`/`write`/`open` …)。
 
 ## 6. 例外
 
 - **段階1** (aCHC: FEAT-0113、CirkaLang: FEAT-0212): `error`・`undefined`・パターンマッチ失敗・`exitWith` は `cirka_panic`/`cirka_exit` で
   stdout/stderr をフラッシュしてプロセスを終了(GHC と同じメッセージ形式・終了コード 1)。
+  aCHC は `error` の呼び出しを型検査で `cirkaErrorCalledAt "<file>:<行>:<列> in main:<モジュール>"` に置き換え、
+  GHC の `CallStack (from HasCallStack):` の行を出す。`head []` などライブラリ内部の呼び出し履歴 (GHC の base の行番号) は出さない。
 - **段階2 (FEAT-0040)**: Itanium C++ ABI のアンワインド (`_Unwind_RaiseException`)。生成コードは `invoke` + landing pad で
   スコープ内の値を drop/release する(Rust の panic=unwind と同じ)。`catch`/`bracket`/`finally`/`throwIO` を実装。
 

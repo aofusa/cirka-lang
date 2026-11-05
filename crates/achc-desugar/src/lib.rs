@@ -360,6 +360,7 @@ impl Ds {
                     | "Cirka.Prim.Double"
                     | "Cirka.Prim.Bytes"
                     | "Cirka.Prim.IO"
+                    | "Cirka.Prim.IORef"
                     | "Cirka.Prim.Bool"
             )
         };

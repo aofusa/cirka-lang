@@ -10,7 +10,9 @@
 
 pub mod alloc;
 pub mod debug;
+pub mod fs;
 pub mod io;
+pub mod mutvar;
 pub mod object;
 pub mod start;
 pub mod sys;

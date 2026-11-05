@@ -53,7 +53,7 @@ module Prelude
   , ReadS, Read(readsPrec, readList), reads, readParen, read, lex
     -- * Input and output
   , IO, putChar, putStr, putStrLn, print, getChar, getLine, getContents, interact
-  , FilePath, readIO, readLn
+  , FilePath, readFile, writeFile, appendFile, readIO, readLn
   , IOError, ioError, userError
   ) where
 
