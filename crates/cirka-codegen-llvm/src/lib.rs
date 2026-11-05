@@ -8,7 +8,7 @@
 //!   eval/apply helpers `cirka_apply_1..8` are emitted into every module.
 
 use cirka_mir::ir::*;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::Write;
 
 /// Code generation options.
@@ -21,6 +21,18 @@ pub struct Options {
 /// Mangles a MIR function name into an LLVM global name.
 pub fn mangle(name: &str) -> String {
     format!("@\"_C{}{}\"", name.len(), name.replace('"', "\\22"))
+}
+
+/// The entry stub of closures over `func` with `ncap` captured values
+/// (partial applications of one function may capture different numbers).
+fn clo_stub_name(func: &str, ncap: usize) -> String {
+    let mn = mangle(func);
+    let base = &mn[2..mn.len() - 1];
+    if ncap == 0 {
+        format!("@\"{base}$clo\"")
+    } else {
+        format!("@\"{base}$clo{ncap}\"")
+    }
 }
 
 fn llty(t: Ty) -> &'static str {
@@ -80,7 +92,8 @@ struct Gen<'m> {
     strings: HashMap<Vec<u8>, String>,
     panics: HashMap<String, (String, usize)>,
     statics: HashMap<(u32, u32), String>,
-    clo_stubs: BTreeMap<String, usize>,
+    /// Closure entry stubs: (function, number of captured values).
+    clo_stubs: BTreeSet<(String, usize)>,
     thunk_stubs: BTreeMap<String, ()>,
     funcs: HashMap<&'m str, &'m Function>,
     externs: BTreeMap<String, String>,
@@ -97,7 +110,7 @@ pub fn emit(m: &Module, opts: Options) -> String {
         strings: HashMap::new(),
         panics: HashMap::new(),
         statics: HashMap::new(),
-        clo_stubs: BTreeMap::new(),
+        clo_stubs: BTreeSet::new(),
         thunk_stubs: BTreeMap::new(),
         funcs: m.funcs.iter().map(|f| (f.name.as_str(), f)).collect(),
         externs: BTreeMap::new(),
@@ -124,7 +137,7 @@ pub fn emit(m: &Module, opts: Options) -> String {
     for gl in &m.globals {
         g.thunk_stubs.insert(gl.init.clone(), ());
     }
-    let clo: Vec<(String, usize)> = g.clo_stubs.iter().map(|(k, v)| (k.clone(), *v)).collect();
+    let clo: Vec<(String, usize)> = g.clo_stubs.iter().cloned().collect();
     for (f, ncap) in clo {
         g.closure_stub(&f, ncap);
     }
@@ -732,12 +745,8 @@ impl<'m> Gen<'m> {
                 let obj = c.t();
                 c.line(&format!("{obj} = call ptr @cirka_alloc(i64 {size})"));
                 let (k, tag, stub) = if is_clo {
-                    self.clo_stubs.insert(func.clone(), args.len());
-                    (
-                        kind::FUN,
-                        arity as u32,
-                        format!("@\"{}$clo\"", &mangle(func)[2..mangle(func).len() - 1]),
-                    )
+                    self.clo_stubs.insert((func.clone(), args.len()));
+                    (kind::FUN, arity as u32, clo_stub_name(func, args.len()))
                 } else {
                     self.thunk_stubs.insert(func.clone(), ());
                     (
@@ -1027,7 +1036,7 @@ impl<'m> Gen<'m> {
         let tys = g.param_tys();
         let arity = g.params.len() - ncap;
         let mn = mangle(fname);
-        let stub = format!("@\"{}$clo\"", &mn[2..mn.len() - 1]);
+        let stub = clo_stub_name(fname, ncap);
         let mut c = FnCtx {
             f: g,
             body: String::new(),

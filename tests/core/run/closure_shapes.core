@@ -1,0 +1,31 @@
+; Closures over one function with different numbers of captured values
+; (BUG-0003): `f` as a value (no captures) and `f x y` (two captures) need
+; distinct entry stubs.
+(data Int () (I# Int#))
+(extern cirka_write_i64 (Int#) Unit#)
+(extern cirka_write_char (Int#) Unit#)
+
+; Recursive, so that it stays a known function and is not inlined.
+(def f (-> Int Int Int Int#)
+  (lam ((a Int) (b Int) (c Int))
+    (case c (s Int) Int#
+      ((I# k) (case k (t Int#) Int#
+        (0 (case a (s1 Int) Int# ((I# x) (case b (s2 Int) Int# ((I# y) (prim sub x y))))))
+        (_ (f a b (con I# () 0))))))))
+
+(def apply3 (-> (-> Int Int Int Int#) Int#)
+  (lam ((g (-> Int Int Int Int#)))
+    (g (con I# () 50) (con I# () 8) (con I# () 1))))
+
+(def apply1 (-> (-> Int Int#) Int#)
+  (lam ((g (-> Int Int#)))
+    (g (con I# () 1))))
+
+(def main Int#
+  (let! (a Int# (apply3 f))
+    (let! (b Int# (apply1 (f (con I# () 7) (con I# () 2))))
+      (let! (u1 Unit# (extern cirka_write_i64 a))
+        (let! (u2 Unit# (extern cirka_write_char 32))
+          (let! (u3 Unit# (extern cirka_write_i64 b))
+            (let! (u4 Unit# (extern cirka_write_char 10))
+              0)))))))
