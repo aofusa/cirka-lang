@@ -976,13 +976,14 @@ impl<'m> Interp<'m> {
                 }
                 o.fields[k as usize]
             }
-            ArraySet => {
+            ArraySet | ArraySetShared => {
+                let shared_ok = p == ArraySetShared;
                 let Val::P(p) = a[0] else {
                     return fault("array_set on a non-pointer");
                 };
                 let k = i(1);
                 let o = self.obj_mut(p)?;
-                if o.rc != 1 {
+                if o.rc != 1 && !shared_ok {
                     return fault("array_set on a shared object");
                 }
                 if k < 0 || k as usize >= o.fields.len() {
@@ -1006,18 +1007,19 @@ impl<'m> Interp<'m> {
                     Val::F(f64::from_bits(w as u64))
                 }
             }
-            BytesSetI64 | BytesSetF64 => {
+            BytesSetI64 | BytesSetF64 | BytesSetI64Shared | BytesSetF64Shared => {
+                let shared_ok = matches!(p, BytesSetI64Shared | BytesSetF64Shared);
                 let Val::P(ptr) = a[0] else {
                     return fault("bytes_set on a non-pointer");
                 };
                 let k = i(1);
-                let w = if p == BytesSetI64 {
+                let w = if matches!(p, BytesSetI64 | BytesSetI64Shared) {
                     i(2)
                 } else {
                     fl(2).to_bits() as i64
                 };
                 let o = self.obj_mut(ptr)?;
-                if o.rc != 1 {
+                if o.rc != 1 && !shared_ok {
                     return fault("bytes_set on a shared object");
                 }
                 match &mut o.payload {

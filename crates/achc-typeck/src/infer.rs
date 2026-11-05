@@ -166,6 +166,12 @@ pub struct Tc {
     pub(crate) has_ltype: bool,
     /// Data types declared `type T :: k1 -> .. -> LType` (with the arity).
     pub(crate) ltype_datas: HashMap<String, usize>,
+    /// Data types of `Unsafe.*` modules declared `... -> Type` although
+    /// they hold linear-only fields (the borrows of Cirka.Borrow, FEAT-0124).
+    pub(crate) type_datas: HashSet<String>,
+    /// Rigid variables of rank-N arguments (`check_poly`): their level, and
+    /// whether they are the region of a borrow (E0320).
+    skolems: HashMap<String, (u32, bool)>,
     /// Type variables (unique names) declared `:: LType`.
     pub(crate) ltype_vars: HashSet<String>,
     /// The type of each pattern and of each let-bound name (by span).
@@ -223,6 +229,8 @@ impl Tc {
             lin_pats: HashMap::new(),
             has_ltype: false,
             ltype_datas: HashMap::new(),
+            type_datas: HashSet::new(),
+            skolems: HashMap::new(),
             ltype_vars: HashSet::new(),
             pat_tys: HashMap::new(),
             omega_args: Vec::new(),
@@ -417,6 +425,33 @@ impl Tc {
         h
     }
 
+    /// The occurs check, and the escape of a rank-N rigid variable created
+    /// deeper than the meta.
+    fn occurs_or_escapes(&mut self, m: u32, level: u32, t: &Ty) -> Result<(), UErr> {
+        match self.shallow(t) {
+            Ty::Meta(n) => {
+                if n == m {
+                    return Err(UErr::Occurs);
+                }
+                let l = &mut self.metas[n as usize].level;
+                if *l > level {
+                    *l = level;
+                }
+                Ok(())
+            }
+            Ty::Var(v) => match self.skolems.get(&v) {
+                Some(&(l, _)) if l > level => Err(UErr::Escape(v)),
+                _ => Ok(()),
+            },
+            Ty::App(a, b) | Ty::Fun(a, b) => {
+                self.occurs_or_escapes(m, level, &a)?;
+                self.occurs_or_escapes(m, level, &b)
+            }
+            Ty::Forall(_, b) => self.occurs_or_escapes(m, level, &b),
+            _ => Ok(()),
+        }
+    }
+
     /// Occurs check and level adjustment before binding meta `m`.
     fn occurs(&mut self, m: u32, level: u32, t: &Ty) -> bool {
         match self.shallow(t) {
@@ -443,9 +478,7 @@ impl Tc {
             (Ty::Meta(x), Ty::Meta(y)) if x == y => Ok(()),
             (Ty::Meta(m), t) | (t, Ty::Meta(m)) => {
                 let level = self.metas[*m as usize].level;
-                if self.occurs(*m, level, t) {
-                    return Err(UErr::Occurs);
-                }
+                self.occurs_or_escapes(*m, level, t)?;
                 self.metas[*m as usize].sol = Some(t.clone());
                 Ok(())
             }
@@ -514,6 +547,37 @@ impl Tc {
                         "`{}` is a rigid type variable bound by a type signature",
                         achc_rename::display_name(&v)
                     )),
+                    UErr::Escape(v) => {
+                        let name = achc_rename::display_name(&v);
+                        let name = name.trim_end_matches(|c: char| c == '#' || c.is_ascii_digit());
+                        if self.skolems.get(&v).is_some_and(|s| s.1) {
+                            err(
+                                "E0320",
+                                span,
+                                format!(
+                                    "a borrow escapes its scope: the region `{name}` would occur in the result `{ac}`"
+                                ),
+                            )
+                            .with_note(
+                                "a borrow (`Ref`/`MutRef`), or a function or computation using it, \
+                                 cannot leave the `borrow` that created it",
+                            )
+                            .with_help(
+                                "return a value read through the borrow instead (e.g. `Ur <$> index a i`)",
+                            )
+                        } else {
+                            err(
+                                "E0604",
+                                span,
+                                format!(
+                                    "couldn't match expected type `{ex}` with actual type `{ac}`"
+                                ),
+                            )
+                            .with_note(format!(
+                                "the type variable `{name}` of a polymorphic argument would escape its scope"
+                            ))
+                        }
+                    }
                     UErr::Occurs => err(
                         "E0602",
                         span,
@@ -863,6 +927,10 @@ impl Tc {
                     if *r == ast::KindSig::LType {
                         self.ltype_datas.insert(name, arity);
                         self.has_ltype = true;
+                    } else if m.starts_with("Unsafe.") {
+                        // Only the escape hatches may declare a type with
+                        // linear-only fields shareable.
+                        self.type_datas.insert(name);
                     }
                 }
             }
@@ -1808,6 +1876,10 @@ impl Tc {
             .zip(sk.iter().map(|v| Ty::Var(v.clone())))
             .collect();
         let inner = body.subst(&sub);
+        for (v, k) in vs.iter().zip(&sk) {
+            let region = mentions_region(body, v);
+            self.skolems.insert(k.clone(), (self.level + 1, region));
+        }
         let wstart = self.wanted.len();
         self.level += 1;
         let te = self.expr(e, &inner);
@@ -2395,7 +2467,7 @@ impl Tc {
                 if let Some(&k) = self.ltype_datas.get(n) {
                     return args.len() >= k;
                 }
-                if visiting.contains(n) {
+                if visiting.contains(n) || self.type_datas.contains(n) {
                     return false;
                 }
                 let Some(d) = self.datas.get(n) else {
@@ -3436,6 +3508,8 @@ pub(crate) enum UErr {
     Mismatch,
     Rigid(String),
     Occurs,
+    /// A rigid variable of a rank-N argument would escape its scope.
+    Escape(String),
 }
 
 /// The kind of type variable `v` in `t`, from how many arguments it is
@@ -3734,5 +3808,27 @@ fn strip_paren(p: &ast::Pat) -> &ast::Pat {
     match &p.kind {
         PatKind::Paren(q) | PatKind::Typed(q, _) => strip_paren(q),
         _ => p,
+    }
+}
+
+/// Whether `v` is the region (first argument) of a borrow type
+/// (`Ref`/`MutRef`/`Borrow` of Cirka.Borrow, FEAT-0124) in `t`.
+fn mentions_region(t: &Ty, v: &str) -> bool {
+    match t {
+        Ty::App(f, x) => {
+            if let (Ty::Con(c), Ty::Var(w)) = (&**f, &**x)
+                && w == v
+                && matches!(
+                    c.as_str(),
+                    "Unsafe.Borrow.Ref" | "Unsafe.Borrow.MutRef" | "Unsafe.Borrow.Borrow"
+                )
+            {
+                return true;
+            }
+            mentions_region(f, v) || mentions_region(x, v)
+        }
+        Ty::Fun(a, b) => mentions_region(a, v) || mentions_region(b, v),
+        Ty::Forall(_, b) => mentions_region(b, v),
+        _ => false,
     }
 }

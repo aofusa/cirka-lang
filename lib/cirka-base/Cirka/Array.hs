@@ -28,11 +28,16 @@ module Cirka.Array
   , toList
   , generate
   , accum
+  , lengthRef
+  , index
+  , writeAt
   ) where
 
 import Cirka.Base hiding (length, read, (!), toList)
 import Cirka.Ownership (Unique, unique, freeze, Ur (..))
 import Unsafe.Linear (toLinear)
+import Unsafe.Borrow (Ref, MutRef, Borrow, refValue, mutRefValue, borrowIO)
+import Cirka.Prim (primArrayWriteShared)
 import Cirka.Prim (Array, ArrayPair (..), primArrayNew, primArrayWrite, primArrayRead, primArrayLength, primArrayIndex, primArraySize, primArrayThaw)
 
 infixl 9 !
@@ -128,3 +133,17 @@ accum f a ps = freeze (go (thaw a) ps)
   where
     go u [] = u
     go u ((i, v) : rest) = go (modify u i (\x -> f x v)) rest
+
+-- ---- borrowed arrays (Cirka.Borrow, FEAT-0124) ----
+
+-- | The number of elements of a borrowed array.
+lengthRef :: Ref r (Unique (Array e)) -> Borrow r Int
+lengthRef a = borrowIO (return $! size (refValue a))
+
+-- | The element at index `i` (evaluated to WHNF) of a borrowed array.
+index :: Ref r (Unique (Array e)) -> Int -> Borrow r e
+index a i = borrowIO (return $! (refValue a ! i))
+
+-- | Stores `x` at index `i` of the owner, in place.
+writeAt :: MutRef r (Unique (Array e)) -> Int -> e -> Borrow r ()
+writeAt a i x = borrowIO (primArrayWriteShared (mutRefValue a) i x)

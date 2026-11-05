@@ -48,6 +48,8 @@ pub struct Parser {
     /// `Strict`: arguments, case alternatives and local bindings are
     /// strict unless marked lazy with `~`.
     strict: bool,
+    /// `CirkaBorrow` (or `CirkaOwnership`): `borrow e as x in body`.
+    borrow_sugar: bool,
     /// Nesting of `let`/`where` blocks.
     local_depth: u32,
 }
@@ -65,6 +67,7 @@ impl Parser {
             errors: Vec::new(),
             fuel: 0,
             strict_data: false,
+            borrow_sugar: false,
             strict: false,
             local_depth: 0,
         }
@@ -482,6 +485,9 @@ impl Parser {
             .iter()
             .any(|(e, _)| e == "StrictData" || e == "Strict");
         self.strict = extensions.iter().any(|(e, _)| e == "Strict");
+        self.borrow_sugar = extensions
+            .iter()
+            .any(|(e, _)| e == "CirkaBorrow" || e == "CirkaOwnership");
         let start = self.span();
         let mut name = None;
         let mut exports = None;
@@ -1932,7 +1938,81 @@ impl Parser {
         })
     }
 
+    /// `borrow e as x in body` / `borrowMut e as x in body` (CirkaBorrow,
+    /// 02-language-extensions.md §5): `borrow e (\x -> body)`.
+    fn borrow_sugar(&mut self) -> PResult<Option<Expr>> {
+        let Tok::VarId(None, f) = self.cur() else {
+            return Ok(None);
+        };
+        if !self.borrow_sugar || !(f == "borrow" || f == "borrowMut") {
+            return Ok(None);
+        }
+        // Only when `as x in` follows the owner; otherwise an application.
+        let st = self.save();
+        self.fuel += 1;
+        self.bump();
+        let ok = self.aexp().is_ok()
+            && matches!(self.cur(), Tok::VarId(None, n) if n == "as")
+            && {
+                self.bump();
+                matches!(self.cur(), Tok::VarId(None, _))
+            }
+            && {
+                self.bump();
+                self.at(&Tok::Kw(Kw::In))
+            };
+        self.fuel -= 1;
+        self.restore(st);
+        if !ok {
+            return Ok(None);
+        }
+        let fspan = self.span();
+        self.bump();
+        let owner = self.aexp()?;
+        self.bump(); // as
+        let xspan = self.span();
+        let Tok::VarId(None, x) = self.cur().clone() else {
+            unreachable!()
+        };
+        self.bump();
+        self.expect(&Tok::Kw(Kw::In))?;
+        let body = self.expr()?;
+        let span = fspan.to(body.span);
+        let lam = Expr {
+            kind: ExprKind::Lam(
+                vec![Pat {
+                    kind: PatKind::Var(Ident {
+                        name: x,
+                        span: xspan,
+                    }),
+                    span: xspan,
+                }],
+                Box::new(body),
+            ),
+            span: xspan.to(span),
+        };
+        let fun = Expr {
+            kind: ExprKind::Var(QName {
+                qual: None,
+                name: f,
+                span: fspan,
+            }),
+            span: fspan,
+        };
+        let app = Expr {
+            kind: ExprKind::App(Box::new(fun), Box::new(owner)),
+            span: fspan.to(span),
+        };
+        Ok(Some(Expr {
+            kind: ExprKind::App(Box::new(app), Box::new(lam)),
+            span,
+        }))
+    }
+
     fn exp10(&mut self) -> PResult<Expr> {
+        if let Some(e) = self.borrow_sugar()? {
+            return Ok(e);
+        }
         let start = self.span();
         let kind = match self.cur() {
             Tok::Backslash => {

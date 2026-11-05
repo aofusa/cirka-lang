@@ -1081,12 +1081,18 @@ impl<'p> Lowerer<'p> {
             PrimOp::BytesGetF => P::BytesGetF64,
             PrimOp::BytesSetF => P::BytesSetF64,
             PrimOp::BytesUnique => P::BytesUnique,
+            PrimOp::ArraySetShared => P::ArraySetShared,
+            PrimOp::BytesSet64Shared => P::BytesSetI64Shared,
+            PrimOp::BytesSetFShared => P::BytesSetF64Shared,
             PrimOp::PtrEq => P::PtrEq,
         };
         let mut ops = Vec::new();
         for (i, a) in args.iter().enumerate() {
             // Array elements are stored lazily.
-            let lazy_elem = matches!((op, i), (PrimOp::ArrayNew, 1) | (PrimOp::ArraySet, 2));
+            let lazy_elem = matches!(
+                (op, i),
+                (PrimOp::ArrayNew, 1) | (PrimOp::ArraySet | PrimOp::ArraySetShared, 2)
+            );
             ops.push(if lazy_elem {
                 self.lazy(fb, env, a)?
             } else {

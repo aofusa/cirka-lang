@@ -1016,14 +1016,15 @@ impl<'m> Gen<'m> {
                 "{dst} = call ptr @cirka_bytes_unique(ptr {})",
                 a[0]
             )),
-            BytesGetI64 | BytesSetI64 | BytesGetF64 | BytesSetF64 => {
+            BytesGetI64 | BytesSetI64 | BytesGetF64 | BytesSetF64 | BytesSetI64Shared
+            | BytesSetF64Shared => {
                 // 8-byte words: index < len / 8.
                 let len = Self::load_field(c, &a[0], 0, Ty::I64);
                 let words = c.t();
                 c.line(&format!("{words} = lshr i64 {len}, 3"));
                 self.bounds(c, &words, &a[1]);
                 let base = Self::gep(c, &a[0], 16);
-                let ty = if matches!(p, BytesGetF64 | BytesSetF64) {
+                let ty = if matches!(p, BytesGetF64 | BytesSetF64 | BytesSetF64Shared) {
                     "double"
                 } else {
                     "i64"
@@ -1044,7 +1045,7 @@ impl<'m> Gen<'m> {
                 let l = Self::load_field(c, &a[0], 0, Ty::I64);
                 c.line(&format!("{dst} = add i64 {l}, 0"));
             }
-            ArrayGet | ArraySet => {
+            ArrayGet | ArraySet | ArraySetShared => {
                 let len = Self::load_field(c, &a[0], 0, Ty::I64);
                 self.bounds(c, &len, &a[1]);
                 let base = Self::gep(c, &a[0], 16);

@@ -455,6 +455,33 @@
             (let! (c Bytes (prim bytes_unique b))
               (let! (u Unit# (prim bytes_setf c k x)) c))))))))
 
+; Borrows (Cirka.Borrow, FEAT-0124): a `Borrow r` computation is an IO
+; action run strictly where the borrow is taken. Stores through a mutable
+; borrow update the owner, which shares the object with the borrow.
+
+(def prim$io_run (forall (a) (-> (-> Unit# a) a))
+  (tlam (a) (lam ((m (-> Unit# a))) (m unit))))
+
+(def prim$array_write_shared (forall (a) (-> (Array a) Int a Unit# Unit))
+  (tlam (a)
+    (lam ((arr (Array a)) (n Int) (x a) (w Unit#))
+      (case n (n1 Int) Unit
+        ((I# k) (let! (u Unit# (prim array_set_shared (a) arr k x)) (con Unit ())))))))
+
+(def prim$uarr_write_int_shared (-> Bytes Int Int Unit# Unit)
+  (lam ((b Bytes) (n Int) (v Int) (w Unit#))
+    (case n (n1 Int) Unit
+      ((I# k)
+        (case v (v1 Int) Unit
+          ((I# x) (let! (u Unit# (prim bytes_set64_shared b k x)) (con Unit ()))))))))
+
+(def prim$uarr_write_dbl_shared (-> Bytes Int Double Unit# Unit)
+  (lam ((b Bytes) (n Int) (v Double) (w Unit#))
+    (case n (n1 Int) Unit
+      ((I# k)
+        (case v (v1 Double) Unit
+          ((D# x) (let! (u Unit# (prim bytes_setf_shared b k x)) (con Unit ()))))))))
+
 ; ---- references and files ----
 
 (def prim$ioref_new (forall (a) (-> a Unit# (IORef a)))

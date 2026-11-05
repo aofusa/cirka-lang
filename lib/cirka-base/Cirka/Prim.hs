@@ -89,6 +89,10 @@ foreign import prim "uarr_write_int" primUArrWriteInt :: Bytes -> Int -> Int -> 
 foreign import prim "uarr_index_dbl" primUArrIndexDbl :: Bytes -> Int -> Double
 foreign import prim "uarr_read_dbl" primUArrReadDbl :: Bytes -> Int -> BytesPair Double
 foreign import prim "uarr_write_dbl" primUArrWriteDbl :: Bytes -> Int -> Double -> Bytes
+foreign import prim "io_run" primRunIO :: IO a -> a
+foreign import prim "array_write_shared" primArrayWriteShared :: Array e -> Int -> e -> IO ()
+foreign import prim "uarr_write_int_shared" primUArrWriteIntShared :: Bytes -> Int -> Int -> IO ()
+foreign import prim "uarr_write_dbl_shared" primUArrWriteDblShared :: Bytes -> Int -> Double -> IO ()
 foreign import prim "read_file" primReadFile :: [Char] -> IO [Char]
 foreign import prim "write_file" primWriteFile :: [Char] -> [Char] -> Int -> IO ()
 foreign import prim "get_char" primGetByte :: IO Int

@@ -128,7 +128,10 @@ impl Analysis<'_> {
             Expr::Prim(op, _, args) => {
                 let mut s = Some(HashSet::new());
                 for (i, a) in args.iter().enumerate() {
-                    let lazy = matches!((op, i), (PrimOp::ArrayNew, 1) | (PrimOp::ArraySet, 2));
+                    let lazy = matches!(
+                        (op, i),
+                        (PrimOp::ArrayNew, 1) | (PrimOp::ArraySet | PrimOp::ArraySetShared, 2)
+                    );
                     if !lazy {
                         s = union(s, self.expr(a));
                     }

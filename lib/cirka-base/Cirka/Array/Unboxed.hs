@@ -24,12 +24,16 @@ module Cirka.Array.Unboxed
   , fromList
   , toList
   , generate
+  , lengthRef
+  , index
+  , writeAt
   ) where
 
 import Cirka.Base hiding (length, read, (!), toList)
 import Cirka.Ownership (Unique, unique, freeze, Ur (..))
-import Cirka.Prim (Bytes, BytesPair (..), primUArrNew, primUArrSize, primUArrSizeU, primUArrThaw, primUArrIndexInt, primUArrReadInt, primUArrWriteInt, primUArrIndexDbl, primUArrReadDbl, primUArrWriteDbl)
+import Cirka.Prim (Bytes, BytesPair (..), primUArrNew, primUArrSize, primUArrSizeU, primUArrThaw, primUArrIndexInt, primUArrReadInt, primUArrWriteInt, primUArrIndexDbl, primUArrReadDbl, primUArrWriteDbl, primUArrWriteIntShared, primUArrWriteDblShared)
 import Unsafe.Linear (toLinear)
+import Unsafe.Borrow (Ref, MutRef, Borrow, refValue, mutRefValue, borrowIO)
 
 infixl 9 !
 
@@ -43,28 +47,34 @@ class UElem e where
   cirkaUIndex :: Bytes -> Int -> e
   cirkaURead :: Bytes -> Int -> BytesPair e
   cirkaUWrite :: Bytes -> Int -> e -> Bytes
+  -- | In-place store through a mutable borrow.
+  cirkaUWriteShared :: Bytes -> Int -> e -> IO ()
 
 instance UElem Int where
   cirkaUIndex = primUArrIndexInt
   cirkaURead = primUArrReadInt
   cirkaUWrite = primUArrWriteInt
+  cirkaUWriteShared = primUArrWriteIntShared
 
 instance UElem Double where
   cirkaUIndex = primUArrIndexDbl
   cirkaURead = primUArrReadDbl
   cirkaUWrite = primUArrWriteDbl
+  cirkaUWriteShared = primUArrWriteDblShared
 
 instance UElem Char where
   cirkaUIndex b i = toEnum (primUArrIndexInt b i)
   cirkaURead b i = case primUArrReadInt b i of
     BytesPair b' n -> BytesPair b' (toEnum n)
   cirkaUWrite b i c = primUArrWriteInt b i (fromEnum c)
+  cirkaUWriteShared b i c = primUArrWriteIntShared b i (fromEnum c)
 
 instance UElem Bool where
   cirkaUIndex b i = primUArrIndexInt b i /= 0
   cirkaURead b i = case primUArrReadInt b i of
     BytesPair b' n -> BytesPair b' (n /= 0)
   cirkaUWrite b i x = primUArrWriteInt b i (if x then 1 else 0)
+  cirkaUWriteShared b i x = primUArrWriteIntShared b i (if x then 1 else 0)
 
 -- | A fresh array of `n` elements, all `x`.
 newArray :: UElem e => Int -> e -> Unique (UArray e)
@@ -142,3 +152,18 @@ generate n f = freeze (gen (unique (UArray (primUArrNew n))) 0)
     gen u i
       | i >= n = u
       | otherwise = gen (write u i (f i)) (i + 1)
+
+-- ---- borrowed arrays (Cirka.Borrow, FEAT-0124) ----
+
+-- | The number of elements of a borrowed array.
+lengthRef :: Ref r (Unique (UArray e)) -> Borrow r Int
+lengthRef a = borrowIO (return $! size (refValue a))
+
+-- | The element at index `i` of a borrowed array.
+index :: UElem e => Ref r (Unique (UArray e)) -> Int -> Borrow r e
+index a i = borrowIO (return $! (refValue a ! i))
+
+-- | Stores `x` (evaluated) at index `i` of the owner, in place.
+writeAt :: UElem e => MutRef r (Unique (UArray e)) -> Int -> e -> Borrow r ()
+writeAt a i x = case mutRefValue a of
+  UArray b -> borrowIO (cirkaUWriteShared b i x)

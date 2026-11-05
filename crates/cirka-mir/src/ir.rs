@@ -459,6 +459,9 @@ pub enum Prim {
     BytesGetF64,
     BytesSetF64,
     BytesUnique,
+    ArraySetShared,
+    BytesSetI64Shared,
+    BytesSetF64Shared,
 }
 
 impl Prim {
@@ -517,6 +520,9 @@ impl Prim {
         Prim::BytesGetF64,
         Prim::BytesSetF64,
         Prim::BytesUnique,
+        Prim::ArraySetShared,
+        Prim::BytesSetI64Shared,
+        Prim::BytesSetF64Shared,
     ];
 
     pub fn name(self) -> &'static str {
@@ -576,6 +582,9 @@ impl Prim {
             BytesGetF64 => "bytes_get_f64",
             BytesSetF64 => "bytes_set_f64",
             BytesUnique => "bytes_unique",
+            ArraySetShared => "array_set_shared",
+            BytesSetI64Shared => "bytes_set_i64_shared",
+            BytesSetF64Shared => "bytes_set_f64_shared",
         }
     }
 
@@ -631,6 +640,11 @@ impl Prim {
             BytesSetF64 => (&[Ptr, I64, F64], I64),
             // bytes_unique(b): like array_unique for BYTES.
             BytesUnique => (&[Ptr], Ptr),
+            // Stores through a mutable borrow (FEAT-0124): the object may be
+            // shared with its borrowed owner; otherwise like the plain stores.
+            ArraySetShared => (&[Ptr, I64, Ptr], I64),
+            BytesSetI64Shared => (&[Ptr, I64, I64], I64),
+            BytesSetF64Shared => (&[Ptr, I64, F64], I64),
         }
     }
 
@@ -643,7 +657,7 @@ impl Prim {
     pub fn consumes(self) -> &'static [usize] {
         match self {
             Prim::ArrayNew => &[1],
-            Prim::ArraySet => &[2],
+            Prim::ArraySet | Prim::ArraySetShared => &[2],
             Prim::ArrayUnique | Prim::BytesUnique => &[0],
             _ => &[],
         }

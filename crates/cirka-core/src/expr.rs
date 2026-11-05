@@ -106,6 +106,11 @@ pub enum PrimOp {
     BytesSetF,
     /// `bytes_unique b`: consumes `b`; `b` itself when unique, otherwise a copy.
     BytesUnique,
+    /// Stores through a mutable borrow (FEAT-0124): the object may be
+    /// shared with its borrowed owner.
+    ArraySetShared,
+    BytesSet64Shared,
+    BytesSetFShared,
     /// Pointer equality of two boxed values (`Int#`).
     PtrEq,
 }
@@ -153,6 +158,9 @@ impl PrimOp {
         PrimOp::BytesGetF,
         PrimOp::BytesSetF,
         PrimOp::BytesUnique,
+        PrimOp::ArraySetShared,
+        PrimOp::BytesSet64Shared,
+        PrimOp::BytesSetFShared,
         PrimOp::PtrEq,
     ];
 
@@ -200,6 +208,9 @@ impl PrimOp {
             BytesGetF => "bytes_getf",
             BytesSetF => "bytes_setf",
             BytesUnique => "bytes_unique",
+            ArraySetShared => "array_set_shared",
+            BytesSet64Shared => "bytes_set64_shared",
+            BytesSetFShared => "bytes_setf_shared",
             PtrEq => "ptr_eq",
         }
     }
@@ -212,7 +223,7 @@ impl PrimOp {
     pub fn ty_arity(self) -> usize {
         use PrimOp::*;
         match self {
-            ArrayNew | ArrayLen | ArrayGet | ArraySet | ArrayUnique | PtrEq => 1,
+            ArrayNew | ArrayLen | ArrayGet | ArraySet | ArrayUnique | ArraySetShared | PtrEq => 1,
             _ => 0,
         }
     }
@@ -240,12 +251,12 @@ impl PrimOp {
             ArrayNew => (vec![i(), elem.clone()], arr),
             ArrayLen => (vec![arr], i()),
             ArrayGet => (vec![arr, i()], elem),
-            ArraySet => (vec![arr, i(), elem], Type::unit()),
+            ArraySet | ArraySetShared => (vec![arr, i(), elem], Type::unit()),
             ArrayUnique => (vec![arr.clone()], arr),
             BytesGet64 => (vec![Type::bytes(), i()], i()),
-            BytesSet64 => (vec![Type::bytes(), i(), i()], Type::unit()),
+            BytesSet64 | BytesSet64Shared => (vec![Type::bytes(), i(), i()], Type::unit()),
             BytesGetF => (vec![Type::bytes(), i()], d()),
-            BytesSetF => (vec![Type::bytes(), i(), d()], Type::unit()),
+            BytesSetF | BytesSetFShared => (vec![Type::bytes(), i(), d()], Type::unit()),
             BytesUnique => (vec![Type::bytes()], Type::bytes()),
             PtrEq => (vec![elem.clone(), elem], i()),
         }
@@ -270,6 +281,9 @@ impl PrimOp {
                 | BytesGetF
                 | BytesSetF
                 | BytesUnique
+                | ArraySetShared
+                | BytesSet64Shared
+                | BytesSetFShared
         )
     }
 }

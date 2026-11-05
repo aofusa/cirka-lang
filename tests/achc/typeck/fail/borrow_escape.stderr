@@ -1,0 +1,27 @@
+error[E0320]: a borrow escapes its scope: the region `r` would occur in the result `Borrow r (Ref r Int)`
+  --> tests/achc/typeck/fail/borrow_escape.hs:10:29
+   |
+10 | leakRef n = borrow n (\a -> pureB a)
+   |                             ^^^^^^^
+   = note: a borrow (`Ref`/`MutRef`), or a function or computation using it, cannot leave the `borrow` that created it
+   = help: return a value read through the borrow instead (e.g. `Ur <$> index a i`)
+error[E0320]: a borrow escapes its scope: the region `r` would occur in the result `Borrow r (t53 -> Borrow r Int)`
+  --> tests/achc/typeck/fail/borrow_escape.hs:13:29
+   |
+13 | leakFun n = borrow n (\a -> pureB (\_ -> size a))
+   |                             ^^^^^^^^^^^^^^^^^^^^
+   = note: a borrow (`Ref`/`MutRef`), or a function or computation using it, cannot leave the `borrow` that created it
+   = help: return a value read through the borrow instead (e.g. `Ur <$> index a i`)
+error[E0320]: a borrow escapes its scope: the region `r` would occur in the result `Borrow r (Borrow r Int)`
+  --> tests/achc/typeck/fail/borrow_escape.hs:16:30
+   |
+16 | leakComp n = borrow n (\a -> pureB (size a))
+   |                              ^^^^^^^^^^^^^^
+   = note: a borrow (`Ref`/`MutRef`), or a function or computation using it, cannot leave the `borrow` that created it
+   = help: return a value read through the borrow instead (e.g. `Ur <$> index a i`)
+error[E0604]: couldn't match expected type `t67` with actual type `Box s`
+  --> tests/achc/typeck/fail/borrow_escape.hs:28:31
+   |
+28 | leakBox = case withBox (\b -> b) of
+   |                               ^
+   = note: the type variable `s` of a polymorphic argument would escape its scope

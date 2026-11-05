@@ -218,6 +218,20 @@ borrow arr as a in do
 
 実行時には `Ref`/`MutRef` は単なるポインタ、`Borrow r` は `State# RealWorld` と同様に消去され、RC 操作は発生しない。
 
+**実装 (FEAT-0124)**: `Cirka.Borrow` が型を抽象的にエクスポートし、実装は `Unsafe.Borrow` にある (ADR-041)。
+
+- `Ref r a`/`MutRef r a` は所有者そのもの (newtype)、`Borrow r` は `IO` の newtype で、`borrow` が `IO` の動作を
+  その場で正格に実行してから所有者を返す。借用を作るときに所有者を 1 回 dup し、終わると drop する (RC 操作は 1 組)。
+- 配列の借用操作は `Cirka.Array` / `Cirka.Array.Unboxed` の `lengthRef`・`index`・`writeAt` (所有者は
+  `Unique (Array e)`)。`length` は一意配列の操作と名前が衝突するので `lengthRef` とする。`writeAt` は所有者と共有された
+  オブジェクトにその場で書き込む (`array_set_shared` 等。所有者の一意性は型 (U-Bind) で保証する)。
+- 結果 `b` は線形にも使える (`b :: LType`)。共有可能な値を取り出すには `Ur` で包む:
+  `case borrow arr (\a -> Ur <$> index a 0) of (arr', Ur x) -> ...`。
+- 入れ子の借用 (`borrowIn`) の内側は新しいリージョン `r'` で動くので、外側の借用はその中では使えない
+  (外側で先に読む)。線形の値を `Borrow r` の `do` の中で受け渡すことはできない (`do` の特別扱いは `IO` だけ)。
+- 構文糖は `CirkaBorrow` (または `CirkaOwnership`) で有効になり、`borrow e as x in body` /
+  `borrowMut e as x in body` の形でだけ働く (それ以外は普通の関数呼び出し)。
+
 ## 6. リージョン (`CirkaRegions`)
 
 ```haskell
