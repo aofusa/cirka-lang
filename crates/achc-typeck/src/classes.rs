@@ -1344,7 +1344,7 @@ fn open_mp(t: &Ty) -> bool {
     }
 }
 
-fn has_meta(t: &Ty) -> bool {
+pub(crate) fn has_meta(t: &Ty) -> bool {
     match t {
         Ty::Meta(_) => true,
         Ty::Var(_) | Ty::Con(_) => false,

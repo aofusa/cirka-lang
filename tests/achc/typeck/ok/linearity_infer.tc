@@ -1,0 +1,81 @@
+Main.open :: Int -> Res
+Main.open = (\($a42 :: Int) -> match $a42 {
+    n#1 -> (Main.Res n#1)
+  })
+Main.close :: Res %1 -> Int
+Main.close = (\($a43 :: Res) -> match $a43 {
+    (Res n#2) -> n#2
+  })
+Main.swap :: forall a b. (a, b) %1 -> (b, a)
+Main.swap = (\($a44 :: (a, b)) -> match $a44 {
+    ((,) x#3 y#4) -> ((Cirka.Prim.(,) @b @a y#4) x#3)
+  })
+Main.pick :: forall a. Bool -> a %1 -> a %1 -> (a, a)
+Main.pick = (\($a47 :: Bool) -> (\($a48 :: a) -> (\($a49 :: a) -> match $a47 $a48 $a49 {
+    b#5 x#6 y#7 -> let
+        $c50 :: Bool
+        $c50 = b#5
+      in match $c50 {
+        True -> ((Cirka.Prim.(,) @a @a x#6) y#7)
+        False -> ((Cirka.Prim.(,) @a @a y#7) x#6)
+      }
+  })))
+Main.closeBoth :: (Res, Res) %1 -> Int
+Main.closeBoth = (\($a52 :: (Res, Res)) -> match $a52 {
+    ((,) a#8 b#9) -> ((Prelude.+ (Main.close a#8)) (Main.close b#9))
+  })
+Main.swapped :: Int -> Int
+Main.swapped = (\($a53 :: Int) -> match $a53 {
+    n#10 -> let
+        $lin4 :: (Res, Res)
+        $lin4 = let
+            $lin3 :: (Res, Res)
+            $lin3 = let
+                $lin2 :: Res
+                $lin2 = (Main.open 1)
+              in (let
+                $lin1 :: Res
+                $lin1 = (Main.open n#10)
+              in (Cirka.Prim.(,) @Res @Res $lin1) $lin2)
+          in (Main.swap @Res @Res $lin3)
+      in (Main.closeBoth $lin4)
+  })
+Main.local :: Int -> Int
+Main.local = (\($a54 :: Int) -> match $a54 {
+    n#11 -> let
+        $lin8 :: (Res, Res)
+        $lin8 = let
+            $lin7 :: (Res, Res)
+            $lin7 = let
+                $lin6 :: Res
+                $lin6 = (Main.open 1)
+              in (let
+                $lin5 :: Res
+                $lin5 = (Main.open n#11)
+              in (Cirka.Prim.(,) @Res @Res $lin5) $lin6)
+          in (rot#12 @Res @Res $lin7)
+      in (Main.closeBoth $lin8)
+      where
+        rot#12 :: forall a b. (a, b) %1 -> (b, a)
+        rot#12 = (\($a55 :: (a, b)) -> match $a55 {
+            ((,) x#13 y#14) -> ((Cirka.Prim.(,) @b @a y#14) x#13)
+          })
+
+  })
+Main.picked :: Int -> Int
+Main.picked = (\($a58 :: Int) -> match $a58 {
+    n#15 -> let
+        $lin11 :: (Res, Res)
+        $lin11 = let
+            $lin10 :: Res
+            $lin10 = (Main.open 2)
+          in (let
+            $lin9 :: Res
+            $lin9 = (Main.open n#15)
+          in ((Main.pick @Res Cirka.Prim.True) $lin9) $lin10)
+      in (Main.closeBoth $lin11)
+  })
+Main.plain :: [(Int, Bool)]
+Main.plain = ((Prelude.map @(Bool, Int) @(Int, Bool) Main.swap @Bool @Int) ((Cirka.Prim.: @(Bool, Int) ((Cirka.Prim.(,) @Bool @Int Cirka.Prim.True) 1)) ((Cirka.Prim.: @(Bool, Int) ((Cirka.Prim.(,) @Bool @Int Cirka.Prim.False) 2)) Cirka.Prim.[] @(Bool, Int))))
+Main.main :: IO ()
+Main.main = (Prelude.return @() Cirka.Prim.())

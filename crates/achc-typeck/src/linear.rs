@@ -247,6 +247,23 @@ pub(crate) fn check(
     (c.errors, c.plan)
 }
 
+/// The number of linearity errors in the clauses of a binding (a trial of
+/// linearity inference, FEAT-0128); nothing is recorded.
+pub(crate) fn trial(tc: &mut Tc, clauses: &[&Decl]) -> usize {
+    let mut c = Checker {
+        tc,
+        errors: Vec::new(),
+        linear: HashSet::new(),
+        unique: HashMap::new(),
+        plan: Plan::default(),
+        has_instance: HashMap::new(),
+    };
+    for d in clauses {
+        c.top_decl(d);
+    }
+    c.errors.len()
+}
+
 /// The spans of the bodies of a right-hand side (marked by inference).
 fn rhs_spans(r: &Rhs) -> Vec<Span> {
     match &r.body {

@@ -1,0 +1,18 @@
+error[E0310]: the type variable `a` of `dupl` has kind `Type`, but is instantiated with the linear-only type `Res`
+  --> tests/achc/typeck/fail/linearity_infer.hs:25:23
+   |
+25 | copied n = closeBoth (dupl (open n))
+   |                       ^^^^ used here
+   = help: a polymorphic function may copy values of kind `Type`; declare the variable `forall (a :: LType)` if it is used linearly
+error[E0310]: the type variable `a` of `first` has kind `Type`, but is instantiated with the linear-only type `Res`
+  --> tests/achc/typeck/fail/linearity_infer.hs:28:20
+   |
+28 | dropped n = close (first (open n, open 1))
+   |                    ^^^^^ used here
+   = help: a polymorphic function may copy values of kind `Type`; declare the variable `forall (a :: LType)` if it is used linearly
+error[E0301]: a value of the linear-only type `(Res, Res)` is passed to an unrestricted argument
+  --> tests/achc/typeck/fail/linearity_infer.hs:28:26
+   |
+28 | dropped n = close (first (open n, open 1))
+   |                          ^^^^^^^^^^^^^^^^ this argument may be used many times
+   = help: the function must take this argument with a linear arrow (`%1 ->`)

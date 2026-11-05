@@ -186,6 +186,11 @@ pub struct Tc {
     /// Metas created by those instantiations (E0310 reports them, not
     /// E0301).
     inst_metas: HashSet<u32>,
+    /// U-Arg multiplicities of bindings without signatures whose argument
+    /// type is not known yet (it mentions variables to generalize): the
+    /// multiplicity and the argument type, decided after generalization
+    /// (FEAT-0128).
+    pending_mults: Vec<(Ty, Ty)>,
     /// The type of each `do` block (by span): `IO` blocks run their
     /// statements once.
     pub(crate) do_tys: HashMap<Span, Ty>,
@@ -237,6 +242,7 @@ impl Tc {
             arg_tys: HashMap::new(),
             inst_checks: Vec::new(),
             inst_metas: HashSet::new(),
+            pending_mults: Vec::new(),
             do_tys: HashMap::new(),
             top_names: HashSet::new(),
             sources: None,
@@ -1298,6 +1304,8 @@ impl Tc {
             let mut results: Vec<tast::Bind> = Vec::new();
             if !infer_ids.is_empty() {
                 let wstart = self.wanted.len();
+                let pstart = self.pending_mults.len();
+                let checks = (self.inst_checks.len(), self.omega_args.len());
                 self.level += 1;
                 let mut tys = Vec::new();
                 for &i in &infer_ids {
@@ -1332,6 +1340,7 @@ impl Tc {
                     }
                 }
                 self.level -= 1;
+                let pending = self.pending_mults.split_off(pstart);
                 // Generalize function bindings; pattern bindings stay
                 // monomorphic.
                 let generalize = infer_ids.iter().all(|&i| binds[i].pat.is_none());
@@ -1347,6 +1356,13 @@ impl Tc {
                     for t in &tys {
                         self.gen_metas(t, &mut ms);
                     }
+                    // Pending multiplicities are decided below, not
+                    // generalized.
+                    ms.retain(|m| {
+                        !pending
+                            .iter()
+                            .any(|(pm, _)| matches!(self.shallow(pm), Ty::Meta(x) if x == *m))
+                    });
                 } else {
                     for r in &rhss {
                         for (_, t, _) in r {
@@ -1362,6 +1378,14 @@ impl Tc {
                 for (m, v) in ms.iter().zip(&tvs) {
                     self.metas[*m as usize].sol = Some(Ty::Var(v.clone()));
                 }
+                if generalize && self.has_ltype {
+                    let clauses: Vec<&Decl> = infer_ids
+                        .iter()
+                        .flat_map(|&i| binds[i].clauses.iter().copied())
+                        .collect();
+                    self.infer_ltype_vars(&tvs, &tys, &clauses, &pending, checks);
+                }
+                self.decide_mults(&pending, binds[infer_ids[0]].span);
                 let ctx: Vec<Pred> = ctx
                     .into_iter()
                     .map(|p| Pred::new(&p.class, self.zonk(&p.ty)))
@@ -1551,6 +1575,103 @@ impl Tc {
         out
     }
 
+    /// Decides the pending U-Arg multiplicities of a binding group: `%1`
+    /// when the argument type is linear-only, ω otherwise.
+    fn decide_mults(&mut self, pending: &[(Ty, Ty)], span: Span) {
+        for (m, a) in pending {
+            if matches!(self.shallow(m), Ty::Meta(_)) {
+                let lin = self.is_ltype(a);
+                self.unify(span, m, &if lin { mult_one() } else { mult_many() });
+            }
+        }
+    }
+
+    /// Linearity inference (FEAT-0128, 03-type-system.md §1.2): a
+    /// generalized variable `a` of a binding group without signatures
+    /// becomes `a :: LType` when the group still passes the linearity check
+    /// with the values of type `a` linear-only (each used exactly once,
+    /// passed only to linear arrows and `LType` variables). The variables
+    /// are tried one by one, then together; a failure keeps them `Type`.
+    fn infer_ltype_vars(
+        &mut self,
+        tvs: &[String],
+        tys: &[Ty],
+        clauses: &[&Decl],
+        pending: &[(Ty, Ty)],
+        checks: (usize, usize),
+    ) {
+        let candidates: Vec<&String> = tvs
+            .iter()
+            .filter(|v| {
+                tys.iter()
+                    .all(|t| applied_arity(v, &self.zonk(t)).is_none())
+            })
+            .collect();
+        // Only functions: their arguments carry the values.
+        if candidates.is_empty()
+            || clauses
+                .iter()
+                .any(|d| !matches!(d, Decl::Fun(_, args, ..) if !args.is_empty()))
+        {
+            return;
+        }
+        let Some(base) = self.trial(clauses, pending, checks) else {
+            return;
+        };
+        let mut chosen = Vec::new();
+        for v in candidates {
+            self.ltype_vars.insert(v.clone());
+            let r = self.trial(clauses, pending, checks);
+            if r == Some(base) {
+                chosen.push(v.clone());
+            }
+            self.ltype_vars.remove(v);
+        }
+        if chosen.is_empty() {
+            return;
+        }
+        self.ltype_vars.extend(chosen.iter().cloned());
+        if self.trial(clauses, pending, checks) != Some(base) {
+            for v in &chosen {
+                self.ltype_vars.remove(v);
+            }
+        }
+    }
+
+    /// The number of linearity errors of a group's clauses with the
+    /// current `ltype_vars` (the pending multiplicities decided
+    /// accordingly for the trial); `None` when an instantiation or argument
+    /// of the group sends a linear-only value to a `Type` position.
+    fn trial(
+        &mut self,
+        clauses: &[&Decl],
+        pending: &[(Ty, Ty)],
+        checks: (usize, usize),
+    ) -> Option<usize> {
+        let leaks = self.inst_checks[checks.0..]
+            .iter()
+            .any(|(_, _, _, t)| self.is_ltype(t))
+            || self.omega_args[checks.1..]
+                .iter()
+                .any(|(_, t)| self.is_ltype(t));
+        if leaks {
+            return None;
+        }
+        let mut set = Vec::new();
+        for (m, a) in pending {
+            if let Ty::Meta(id) = self.shallow(m) {
+                let lin = self.is_ltype(a);
+                self.metas[id as usize].sol = Some(if lin { mult_one() } else { mult_many() });
+                set.push(id);
+            }
+        }
+        let n = crate::linear::trial(self, clauses);
+        for id in set {
+            self.metas[id as usize].sol = None;
+        }
+        Some(n)
+    }
+
     /// The clauses of a function as nested lambdas over a match.
     fn fun_bind(&mut self, clauses: &[&Decl], ty: &Ty, span: Span) -> tast::Expr {
         let arity = match clauses[0] {
@@ -1652,6 +1773,12 @@ impl Tc {
         }
         for (i, m) in open_mults {
             if matches!(self.shallow(&m), Ty::Meta(_)) {
+                // The argument type may still become linear-only when its
+                // variables are generalized (FEAT-0128).
+                if crate::classes::has_meta(&self.zonk(&args[i])) {
+                    self.pending_mults.push((m, args[i].clone()));
+                    continue;
+                }
                 let lin = self.is_ltype(&args[i]);
                 self.unify(span, &m, &if lin { mult_one() } else { mult_many() });
             }
