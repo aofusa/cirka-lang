@@ -325,6 +325,7 @@ impl Tc {
                     ty: Ty::fun(dty.clone(), res),
                     rhs: tast::Expr::Lam(d, dty.clone(), Box::new(m)),
                     span: Span::DUMMY,
+                    strict: false,
                 }));
             }
         }
@@ -606,6 +607,7 @@ impl Tc {
                         ty: lty,
                         rhs: lam,
                         span: Span::DUMMY,
+                        strict: false,
                     })],
                     Box::new(tast::Expr::Local(m, fty)),
                 ));
@@ -644,6 +646,7 @@ impl Tc {
             ty,
             rhs,
             span: inst.span,
+            strict: false,
         }
     }
 

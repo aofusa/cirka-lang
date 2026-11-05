@@ -95,6 +95,8 @@ pub struct Bind {
     pub ty: Ty,
     pub rhs: Expr,
     pub span: Span,
+    /// Evaluated before the body of the `let` (a bang pattern binding).
+    pub strict: bool,
 }
 
 #[derive(Clone, Debug)]

@@ -81,7 +81,10 @@ pub fn compile(
             &achc_syntax::print::print_module(&m.ast),
         )?;
     }
-    let tp = achc_typeck::typecheck_in(&rn, Some(sm))?;
+    let lib = lib_dir();
+    let tp = achc_typeck::typecheck_in(&rn, Some(sm), &|f| {
+        std::path::Path::new(f).starts_with(&lib)
+    })?;
     dump_frontend(
         opts,
         "tc",

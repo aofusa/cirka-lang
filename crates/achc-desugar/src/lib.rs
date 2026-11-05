@@ -561,14 +561,7 @@ impl Ds {
                 let b = self.expr(b);
                 c::Expr::Lam(c::Binder::new(i, c::Mult::Many, ty), Box::new(b))
             }
-            tast::Expr::Let(gs, b) => {
-                let binds: Vec<c::Bind> = gs.iter().map(|g| self.group(g)).collect();
-                let body = self.expr(b);
-                binds
-                    .into_iter()
-                    .rev()
-                    .fold(body, |e, b| c::Expr::Let(b, Box::new(e)))
-            }
+            tast::Expr::Let(gs, b) => self.lets(gs, |s| s.expr(b)),
             tast::Expr::Match(vs, cls, t) => {
                 let cols: Vec<Col> = vs
                     .iter()
@@ -646,6 +639,25 @@ impl Ds {
                 [c::Expr::Lit(c::Lit::Str(s.as_bytes().to_vec()))],
             ),
         }
+    }
+
+    /// `let` bindings around `body`; strict (bang) bindings become `let!`.
+    fn lets(&mut self, gs: &[BindGroup], body: impl FnOnce(&mut Self) -> c::Expr) -> c::Expr {
+        let binds: Vec<(c::Bind, bool)> = gs
+            .iter()
+            .map(|g| {
+                let strict = matches!(g, BindGroup::NonRec(b) if b.strict);
+                (self.group(g), strict)
+            })
+            .collect();
+        let body = body(self);
+        binds
+            .into_iter()
+            .rev()
+            .fold(body, |e, (b, strict)| match b {
+                c::Bind::NonRec(x, r) if strict => c::Expr::LetStrict(x, r, Box::new(e)),
+                b => c::Expr::Let(b, Box::new(e)),
+            })
     }
 
     fn group(&mut self, g: &BindGroup) -> c::Bind {
@@ -1134,14 +1146,7 @@ impl Ds {
         let body = match row.rhs {
             RowRhs::Expr(e) => e,
             RowRhs::Guards(gs, e) => self.guards(gs, e, fail, res),
-            RowRhs::Rhs(r) => {
-                let binds: Vec<c::Bind> = r.wheres.iter().map(|g| self.group(g)).collect();
-                let body = self.alternatives(&r.body, fail, res);
-                binds
-                    .into_iter()
-                    .rev()
-                    .fold(body, |e, b| c::Expr::Let(b, Box::new(e)))
-            }
+            RowRhs::Rhs(r) => self.lets(&r.wheres, |s| s.alternatives(&r.body, fail, res)),
         };
         row.lets.into_iter().rev().fold(body, |e, (b, r)| {
             c::Expr::Let(c::Bind::NonRec(b, Box::new(r)), Box::new(e))
@@ -1196,14 +1201,7 @@ impl Ds {
                     ],
                 )
             }
-            Guard::Let(bs) => {
-                let binds: Vec<c::Bind> = bs.iter().map(|g| self.group(g)).collect();
-                let e = self.guards(rest, body, fail, res);
-                binds
-                    .into_iter()
-                    .rev()
-                    .fold(e, |e, b| c::Expr::Let(b, Box::new(e)))
-            }
+            Guard::Let(bs) => self.lets(bs, |s| s.guards(rest, body, fail, res)),
             Guard::Bind(p, e) => {
                 let t = self.pat_ty(p);
                 let ct = self.ty(&t);

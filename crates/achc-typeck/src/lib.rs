@@ -22,20 +22,23 @@ use types::*;
 
 /// Type checks a renamed program. On success also returns warnings.
 pub fn typecheck(p: &achc_rename::Program) -> Result<tast::Program, Vec<Diagnostic>> {
-    typecheck_in(p, None)
+    typecheck_in(p, None, &|_| false)
 }
 
-/// Like [`typecheck`]; with the source map, calls of `error` report their
-/// call site like GHC's `HasCallStack`.
+/// Like [`typecheck`]; with the source map, calls of `error` and
+/// `undefined` in modules outside the library (`is_library` tells library
+/// files by name) report their call site like GHC's `HasCallStack`.
 pub fn typecheck_in(
     p: &achc_rename::Program,
     sm: Option<&cirka_diagnostics::SourceMap>,
+    is_library: &dyn Fn(&str) -> bool,
 ) -> Result<tast::Program, Vec<Diagnostic>> {
     let mut tc = Tc::new();
     if let Some(sm) = sm {
         let mods = p
             .modules
             .iter()
+            .filter(|m| sm.get(m.file).is_some_and(|f| !is_library(&f.name)))
             .map(|m| (m.file.0, m.name.clone()))
             .collect();
         tc.sources = Some((sm.clone(), mods));

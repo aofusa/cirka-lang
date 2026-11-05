@@ -84,7 +84,11 @@ error = primError
 -- `error` to this): the message gets GHC's call stack line.
 cirkaErrorCalledAt :: [Char] -> [Char] -> a
 cirkaErrorCalledAt site msg =
-  primError (msg ++ "\nCallStack (from HasCallStack):\n  error, called at " ++ site)
+  primError (msg ++ "\nCallStack (from HasCallStack):\n  " ++ site)
+
+cirkaUndefinedAt :: [Char] -> a
+cirkaUndefinedAt site =
+  primError ("Prelude.undefined\nCallStack (from HasCallStack):\n  " ++ site)
 
 errorWithoutStackTrace :: [Char] -> a
 errorWithoutStackTrace = primError

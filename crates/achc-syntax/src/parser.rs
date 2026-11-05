@@ -42,6 +42,14 @@ pub struct Parser {
     errors: Vec<Diagnostic>,
     /// Nesting of parse attempts; errors inside are discarded on failure.
     fuel: u32,
+    /// `StrictData` (or `Strict`): constructor fields are strict unless
+    /// marked lazy with `~`.
+    strict_data: bool,
+    /// `Strict`: arguments, case alternatives and local bindings are
+    /// strict unless marked lazy with `~`.
+    strict: bool,
+    /// Nesting of `let`/`where` blocks.
+    local_depth: u32,
 }
 
 type PResult<T> = Result<T, ()>;
@@ -56,6 +64,9 @@ impl Parser {
             block_start: usize::MAX,
             errors: Vec::new(),
             fuel: 0,
+            strict_data: false,
+            strict: false,
+            local_depth: 0,
         }
     }
 
@@ -467,6 +478,10 @@ impl Parser {
     // ---- module ----
 
     pub fn module(&mut self, extensions: Vec<(String, Span)>) -> Module {
+        self.strict_data = extensions
+            .iter()
+            .any(|(e, _)| e == "StrictData" || e == "Strict");
+        self.strict = extensions.iter().any(|(e, _)| e == "Strict");
         let start = self.span();
         let mut name = None;
         let mut exports = None;
@@ -809,6 +824,53 @@ impl Parser {
         self.block(|p| p.decl()).into_iter().flatten().collect()
     }
 
+    /// The declarations of a `let` or `where`.
+    fn local_decls_block(&mut self) -> Vec<Decl> {
+        self.local_depth += 1;
+        let ds = self.decls_block();
+        self.local_depth -= 1;
+        ds
+    }
+
+    /// Under `Strict`, a pattern without `!` or `~` is strict.
+    fn strict_pat(&self, p: Pat) -> Pat {
+        if !self.strict || matches!(p.kind, PatKind::Bang(_) | PatKind::Lazy(_)) {
+            return p;
+        }
+        let span = p.span;
+        Pat {
+            kind: PatKind::Bang(Box::new(p)),
+            span,
+        }
+    }
+
+    /// `Strict` applied to a declaration: strict arguments, and strict
+    /// local variable bindings (`x = e` is `!x = e`).
+    fn strict_decl(&self, d: Decl) -> Decl {
+        if !self.strict {
+            return d;
+        }
+        match d {
+            Decl::Fun(f, args, rhs, sp) if args.is_empty() && self.local_depth > 0 => {
+                let v = Pat {
+                    kind: PatKind::Var(f.clone()),
+                    span: f.span,
+                };
+                Decl::PatBind(self.strict_pat(v), rhs, sp)
+            }
+            Decl::Fun(f, args, rhs, sp) => Decl::Fun(
+                f,
+                args.into_iter().map(|a| self.strict_pat(a)).collect(),
+                rhs,
+                sp,
+            ),
+            Decl::PatBind(p, rhs, sp) if self.local_depth > 0 => {
+                Decl::PatBind(self.strict_pat(p), rhs, sp)
+            }
+            d => d,
+        }
+    }
+
     fn tyvars(&mut self) -> Vec<Ident> {
         let mut v = Vec::new();
         while let Tok::VarId(None, n) = self.cur() {
@@ -896,12 +958,23 @@ impl Parser {
         })
     }
 
-    fn strict_atype(&mut self) -> PResult<(Type, bool)> {
+    /// A strictness annotation of a constructor field: `!` (strict), `~`
+    /// (lazy) or none (strict under `StrictData`).
+    fn field_strictness(&mut self) -> Option<bool> {
         if self.at_varsym("!") {
             self.bump();
-            return Ok((self.atype()?, true));
+            Some(true)
+        } else if self.at(&Tok::Tilde) {
+            self.bump();
+            Some(false)
+        } else {
+            None
         }
-        Ok((self.atype()?, false))
+    }
+
+    fn strict_atype(&mut self) -> PResult<(Type, bool)> {
+        let s = self.field_strictness();
+        Ok((self.atype()?, s.unwrap_or(self.strict_data)))
     }
 
     fn at_atype_start(&self) -> bool {
@@ -909,6 +982,7 @@ impl Parser {
             self.cur(),
             Tok::VarId(None, _) | Tok::ConId(..) | Tok::LParen | Tok::LBracket
         ) || self.at_varsym("!")
+            || self.at(&Tok::Tilde)
     }
 
     fn con_decl(&mut self) -> PResult<ConDecl> {
@@ -926,11 +1000,9 @@ impl Parser {
                     names.push(self.var_or_parens_op(false)?);
                 }
                 self.expect(&Tok::DColon)?;
-                let (ty, strict) = if self.at_varsym("!") {
-                    self.bump();
-                    (self.atype()?, true)
-                } else {
-                    (self.ty()?, false)
+                let (ty, strict) = match self.field_strictness() {
+                    Some(s) => (self.atype()?, s),
+                    None => (self.ty()?, self.strict_data),
                 };
                 fields.push((names, ty, strict));
                 if !self.eat(&Tok::Comma) {
@@ -996,11 +1068,9 @@ impl Parser {
                 None => return self.expected("a constructor"),
             };
             self.bump_n(n);
-            let right = if self.at_varsym("!") {
-                self.bump();
-                (self.atype()?, true)
-            } else {
-                (self.btype()?, false)
+            let right = match self.field_strictness() {
+                Some(s) => (self.atype()?, s),
+                None => (self.btype()?, self.strict_data),
             };
             return Ok(ConDecl {
                 name: Ident {
@@ -1134,7 +1204,8 @@ impl Parser {
         let lhs = self.pat_seq_operands()?;
         let rhs = self.rhs(&Tok::Equals)?;
         let span = start.to(self.prev_span());
-        self.classify_lhs(lhs, rhs, span).map(|d| vec![d])
+        self.classify_lhs(lhs, rhs, span)
+            .map(|d| vec![self.strict_decl(d)])
     }
 
     /// A left-hand side: operands are runs of atomic patterns.
@@ -1276,7 +1347,7 @@ impl Parser {
         };
         let wheres = if self.at_kw(Kw::Where) {
             self.bump();
-            self.decls_block()
+            self.local_decls_block()
         } else {
             Vec::new()
         };
@@ -1316,7 +1387,7 @@ impl Parser {
                 return Ok(Stmt::Expr(e));
             }
             self.bump();
-            let ds = self.decls_block();
+            let ds = self.local_decls_block();
             return Ok(Stmt::Let(ds, start.to(self.prev_span())));
         }
         if let Some(p) = self.attempt(|p| {
@@ -1772,12 +1843,13 @@ impl Parser {
                     }
                     self.expect(&Tok::RArrow)?;
                     let body = self.expr()?;
+                    let ps = ps.into_iter().map(|p| self.strict_pat(p)).collect();
                     ExprKind::Lam(ps, Box::new(body))
                 }
             }
             Tok::Kw(Kw::Let) => {
                 self.bump();
-                let ds = self.decls_block();
+                let ds = self.local_decls_block();
                 self.expect(&Tok::Kw(Kw::In))?;
                 let body = self.expr()?;
                 ExprKind::Let(ds, Box::new(body))
@@ -1834,6 +1906,7 @@ impl Parser {
     fn alt(&mut self) -> PResult<Alt> {
         let start = self.span();
         let pat = self.pat()?;
+        let pat = self.strict_pat(pat);
         let rhs = self.rhs(&Tok::RArrow)?;
         Ok(Alt {
             pat,

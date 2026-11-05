@@ -91,6 +91,8 @@ pub struct Tc {
     locals: HashMap<String, LocalKind>,
     /// Bindings of groups being inferred, to their quantified variables.
     rec_tvs: HashMap<String, Vec<String>>,
+    /// Local bindings evaluated before the body (`let !p = e`).
+    strict_locals: HashSet<String>,
     fields: HashMap<String, Vec<(String, usize)>>,
     pub(crate) counter: u32,
     pub errors: Vec<Diagnostic>,
@@ -131,6 +133,7 @@ impl Tc {
             globals: HashMap::new(),
             locals: HashMap::new(),
             rec_tvs: HashMap::new(),
+            strict_locals: HashSet::new(),
             fields: HashMap::new(),
             counter: 0,
             errors: Vec::new(),
@@ -660,7 +663,6 @@ impl Tc {
                 ));
             }
         }
-        let strict_data = false;
         for c in &dd.cons {
             let cname = format!("{m}.{}", c.name.name);
             let mut fields = Vec::new();
@@ -670,7 +672,7 @@ impl Tc {
                 ConFields::Plain(fs) => {
                     for (t, s) in fs {
                         fields.push(self.ast_ty(t, &mut tvs, false));
-                        strict.push(*s || strict_data);
+                        strict.push(*s);
                         names.push(None);
                     }
                 }
@@ -679,7 +681,7 @@ impl Tc {
                         let ty = self.ast_ty(t, &mut tvs, false);
                         for n in ns {
                             fields.push(ty.clone());
-                            strict.push(*s || strict_data);
+                            strict.push(*s);
                             let f = format!("{m}.{}", n.name);
                             self.fields
                                 .entry(f.clone())
@@ -798,6 +800,7 @@ impl Tc {
                 ty,
                 rhs: body,
                 span: Span::DUMMY,
+                strict: false,
             }));
         }
         out
@@ -1016,12 +1019,14 @@ impl Tc {
                             .iter()
                             .map(|v| (v.clone(), self.kind_in(v, &full)))
                             .collect();
+                        let strict = !recursive && self.strict_locals.contains(&name);
                         results.push(tast::Bind {
                             name,
                             tvs: ktvs,
                             ty: full,
                             rhs: e,
                             span: Span::DUMMY,
+                            strict,
                         });
                     }
                 }
@@ -1062,6 +1067,7 @@ impl Tc {
                     ty: full,
                     rhs: e,
                     span: b.span,
+                    strict: false,
                 });
             }
             if recursive {
@@ -1126,6 +1132,9 @@ impl Tc {
         };
         let e = self.rhs_expr(rhs, t, sp);
         let tp = self.pat(p, t);
+        if !top && matches!(strip_paren(p).kind, PatKind::Bang(_)) {
+            self.strict_locals.insert(whole.clone());
+        }
         let mut out = vec![(whole.clone(), t.clone(), e)];
         let mut vars = Vec::new();
         tpat_vars(&tp, &mut vars);
@@ -1156,6 +1165,7 @@ impl Tc {
                     ty: t.clone(),
                     rhs: tast::Expr::Global(whole.clone(), vec![Ty::Con(REC.into())]),
                     span: sp,
+                    strict: false,
                 })],
                 Box::new(body),
             );
@@ -1670,16 +1680,22 @@ impl Tc {
     /// so that the message has GHC's `CallStack` line.
     fn error_with_call_site(&mut self, name: &str, sp: Span) -> Option<(tast::Expr, Ty)> {
         let base = achc_rename::BASE_MODULE;
-        if name != format!("{base}.error") {
-            return None;
-        }
-        let helper = format!("{base}.cirkaErrorCalledAt");
+        let (fun, helper) = [
+            ("error", "cirkaErrorCalledAt"),
+            ("undefined", "cirkaUndefinedAt"),
+        ]
+        .into_iter()
+        .find(|(f, _)| name == format!("{base}.{f}"))?;
+        let helper = format!("{base}.{helper}");
         let s = self.globals.get(&helper)?.clone();
         let (sm, mods) = self.sources.as_ref()?;
         let file = sm.get(sp.file)?;
         let (line, col) = file.line_col(sp.start);
         let module = mods.get(&sp.file.0)?;
-        let site = format!("{}:{line}:{col} in main:{module}", file.name);
+        let site = format!(
+            "{fun}, called at {}:{line}:{col} in main:{module}",
+            file.name
+        );
         let f = self.let_ref(&helper, &s, sp);
         let st = Ty::list(Ty::Con(prim("Char")));
         Some(self.app(sp, f, tast::Expr::Lit(tast::Lit::Str(site)), &st))
@@ -1812,6 +1828,7 @@ impl Tc {
                 ty: t,
                 rhs,
                 span: Span::DUMMY,
+                strict: false,
             })],
             Box::new(body),
         )
@@ -2040,6 +2057,7 @@ impl Tc {
                 ty: s.ty.clone(),
                 rhs: te,
                 span: sp,
+                strict: false,
             })],
             Box::new(tast::Expr::Global(name, inst)),
         );
@@ -2934,4 +2952,12 @@ fn tarjan(n: usize, edges: &[Vec<usize>]) -> Vec<Vec<usize>> {
         }
     }
     s.out
+}
+
+/// A pattern without its parentheses and type annotations.
+fn strip_paren(p: &ast::Pat) -> &ast::Pat {
+    match &p.kind {
+        PatKind::Paren(q) | PatKind::Typed(q, _) => strip_paren(q),
+        _ => p,
+    }
 }
