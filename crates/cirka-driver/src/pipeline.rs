@@ -149,6 +149,9 @@ pub fn compile_core(
     }
     if opts.opt_level > 0 {
         cirka_core::opt::optimize(&mut p).map_err(|e| vec![to_ice(e)])?;
+    } else {
+        // Even unoptimized builds drop the library code `main` never uses.
+        cirka_core::opt::dce_globals(&mut p);
     }
     dump(opts, Stage::CoreOpt, name, &cirka_core::print_program(&p))?;
     let mut m = cirka_mir::lower::lower_program(&p)?;

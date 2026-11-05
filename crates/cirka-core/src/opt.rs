@@ -59,7 +59,11 @@ pub fn optimize(p: &mut Program) -> Result<(), Diagnostic> {
 
 /// Runs the optimization pipeline and reports what it did.
 pub fn optimize_with_stats(p: &mut Program) -> Result<Stats, Diagnostic> {
-    let mut st = Stats::default();
+    // Libraries are large; optimize only what `main` can reach.
+    let mut st = Stats {
+        removed_globals: dce_globals(p),
+        ..Stats::default()
+    };
     let mut next = p.max_id() + 1;
     for b in &mut p.binds {
         b.expr = freshen(&b.expr, &mut next);
@@ -79,7 +83,7 @@ pub fn optimize_with_stats(p: &mut Program) -> Result<Stats, Diagnostic> {
         lint_all(p, "worker-wrapper")?;
         simplify_rounds(p, &mut st, &mut next)?;
     }
-    st.removed_globals = dce_globals(p);
+    st.removed_globals += dce_globals(p);
     lint_all(p, "dce")?;
     Ok(st)
 }
@@ -613,7 +617,7 @@ fn inline_candidates(p: &Program) -> HashMap<String, Expr> {
 }
 
 /// Removes top-level bindings unreachable from `main` (when there is one).
-fn dce_globals(p: &mut Program) -> usize {
+pub fn dce_globals(p: &mut Program) -> usize {
     if p.bind("main").is_none() {
         return 0;
     }
