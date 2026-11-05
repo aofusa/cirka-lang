@@ -269,6 +269,13 @@ liftIO     :: IO a -> RIO r a
 
 構文糖: `region r in do ...`。循環を含むグラフ構造(knot-tying)は、リージョン内で作れば RC を使わず安全に回収できる。
 
+- 実装 (FEAT-0127): `Cirka.Region` が上の API と `readRefIn`・`writeRefIn`・`modifyRefIn` を提供する。`Arena r`・`RIO r`・
+  `In r a`・`RefIn r a` は抽象型で、`RIO r` は `IO` の newtype、`In`/`RefIn` はセルのアドレス (`Int`) の newtype
+  (04-memory-model.md §6)。`withRegion` の結果に `r` が現れると借用と同じ脱出検査で E0320 (リージョン向けのメッセージ)。
+  構文糖は `CirkaRegions` (または `CirkaOwnership`) で有効になり、`region r in e` を `withRegion (\r -> e)` にする。
+- リージョンの中の値どうしの循環はセル (`RefIn`) を通して作る。セルを介さない循環 (値の `letrec`) は §4 の通常の扱い
+  (W0401、`--cycles=collect`)。
+
 ## 7. C FFI (`CirkaExtern`)
 
 Haskell 2010 の `foreign import ccall` はそのまま使える(`.hs` でも可)。Cirka モードでは加えて:

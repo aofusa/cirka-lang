@@ -7,10 +7,10 @@
 
 (def Main.zipW (forall (a b c) (-> (-> a b c) (List a) (List b) (List c)))
   (tlam (a b c)
-    (lam ((a~707 (-> a b c)) (a~708 (List a)) (a~709 (List b)))
-      (case a~708 (s~725 (List a)) (List c)
-        ((Cons f~713 f~714) (case a~709 (s~724 (List b)) (List c)
-            ((Cons f~718 f~719) (con Cons (c) (a~707 f~713 f~718) ((@ Main.zipW a b c) a~707 f~714 f~719)))
+    (lam ((a~735 (-> a b c)) (a~736 (List a)) (a~737 (List b)))
+      (case a~736 (s~753 (List a)) (List c)
+        ((Cons f~741 f~742) (case a~737 (s~752 (List b)) (List c)
+            ((Cons f~746 f~747) (con Cons (c) (a~735 f~741 f~746) ((@ Main.zipW a b c) a~735 f~742 f~747)))
             (_ (con Nil (c)))))
         (_ (con Nil (c)))))))
 

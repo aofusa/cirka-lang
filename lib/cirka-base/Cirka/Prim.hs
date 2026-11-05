@@ -9,6 +9,8 @@ data Char
 data Double
 data IO a
 data IORef a
+-- | A region: an arena of cells (Cirka.Region).
+data Region
 data Array e
 data ArrayPair e b = ArrayPair (Array e) b
 data Bytes
@@ -72,6 +74,12 @@ foreign import prim "prog_name" primProgName :: IO [Char]
 foreign import prim "ioref_new" primNewIORef :: a -> IO (IORef a)
 foreign import prim "ioref_read" primReadIORef :: IORef a -> IO a
 foreign import prim "ioref_write" primWriteIORef :: IORef a -> a -> IO ()
+-- Regions (Cirka.Region, FEAT-0127): an arena of cells addressed by Int.
+foreign import prim "region_new" primRegionNew :: IO Region
+foreign import prim "region_free" primRegionFree :: Region -> IO ()
+foreign import prim "region_cell" primRegionCell :: Region -> a -> IO Int
+foreign import prim "region_get" primRegionGet :: Int -> IO a
+foreign import prim "region_set" primRegionSet :: Int -> a -> IO ()
 foreign import prim "array_new" primArrayNew :: Int -> e -> Array e
 foreign import prim "array_write" primArrayWrite :: Array e -> Int -> e -> Array e
 foreign import prim "array_read" primArrayRead :: Array e -> Int -> ArrayPair e e

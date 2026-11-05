@@ -1,0 +1,21 @@
+error[E0320]: a region value escapes its scope: the region `r` would occur in the result `RIO r (Arena r)`
+ --> tests/achc/typeck/fail/region_escape.hs:9:31
+  |
+9 | leakArena = withRegion (\a -> pureR a)
+  |                               ^^^^^^^
+  = note: the arena, its handles (`In`/`RefIn`) and computations using them (`RIO`) cannot leave the `withRegion` that created them: the region is freed when it ends
+  = help: return a value read from the region instead (e.g. with `readIn`)
+error[E0320]: a region value escapes its scope: the region `r` would occur in the result `RIO r (In r Int)`
+  --> tests/achc/typeck/fail/region_escape.hs:12:32
+   |
+12 | leakHandle = withRegion (\a -> allocIn a 1)
+   |                                ^^^^^^^^^^^
+   = note: the arena, its handles (`In`/`RefIn`) and computations using them (`RIO`) cannot leave the `withRegion` that created them: the region is freed when it ends
+   = help: return a value read from the region instead (e.g. with `readIn`)
+error[E0320]: a region value escapes its scope: the region `r` would occur in the result `RIO r (RIO r (In r Int))`
+  --> tests/achc/typeck/fail/region_escape.hs:15:30
+   |
+15 | leakComp = withRegion (\a -> pureR (allocIn a 1))
+   |                              ^^^^^^^^^^^^^^^^^^^
+   = note: the arena, its handles (`In`/`RefIn`) and computations using them (`RIO`) cannot leave the `withRegion` that created them: the region is freed when it ends
+   = help: return a value read from the region instead (e.g. with `readIn`)

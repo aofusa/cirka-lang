@@ -50,6 +50,8 @@ pub struct Parser {
     strict: bool,
     /// `CirkaBorrow` (or `CirkaOwnership`): `borrow e as x in body`.
     borrow_sugar: bool,
+    /// `region r in e` (CirkaRegions).
+    region_sugar: bool,
     /// Nesting of `let`/`where` blocks.
     local_depth: u32,
 }
@@ -68,6 +70,7 @@ impl Parser {
             fuel: 0,
             strict_data: false,
             borrow_sugar: false,
+            region_sugar: false,
             strict: false,
             local_depth: 0,
         }
@@ -485,6 +488,7 @@ impl Parser {
         self.strict_data = on("StrictData") || on("Strict");
         self.strict = on("Strict");
         self.borrow_sugar = on("CirkaBorrow") || on("CirkaOwnership");
+        self.region_sugar = on("CirkaRegions") || on("CirkaOwnership");
         let start = self.span();
         let mut name = None;
         let mut exports = None;
@@ -2006,8 +2010,64 @@ impl Parser {
         }))
     }
 
+    /// `region r in body` (CirkaRegions, 02-language-extensions.md §6):
+    /// `withRegion (\r -> body)`.
+    fn region_sugar(&mut self) -> PResult<Option<Expr>> {
+        if !self.region_sugar || !matches!(self.cur(), Tok::VarId(None, f) if f == "region") {
+            return Ok(None);
+        }
+        let st = self.save();
+        self.bump();
+        let ok = matches!(self.cur(), Tok::VarId(None, _)) && {
+            self.bump();
+            self.at(&Tok::Kw(Kw::In))
+        };
+        self.restore(st);
+        if !ok {
+            return Ok(None);
+        }
+        let fspan = self.span();
+        self.bump();
+        let rspan = self.span();
+        let Tok::VarId(None, r) = self.cur().clone() else {
+            unreachable!()
+        };
+        self.bump();
+        self.expect(&Tok::Kw(Kw::In))?;
+        let body = self.expr()?;
+        let span = fspan.to(body.span);
+        let lam = Expr {
+            kind: ExprKind::Lam(
+                vec![Pat {
+                    kind: PatKind::Var(Ident {
+                        name: r,
+                        span: rspan,
+                    }),
+                    span: rspan,
+                }],
+                Box::new(body),
+            ),
+            span: rspan.to(span),
+        };
+        let fun = Expr {
+            kind: ExprKind::Var(QName {
+                qual: None,
+                name: "withRegion".into(),
+                span: fspan,
+            }),
+            span: fspan,
+        };
+        Ok(Some(Expr {
+            kind: ExprKind::App(Box::new(fun), Box::new(lam)),
+            span,
+        }))
+    }
+
     fn exp10(&mut self) -> PResult<Expr> {
         if let Some(e) = self.borrow_sugar()? {
+            return Ok(e);
+        }
+        if let Some(e) = self.region_sugar()? {
             return Ok(e);
         }
         let start = self.span();

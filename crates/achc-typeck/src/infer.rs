@@ -171,7 +171,7 @@ pub struct Tc {
     pub(crate) type_datas: HashSet<String>,
     /// Rigid variables of rank-N arguments (`check_poly`): their level, and
     /// whether they are the region of a borrow (E0320).
-    skolems: HashMap<String, (u32, bool)>,
+    skolems: HashMap<String, (u32, Option<ScopeKind>)>,
     /// Type variables (unique names) declared `:: LType`.
     pub(crate) ltype_vars: HashSet<String>,
     /// The type of each pattern and of each let-bound name (by span).
@@ -550,7 +550,8 @@ impl Tc {
                     UErr::Escape(v) => {
                         let name = achc_rename::display_name(&v);
                         let name = name.trim_end_matches(|c: char| c == '#' || c.is_ascii_digit());
-                        if self.skolems.get(&v).is_some_and(|s| s.1) {
+                        let kind = self.skolems.get(&v).and_then(|s| s.1);
+                        if kind == Some(ScopeKind::Borrow) {
                             err(
                                 "E0320",
                                 span,
@@ -565,6 +566,20 @@ impl Tc {
                             .with_help(
                                 "return a value read through the borrow instead (e.g. `Ur <$> index a i`)",
                             )
+                        } else if kind == Some(ScopeKind::Region) {
+                            err(
+                                "E0320",
+                                span,
+                                format!(
+                                    "a region value escapes its scope: the region `{name}` would occur in the result `{ac}`"
+                                ),
+                            )
+                            .with_note(
+                                "the arena, its handles (`In`/`RefIn`) and computations using them \
+                                 (`RIO`) cannot leave the `withRegion` that created them: the region \
+                                 is freed when it ends",
+                            )
+                            .with_help("return a value read from the region instead (e.g. with `readIn`)")
                         } else {
                             err(
                                 "E0604",
@@ -3817,22 +3832,33 @@ fn strip_paren(p: &ast::Pat) -> &ast::Pat {
 
 /// Whether `v` is the region (first argument) of a borrow type
 /// (`Ref`/`MutRef`/`Borrow` of Cirka.Borrow, FEAT-0124) in `t`.
-fn mentions_region(t: &Ty, v: &str) -> bool {
+/// What a rank-2 type variable scopes: borrows or a region (for E0320).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum ScopeKind {
+    Borrow,
+    Region,
+}
+
+/// Whether `v` is the scope variable of a borrow or region type in `t`.
+fn mentions_region(t: &Ty, v: &str) -> Option<ScopeKind> {
     match t {
         Ty::App(f, x) => {
             if let (Ty::Con(c), Ty::Var(w)) = (&**f, &**x)
                 && w == v
-                && matches!(
-                    c.as_str(),
-                    "Unsafe.Borrow.Ref" | "Unsafe.Borrow.MutRef" | "Unsafe.Borrow.Borrow"
-                )
             {
-                return true;
+                match c.as_str() {
+                    "Unsafe.Borrow.Ref" | "Unsafe.Borrow.MutRef" | "Unsafe.Borrow.Borrow" => {
+                        return Some(ScopeKind::Borrow);
+                    }
+                    "Cirka.Region.Arena" | "Cirka.Region.RIO" | "Cirka.Region.In"
+                    | "Cirka.Region.RefIn" => return Some(ScopeKind::Region),
+                    _ => {}
+                }
             }
-            mentions_region(f, v) || mentions_region(x, v)
+            mentions_region(f, v).or_else(|| mentions_region(x, v))
         }
-        Ty::Fun(a, b) => mentions_region(a, v) || mentions_region(b, v),
+        Ty::Fun(a, b) => mentions_region(a, v).or_else(|| mentions_region(b, v)),
         Ty::Forall(_, b) => mentions_region(b, v),
-        _ => false,
+        _ => None,
     }
 }

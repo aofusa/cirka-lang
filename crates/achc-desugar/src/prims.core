@@ -12,6 +12,8 @@
 (data IO (a) :newtype (IO# (-> Unit# a)))
 ; A mutable reference (runtime MUTVAR) holding a value of type a.
 (data IORef (a) :newtype (IORef# Any))
+; A region (runtime FOREIGN object owning an arena of cells), FEAT-0127.
+(data Region () :newtype (Region# Any))
 ; An array and a value read from it (Cirka.Array, FEAT-0123): returning
 ; both keeps the array unique across the read.
 (data ArrayPair (a b) (ArrayPair (Array a) b))
@@ -33,6 +35,11 @@
 (extern cirka_mutvar_new (Any) Any)
 (extern cirka_mutvar_read (Any) Any)
 (extern cirka_mutvar_write (Any Any) Unit#)
+(extern cirka_region_new () Any)
+(extern cirka_region_free (Any) Int#)
+(extern cirka_region_cell (Any Any) Int#)
+(extern cirka_region_get (Int#) Any)
+(extern cirka_region_set (Int# Any) Int#)
 (extern cirka_file_read (Bytes) Bytes)
 (extern cirka_file_write (Bytes Bytes Int#) Unit#)
 (extern cirka_panic_bytes (Bytes) Unit#)
@@ -500,6 +507,34 @@
     (lam ((r (IORef a)) (x a) (w Unit#))
       (case r (r1 (IORef a)) Unit
         ((IORef# m) (let! (u Unit# (extern cirka_mutvar_write m (cast x Any))) (con Unit ())))))))
+
+; Regions (Cirka.Region, FEAT-0127): a cell is addressed by an Int.
+(def prim$region_new (-> Unit# Region)
+  (lam ((w Unit#))
+    (con Region# () (extern cirka_region_new))))
+
+(def prim$region_free (-> Region Unit# Unit)
+  (lam ((r Region) (w Unit#))
+    (case r (r1 Region) Unit
+      ((Region# m) (let! (u Int# (extern cirka_region_free m)) (con Unit ()))))))
+
+(def prim$region_cell (forall (a) (-> Region a Unit# Int))
+  (tlam (a)
+    (lam ((r Region) (x a) (w Unit#))
+      (case r (r1 Region) Int
+        ((Region# m) (let! (c Int# (extern cirka_region_cell m (cast x Any))) (con I# () c)))))))
+
+(def prim$region_get (forall (a) (-> Int Unit# a))
+  (tlam (a)
+    (lam ((c Int) (w Unit#))
+      (case c (c1 Int) a
+        ((I# k) (cast (extern cirka_region_get k) a))))))
+
+(def prim$region_set (forall (a) (-> Int a Unit# Unit))
+  (tlam (a)
+    (lam ((c Int) (x a) (w Unit#))
+      (case c (c1 Int) Unit
+        ((I# k) (let! (u Int# (extern cirka_region_set k (cast x Any))) (con Unit ())))))))
 
 (def prim$read_file (-> (List Char) Unit# (List Char))
   (lam ((p (List Char)) (w Unit#))

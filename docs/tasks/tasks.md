@@ -88,7 +88,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0046](features/FEAT-0046-async-io-runtime.md) | 非同期 I/O ランタイム (epoll) | todo | P1 | 0045 |
 | [FEAT-0047](features/FEAT-0047-ffi-abi.md) | FFI ABI の完成 (構造体・共用体・可変長引数・コールバック) | todo | P1 | 0031 |
 | [FEAT-0048](features/FEAT-0048-bindgen.md) | bindgen (libclang による C ヘッダ取り込み) | todo | P1 | 0047 |
-| [FEAT-0049](features/FEAT-0049-region-arena.md) | リージョン用アリーナのランタイム | todo | P2 | 0031 |
+| [FEAT-0049](features/FEAT-0049-region-arena.md) | リージョン用アリーナのランタイム | done | P2 | 0031 |
 | [FEAT-0050](features/FEAT-0050-smt-infra.md) | SMT 連携基盤 (cirka-smt) | todo | P1 | 0005 |
 | [FEAT-0051](features/FEAT-0051-allocator-tuning.md) | アロケータの改善 | todo | P2 | 0043 |
 | [FEAT-0052](features/FEAT-0052-remote-scripts.md) | 遠隔検証スクリプト (scripts/remote.sh) | todo | P2 | 0002 |
@@ -136,7 +136,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0124](features/FEAT-0124-hs-borrowing.md) | 借用 (Ref / MutRef / Borrow モナド) | done | P1 | 0121 |
 | [FEAT-0125](features/FEAT-0125-hs-chs-mode.md) | .chs モード・CirkaOwnership・ownership レベル | done | P1 | 0122 |
 | [FEAT-0126](features/FEAT-0126-hs-cycles.md) | 循環の検出と局所回収器 | done | P2 | 0112 |
-| [FEAT-0127](features/FEAT-0127-hs-regions.md) | リージョン (aCHC) | todo | P2 | 0124, 0049 |
+| [FEAT-0127](features/FEAT-0127-hs-regions.md) | リージョン (aCHC) | done | P2 | 0124, 0049 |
 | [FEAT-0128](features/FEAT-0128-hs-linearity-inference.md) | 線形性の推論 (LType 一般化) | todo | P2 | 0121 |
 
 ### H4 FFI 拡張と評価
