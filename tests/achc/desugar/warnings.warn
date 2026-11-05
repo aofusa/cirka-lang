@@ -16,3 +16,9 @@ warning[W0611]: this equation is redundant
 14 | dup True = 2
    | ^^^^^^^^^^^^
    = note: earlier equations match every value it matches
+warning[W0610]: non-exhaustive patterns
+  --> tests/achc/desugar/warnings.hs:25:1
+   |
+25 | guarded b | b = 1
+   | ^^^^^^^^^^^^^^^^^
+   = note: a value not matched by any equation is a runtime error

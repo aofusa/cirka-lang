@@ -13,6 +13,8 @@
 //! - `foreign import prim "p"` binds to the Core definition `prim$p` of
 //!   `prims.core`; the declared type must equal the primitive's type.
 
+mod exhaust;
+
 use achc_typeck::infer::kind_of;
 use achc_typeck::tast::{self, BindGroup, Clause, Guard, Pat};
 use achc_typeck::types::*;
@@ -683,7 +685,9 @@ impl Ds {
         let e = self.matcher(&cols, rows, &c::Expr::Var(fail.clone()), &res);
         let span = cls.first().map(|c| c.span).unwrap_or(Span::DUMMY);
         let e = if count_var(&e, &fail) > 0 {
-            if !span.is_dummy() {
+            // The decision tree may keep failure paths that are
+            // impossible; warn only when some value is really unmatched.
+            if !span.is_dummy() && self.non_exhaustive(cls) {
                 self.warnings.push(
                     Diagnostic::warning("non-exhaustive patterns")
                         .with_code("W0610")

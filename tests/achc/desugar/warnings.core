@@ -9,12 +9,33 @@
   (tlam (a)
     (lam ((a (List a)))
       (case a (s (List a)) a
-        ((Cons f~443 f~444) f~443)
+        ((Cons f~446 f~447) f~446)
         (_ (panic "non-exhaustive patterns" a))))))
 
 (def Main.dup (-> Bool Int)
   (lam ((a Bool))
     (con I# () 1)))
+
+(def Main.both (forall (a) (-> (Prelude.Maybe a) (Prelude.Maybe a) Int))
+  (tlam (a)
+    (lam ((a~459 (Prelude.Maybe a)) (a~460 (Prelude.Maybe a)))
+      (case a~459 (s~466 (Prelude.Maybe a)) Int
+        ((Prelude.Nothing) (con I# () 0))
+        (_ (case a~460 (s~471 (Prelude.Maybe a)) Int
+            ((Prelude.Nothing) (con I# () 1))
+            (_ (case a~459 (s~481 (Prelude.Maybe a)) Int
+                ((Prelude.Just f~473) (case a~460 (s~480 (Prelude.Maybe a)) Int
+                    ((Prelude.Just f~476) (con I# () 2))
+                    (_ (panic "non-exhaustive patterns" Int))))
+                (_ (panic "non-exhaustive patterns" Int))))))))))
+
+(def Main.guarded (-> Bool Int)
+  (lam ((a Bool))
+    (case a (g Bool) Int
+      ((True) (con I# () 1))
+      (_ (case a (s Bool) Int
+          ((False) (con I# () 0))
+          (_ (panic "non-exhaustive patterns" Int)))))))
 
 (def Main.main (IO Unit)
   ((@ Prelude.return Unit) (con Unit ())))
