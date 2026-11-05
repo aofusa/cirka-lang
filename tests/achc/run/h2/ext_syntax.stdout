@@ -1,0 +1,11 @@
+zero
+odd
+even
+([(1,True),(2,True)],[("x",'a'),("x",'b')])
+[(1,2,'c')]
+["neg","zero","small","big"]
+5000050000
+none
+even 4
+odd 7
+3

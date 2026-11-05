@@ -84,25 +84,29 @@ impl Tc {
     /// First pass: the class name and its variable.
     pub(crate) fn declare_class_name(&mut self, m: &str, c: &ast::ClassDecl) {
         let name = format!("{m}.{}", c.name.name);
-        if c.params.len() != 1 {
+        if c.params.is_empty() {
             self.error(err(
                 "E0001",
                 c.span,
-                "multi-parameter type classes are not supported",
+                "a class needs at least one type parameter",
             ));
         }
-        let var = c
+        let mut vars: Vec<String> = c
             .params
-            .first()
+            .iter()
             .map(|p| self.fresh_name(&format!("{}#", p.name)))
-            .unwrap_or_else(|| "a#".into());
-        self.add_data(&name, vec![var.clone()], vec![Kind::Star], false);
+            .collect();
+        if vars.is_empty() {
+            vars.push("a#".into());
+        }
+        let kinds = vec![Kind::Star; vars.len()];
+        self.add_data(&name, vars.clone(), kinds.clone(), false);
         self.classes.insert(
             name,
             ClassInfo {
                 module: m.to_string(),
-                var,
-                kind: Kind::Star,
+                vars,
+                kinds,
                 supers: Vec::new(),
                 methods: Vec::new(),
                 defaults: HashSet::new(),
@@ -125,11 +129,14 @@ impl Tc {
                 let Some(info) = self.classes.get(&name).cloned() else {
                     continue;
                 };
-                let src_var = c.params.first().map(|p| p.name.clone()).unwrap_or_default();
+                let src_vars: Vec<String> = c.params.iter().map(|p| p.name.clone()).collect();
+                let src_var = src_vars.first().cloned().unwrap_or_default();
+                let nv = info.vars.len();
                 let mut supers = Vec::new();
                 for k in &c.context {
                     let sc = k.class.text();
-                    let ok = k.types.len() == 1
+                    let ok = nv == 1
+                        && k.types.len() == 1
                         && matches!(&k.types[0].kind, ast::TypeKind::Var(v) if *v == src_var);
                     if !ok {
                         self.error(err(
@@ -152,16 +159,20 @@ impl Tc {
                 for d in &c.decls {
                     match d {
                         Decl::TypeSig(ns, t, _) => {
-                            let mut tvs = vec![(src_var.clone(), Ty::Var(info.var.clone()))];
+                            let mut tvs: Vec<(String, Ty)> = src_vars
+                                .iter()
+                                .cloned()
+                                .zip(info.vars.iter().map(|v| Ty::Var(v.clone())))
+                                .collect();
                             let saved = std::mem::take(&mut self.qual_preds);
-                            let ty = self.ast_ty(t, &mut tvs, true);
+                            let (ty, _) = self.ast_sig_ty(t, &mut tvs);
                             let extra = std::mem::replace(&mut self.qual_preds, saved);
-                            let mut vars = vec![info.var.clone()];
-                            vars.extend(tvs[1..].iter().filter_map(|(_, t)| match t {
+                            let mut vars = info.vars.clone();
+                            vars.extend(tvs[nv..].iter().filter_map(|(_, t)| match t {
                                 Ty::Var(v) => Some(v.clone()),
                                 _ => None,
                             }));
-                            let mut preds = vec![Pred::new(&name, Ty::Var(info.var.clone()))];
+                            let mut preds = vec![Pred::new(&name, info.class_ty())];
                             preds.extend(extra);
                             for n in ns {
                                 let mname = format!("{m}.{}", n.name);
@@ -215,19 +226,25 @@ impl Tc {
                         ));
                     }
                 }
-                // The kind of the class variable from the method types.
-                let mut kind = Kind::Star;
-                for (_, s) in &methods {
-                    if let Some(n) = crate::infer::applied_arity(&info.var, &s.ty) {
-                        kind = Kind::arity(n);
+                // The kinds of the class variables from the method types.
+                let mut kinds = vec![Kind::Star; nv];
+                for (i, (v, kind)) in info.vars.iter().zip(kinds.iter_mut()).enumerate() {
+                    if let Some(Some(k)) = c.param_kinds.get(i) {
+                        *kind = Kind::from_sig(k);
+                        continue;
+                    }
+                    for (_, s) in &methods {
+                        if let Some(n) = crate::infer::applied_arity(v, &s.ty) {
+                            *kind = Kind::arity(n);
+                        }
                     }
                 }
                 let ci = self.classes.get_mut(&name).unwrap();
                 ci.supers = supers;
                 ci.methods = methods;
                 ci.defaults = defaults;
-                ci.kind = kind.clone();
-                self.datas.get_mut(&name).unwrap().kinds = vec![kind];
+                ci.kinds = kinds.clone();
+                self.datas.get_mut(&name).unwrap().kinds = kinds;
                 order.push(name);
             }
         }
@@ -235,21 +252,28 @@ impl Tc {
         let mut binds = Vec::new();
         for name in order {
             let ci = self.classes[&name].clone();
-            let cv = Ty::Var(ci.var.clone());
+            let cv = ci.class_ty();
+            let cvs: Vec<Ty> = ci.vars.iter().map(|v| Ty::Var(v.clone())).collect();
+            let ctvs: Vec<(String, Kind)> = ci
+                .vars
+                .iter()
+                .cloned()
+                .zip(ci.kinds.iter().cloned())
+                .collect();
             let mut fields: Vec<Ty> = ci
                 .supers
                 .iter()
                 .map(|s| Pred::new(s, cv.clone()).dict_ty())
                 .collect();
             for (_, s) in &ci.methods {
-                fields.push(method_field(s));
+                fields.push(method_field(s, ci.vars.len()));
             }
             let con = format!("{name}$Dict");
             let n = fields.len();
             self.add_con(&con, &name, fields.clone(), vec![false; n]);
             self.out.datas.push(tast::DataDecl {
                 name: name.clone(),
-                params: vec![(ci.var.clone(), ci.kind.clone())],
+                params: ctvs.clone(),
                 cons: vec![tast::ConDecl {
                     name: con.clone(),
                     fields: fields.clone(),
@@ -262,20 +286,10 @@ impl Tc {
             for (i, ft) in fields.iter().enumerate() {
                 let (sel, mut tvs, res, sel_ty) = if i < nsup {
                     let sel = format!("{name}$super{i}");
-                    (
-                        sel,
-                        vec![(ci.var.clone(), ci.kind.clone())],
-                        ft.clone(),
-                        None,
-                    )
+                    (sel, ctvs.clone(), ft.clone(), None)
                 } else {
                     let (mname, s) = &ci.methods[i - nsup];
-                    (
-                        mname.clone(),
-                        vec![(ci.var.clone(), ci.kind.clone())],
-                        ft.clone(),
-                        Some(s),
-                    )
+                    (mname.clone(), ctvs.clone(), ft.clone(), Some(s))
                 };
                 let f = self.fresh_name("$m");
                 let d = self.fresh_name("$dict");
@@ -304,7 +318,7 @@ impl Tc {
                 let m = tast::Expr::Match(
                     vec![(d.clone(), dty.clone())],
                     vec![Clause {
-                        pats: vec![tast::Pat::Con(con.clone(), vec![cv.clone()], pats)],
+                        pats: vec![tast::Pat::Con(con.clone(), cvs.clone(), pats)],
                         rhs: Rhs {
                             wheres: Vec::new(),
                             body: vec![(Vec::new(), body)],
@@ -316,7 +330,7 @@ impl Tc {
                 if i < nsup {
                     self.globals.insert(
                         sel.clone(),
-                        Scheme::poly(vec![ci.var.clone()], Ty::fun(dty.clone(), res.clone())),
+                        Scheme::poly(ci.vars.clone(), Ty::fun(dty.clone(), res.clone())),
                     );
                 }
                 binds.push(BindGroup::NonRec(tast::Bind {
@@ -353,7 +367,8 @@ impl Tc {
         for (m, idx, decls) in pending {
             let inst = self.instances[idx].clone();
             let ci = self.classes[&inst.class].clone();
-            let csub = vec![(ci.var.clone(), inst.head.clone())];
+            let csub = ci.csub(&inst.head);
+            let nv = ci.vars.len();
             let mut impls: HashMap<String, String> = HashMap::new();
             for d in decls {
                 let Decl::Fun(f, args, rhs, sp) = d else {
@@ -377,7 +392,7 @@ impl Tc {
                         let l = format!("$c{}{idx}${}", short(&inst.class), short(&f.name));
                         impls.insert(f.name.clone(), l.clone());
                         let mut vars = inst.vars.clone();
-                        vars.extend(s.vars[1..].iter().cloned());
+                        vars.extend(s.vars[nv..].iter().cloned());
                         let mut preds = inst.ctx.clone();
                         preds.extend(s.preds[1..].iter().map(|p| p.subst(&csub)));
                         self.extra_sigs.insert(
@@ -423,17 +438,28 @@ impl Tc {
             ));
             return None;
         }
-        if i.types.len() != 1 {
+        let nv = self.classes[&class].vars.len();
+        if i.types.len() != nv {
             self.error(err(
                 "E0001",
                 i.span,
-                "multi-parameter type classes are not supported",
+                format!(
+                    "the class `{}` takes {nv} type argument{}, but the instance has {}",
+                    short(&class),
+                    if nv == 1 { "" } else { "s" },
+                    i.types.len()
+                ),
             ));
             return None;
         }
         let mut tvs = Vec::new();
         let saved = std::mem::take(&mut self.qual_preds);
-        let head = self.ast_ty(&i.types[0], &mut tvs, true);
+        let head_tys: Vec<Ty> = i
+            .types
+            .iter()
+            .map(|t| self.ast_ty(t, &mut tvs, true))
+            .collect();
+        let head = crate::infer::pack_class_tys(head_tys);
         let mut ctx = Vec::new();
         for c in &i.context {
             if let Some(p) = self.constraint(c, &mut tvs, false) {
@@ -441,7 +467,7 @@ impl Tc {
             }
         }
         self.qual_preds = saved;
-        if head.head_con().is_none() {
+        if nv == 1 && head.head_con().is_none() {
             self.error(
                 err(
                     "E0001",
@@ -514,7 +540,9 @@ impl Tc {
         ci: &ClassInfo,
         impls: &HashMap<String, String>,
     ) -> tast::Bind {
-        let csub = vec![(ci.var.clone(), inst.head.clone())];
+        let csub = ci.csub(&inst.head);
+        let nv = ci.vars.len();
+        let head_args = ci.head_args(&inst.head);
         let dicts = self.dict_params(&inst.ctx);
         let gstart = self.givens.len();
         for (p, (d, t)) in inst.ctx.iter().zip(&dicts) {
@@ -553,7 +581,7 @@ impl Tc {
         }
         let mut missing = Vec::new();
         for (mname, s) in &ci.methods {
-            let extra_vars = &s.vars[1..];
+            let extra_vars = &s.vars[nv..];
             let extra_preds: Vec<Pred> = s.preds[1..].iter().map(|p| p.subst(&csub)).collect();
             let ty = s.ty.subst(&csub);
             let impl_expr = if let Some(g) = impls.get(mname) {
@@ -565,7 +593,7 @@ impl Tc {
                 ))
             } else if ci.defaults.contains(mname) {
                 let dm = format!("{}.$dm{}", ci.module, short(mname));
-                let mut inst_tys = vec![inst.head.clone()];
+                let mut inst_tys = head_args.clone();
                 inst_tys.extend(extra_vars.iter().map(|v| Ty::Var(v.clone())));
                 Some(app_all(
                     tast::Expr::Global(dm, inst_tys),
@@ -632,7 +660,7 @@ impl Tc {
             );
         }
         let con = format!("{}$Dict", inst.class);
-        let body = app_all(tast::Expr::Con(con, vec![inst.head.clone()]), fields);
+        let body = app_all(tast::Expr::Con(con, head_args), fields);
         let dty = Pred::new(&inst.class, inst.head.clone()).dict_ty();
         let (rhs, ty) = wrap_dicts(&dicts, body, dty);
         let tvs = inst
@@ -648,6 +676,150 @@ impl Tc {
             span: inst.span,
             strict: false,
         }
+    }
+
+    /// Instances derived for newtypes (GeneralizedNewtypeDeriving): the
+    /// dictionary of the representation type, coerced. The class's last
+    /// parameter may have a higher kind: the newtype's last parameters
+    /// are then dropped from both sides (`newtype P a = P (Maybe a)
+    /// deriving Functor` uses `Functor Maybe`).
+    pub fn declare_newtype_instances(&mut self) -> Vec<BindGroup> {
+        let pending = std::mem::take(&mut self.gnd_pending);
+        let mut todo = Vec::new();
+        for (m, data, class, span) in pending {
+            let ci = self.classes[&class].clone();
+            let cannot = |why: String| {
+                err(
+                    "E0615",
+                    span,
+                    format!(
+                        "cannot derive `{}` for the newtype `{}`: {why}",
+                        short(&class),
+                        short(&data)
+                    ),
+                )
+            };
+            if ci.vars.len() != 1 {
+                self.error(cannot("the class has several parameters".into()));
+                continue;
+            }
+            let k = ci.kinds[0].args();
+            let di = self.datas[&data].clone();
+            let field = self.cons[&di.cons[0]].fields[0].clone();
+            let n = di.params.len();
+            let Some(keep) = n.checked_sub(k) else {
+                self.error(cannot("the newtype has too few parameters".into()));
+                continue;
+            };
+            let Some(rep) = eta_reduce(&field, &di.params[keep..]) else {
+                self.error(cannot(format!(
+                    "its last parameter{} must be the last argument{} of the representation type",
+                    if k == 1 { "" } else { "s" },
+                    if k == 1 { "" } else { "s" },
+                )));
+                continue;
+            };
+            let vars: Vec<String> = di.params[..keep]
+                .iter()
+                .map(|v| self.fresh_name(&format!("{}#", short(v).trim_end_matches('#'))))
+                .collect();
+            let sub: Vec<(String, Ty)> = di.params[..keep]
+                .iter()
+                .cloned()
+                .zip(vars.iter().map(|v| Ty::Var(v.clone())))
+                .collect();
+            let rep = rep.subst(&sub);
+            let head = Ty::con(&data, vars.iter().map(|v| Ty::Var(v.clone())).collect());
+            let mut ctx = Vec::new();
+            let has_vars = |_: &Tc, t: &Ty| {
+                let mut vs = Vec::new();
+                t.vars(&mut vs);
+                !vs.is_empty()
+            };
+            if let Err(p) = self.hnf(&Pred::new(&class, rep.clone()), &has_vars, &mut ctx) {
+                self.error(
+                    err(
+                        "E0608",
+                        span,
+                        format!(
+                            "no instance for `{}` arising from deriving `{}` for a newtype",
+                            show_pred(&p),
+                            short(&class)
+                        ),
+                    )
+                    .with_help("the representation type must have the instance"),
+                );
+                continue;
+            }
+            if self.instance_for(&class, &head).is_some() {
+                self.error(err(
+                    "E0612",
+                    span,
+                    format!(
+                        "duplicate or overlapping instance `{} {}`",
+                        short(&class),
+                        show(&head)
+                    ),
+                ));
+                continue;
+            }
+            let idx = self.instances.len();
+            let dfun = format!("{m}.$f{}{idx}", short(&class));
+            let p = Pred::new(&class, head.clone());
+            self.globals.insert(
+                dfun.clone(),
+                Scheme {
+                    vars: vars.clone(),
+                    preds: ctx.clone(),
+                    ty: p.dict_ty(),
+                },
+            );
+            self.instances.push(InstInfo {
+                class: class.clone(),
+                vars,
+                head,
+                ctx,
+                dfun,
+                span,
+            });
+            todo.push((idx, rep));
+        }
+        let mut binds = Vec::new();
+        for (idx, rep) in todo {
+            let inst = self.instances[idx].clone();
+            let dicts = self.dict_params(&inst.ctx);
+            let gstart = self.givens.len();
+            for (p, (d, t)) in inst.ctx.iter().zip(&dicts) {
+                self.givens
+                    .push((p.clone(), tast::Expr::Local(d.clone(), t.clone())));
+            }
+            let rp = Pred::new(&inst.class, rep);
+            let e = match self.solve(&rp, &|_, _| true) {
+                Ok(e) => e,
+                Err(p) => {
+                    self.no_instance(&p, inst.span);
+                    tast::Expr::Error("newtype instance".into(), p.dict_ty())
+                }
+            };
+            self.givens.truncate(gstart);
+            let dty = Pred::new(&inst.class, inst.head.clone()).dict_ty();
+            let body = tast::Expr::Coerce(Box::new(e), dty.clone());
+            let (rhs, ty) = wrap_dicts(&dicts, body, dty);
+            let tvs = inst
+                .vars
+                .iter()
+                .map(|v| (v.clone(), self.kind_in(v, &ty)))
+                .collect();
+            binds.push(BindGroup::NonRec(tast::Bind {
+                name: inst.dfun.clone(),
+                tvs,
+                ty,
+                rhs,
+                span: inst.span,
+                strict: false,
+            }));
+        }
+        binds
     }
 
     // ---- kinds ----
@@ -745,10 +917,15 @@ impl Tc {
                 return Ok(e);
             }
         }
-        if t.head_con().is_some() {
-            let Some((i, sub)) = self.instance_for(&p.class, &t) else {
-                return Err(Pred::new(&p.class, t));
-            };
+        let found = if t.head_con().is_some() {
+            self.instance_for(&p.class, &t)
+        } else {
+            None
+        };
+        if found.is_none() && t.head_con().is_some() && !open_mp(&t) {
+            return Err(Pred::new(&p.class, t));
+        }
+        if let Some((i, sub)) = found {
             let inst = self.instances[i].clone();
             let tys: Vec<Ty> = inst
                 .vars
@@ -789,10 +966,15 @@ impl Tc {
                 return Ok(());
             }
         }
-        if t.head_con().is_some() {
-            let Some((i, sub)) = self.instance_for(&p.class, &t) else {
-                return Err(Pred::new(&p.class, t));
-            };
+        let found = if t.head_con().is_some() {
+            self.instance_for(&p.class, &t)
+        } else {
+            None
+        };
+        if found.is_none() && t.head_con().is_some() && !open_mp(&t) {
+            return Err(Pred::new(&p.class, t));
+        }
+        if let Some((i, sub)) = found {
             for c in self.instances[i].ctx.clone() {
                 self.hnf(&c.subst(&sub), local, out)?;
             }
@@ -959,7 +1141,7 @@ impl Tc {
                         self.metas_of(&p.ty, &mut mm);
                         mm.is_empty()
                     };
-                    if ground || p.ty.head_con().is_some() {
+                    if ground || (p.ty.head_con().is_some() && !open_mp(&p.ty)) {
                         self.no_instance(&p, w.span);
                     } else {
                         self.ambiguous(&p, w.span);
@@ -1004,11 +1186,13 @@ impl Tc {
     pub(crate) fn solve_with(&mut self, ws: Vec<Wanted>, dicts: &[(String, Ty)]) {
         let gstart = self.givens.len();
         for (d, t) in dicts {
-            if let Ty::App(c, a) = t
-                && let Ty::Con(class) = &**c
+            let (h, args) = t.spine();
+            if let Ty::Con(class) = h
+                && !args.is_empty()
             {
+                let tys = args.into_iter().cloned().collect();
                 self.givens.push((
-                    Pred::new(class, (**a).clone()),
+                    Pred::new(class, crate::infer::pack_class_tys(tys)),
                     tast::Expr::Local(d.clone(), t.clone()),
                 ));
             }
@@ -1083,7 +1267,7 @@ impl Tc {
     fn report_unsolved(&mut self, p: &Pred, span: Span) {
         let mut mm = Vec::new();
         self.metas_of(&p.ty, &mut mm);
-        if !mm.is_empty() && p.ty.head_con().is_none() {
+        if !mm.is_empty() && (p.ty.head_con().is_none() || open_mp(&p.ty)) {
             self.ambiguous(p, span);
         } else {
             self.no_instance(p, span);
@@ -1117,15 +1301,56 @@ impl Tc {
     }
 }
 
+/// `t` without its last arguments `vs` (which must not occur elsewhere).
+fn eta_reduce(t: &Ty, vs: &[String]) -> Option<Ty> {
+    let mut t = t.clone();
+    for v in vs.iter().rev() {
+        let Ty::App(f, a) = &t else { return None };
+        if !matches!(&**a, Ty::Var(x) if x == v) {
+            return None;
+        }
+        t = (**f).clone();
+    }
+    let mut free = Vec::new();
+    t.vars(&mut free);
+    if free.iter().any(|x| vs.contains(x)) {
+        return None;
+    }
+    Some(t)
+}
+
+/// A multi-parameter constraint with a type variable or meta in an
+/// argument and no matching instance yet: like a constraint on a variable,
+/// it is deferred or taken from the context instead of being an error.
+fn open_mp(t: &Ty) -> bool {
+    match crate::types::mp_args(t) {
+        Some(args) => args.iter().any(|a| {
+            let mut vs = Vec::new();
+            a.vars(&mut vs);
+            !vs.is_empty() || has_meta(a)
+        }),
+        None => false,
+    }
+}
+
+fn has_meta(t: &Ty) -> bool {
+    match t {
+        Ty::Meta(_) => true,
+        Ty::Var(_) | Ty::Con(_) => false,
+        Ty::App(a, b) | Ty::Fun(a, b) => has_meta(a) || has_meta(b),
+        Ty::Forall(_, b) => has_meta(b),
+    }
+}
+
 /// The dictionary field of a method: `forall extra. ctx -> τ`.
-fn method_field(s: &Scheme) -> Ty {
+fn method_field(s: &Scheme, nv: usize) -> Ty {
     let extra_preds = &s.preds[1..];
     let body = extra_preds
         .iter()
         .rev()
         .fold(s.ty.clone(), |t, p| Ty::fun(p.dict_ty(), t));
-    if s.vars.len() > 1 {
-        Ty::Forall(s.vars[1..].to_vec(), Box::new(body))
+    if s.vars.len() > nv {
+        Ty::Forall(s.vars[nv..].to_vec(), Box::new(body))
     } else {
         body
     }

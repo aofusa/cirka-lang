@@ -88,6 +88,14 @@ pub fn ty(t: &Type) -> String {
             let v: Vec<&str> = vs.iter().map(|v| v.name.as_str()).collect();
             format!("(forall ({}) {})", v.join(" "), ty(b))
         }
+        TypeKind::Kinded(t, k) => format!("(:: {} {})", ty(t), kind(k)),
+    }
+}
+
+pub fn kind(k: &KindSig) -> String {
+    match k {
+        KindSig::Star => "*".into(),
+        KindSig::Arrow(a, b) => format!("(-> {} {})", kind(a), kind(b)),
     }
 }
 

@@ -136,6 +136,8 @@ pub struct DataDecl {
     pub context: Vec<Constraint>,
     pub name: Ident,
     pub params: Vec<Ident>,
+    /// Kind signatures of the parameters (`data P (f :: Type -> Type)`).
+    pub param_kinds: Vec<Option<KindSig>>,
     pub cons: Vec<ConDecl>,
     pub deriving: Vec<QName>,
     pub span: Span,
@@ -160,6 +162,7 @@ pub struct ClassDecl {
     pub context: Vec<Constraint>,
     pub name: Ident,
     pub params: Vec<Ident>,
+    pub param_kinds: Vec<Option<KindSig>>,
     pub decls: Vec<Decl>,
     pub span: Span,
 }
@@ -209,6 +212,15 @@ pub enum TypeKind {
     Qual(Vec<Constraint>, Box<Type>),
     /// `forall a b. t` (RankNTypes / ScopedTypeVariables).
     Forall(Vec<Ident>, Box<Type>),
+    /// `(t :: k)` (KindSignatures).
+    Kinded(Box<Type>, KindSig),
+}
+
+/// A kind written in the source (KindSignatures): `*` / `Type` and arrows.
+#[derive(Clone, Debug, PartialEq)]
+pub enum KindSig {
+    Star,
+    Arrow(Box<KindSig>, Box<KindSig>),
 }
 
 #[derive(Clone, Debug, PartialEq)]

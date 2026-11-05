@@ -154,16 +154,29 @@ impl Tc {
                 for cls in &dd.deriving {
                     let class = cls.text();
                     let short_name = short(&class).to_string();
-                    if !self.classes.contains_key(&class)
-                        || !DERIVABLE.contains(&short_name.as_str())
-                    {
+                    let stock = DERIVABLE.contains(&short_name.as_str());
+                    if self.classes.contains_key(&class) && !stock && dd.newtype {
+                        // GeneralizedNewtypeDeriving: the instance of the
+                        // representation type, coerced.
+                        self.gnd_pending.push((
+                            m.clone(),
+                            format!("{m}.{}", dd.name.name),
+                            class,
+                            cls.span,
+                        ));
+                        continue;
+                    }
+                    if !self.classes.contains_key(&class) || !stock {
                         self.error(
                             err(
                                 "E0615",
                                 cls.span,
                                 format!("cannot derive instances of `{}`", short(&class)),
                             )
-                            .with_note("derivable classes: Eq, Ord, Show, Read, Enum, Bounded"),
+                            .with_note("derivable classes: Eq, Ord, Show, Read, Enum, Bounded")
+                            .with_note(
+                                "a newtype can derive any single-parameter class of its representation type",
+                            ),
                         );
                         continue;
                     }

@@ -1,0 +1,7 @@
+(Age 7,Age 9)
+(Score 0.75,Score 0.25)
+Log [1,2,3]
+Log "abc"
+(Box (Just 3),Box Nothing)
+(Counter 42,True)
+Age 55

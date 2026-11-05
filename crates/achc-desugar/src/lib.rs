@@ -594,6 +594,11 @@ impl Ds {
                 let t = self.ty(t);
                 c::Expr::Panic(m.clone(), t)
             }
+            tast::Expr::Coerce(x, t) => {
+                let x = self.expr(x);
+                let t = self.ty(t);
+                cast_poly(x, &t)
+            }
             tast::Expr::Hole(_) | tast::Expr::OverLit(..) => {
                 self.ice("unresolved class dictionary".into());
                 c::Expr::Lit(c::Lit::Unit)

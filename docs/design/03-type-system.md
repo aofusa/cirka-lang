@@ -145,7 +145,7 @@ Linear Haskell と同様に、文脈の各変数に多重度を付ける。
 - **do 記法**: `>>=`・`>>` (Monad)。失敗しうるパターンの束縛は `fail` (MonadFail) を呼ぶ。
 - **deriving**: `Eq`・`Ord`・`Show`・`Read`・`Enum`・`Bounded`。型検査の前にインスタンス宣言 (改名済み AST) を生成する。
   `Show`/`Read` は GHC と同じ形式 (中置コンストラクタは結合性の優先度、レコード構文、負数の括弧) を出力・受理する。
-  文脈は種 `*` の型引数ごとに付ける。それ以外のクラスは E0615。
+  文脈は種 `*` の型引数ごとに付ける。それ以外のクラスは newtype なら §7.2 の GND、そうでなければ E0615。
 - **レコード** (FEAT-0115): フィールドは選択関数になり、フィールドを持たない構築子には GHC と同じ実行時エラー
   (`No match in record selector f`) の節を足す。構築で省いたフィールドは W0617 (正格フィールドなら E0616) で、
   値は `<位置>: Missing field in record construction f` の実行時エラー。更新はフィールドをすべて持つ構築子ごとの
@@ -155,6 +155,28 @@ Linear Haskell と同様に、文脈の各変数に多重度を付ける。
   `foreign import prim` の束縛でキャストする。
 - **構文に組み込まれた名前** (`negate`・`>>=`・`fromInteger`・`enumFromTo`・`==`…) は `Cirka.Base` に定義があればそれを、
   なければ `Prelude` のものを使う (テスト用の小さな Prelude のため)。
+
+### 7.2 GHC 拡張の型 (FEAT-0118)
+
+- **MultiParamTypeClasses / FlexibleInstances / FlexibleContexts**: 多引数の制約 `C a b` は、内部の型構築子
+  `#MP2` で引数をまとめた 1 引数の制約 `C (#MP2 a b)` として扱い、解決器・汎化・defaulting をそのまま使う
+  (ADR-036)。辞書の型は `C a b` (クラスのデータ型は引数を n 個取る)。インスタンスの頭部も同じ形で照合し、
+  一致するインスタンスがなく引数に型変数・メタ変数が残る制約は、型変数の制約と同様に外側へ持ち越すか文脈にする。
+  関数従属 (`FunctionalDependencies`) は H5。多引数クラスのスーパークラスは未対応 (E0001)。
+  インスタンスの頭部は 1 引数クラスでは型構築子の適用でなければならない (FlexibleInstances として `[Char]`・`Maybe Int` は可)。
+  文脈には任意の型の制約を書ける (`Show (f Int)`)。
+- **GeneralizedNewtypeDeriving**: newtype の `deriving` に標準の導出対象 (`Eq` など) 以外の 1 引数クラスを書くと、
+  表現型のインスタンスの辞書を **表現を変えないキャスト** (`tast::Expr::Coerce` → Core の `cast`) で newtype の辞書にする。
+  クラス引数が高階の種 (`Functor`) なら newtype の末尾の型引数を両辺から落とす (η 簡約。落とせなければ E0615)。
+  文脈は表現型の制約の頭部正規形 (`newtype C a = C a deriving Num` は `Num a =>`)。表現型にインスタンスがなければ E0608。
+  newtype は Core で消去されるので、辞書のフィールド (`Int -> Int` と `Age -> Age`) は同じ表現になる。
+- **ScopedTypeVariables**: 型シグネチャの **明示的な `forall`** が束縛した型変数は、その定義の本体
+  (`where`・内側のシグネチャ・式とパターンの型注釈) で有効。内側のシグネチャはそれらを汎化せず、それらへの制約は外側の
+  文脈から解く。`forall` のないシグネチャの型変数は GHC と同じくスコープを持たない。
+- **RankNTypes (注釈必須)**: 入れ子の `forall` は `Ty::Forall` になる (引数・構築子のフィールド)。その型の引数は
+  使うたびに新しいメタ変数で具体化し、`forall` 型に対して検査する式は型変数を固定 (skolem) して局所的な多相 `let` にする
+  (クラス辞書の多相フィールドと同じ形)。型は注釈から決まるものに限り、推論しない。入れ子の `forall` の下の制約は
+  未対応 (E0001)。
 
 ## 8. 例外と線形性
 

@@ -59,7 +59,8 @@ pub fn typecheck_in(
             x.1.push(d);
         }
     }
-    let (inst_values, dfuns) = tc.declare_instances(&with_derived);
+    let (inst_values, mut dfuns) = tc.declare_instances(&with_derived);
+    dfuns.extend(tc.declare_newtype_instances());
     values.extend(inst_values);
     for (m, ds) in &modules {
         for d in ds {

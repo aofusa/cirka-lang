@@ -39,6 +39,9 @@ pub enum Expr {
     /// An overloaded numeric literal at a type with the `Num` /
     /// `Fractional` dictionary in a hole (only during type checking).
     OverLit(Lit, Ty, u32),
+    /// A representation-preserving conversion to the type (the
+    /// dictionaries of newtype-derived instances).
+    Coerce(Box<Expr>, Ty),
 }
 
 #[derive(Clone, Debug)]
@@ -306,6 +309,11 @@ fn expr(e: &Expr, n: usize, s: &mut String) {
         }
         Expr::OverLit(l, _, h) => {
             let _ = write!(s, "(fromLit ?dict{h} {})", lit(l));
+        }
+        Expr::Coerce(x, t) => {
+            s.push_str("(coerce ");
+            expr(x, n, s);
+            let _ = write!(s, " :: {})", show(t));
         }
     }
 }

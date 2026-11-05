@@ -706,20 +706,21 @@ impl Parser {
             Tok::Kw(Kw::Class) => {
                 self.bump();
                 let (context, head) = self.context_and_head()?;
-                let (name, params) = match head.kind {
+                let (name, params, param_kinds) = match head.kind {
                     TypeKind::App(..) | TypeKind::Con(_) => {
                         let (h, args) = flatten_tyapp(&head);
                         let TypeKind::Con(c) = &h.kind else {
                             return self.expected("a class name");
                         };
                         let mut ps = Vec::new();
+                        let mut pks = Vec::new();
                         for a in args {
-                            match &a.kind {
-                                TypeKind::Var(v) => ps.push(Ident {
-                                    name: v.clone(),
-                                    span: a.span,
-                                }),
-                                _ => {
+                            match tyvar_binder(a) {
+                                Some((v, k)) => {
+                                    ps.push(v);
+                                    pks.push(k);
+                                }
+                                None => {
                                     self.error_at(
                                         a.span,
                                         "class parameters must be type variables".into(),
@@ -735,6 +736,7 @@ impl Parser {
                                 span: c.span,
                             },
                             ps,
+                            pks,
                         )
                     }
                     _ => return self.expected("a class name"),
@@ -748,6 +750,7 @@ impl Parser {
                     context,
                     name,
                     params,
+                    param_kinds,
                     decls,
                     span: start.to(self.prev_span()),
                 })])
@@ -871,16 +874,66 @@ impl Parser {
         }
     }
 
+    /// Type variable binders; `(v :: k)` binders drop their kind.
     fn tyvars(&mut self) -> Vec<Ident> {
         let mut v = Vec::new();
-        while let Tok::VarId(None, n) = self.cur() {
-            v.push(Ident {
-                name: n,
-                span: self.span(),
-            });
-            self.bump();
+        loop {
+            match self.cur() {
+                Tok::VarId(None, n) => {
+                    v.push(Ident {
+                        name: n,
+                        span: self.span(),
+                    });
+                    self.bump();
+                }
+                Tok::LParen
+                    if matches!(self.peek_real(1), Tok::VarId(None, _))
+                        && self.peek_real(2) == &Tok::DColon =>
+                {
+                    self.bump();
+                    let Tok::VarId(None, n) = self.cur() else {
+                        unreachable!()
+                    };
+                    v.push(Ident {
+                        name: n,
+                        span: self.span(),
+                    });
+                    self.bump();
+                    self.bump();
+                    if self.kind_sig().is_err() || !self.eat(&Tok::RParen) {
+                        break;
+                    }
+                }
+                _ => break,
+            }
         }
         v
+    }
+
+    /// A kind (KindSignatures): `*`, `Type`, `k -> k`, `(k)`.
+    fn kind_sig(&mut self) -> PResult<KindSig> {
+        let a = match self.cur() {
+            Tok::VarSym(None, ref s) if s == "*" => {
+                self.bump();
+                KindSig::Star
+            }
+            Tok::ConId(_, ref n) if n == "Type" => {
+                self.bump();
+                KindSig::Star
+            }
+            Tok::LParen => {
+                self.bump();
+                let k = self.kind_sig()?;
+                self.expect(&Tok::RParen)?;
+                k
+            }
+            _ => return self.expected("a kind (`*`, `Type` or `k -> k`)"),
+        };
+        if self.eat(&Tok::RArrow) {
+            let r = self.kind_sig()?;
+            return Ok(KindSig::Arrow(Box::new(a), Box::new(r)));
+        }
+        Ok(a)
     }
 
     fn data_decl(&mut self, newtype: bool, start: Span) -> PResult<DataDecl> {
@@ -894,13 +947,14 @@ impl Parser {
             span: c.span,
         };
         let mut params = Vec::new();
+        let mut param_kinds = Vec::new();
         for a in args {
-            match &a.kind {
-                TypeKind::Var(v) => params.push(Ident {
-                    name: v.clone(),
-                    span: a.span,
-                }),
-                _ => {
+            match tyvar_binder(a) {
+                Some((v, k)) => {
+                    params.push(v);
+                    param_kinds.push(k);
+                }
+                None => {
                     self.error_at(
                         a.span,
                         "type parameters must be type variables".into(),
@@ -952,6 +1006,7 @@ impl Parser {
             context,
             name,
             params,
+            param_kinds,
             cons,
             deriving,
             span: start.to(self.prev_span()),
@@ -1513,6 +1568,14 @@ impl Parser {
                     ))
                 } else {
                     let t = self.sig_type()?;
+                    if self.eat(&Tok::DColon) {
+                        let k = self.kind_sig()?;
+                        self.expect(&Tok::RParen)?;
+                        return Ok(Type {
+                            kind: TypeKind::Kinded(Box::new(t), k),
+                            span: start.to(self.prev_span()),
+                        });
+                    }
                     if self.at(&Tok::Comma) {
                         let mut ts = vec![t];
                         while self.eat(&Tok::Comma) {
@@ -2242,6 +2305,24 @@ enum TopItem {
 }
 
 /// `T a b` as head and arguments.
+/// A type variable binder of a declaration head: `v` or `(v :: k)`.
+fn tyvar_binder(t: &Type) -> Option<(Ident, Option<KindSig>)> {
+    match &t.kind {
+        TypeKind::Var(v) => Some((
+            Ident {
+                name: v.clone(),
+                span: t.span,
+            },
+            None,
+        )),
+        TypeKind::Kinded(inner, k) => {
+            let (v, _) = tyvar_binder(inner)?;
+            Some((v, Some(k.clone())))
+        }
+        _ => None,
+    }
+}
+
 pub fn flatten_tyapp(t: &Type) -> (&Type, Vec<&Type>) {
     let mut args = Vec::new();
     let mut h = t;

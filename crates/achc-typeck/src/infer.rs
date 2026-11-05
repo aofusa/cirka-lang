@@ -58,15 +58,50 @@ pub(crate) struct Wanted {
 #[derive(Clone, Debug)]
 pub struct ClassInfo {
     pub module: String,
-    /// The class variable (a unique type variable name).
-    pub var: String,
-    pub kind: Kind,
+    /// The class variables (unique type variable names); more than one
+    /// for a multi-parameter class.
+    pub vars: Vec<String>,
+    pub kinds: Vec<Kind>,
     pub supers: Vec<String>,
     /// Methods (global names) with their schemes: the class variable and
     /// the class constraint first, then the method's own.
     pub methods: Vec<(String, Scheme)>,
     /// Methods with a default definition.
     pub defaults: HashSet<String>,
+}
+
+impl ClassInfo {
+    /// The type of a constraint on the class variables: the variable, or
+    /// the packed variables of a multi-parameter class.
+    pub fn class_ty(&self) -> Ty {
+        let vs: Vec<Ty> = self.vars.iter().map(|v| Ty::Var(v.clone())).collect();
+        pack_class_tys(vs)
+    }
+
+    /// The class arguments of a constraint type (`[t]` or the packed ones).
+    pub fn head_args(&self, t: &Ty) -> Vec<Ty> {
+        if self.vars.len() == 1 {
+            return vec![t.clone()];
+        }
+        match crate::types::mp_args(t) {
+            Some(a) => a.into_iter().cloned().collect(),
+            None => vec![t.clone()],
+        }
+    }
+
+    /// The substitution of the class variables by a constraint type.
+    pub fn csub(&self, t: &Ty) -> Vec<(String, Ty)> {
+        self.vars.iter().cloned().zip(self.head_args(t)).collect()
+    }
+}
+
+/// The type of a class constraint on `tys` (packed when there are several).
+pub fn pack_class_tys(mut tys: Vec<Ty>) -> Ty {
+    if tys.len() == 1 {
+        tys.pop().unwrap()
+    } else {
+        Ty::con(&crate::types::mp_tc(tys.len()), tys)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -114,6 +149,12 @@ pub struct Tc {
     pub(crate) extra_sigs: HashMap<String, Scheme>,
     /// Fixity of constructor operators (derived `Show` / `Read`).
     pub(crate) con_fixity: HashMap<String, (ast::Assoc, u8)>,
+    /// Newtype-derived instances to declare (module, data type, class,
+    /// span of the `deriving` entry).
+    pub(crate) gnd_pending: Vec<(String, String, String, Span)>,
+    /// Type variables in scope (ScopedTypeVariables): those bound by an
+    /// explicit `forall` of the signatures of the enclosing bindings.
+    scoped: Vec<(String, Ty)>,
     /// Top-level value names of all modules (for deriving helpers).
     pub(crate) top_names: HashSet<String>,
     /// Source files and their modules, for the call stack of `error`
@@ -148,6 +189,8 @@ impl Tc {
             qual_preds: Vec::new(),
             extra_sigs: HashMap::new(),
             con_fixity: HashMap::new(),
+            gnd_pending: Vec::new(),
+            scoped: Vec::new(),
             top_names: HashSet::new(),
             sources: None,
         };
@@ -467,7 +510,7 @@ impl Tc {
     pub fn ast_ty(&mut self, t: &ast::Type, tvs: &mut Vec<(String, Ty)>, bind_new: bool) -> Ty {
         match &t.kind {
             TypeKind::Var(v) => {
-                if let Some((_, ty)) = tvs.iter().find(|(n, _)| n == v) {
+                if let Some((_, ty)) = tvs.iter().rev().find(|(n, _)| n == v) {
                     return ty.clone();
                 }
                 if bind_new {
@@ -552,14 +595,34 @@ impl Tc {
                 }
                 self.ast_ty(b, tvs, bind_new)
             }
+            TypeKind::Kinded(b, _) => self.ast_ty(b, tvs, bind_new),
             TypeKind::Forall(vs, b) => {
+                // A nested `forall` (RankNTypes): a polymorphic argument
+                // or field.
+                let n0 = tvs.len();
+                let mut names = Vec::new();
                 for v in vs {
-                    if !tvs.iter().any(|(n, _)| n == &v.name) {
-                        let ty = Ty::Var(self.fresh_name(&format!("{}#", v.name)));
-                        tvs.push((v.name.clone(), ty));
-                    }
+                    let n = self.fresh_name(&format!("{}#", v.name));
+                    tvs.push((v.name.clone(), Ty::Var(n.clone())));
+                    names.push(n);
                 }
-                self.ast_ty(b, tvs, bind_new)
+                let saved = std::mem::take(&mut self.qual_preds);
+                let body = self.ast_ty(b, tvs, bind_new);
+                let preds = std::mem::replace(&mut self.qual_preds, saved);
+                if !preds.is_empty() {
+                    self.error(err(
+                        "E0001",
+                        t.span,
+                        "a class constraint under a nested `forall` is not supported",
+                    ));
+                }
+                // Variables first seen in the body stay in scope.
+                tvs.drain(n0..n0 + names.len());
+                if names.is_empty() {
+                    body
+                } else {
+                    Ty::Forall(names, Box::new(body))
+                }
             }
         }
     }
@@ -580,27 +643,77 @@ impl Tc {
             ));
             return None;
         }
-        if c.types.len() != 1 {
+        let n = self.classes[&class].vars.len();
+        if c.types.len() != n {
             self.error(err(
                 "E0001",
                 c.class.span,
-                "multi-parameter type classes are not supported",
+                format!(
+                    "the class `{}` takes {n} type argument{}, but the constraint has {}",
+                    short(&class),
+                    if n == 1 { "" } else { "s" },
+                    c.types.len()
+                ),
             ));
             return None;
         }
-        let t = self.ast_ty(&c.types[0], tvs, bind_new);
-        Some(Pred::new(&class, t))
+        let tys = c
+            .types
+            .iter()
+            .map(|t| self.ast_ty(t, tvs, bind_new))
+            .collect();
+        Some(Pred::new(&class, pack_class_tys(tys)))
+    }
+
+    /// A signature type: its outermost `forall` binds variables (that
+    /// shadow the scoped ones) instead of making a nested polymorphic type.
+    /// Returns the explicitly bound variables.
+    pub(crate) fn ast_sig_ty(
+        &mut self,
+        t: &ast::Type,
+        tvs: &mut Vec<(String, Ty)>,
+    ) -> (Ty, Vec<(String, Ty)>) {
+        match &t.kind {
+            TypeKind::Forall(vs, b) => {
+                let mut bound = Vec::new();
+                for v in vs {
+                    let ty = Ty::Var(self.fresh_name(&format!("{}#", v.name)));
+                    tvs.push((v.name.clone(), ty.clone()));
+                    bound.push((v.name.clone(), ty));
+                }
+                let (ty, more) = self.ast_sig_ty(b, tvs);
+                bound.extend(more);
+                (ty, bound)
+            }
+            TypeKind::Qual(ctx, b) => {
+                for c in ctx {
+                    if let Some(p) = self.constraint(c, tvs, true) {
+                        self.qual_preds.push(p);
+                    }
+                }
+                self.ast_sig_ty(b, tvs)
+            }
+            _ => (self.ast_ty(t, tvs, true), Vec::new()),
+        }
     }
 
     /// The scheme of a type signature.
     pub fn sig_scheme(&mut self, t: &ast::Type) -> Scheme {
-        let mut tvs = Vec::new();
+        self.sig_scheme_scoped(t).0
+    }
+
+    /// The scheme of a type signature and the type variables its explicit
+    /// `forall` brings into scope over the definition. Type variables
+    /// already in scope are not generalized.
+    pub(crate) fn sig_scheme_scoped(&mut self, t: &ast::Type) -> (Scheme, Vec<(String, Ty)>) {
+        let mut tvs = self.scoped.clone();
+        let n0 = tvs.len();
         let saved = std::mem::take(&mut self.qual_preds);
-        let ty = self.ast_ty(t, &mut tvs, true);
+        let (ty, bound) = self.ast_sig_ty(t, &mut tvs);
         let preds = std::mem::replace(&mut self.qual_preds, saved);
-        Scheme {
+        let s = Scheme {
             vars: tvs
-                .into_iter()
+                .drain(n0..)
                 .filter_map(|(_, t)| match t {
                     Ty::Var(v) => Some(v),
                     _ => None,
@@ -608,7 +721,8 @@ impl Tc {
                 .collect(),
             preds,
             ty,
-        }
+        };
+        (s, bound)
     }
 
     // ---- declarations ----
@@ -735,11 +849,15 @@ impl Tc {
                 strict,
             });
         }
-        // Kinds of the parameters from their uses.
+        // Kinds of the parameters from their signatures or their uses.
         let kinds: Vec<Kind> = dd
             .params
             .iter()
-            .map(|p| {
+            .enumerate()
+            .map(|(i, p)| {
+                if let Some(Some(k)) = dd.param_kinds.get(i) {
+                    return Kind::from_sig(k);
+                }
                 let mut k = Kind::Star;
                 for c in &tcons {
                     for f in &c.fields {
@@ -906,9 +1024,14 @@ impl Tc {
         }
         // Signatures are known up front.
         let mut sig_schemes: HashMap<String, Scheme> = HashMap::new();
+        let mut sig_scoped: HashMap<String, Vec<(String, Ty)>> = HashMap::new();
         for b in &binds {
             let s = match sigs.get(&b.name) {
-                Some((t, _)) => self.sig_scheme(t),
+                Some((t, _)) => {
+                    let (s, bound) = self.sig_scheme_scoped(t);
+                    sig_scoped.insert(b.name.clone(), bound);
+                    s
+                }
                 None => match self.extra_sigs.get(&b.name) {
                     Some(s) => s.clone(),
                     None => continue,
@@ -1092,9 +1215,14 @@ impl Tc {
                         .push((p.clone(), tast::Expr::Local(d.clone(), t.clone())));
                 }
                 let wstart = self.wanted.len();
+                let scoped_len = self.scoped.len();
+                if let Some(bound) = sig_scoped.get(&b.name) {
+                    self.scoped.extend(bound.iter().cloned());
+                }
                 self.level += 1;
                 let e = self.fun_bind(&b.clauses, &s.ty, b.span);
                 self.level -= 1;
+                self.scoped.truncate(scoped_len);
                 let new = self.wanted.split_off(wstart);
                 self.solve_sig(new, &s.vars);
                 self.givens.truncate(gstart);
@@ -1495,6 +1623,9 @@ impl Tc {
     // ---- expressions ----
 
     pub fn expr(&mut self, e: &ast::Expr, expected: &Ty) -> tast::Expr {
+        if let Ty::Forall(vs, body) = self.shallow(expected) {
+            return self.check_poly(e, &vs, &body);
+        }
         let before = self.errors.len();
         let (te, t) = self.infer(e, Some(expected));
         if self.errors.len() == before {
@@ -1505,6 +1636,48 @@ impl Tc {
             let _ = self.unify_raw(expected, &t);
         }
         te
+    }
+
+    /// Checks `e` against `forall vs. body` (RankNTypes): with the
+    /// variables rigid, as a local polymorphic binding.
+    fn check_poly(&mut self, e: &ast::Expr, vs: &[String], body: &Ty) -> tast::Expr {
+        let sk: Vec<String> = vs
+            .iter()
+            .map(|v| {
+                self.fresh_name(&format!(
+                    "{}#",
+                    short(v).trim_end_matches(|c: char| c == '#' || c.is_ascii_digit())
+                ))
+            })
+            .collect();
+        let sub: Vec<(String, Ty)> = vs
+            .iter()
+            .cloned()
+            .zip(sk.iter().map(|v| Ty::Var(v.clone())))
+            .collect();
+        let inner = body.subst(&sub);
+        let wstart = self.wanted.len();
+        self.level += 1;
+        let te = self.expr(e, &inner);
+        self.level -= 1;
+        let new = self.wanted.split_off(wstart);
+        self.solve_sig(new, &sk);
+        let name = self.fresh_name("$poly");
+        let tvs = sk
+            .iter()
+            .map(|v| (v.clone(), self.kind_in(v, &inner)))
+            .collect();
+        tast::Expr::Let(
+            vec![BindGroup::NonRec(tast::Bind {
+                name: name.clone(),
+                tvs,
+                ty: inner.clone(),
+                rhs: te,
+                span: e.span,
+                strict: false,
+            })],
+            Box::new(tast::Expr::Local(name, Ty::Forall(sk, Box::new(inner)))),
+        )
     }
 
     fn infer(&mut self, e: &ast::Expr, expected: Option<&Ty>) -> (tast::Expr, Ty) {
@@ -1802,7 +1975,17 @@ impl Tc {
         let name = q.text();
         if q.qual.is_none() {
             match self.locals.get(&name).cloned() {
-                Some(LocalKind::Mono(t)) => return (tast::Expr::Local(name, t.clone()), t),
+                Some(LocalKind::Mono(t)) => {
+                    // A polymorphic argument (RankNTypes) is instantiated
+                    // at each use.
+                    if let Ty::Forall(vs, b) = self.shallow(&t) {
+                        let ms: Vec<Ty> = vs.iter().map(|_| self.fresh()).collect();
+                        let sub: Vec<(String, Ty)> =
+                            vs.iter().cloned().zip(ms.iter().cloned()).collect();
+                        return (tast::Expr::Global(name, ms), b.subst(&sub));
+                    }
+                    return (tast::Expr::Local(name, t.clone()), t);
+                }
                 Some(LocalKind::Let(s)) => return self.let_ref(&name, &s, q.span),
                 None => {
                     self.error(err(
@@ -2665,6 +2848,10 @@ impl Tc {
             tast::Expr::App(f, a) => {
                 self.finish_expr(f);
                 self.finish_expr(a);
+            }
+            tast::Expr::Coerce(x, t) => {
+                *t = self.final_ty(t);
+                self.finish_expr(x);
             }
             tast::Expr::Lam(_, t, b) => {
                 *t = self.final_ty(t);

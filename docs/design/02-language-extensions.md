@@ -38,6 +38,8 @@ aCHC は前期と後期に分けて進める (ADR-025, ADR-027)。前期 (H1–H
 `BangPatterns`, `ScopedTypeVariables`, `LambdaCase`, `TupleSections`, `MultiWayIf`,
 `RankNTypes` (注釈必須), `MultiParamTypeClasses`, `FlexibleInstances`, `FlexibleContexts`,
 `GeneralizedNewtypeDeriving`, `KindSignatures`, `LinearTypes`, `Strict`, `StrictData`。
+型検査での扱いと制限 (多引数クラスの関数従属は H5、入れ子の `forall` は注釈から決まる型だけ) は
+[03-type-system.md](03-type-system.md) §7.2。
 
 **後期 (H5、CirkaLang v0.0.4 の後)** に追加する高度な型拡張 ([14-achc-advanced.md](14-achc-advanced.md) §2):
 `GADTs`, `ExistentialQuantification`, `TypeFamilies`, `DataKinds`, `PolyKinds`, `FunctionalDependencies`, `TypeOperators`,

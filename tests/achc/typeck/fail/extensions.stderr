@@ -1,0 +1,28 @@
+error[E0001]: the class `Convert` takes 2 type arguments, but the instance has 1
+  --> tests/achc/typeck/fail/extensions.hs:13:1
+   |
+13 | instance Convert Int where
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+error[E0608]: no instance for `Size Bool` arising from deriving `Size` for a newtype
+  --> tests/achc/typeck/fail/extensions.hs:16:36
+   |
+16 | newtype Flag = Flag Bool deriving (Size)
+   |                                    ^^^^
+   = help: the representation type must have the instance
+error[E0615]: cannot derive `Convert` for the newtype `Pair`: the class has several parameters
+  --> tests/achc/typeck/fail/extensions.hs:18:35
+   |
+18 | newtype Pair = Pair Int deriving (Convert)
+   |                                   ^^^^^^^
+error[E0608]: no instance for `Convert Char Bool`
+  --> tests/achc/typeck/fail/extensions.hs:21:5
+   |
+21 | c = convert 'c'
+   |     ^^^^^^^
+   = help: declare an instance, or derive it with a `deriving` clause
+error[E0604]: couldn't match expected type `a -> a` with actual type `Bool -> Bool`
+  --> tests/achc/typeck/fail/extensions.hs:30:13
+   |
+30 | bad = useId notId
+   |             ^^^^^
+   = note: `a` is a rigid type variable bound by a type signature

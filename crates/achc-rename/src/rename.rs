@@ -660,6 +660,7 @@ impl Renamer {
                     context,
                     name: dd.name.clone(),
                     params: dd.params.clone(),
+                    param_kinds: dd.param_kinds.clone(),
                     cons,
                     deriving,
                     span: dd.span,
@@ -673,6 +674,7 @@ impl Renamer {
                     context,
                     name: c.name.clone(),
                     params: c.params.clone(),
+                    param_kinds: c.param_kinds.clone(),
                     decls,
                     span: c.span,
                 })
@@ -1263,6 +1265,7 @@ impl Renamer {
                 Box::new(self.ty(b)),
             ),
             TypeKind::Forall(vs, b) => TypeKind::Forall(vs.clone(), Box::new(self.ty(b))),
+            TypeKind::Kinded(b, k) => TypeKind::Kinded(Box::new(self.ty(b)), k.clone()),
         };
         Type { kind, span: t.span }
     }

@@ -20,6 +20,22 @@ pub fn tuple_tc(n: usize) -> String {
     prim(&format!("({})", ",".repeat(n - 1)))
 }
 
+/// The hidden type constructor that packs the arguments of a
+/// multi-parameter class constraint `C a b` into the single type of a
+/// [`Pred`] (`C (MP2 a b)`). It never appears in the types of values.
+pub fn mp_tc(n: usize) -> String {
+    prim(&format!("#MP{n}"))
+}
+
+/// The arguments of a packed multi-parameter constraint type.
+pub fn mp_args(t: &Ty) -> Option<Vec<&Ty>> {
+    let (h, args) = t.spine();
+    match h {
+        Ty::Con(c) if c.starts_with("Cirka.Prim.#MP") => Some(args),
+        _ => None,
+    }
+}
+
 pub fn tuple_arity(name: &str) -> Option<usize> {
     let n = name.strip_prefix("Cirka.Prim.(")?.strip_suffix(')')?;
     if !n.is_empty() && n.chars().all(|c| c == ',') {
@@ -149,6 +165,9 @@ impl Pred {
 
     /// The type of a dictionary for this constraint.
     pub fn dict_ty(&self) -> Ty {
+        if let Some(args) = mp_args(&self.ty) {
+            return Ty::con(&self.class, args.into_iter().cloned().collect());
+        }
         Ty::App(
             Box::new(Ty::Con(self.class.clone())),
             Box::new(self.ty.clone()),
@@ -158,6 +177,18 @@ impl Pred {
 
 /// `C t` for diagnostics.
 pub fn show_pred(p: &Pred) -> String {
+    if let Some(args) = mp_args(&p.ty) {
+        let mut out = short(&p.class).to_string();
+        for a in args {
+            let t = show(a);
+            if t.contains(' ') && !t.starts_with('[') && !t.starts_with('(') {
+                let _ = write!(out, " ({t})");
+            } else {
+                let _ = write!(out, " {t}");
+            }
+        }
+        return out;
+    }
     let t = show(&p.ty);
     if t.contains(' ') && !t.starts_with('[') && !t.starts_with('(') {
         format!("{} ({t})", short(&p.class))
@@ -202,6 +233,23 @@ pub enum Kind {
 }
 
 impl Kind {
+    /// The number of arguments (`* -> * -> *` has 2).
+    pub fn args(&self) -> usize {
+        match self {
+            Kind::Star | Kind::Meta(_) => 0,
+            Kind::Arrow(_, r) => 1 + r.args(),
+        }
+    }
+
+    pub fn from_sig(k: &achc_syntax::ast::KindSig) -> Kind {
+        match k {
+            achc_syntax::ast::KindSig::Star => Kind::Star,
+            achc_syntax::ast::KindSig::Arrow(a, b) => {
+                Kind::Arrow(Box::new(Kind::from_sig(a)), Box::new(Kind::from_sig(b)))
+            }
+        }
+    }
+
     pub fn arity(n: usize) -> Kind {
         (0..n).fold(Kind::Star, |k, _| {
             Kind::Arrow(Box::new(Kind::Star), Box::new(k))
