@@ -491,6 +491,13 @@ impl<'m> Gen<'m> {
         );
         for (bi, body) in block_bodies.iter().enumerate() {
             let _ = writeln!(self.out, "{}:", bb_label(bi));
+            // A join block no jump reaches (e.g. after a `panic`) has no
+            // incoming values for its parameters: it is unreachable, and
+            // its body (which may drop them) is not emitted (BUG-0012).
+            if bi > 0 && !f.blocks[bi].params.is_empty() && !c.phis.contains_key(&bi) {
+                self.out.push_str("  unreachable\n");
+                continue;
+            }
             if let Some(inc) = c.phis.get(&bi) {
                 for (k, p) in f.blocks[bi].params.iter().enumerate() {
                     let parts: Vec<String> = inc
