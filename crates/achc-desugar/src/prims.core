@@ -12,6 +12,8 @@
 (data IO (a) :newtype (IO# (-> Unit# a)))
 ; A mutable reference (runtime MUTVAR) holding a value of type a.
 (data IORef (a) :newtype (IORef# Any))
+; A big integer (runtime BYTES in cirka-bigint's encoding), FEAT-0114.
+(data BigNat () :newtype (BigNat# Bytes))
 
 (extern cirka_write_char (Int#) Unit#)
 (extern cirka_write_bytes (Bytes) Unit#)
@@ -46,6 +48,19 @@
 (extern pow (Double# Double#) Double#)
 (extern cirka_f64_show_hs (Double#) Bytes)
 (extern cirka_parse_f64 (Bytes) Double#)
+(extern cirka_big_from_int (Int#) Bytes)
+(extern cirka_big_fits_int (Bytes) Int#)
+(extern cirka_big_to_int (Bytes) Int#)
+(extern cirka_big_to_double (Bytes) Double#)
+(extern cirka_big_from_double (Double#) Bytes)
+(extern cirka_big_op (Int# Bytes Bytes) Bytes)
+(extern cirka_big_cmp (Bytes Bytes) Int#)
+(extern cirka_big_show (Bytes) Bytes)
+(extern cirka_big_read (Bytes Int#) Bytes)
+(extern cirka_f32_round (Double#) Double#)
+(extern cirka_f32_show_hs (Double#) Bytes)
+(extern cirka_f64_bits (Double#) Int#)
+(extern cirka_f64_from_bits (Int#) Double#)
 
 ; ---- Int ----
 
@@ -375,3 +390,43 @@
 
 (def prim$seq (forall (a b) (-> a b b))
   (tlam (a b) (lam ((x a) (y b)) (case x (x1 a) b (_ y)))))
+
+; ---- Integer (FEAT-0114) ----
+
+(def prim$big_from_int (-> Int BigNat)
+  (lam ((a Int)) (case a (a1 Int) BigNat ((I# x) (cast (extern cirka_big_from_int x) BigNat)))))
+(def prim$big_fits_int (-> BigNat Bool)
+  (lam ((a BigNat)) (let! (b Bytes (cast a Bytes)) (prim$bool (extern cirka_big_fits_int b)))))
+(def prim$big_to_int (-> BigNat Int)
+  (lam ((a BigNat)) (let! (b Bytes (cast a Bytes)) (con I# () (extern cirka_big_to_int b)))))
+(def prim$big_to_double (-> BigNat Double)
+  (lam ((a BigNat)) (let! (b Bytes (cast a Bytes)) (con D# () (extern cirka_big_to_double b)))))
+(def prim$big_from_double (-> Double BigNat)
+  (lam ((a Double))
+    (case a (a1 Double) BigNat ((D# x) (cast (extern cirka_big_from_double x) BigNat)))))
+(def prim$big_op (-> Int BigNat BigNat BigNat)
+  (lam ((o Int) (a BigNat) (b BigNat))
+    (case o (o1 Int) BigNat
+      ((I# k) (let! (x Bytes (cast a Bytes))
+                (let! (y Bytes (cast b Bytes)) (cast (extern cirka_big_op k x y) BigNat)))))))
+(def prim$big_cmp (-> BigNat BigNat Int)
+  (lam ((a BigNat) (b BigNat))
+    (let! (x Bytes (cast a Bytes))
+      (let! (y Bytes (cast b Bytes)) (con I# () (extern cirka_big_cmp x y))))))
+(def prim$big_show (-> BigNat (List Char))
+  (lam ((a BigNat)) (let! (b Bytes (cast a Bytes)) (prim$unpack (extern cirka_big_show b)))))
+(def prim$big_read (-> (List Char) Int BigNat)
+  (lam ((s (List Char)) (n Int))
+    (case n (n1 Int) BigNat
+      ((I# k) (let! (b Bytes (prim$pack s)) (cast (extern cirka_big_read b k) BigNat))))))
+
+; ---- Float (a Double rounded to single precision) and Double bits ----
+
+(def prim$flt_round (-> Double Double)
+  (lam ((a Double)) (case a (a1 Double) Double ((D# x) (con D# () (extern cirka_f32_round x))))))
+(def prim$flt_show_hs (-> Double (List Char))
+  (lam ((a Double)) (case a (a1 Double) (List Char) ((D# x) (prim$unpack (extern cirka_f32_show_hs x))))))
+(def prim$dbl_bits (-> Double Int)
+  (lam ((a Double)) (case a (a1 Double) Int ((D# x) (con I# () (extern cirka_f64_bits x))))))
+(def prim$dbl_from_bits (-> Int Double)
+  (lam ((a Int)) (case a (a1 Int) Double ((I# x) (con D# () (extern cirka_f64_from_bits x))))))

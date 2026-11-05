@@ -4,8 +4,8 @@
 -- Monad / MonadFail, Semigroup / Monoid, Foldable / Traversable).
 -- `Prelude` re-exports GHC's selection of them; `Data.*` modules others.
 --
--- Until FEAT-0114, `Integer` is a synonym of the 64-bit `Int` and `Float`
--- one of `Double`. Internal helpers are named `cirka...`.
+-- `Integer` has any size (FEAT-0114). Internal helpers are named
+-- `cirka...`.
 module Cirka.Base
   ( module Cirka.Base
   , Int, Char, Double, IO, Bool(..)
@@ -30,9 +30,18 @@ infixr 1 =<<
 infixr 0 $, $!, `seq`
 
 type String = [Char]
-type Integer = Int
-type Float = Double
 type Rational = Ratio Integer
+
+-- | Integers of any size. `IS` holds the values that fit in an `Int`, `IP`
+-- the others (a runtime big integer): the representation is canonical.
+data Integer = IS !Int | IP !BigNat
+
+-- | Single precision: a `Double` rounded to single precision after every
+-- operation (exact for + - * / and sqrt).
+newtype Float = CirkaFloat Double
+
+-- | Unsigned 64-bit words, stored as the bit pattern of an `Int`.
+newtype Word = CirkaWord Int
 type ShowS = String -> String
 type ReadS a = String -> [(a, String)]
 type FilePath = String
@@ -405,9 +414,32 @@ class (Real a, Fractional a) => RealFrac a where
   floor x = let nr = properFraction x in if snd nr < 0 then fst nr - 1 else fst nr
 
 class (RealFrac a, Floating a) => RealFloat a where
+  floatRadix :: a -> Integer
   floatDigits :: a -> Int
-  isNaN, isInfinite, isNegativeZero, isIEEE :: a -> Bool
+  floatRange :: a -> (Int, Int)
+  decodeFloat :: a -> (Integer, Int)
+  encodeFloat :: Integer -> Int -> a
+  exponent :: a -> Int
+  significand :: a -> a
+  scaleFloat :: Int -> a -> a
+  isNaN, isInfinite, isDenormalized, isNegativeZero, isIEEE :: a -> Bool
   atan2 :: a -> a -> a
+  floatRadix _ = 2
+  exponent x = case decodeFloat x of
+    (m, n) -> if m == 0 then 0 else n + floatDigits x
+  significand x = case decodeFloat x of
+    (m, _) -> encodeFloat m (negate (floatDigits x))
+  scaleFloat k x = if k == 0 || x == 0 || isNaN x || isInfinite x then x else
+    case decodeFloat x of (m, n) -> encodeFloat m (n + k)
+  atan2 y x
+    | x > 0 = atan (y / x)
+    | x == 0 && y > 0 = pi / 2
+    | x < 0 && y > 0 = pi + atan (y / x)
+    | (x <= 0 && y < 0) || (x < 0 && isNegativeZero y) || (isNegativeZero x && isNegativeZero y) =
+        negate (atan2 (negate y) x)
+    | y == 0 && (x < 0 || isNegativeZero x) = pi
+    | x == 0 && y == 0 = y
+    | otherwise = x + y
 
 instance Num Int where
   (+) = primIntAdd
@@ -416,10 +448,10 @@ instance Num Int where
   negate = primIntNeg
   abs x = if primIntLt x 0 then primIntNeg x else x
   signum x = if primIntLt x 0 then negate 1 else if primIntEq x 0 then 0 else 1
-  fromInteger x = x
+  fromInteger = cirkaIntegerToInt
 
 instance Real Int where
-  toRational x = x :% 1
+  toRational x = IS x :% 1
 
 instance Integral Int where
   quot = primIntQuot
@@ -433,7 +465,7 @@ instance Integral Int where
     in if (r < 0 && y > 0) || (r > 0 && y < 0) then r + y else r
   quotRem x y = (primIntQuot x y, primIntRem x y)
   divMod x y = (div x y, mod x y)
-  toInteger x = x
+  toInteger = IS
 
 instance Num Double where
   (+) = primDoubleAdd
@@ -442,7 +474,7 @@ instance Num Double where
   negate = primDoubleNeg
   abs x = if x < 0 then negate x else x
   signum x = if x < 0 then negate 1 else if x > 0 then 1 else x
-  fromInteger = primIntToDouble
+  fromInteger = cirkaIntegerToDouble
 
 instance Real Double where
   toRational x = cirkaDoubleToRational x
@@ -450,7 +482,7 @@ instance Real Double where
 instance Fractional Double where
   (/) = primDoubleDiv
   recip x = 1 / x
-  fromRational (n :% d) = primDoubleDiv (primIntToDouble n) (primIntToDouble d)
+  fromRational (n :% d) = cirkaRationalToDouble n d
 
 instance Floating Double where
   pi = 3.141592653589793
@@ -470,25 +502,354 @@ instance Floating Double where
 
 instance RealFrac Double where
   properFraction x =
-    let n = primDoubleToInt x
-    in (fromIntegral n, x - primIntToDouble n)
-  truncate x = fromIntegral (primDoubleToInt x)
+    let n = cirkaDoubleTruncate x
+    in (fromInteger n, x - cirkaIntegerToDouble n)
+  truncate x = fromInteger (cirkaDoubleTruncate x)
 
 instance RealFloat Double where
   floatDigits _ = 53
+  floatRange _ = (negate 1021, 1024)
+  decodeFloat = cirkaDecodeDouble
+  encodeFloat m e = cirkaEncodeDouble m e
   isNaN x = not (primDoubleEq x x)
   isInfinite x = x == 1 / 0 || x == negate 1 / 0
-  isNegativeZero x = x == 0 && 1 / x < 0
+  isDenormalized x = x /= 0 && abs x < 2.2250738585072014e-308
+  isNegativeZero x = x == 0 && primIntLt (primDoubleBits x) 0
   isIEEE _ = True
   atan2 = primDoubleAtan2
 
-cirkaDoubleToRational :: Double -> Rational
-cirkaDoubleToRational x = go x 1
-  where go y d = if primIntToDouble (primDoubleToInt y) == y || d > 1000000000000000
-                   then reduce (primDoubleToInt y) d
-                   else go (y * 10) (d * 10)
+-- ---- Integer (FEAT-0114) ----
 
--- Rationals (with 64-bit `Integer` until FEAT-0114).
+cirkaIntegerLit :: Int -> Integer
+cirkaIntegerLit = IS
+
+-- | A literal beyond `Int` (decimal digits).
+cirkaIntegerLitBig :: [Char] -> Integer
+cirkaIntegerLitBig ('-' : s) = cirkaBigToInteger (primBigRead s 1)
+cirkaIntegerLitBig s = cirkaBigToInteger (primBigRead s 0)
+
+cirkaBig :: Integer -> BigNat
+cirkaBig (IS i) = primBigFromInt i
+cirkaBig (IP b) = b
+
+cirkaBigToInteger :: BigNat -> Integer
+cirkaBigToInteger b = if primBigFitsInt b then IS (primBigToInt b) else IP b
+
+-- | 0 add, 1 sub, 2 mul, 3 quot, 4 rem on big integers.
+cirkaBigOp :: Int -> Integer -> Integer -> Integer
+cirkaBigOp op x y = cirkaBigToInteger (primBigOp op (cirkaBig x) (cirkaBig y))
+
+cirkaMinInt :: Int
+cirkaMinInt = primIntSub (primIntNeg 9223372036854775807) 1
+
+cirkaAddOverflows, cirkaSubOverflows, cirkaMulOverflows :: Int -> Int -> Int -> Bool
+cirkaAddOverflows a b r =
+  if primIntGe a 0 then primIntGe b 0 && primIntLt r 0 else primIntLt b 0 && primIntGe r 0
+cirkaSubOverflows a b r =
+  if primIntGe a 0 then primIntLt b 0 && primIntLt r 0 else primIntGe b 0 && primIntGe r 0
+cirkaMulOverflows a b r =
+  primIntNe a 0
+    && ((primIntEq a (primIntNeg 1) && primIntEq b cirkaMinInt) || primIntNe (primIntQuot r a) b)
+
+cirkaIntegerToInt :: Integer -> Int
+cirkaIntegerToInt (IS i) = i
+cirkaIntegerToInt (IP b) = primBigToInt b
+
+cirkaIntegerToDouble :: Integer -> Double
+cirkaIntegerToDouble (IS i) = primIntToDouble i
+cirkaIntegerToDouble (IP b) = primBigToDouble b
+
+cirkaDivZero :: a
+cirkaDivZero = errorWithoutStackTrace "divide by zero"
+
+instance Eq Integer where
+  IS a == IS b = primIntEq a b
+  IP a == IP b = primIntEq (primBigCmp a b) 0
+  _ == _ = False
+
+instance Ord Integer where
+  compare (IS a) (IS b) = compare a b
+  compare x y = compare (primBigCmp (cirkaBig x) (cirkaBig y)) 0
+  IS a < IS b = primIntLt a b
+  x < y = compare x y == LT
+  IS a <= IS b = primIntLe a b
+  x <= y = compare x y /= GT
+  IS a > IS b = primIntGt a b
+  x > y = compare x y == GT
+  IS a >= IS b = primIntGe a b
+  x >= y = compare x y /= LT
+
+instance Num Integer where
+  IS a + IS b = let r = primIntAdd a b in
+    if cirkaAddOverflows a b r then cirkaBigOp 0 (IS a) (IS b) else IS r
+  x + y = cirkaBigOp 0 x y
+  IS a - IS b = let r = primIntSub a b in
+    if cirkaSubOverflows a b r then cirkaBigOp 1 (IS a) (IS b) else IS r
+  x - y = cirkaBigOp 1 x y
+  IS a * IS b = let r = primIntMul a b in
+    if cirkaMulOverflows a b r then cirkaBigOp 2 (IS a) (IS b) else IS r
+  x * y = cirkaBigOp 2 x y
+  negate (IS a) = if primIntEq a cirkaMinInt then cirkaBigOp 1 (IS 0) (IS a) else IS (primIntNeg a)
+  negate x = cirkaBigOp 1 (IS 0) x
+  abs x = if x < IS 0 then negate x else x
+  signum (IS a) = IS (signum a)
+  signum (IP b) = IS (primBigCmp b (primBigFromInt 0))
+  fromInteger x = x
+
+instance Real Integer where
+  toRational x = x :% 1
+
+instance Enum Integer where
+  succ x = x + 1
+  pred x = x - 1
+  toEnum = IS
+  fromEnum = cirkaIntegerToInt
+  enumFrom x = x : enumFrom (x + 1)
+  enumFromThen x y = x : enumFromThen y (y + y - x)
+  enumFromTo x lim = if x > lim then [] else x : enumFromTo (x + 1) lim
+  enumFromThenTo x y lim
+    | y >= x = if x > lim then [] else x : enumFromThenTo y (y + y - x) lim
+    | otherwise = if x < lim then [] else x : enumFromThenTo y (y + y - x) lim
+
+instance Integral Integer where
+  quot (IS a) (IS b)
+    | primIntEq b 0 = cirkaDivZero
+    | primIntEq b (primIntNeg 1) = negate (IS a)
+    | otherwise = IS (primIntQuot a b)
+  quot x y = if y == IS 0 then cirkaDivZero else cirkaBigOp 3 x y
+  rem (IS a) (IS b)
+    | primIntEq b 0 = cirkaDivZero
+    | primIntEq b (primIntNeg 1) = IS 0
+    | otherwise = IS (primIntRem a b)
+  rem x y = if y == IS 0 then cirkaDivZero else cirkaBigOp 4 x y
+  quotRem x y = (quot x y, rem x y)
+  div x y = let q = quot x y
+                r = rem x y
+            in if (r < IS 0 && y > IS 0) || (r > IS 0 && y < IS 0) then q - IS 1 else q
+  mod x y = let r = rem x y
+            in if (r < IS 0 && y > IS 0) || (r > IS 0 && y < IS 0) then r + y else r
+  divMod x y = (div x y, mod x y)
+  toInteger x = x
+
+-- | `x` truncated toward zero.
+cirkaDoubleTruncate :: Double -> Integer
+cirkaDoubleTruncate x =
+  if x > negate 9.2e18 && x < 9.2e18 then IS (primDoubleToInt x)
+  else cirkaBigToInteger (primBigFromDouble x)
+
+-- | GHC's `decodeFloat` for Double: mantissa (53 bits) and exponent.
+cirkaDecodeDouble :: Double -> (Integer, Int)
+cirkaDecodeDouble x =
+  let bits = primDoubleBits x
+      neg = primIntLt bits 0
+      b = if neg then primIntSub bits cirkaMinInt else bits
+      ex = primIntQuot b 4503599627370496
+      fr = primIntRem b 4503599627370496
+      m = if primIntEq ex 0 then fr else primIntAdd fr 4503599627370496
+      e = if primIntEq ex 0 then negate 1074 else primIntSub ex 1075
+  in if primIntEq m 0 then (IS 0, 0) else (IS (if neg then primIntNeg m else m), e)
+
+-- | `m * 2^e`, correctly rounded.
+cirkaEncodeDouble :: Integer -> Int -> Double
+cirkaEncodeDouble m e =
+  if e >= 0 then cirkaIntegerToDouble (m * 2 ^ e)
+  else cirkaRationalToDouble m (2 ^ negate e)
+
+cirkaDoubleToRational :: Double -> Rational
+cirkaDoubleToRational x = case cirkaDecodeDouble x of
+  (m, e) -> if e >= 0 then (m * 2 ^ e) :% 1 else reduce m (2 ^ negate e)
+
+-- | floor (log2 n) for n > 0.
+cirkaILog2 :: Integer -> Int
+cirkaILog2 (IS i) = go i 0
+  where go k acc = if primIntLt k 2 then acc else go (primIntQuot k 2) (primIntAdd acc 1)
+cirkaILog2 x = 62 + cirkaILog2 (x `quot` 4611686018427387904)
+
+-- | n / d correctly rounded to the nearest Double (ties to even).
+cirkaRationalToDouble :: Integer -> Integer -> Double
+cirkaRationalToDouble n d
+  | d < 0 = cirkaRationalToDouble (negate n) (negate d)
+  | d == 0 = if n > 0 then 1 / 0 else if n < 0 then negate 1 / 0 else 0 / 0
+  | n == 0 = 0
+  | n < 0 = negate (cirkaPosRatioToDouble (negate n) d)
+  | otherwise = cirkaPosRatioToDouble n d
+
+cirkaPosRatioToDouble :: Integer -> Integer -> Double
+cirkaPosRatioToDouble n d =
+  let k = cirkaILog2 n - cirkaILog2 d
+      -- q = n / (d * 2^e) in [2^52, 2^53), fewer bits for subnormals.
+      quotAt e = if e >= 0 then quotRem n (d * 2 ^ e) else quotRem (n * 2 ^ negate e) d
+      denAt e = if e >= 0 then d * 2 ^ e else d
+      e0 = max (k - 53) (negate 1074)
+      e1 = if fst (quotAt e0) >= 9007199254740992 then e0 + 1 else e0
+      qr = quotAt e1
+      q = fst qr
+      r2 = 2 * snd qr
+      den = denAt e1
+      q' = if r2 > den || (r2 == den && odd q) then q + 1 else q
+  in cirkaMakeDouble (cirkaIntegerToInt q') e1
+
+-- | The double m * 2^e for 0 < m <= 2^53 (normal when m >= 2^52, else the
+-- subnormal at e = -1074).
+cirkaMakeDouble :: Int -> Int -> Double
+cirkaMakeDouble m e
+  | primIntEq m 9007199254740992 = cirkaMakeDouble 4503599627370496 (primIntAdd e 1)
+  | primIntLt m 4503599627370496 = primDoubleFromBits m
+  | primIntGe (primIntAdd e 1075) 2047 = 1 / 0
+  | otherwise =
+      primDoubleFromBits (primIntAdd (primIntMul (primIntAdd e 1075) 4503599627370496)
+                                     (primIntSub m 4503599627370496))
+
+-- ---- Float (FEAT-0114) ----
+
+cirkaF :: Double -> Float
+cirkaF x = CirkaFloat (primFloatRound x)
+
+cirkaD :: Float -> Double
+cirkaD (CirkaFloat x) = x
+
+instance Eq Float where
+  CirkaFloat a == CirkaFloat b = primDoubleEq a b
+
+instance Ord Float where
+  compare (CirkaFloat a) (CirkaFloat b) = compare a b
+  CirkaFloat a < CirkaFloat b = primDoubleLt a b
+  CirkaFloat a <= CirkaFloat b = primDoubleLe a b
+  CirkaFloat a > CirkaFloat b = primDoubleLt b a
+  CirkaFloat a >= CirkaFloat b = primDoubleLe b a
+
+instance Num Float where
+  CirkaFloat a + CirkaFloat b = cirkaF (primDoubleAdd a b)
+  CirkaFloat a - CirkaFloat b = cirkaF (primDoubleSub a b)
+  CirkaFloat a * CirkaFloat b = cirkaF (primDoubleMul a b)
+  negate (CirkaFloat a) = CirkaFloat (primDoubleNeg a)
+  abs (CirkaFloat a) = CirkaFloat (abs a)
+  signum (CirkaFloat a) = CirkaFloat (signum a)
+  fromInteger n = cirkaF (cirkaIntegerToDouble n)
+
+instance Real Float where
+  toRational (CirkaFloat a) = cirkaDoubleToRational a
+
+instance Fractional Float where
+  CirkaFloat a / CirkaFloat b = cirkaF (primDoubleDiv a b)
+  fromRational (n :% d) = cirkaF (cirkaRationalToDouble n d)
+
+instance Floating Float where
+  pi = cirkaF pi
+  exp = cirkaLiftF exp
+  log = cirkaLiftF log
+  sqrt = cirkaLiftF sqrt
+  CirkaFloat a ** CirkaFloat b = cirkaF (a ** b)
+  logBase (CirkaFloat a) (CirkaFloat b) = cirkaF (logBase a b)
+  sin = cirkaLiftF sin
+  cos = cirkaLiftF cos
+  tan = cirkaLiftF tan
+  asin = cirkaLiftF asin
+  acos = cirkaLiftF acos
+  atan = cirkaLiftF atan
+  sinh = cirkaLiftF sinh
+  cosh = cirkaLiftF cosh
+  tanh = cirkaLiftF tanh
+  asinh = cirkaLiftF asinh
+  acosh = cirkaLiftF acosh
+  atanh = cirkaLiftF atanh
+
+cirkaLiftF :: (Double -> Double) -> Float -> Float
+cirkaLiftF f (CirkaFloat a) = cirkaF (f a)
+
+instance RealFrac Float where
+  properFraction (CirkaFloat a) = case properFraction a of (n, r) -> (n, CirkaFloat r)
+  truncate (CirkaFloat a) = truncate a
+
+instance RealFloat Float where
+  floatDigits _ = 24
+  floatRange _ = (negate 125, 128)
+  decodeFloat (CirkaFloat a) = case cirkaDecodeDouble a of
+    (m, e) -> if m == 0 then (0, 0) else cirkaNormFloat m e
+  encodeFloat m e = cirkaF (cirkaEncodeDouble m e)
+  isNaN (CirkaFloat a) = isNaN a
+  isInfinite (CirkaFloat a) = isInfinite a
+  isDenormalized (CirkaFloat a) = a /= 0 && abs a < 1.1754943508222875e-38
+  isNegativeZero (CirkaFloat a) = isNegativeZero a
+  isIEEE _ = True
+  atan2 (CirkaFloat a) (CirkaFloat b) = cirkaF (atan2 a b)
+
+-- | A Double's mantissa and exponent as 24-bit ones (the value is a Float).
+cirkaNormFloat :: Integer -> Int -> (Integer, Int)
+cirkaNormFloat m e =
+  if abs m >= 16777216 then cirkaNormFloat (m `quot` 2) (e + 1)
+  else if e < negate 149 then cirkaNormFloat (m `quot` 2) (e + 1) else (m, e)
+
+instance Enum Float where
+  succ x = x + 1
+  pred x = x - 1
+  toEnum n = cirkaF (primIntToDouble n)
+  fromEnum (CirkaFloat a) = primDoubleToInt a
+  enumFrom x = x : enumFrom (x + 1)
+  enumFromThen x y = x : enumFromThen y (y + y - x)
+  enumFromTo x lim = takeWhile (<= lim + 1 / 2) (enumFrom x)
+  enumFromThenTo x y lim
+    | y >= x = takeWhile (<= lim + (y - x) / 2) (enumFromThen x y)
+    | otherwise = takeWhile (>= lim + (y - x) / 2) (enumFromThen x y)
+
+-- ---- Word (FEAT-0114) ----
+
+-- | Unsigned less-than on the bit patterns.
+cirkaWordLt :: Int -> Int -> Bool
+cirkaWordLt a b =
+  if primIntGe a 0 then (if primIntGe b 0 then primIntLt a b else True)
+  else (if primIntGe b 0 then False else primIntLt a b)
+
+instance Eq Word where
+  CirkaWord a == CirkaWord b = primIntEq a b
+
+instance Ord Word where
+  compare (CirkaWord a) (CirkaWord b)
+    | primIntEq a b = EQ
+    | cirkaWordLt a b = LT
+    | otherwise = GT
+
+instance Num Word where
+  CirkaWord a + CirkaWord b = CirkaWord (primIntAdd a b)
+  CirkaWord a - CirkaWord b = CirkaWord (primIntSub a b)
+  CirkaWord a * CirkaWord b = CirkaWord (primIntMul a b)
+  negate (CirkaWord a) = CirkaWord (primIntNeg a)
+  abs x = x
+  signum (CirkaWord a) = CirkaWord (if primIntEq a 0 then 0 else 1)
+  fromInteger n = CirkaWord (cirkaIntegerToInt n)
+
+instance Real Word where
+  toRational w = toInteger w :% 1
+
+instance Bounded Word where
+  minBound = CirkaWord 0
+  maxBound = CirkaWord (primIntNeg 1)
+
+instance Enum Word where
+  succ x = x + 1
+  pred x = x - 1
+  toEnum n = CirkaWord n
+  fromEnum (CirkaWord a) = a
+  enumFrom x = enumFromTo x maxBound
+  enumFromTo x lim = if x > lim then [] else x : (if x == lim then [] else enumFromTo (x + 1) lim)
+  enumFromThenTo x y lim = map fromInteger (enumFromThenTo (toInteger x) (toInteger y) (toInteger lim))
+
+instance Integral Word where
+  quotRem x y = (quot x y, rem x y)
+  quot (CirkaWord a) (CirkaWord b)
+    | primIntEq b 0 = cirkaDivZero
+    | primIntGe a 0 && primIntGe b 0 = CirkaWord (primIntQuot a b)
+    | otherwise = fromInteger (toInteger (CirkaWord a) `quot` toInteger (CirkaWord b))
+  rem (CirkaWord a) (CirkaWord b)
+    | primIntEq b 0 = cirkaDivZero
+    | primIntGe a 0 && primIntGe b 0 = CirkaWord (primIntRem a b)
+    | otherwise = fromInteger (toInteger (CirkaWord a) `rem` toInteger (CirkaWord b))
+  div = quot
+  mod = rem
+  divMod x y = (quot x y, rem x y)
+  toInteger (CirkaWord a) = if primIntGe a 0 then IS a else IS a + 18446744073709551616
+
+-- Rationals.
 
 instance Eq a => Eq (Ratio a) where
   (a :% b) == (c :% d) = a == c && b == d
@@ -1113,6 +1474,19 @@ instance Show Int where
 instance Show Double where
   showsPrec p x = showParen (p > 6 && (x < 0 || isNegativeZero x)) (showString (primShowDoubleHs x))
 
+instance Show Float where
+  showsPrec p (CirkaFloat x) =
+    showParen (p > 6 && (x < 0 || isNegativeZero x)) (showString (primShowFloatHs x))
+
+instance Show Integer where
+  showsPrec p (IS n) = showsPrec p n
+  showsPrec p (IP b) = let s = primBigShow b in
+    if p > 6 && primIntLt (primBigCmp b (primBigFromInt 0)) 0 then showParen True (showString s)
+    else showString s
+
+instance Show Word where
+  showsPrec _ w = shows (toInteger w)
+
 instance Show Bool where
   showsPrec _ True = showString "True"
   showsPrec _ False = showString "False"
@@ -1256,7 +1630,7 @@ cirkaLexLitChar "" = []
 cirkaReadDec :: Num a => ReadS a
 cirkaReadDec s = case span cirkaIsDigit s of
   ([], _) -> []
-  (ds, r) -> [(cirkaFoldlList (\n d -> n * 10 + fromInteger (primCharOrd d - 48)) 0 ds, r)]
+  (ds, r) -> [(cirkaFoldlList (\n d -> n * 10 + fromInteger (IS (primCharOrd d - 48))) 0 ds, r)]
 
 -- | `readSigned` of the Haskell 2010 report (the precedence is ignored).
 cirkaReadSigned :: Num a => ReadS a -> Int -> ReadS a
@@ -1266,6 +1640,23 @@ cirkaReadSigned readPos _ = readParen False read'
 
 instance Read Int where
   readsPrec = cirkaReadSigned cirkaReadDec
+
+instance Read Integer where
+  readsPrec = cirkaReadSigned cirkaReadInteger
+
+cirkaReadInteger :: ReadS Integer
+cirkaReadInteger s = case span cirkaIsDigit s of
+  ([], _) -> []
+  (ds, r) -> [(if length ds <= 18 then IS (cirkaDigitsToInt ds) else cirkaBigToInteger (primBigRead ds 0), r)]
+
+cirkaDigitsToInt :: [Char] -> Int
+cirkaDigitsToInt = cirkaFoldlList (\n d -> primIntAdd (primIntMul n 10) (primIntSub (primCharOrd d) 48)) 0
+
+instance Read Word where
+  readsPrec p s = [(fromInteger n, t) | (n, t) <- readsPrec p s]
+
+instance Read Float where
+  readsPrec p s = [(cirkaF x, t) | (x, t) <- readsPrec p s]
 
 instance Read Double where
   readsPrec = cirkaReadSigned readD

@@ -8,6 +8,9 @@ use std::fmt::Write;
 #[derive(Clone, Debug, PartialEq)]
 pub enum Lit {
     Int(i64),
+    /// An integer literal above `i64::MAX` (only as an overloaded literal;
+    /// resolved by the type checker).
+    BigInt(u128),
     Double(f64),
     Char(char),
     /// A string literal of type `String` (`[Char]`).
@@ -224,6 +227,7 @@ fn print_group(g: &BindGroup, n: usize, s: &mut String) {
 fn lit(l: &Lit) -> String {
     match l {
         Lit::Int(n) => n.to_string(),
+        Lit::BigInt(n) => n.to_string(),
         Lit::Double(x) => format!("{x:?}"),
         Lit::Char(c) => format!("{c:?}"),
         Lit::Str(t) => format!("{t:?}"),

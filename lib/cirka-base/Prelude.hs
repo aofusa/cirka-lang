@@ -15,7 +15,7 @@ module Prelude
   , Enum(succ, pred, toEnum, fromEnum, enumFrom, enumFromThen, enumFromTo, enumFromThenTo)
   , Bounded(minBound, maxBound)
     -- * Numbers
-  , Int, Integer, Float, Double, Rational
+  , Int, Integer, Float, Double, Rational, Word
   , Num((+), (-), (*), negate, abs, signum, fromInteger)
   , Real(toRational)
   , Integral(quot, rem, div, mod, quotRem, divMod, toInteger)
@@ -23,7 +23,9 @@ module Prelude
   , Floating(pi, exp, log, sqrt, (**), logBase, sin, cos, tan, asin, acos, atan,
              sinh, cosh, tanh, asinh, acosh, atanh)
   , RealFrac(properFraction, truncate, round, ceiling, floor)
-  , RealFloat(floatDigits, isNaN, isInfinite, isNegativeZero, isIEEE, atan2)
+  , RealFloat(floatRadix, floatDigits, floatRange, decodeFloat, encodeFloat, exponent,
+              significand, scaleFloat, isNaN, isInfinite, isDenormalized,
+              isNegativeZero, isIEEE, atan2)
   , subtract, even, odd, gcd, lcm, (^), (^^), fromIntegral, realToFrac
     -- * Semigroups, monoids, functors and monads
   , Semigroup((<>))

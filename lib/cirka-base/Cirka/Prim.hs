@@ -9,6 +9,7 @@ data Char
 data Double
 data IO a
 data IORef a
+data BigNat
 data Bool = False | True
 
 foreign import prim "int_add" primIntAdd :: Int -> Int -> Int
@@ -76,3 +77,22 @@ foreign import prim "get_arg" primGetArg :: Int -> IO [Char]
 
 foreign import prim "error" primError :: [Char] -> a
 foreign import prim "seq" primSeq :: a -> b -> b
+
+-- Integer (FEAT-0114): big integers in the runtime (cirka-bigint).
+foreign import prim "big_from_int" primBigFromInt :: Int -> BigNat
+foreign import prim "big_fits_int" primBigFitsInt :: BigNat -> Bool
+foreign import prim "big_to_int" primBigToInt :: BigNat -> Int
+foreign import prim "big_to_double" primBigToDouble :: BigNat -> Double
+foreign import prim "big_from_double" primBigFromDouble :: Double -> BigNat
+-- 0 add, 1 sub, 2 mul, 3 quot, 4 rem (the divisor is not zero).
+foreign import prim "big_op" primBigOp :: Int -> BigNat -> BigNat -> BigNat
+foreign import prim "big_cmp" primBigCmp :: BigNat -> BigNat -> Int
+foreign import prim "big_show" primBigShow :: BigNat -> [Char]
+-- Decimal digits (checked by the caller), negated when the flag is 1.
+foreign import prim "big_read" primBigRead :: [Char] -> Int -> BigNat
+
+-- Float as a Double rounded to single precision; Double bits.
+foreign import prim "flt_round" primFloatRound :: Double -> Double
+foreign import prim "flt_show_hs" primShowFloatHs :: Double -> [Char]
+foreign import prim "dbl_bits" primDoubleBits :: Double -> Int
+foreign import prim "dbl_from_bits" primDoubleFromBits :: Int -> Double

@@ -361,6 +361,7 @@ impl Ds {
                     | "Cirka.Prim.Bytes"
                     | "Cirka.Prim.IO"
                     | "Cirka.Prim.IORef"
+                    | "Cirka.Prim.BigNat"
                     | "Cirka.Prim.Bool"
             )
         };
@@ -626,6 +627,10 @@ impl Ds {
     fn lit(&mut self, l: &tast::Lit) -> c::Expr {
         match l {
             tast::Lit::Int(n) => c::Expr::Con("I#".into(), Vec::new(), vec![c::Expr::int(*n)]),
+            // Resolved by the type checker; wraps like `fromInteger` to Int.
+            tast::Lit::BigInt(n) => {
+                c::Expr::Con("I#".into(), Vec::new(), vec![c::Expr::int(*n as i64)])
+            }
             tast::Lit::Char(ch) => {
                 c::Expr::Con("C#".into(), Vec::new(), vec![c::Expr::int(*ch as i64)])
             }

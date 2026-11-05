@@ -49,7 +49,14 @@ lib/cirka-base/
   内部の補助関数は `cirka` で始める。
 - `Prelude.hs` は GHC の Prelude と同じ名前だけを `Cirka.Base` から再エクスポートする (`toList` などは出さない)。
   `Data.*` モジュール (FEAT-0111) は `Cirka.Base` から必要なものを再エクスポートする。
-- `Integer` は FEAT-0114 まで `Int` (64 ビット) の別名、`Float` は `Double` の別名。`Rational` は `Ratio Int`。
+- 数値 (FEAT-0114): `Integer` は `data Integer = IS !Int | IP !BigNat` (`Int` に収まる値は必ず `IS`、収まらない値だけ `IP`
+  という正規形)。小さい値の演算は `Int` の命令とオーバーフロー検査だけで済み、溢れたときだけランタイムの多倍長演算を呼ぶ。
+  `BigNat` は `Bytes` の newtype で、中身は `cirka-bigint` の符号化 (符号 1 バイト + u32 の limb のリトルエンディアン)。
+  `Float` は `newtype Float = CirkaFloat Double` で、各演算の後に単精度へ丸める (`cirka_f32_round`)。`show` はランタイムの
+  `cirka_f32_show_hs` が単精度の最短表現を出す。`Word` は `newtype Word = CirkaWord Int` (比較・除算・`show` を符号なしで行う)。
+  `Rational` は `Ratio Integer`。整数リテラルは `fromInteger` に `Integer` を渡し (`Int` に収まらないものは
+  `cirkaIntegerLitBig` が 10 進文字列から作る)、小数リテラルは最短 10 進表現をそのまま既約分数にして `fromRational` に渡す。
+  既定化 (defaulting) は GHC と同じく `Integer` → `Double`。`Data.Ratio`・`Data.Word` (`Word` のみ) を置く。
 - 基本モジュール (FEAT-0111): `Data.{List,Char,Maybe,Either,Function,Ord,Tuple,Foldable,Traversable,Functor}`、
   `Control.{Monad,Applicative}`、`Text.Read`、`System.IO` (標準入出力とハンドル名のみ。ファイルとハンドル操作・`IORef` は FEAT-0113)。
   GHC と同じ名前を同じ実体として再エクスポートするため、複数のモジュールにある関数 (`foldl'`・`find`・`void`・`forM` など) は
@@ -66,9 +73,9 @@ lib/cirka-base/
 | `Int`, `Word`, `IntN`, `WordN` | LLVM の整数命令 (オーバーフローは GHC と同じくラップ) |
 | `Double`, `Float` | LLVM の浮動小数命令。`sqrt` 等は LLVM 組み込み (`llvm.sqrt.f64`) |
 | `sin`, `exp`, `log`, … | **glibc の libm** を FFI で呼ぶ |
-| `Integer`, `Natural` | ランタイムの多倍長整数 (Rust で自前実装、小さい値は非ボックス fast path) |
+| `Integer`, `Natural` | ランタイムの多倍長整数 (Rust で自前実装の `cirka-bigint`、小さい値は `IS !Int` の fast path)。`Natural` は未実装 |
 | `Rational` | `Integer` の上に base と同じ Haskell 実装 |
-| `showFloat`/`read` | GHC と同じ出力にするため、base の Haskell 実装 (Dragon4 系) を移植 |
+| `showFloat`/`read` | GHC と同じ出力 (最短の往復可能表現・`0.1 <= x < 10^7` は小数表記) をランタイムで生成。`read` は 10 進を正確な有理数にしてから正しく丸める |
 
 GMP は使わない(静的リンク時の LGPL の扱いを避ける・依存を減らす)。性能が問題になれば任意のバックエンドとして追加検討。
 

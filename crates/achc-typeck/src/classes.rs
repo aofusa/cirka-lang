@@ -871,7 +871,7 @@ impl Tc {
             if !simple || !on.iter().any(|c| is_numeric(c)) {
                 continue;
             }
-            for cand in [Ty::Con(prim("Int")), Ty::Con(prim("Double"))] {
+            for cand in [self.integer_ty(), Ty::Con(prim("Double"))] {
                 let ok = on.iter().all(|c| {
                     let mut out = Vec::new();
                     self.hnf(&Pred::new(c, cand.clone()), &|_, _| true, &mut out)

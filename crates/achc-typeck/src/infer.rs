@@ -1322,6 +1322,60 @@ impl Tc {
     /// A name wired into syntax (`Prelude.x`): the base library defines it
     /// in `Cirka.Base` (re-exported by `Prelude`); small test preludes
     /// define it in `Prelude` itself.
+    /// The type of integer literals given to `fromInteger`: the base
+    /// library's `Integer`, or `Int` with a small test prelude.
+    pub(crate) fn integer_ty(&self) -> Ty {
+        let b = format!("{}.Integer", achc_rename::BASE_MODULE);
+        if self.datas.contains_key(&b) {
+            Ty::Con(b)
+        } else {
+            Ty::Con(prim("Int"))
+        }
+    }
+
+    /// An `Integer` literal (`cirkaIntegerLit n`, or `cirkaIntegerLitBig
+    /// "digits"` beyond `Int`); a plain `Int` literal with a small prelude.
+    pub(crate) fn integer_lit(&self, n: i128) -> tast::Expr {
+        let small = self.wired("Prelude.cirkaIntegerLit");
+        if !self.globals.contains_key(&small) {
+            return tast::Expr::Lit(tast::Lit::Int(n as i64));
+        }
+        match i64::try_from(n) {
+            Ok(k) => tast::Expr::App(
+                Box::new(tast::Expr::Global(small, Vec::new())),
+                Box::new(tast::Expr::Lit(tast::Lit::Int(k))),
+            ),
+            Err(_) => tast::Expr::App(
+                Box::new(tast::Expr::Global(
+                    self.wired("Prelude.cirkaIntegerLitBig"),
+                    Vec::new(),
+                )),
+                Box::new(tast::Expr::Lit(tast::Lit::Str(n.to_string()))),
+            ),
+        }
+    }
+
+    /// [`Self::integer_lit`] of a decimal string (with optional `-`).
+    pub(crate) fn integer_lit_str(&self, s: &str) -> tast::Expr {
+        match s.parse::<i128>() {
+            Ok(n)
+                if i64::try_from(n).is_ok()
+                    || !self
+                        .globals
+                        .contains_key(&self.wired("Prelude.cirkaIntegerLit")) =>
+            {
+                self.integer_lit(n)
+            }
+            _ => tast::Expr::App(
+                Box::new(tast::Expr::Global(
+                    self.wired("Prelude.cirkaIntegerLitBig"),
+                    Vec::new(),
+                )),
+                Box::new(tast::Expr::Lit(tast::Lit::Str(s.to_string()))),
+            ),
+        }
+    }
+
     pub(crate) fn wired(&self, name: &str) -> String {
         if let Some(short) = name.strip_prefix("Prelude.") {
             let b = format!("{}.{short}", achc_rename::BASE_MODULE);
@@ -1767,10 +1821,11 @@ impl Tc {
                 if let Some(c) = self.overloaded("Prelude.Num", "Prelude.fromInteger") {
                     let t = self.fresh();
                     let h = self.want(Pred::new(&c, t.clone()), sp);
-                    return (
-                        tast::Expr::OverLit(tast::Lit::Int(*n as i64), t.clone(), h),
-                        t,
-                    );
+                    let l = match i64::try_from(*n) {
+                        Ok(n) => tast::Lit::Int(n),
+                        Err(_) => tast::Lit::BigInt(*n),
+                    };
+                    return (tast::Expr::OverLit(l, t.clone(), h), t);
                 }
                 (
                     tast::Expr::Lit(tast::Lit::Int(*n as i64)),
@@ -2437,31 +2492,38 @@ impl Tc {
                 let lit = |l: tast::Lit| tast::Expr::Lit(l);
                 *e = match (&*l, &t) {
                     (tast::Lit::Int(n), t) if *t == int => lit(tast::Lit::Int(*n)),
+                    (tast::Lit::BigInt(n), t) if *t == int => lit(tast::Lit::Int(*n as i64)),
                     (tast::Lit::Int(n), t) if *t == dbl => lit(tast::Lit::Double(*n as f64)),
+                    (tast::Lit::BigInt(n), t) if *t == dbl => lit(tast::Lit::Double(*n as f64)),
                     (tast::Lit::Double(x), t) if *t == dbl => lit(tast::Lit::Double(*x)),
-                    (tast::Lit::Int(n), _) => {
+                    (tast::Lit::Int(_) | tast::Lit::BigInt(_), _) => {
+                        let n = match &*l {
+                            tast::Lit::Int(n) => i128::from(*n),
+                            tast::Lit::BigInt(n) => *n as i128,
+                            _ => unreachable!(),
+                        };
                         let mut d = tast::Expr::Hole(*h);
                         self.finish_expr(&mut d);
                         let f =
                             tast::Expr::Global(self.wired("Prelude.fromInteger"), vec![t.clone()]);
+                        let arg = self.integer_lit(n);
                         tast::Expr::App(
                             Box::new(tast::Expr::App(Box::new(f), Box::new(d))),
-                            Box::new(lit(tast::Lit::Int(*n))),
+                            Box::new(arg),
                         )
                     }
                     (tast::Lit::Double(x), _) => {
                         let mut d = tast::Expr::Hole(*h);
                         self.finish_expr(&mut d);
-                        let (n, q) = rational_of(*x);
+                        let (n, q) = rational_digits(*x);
+                        let it = self.integer_ty();
+                        let (n, q) = (self.integer_lit_str(&n), self.integer_lit_str(&q));
                         let ratio = tast::Expr::App(
                             Box::new(tast::Expr::App(
-                                Box::new(tast::Expr::Con(
-                                    self.wired("Prelude.:%"),
-                                    vec![int.clone()],
-                                )),
-                                Box::new(lit(tast::Lit::Int(n))),
+                                Box::new(tast::Expr::Con(self.wired("Prelude.:%"), vec![it])),
+                                Box::new(n),
                             )),
-                            Box::new(lit(tast::Lit::Int(q))),
+                            Box::new(q),
                         );
                         let f =
                             tast::Expr::Global(self.wired("Prelude.fromRational"), vec![t.clone()]);
@@ -2591,6 +2653,9 @@ impl Tc {
                     (tast::Lit::Int(n), Ty::Con(c)) if *c == prim("Int") => {
                         Some(tast::Lit::Int(*n))
                     }
+                    (tast::Lit::BigInt(n), Ty::Con(c)) if *c == prim("Int") => {
+                        Some(tast::Lit::Int(*n as i64))
+                    }
                     (tast::Lit::Int(n), Ty::Con(c)) if *c == prim("Double") => {
                         Some(tast::Lit::Double(*n as f64))
                     }
@@ -2622,46 +2687,67 @@ impl Tc {
 }
 
 /// `x` as a fraction `n / d` in lowest terms, from its shortest decimal
-/// representation (`0.1` is `1/10`, as the literal is written).
-pub(crate) fn rational_of(x: f64) -> (i64, i64) {
-    fn gcd(a: i128, b: i128) -> i128 {
-        if b == 0 { a.abs() } else { gcd(b, a % b) }
+/// representation (`0.1` is `1/10`, as the literal is written), as decimal
+/// strings of any size (`1e300`, `5e-324`); the numerator carries the sign.
+pub(crate) fn rational_digits(x: f64) -> (String, String) {
+    if !x.is_finite() {
+        // Not produced by the lexer; keep something well formed.
+        return ("0".into(), "1".into());
     }
     let s = format!("{x:e}");
     let (mant, exp) = s.split_once('e').unwrap_or((&s, "0"));
-    let exp: i32 = exp.parse().unwrap_or(0);
+    let exp: i64 = exp.parse().unwrap_or(0);
     let neg = mant.starts_with('-');
     let mant = mant.trim_start_matches('-');
     let (ip, fp) = mant.split_once('.').unwrap_or((mant, ""));
-    let digits = format!("{ip}{fp}");
-    let scale = exp - fp.len() as i32;
-    let mut n: i128 = digits.parse().unwrap_or(0);
-    let mut d: i128 = 1;
-    let ok = (|| {
-        if scale >= 0 {
-            for _ in 0..scale {
-                n = n.checked_mul(10)?;
-            }
-        } else {
-            for _ in 0..-scale {
-                d = d.checked_mul(10)?;
-            }
+    let mut n: u64 = format!("{ip}{fp}").parse().unwrap_or(0);
+    let scale = exp - fp.len() as i64;
+    let sign = if neg && n != 0 { "-" } else { "" };
+    if n == 0 {
+        return ("0".into(), "1".into());
+    }
+    if scale >= 0 {
+        let mut v = decimal_mul_small(&n.to_string(), 1);
+        for _ in 0..scale {
+            v.push('0');
         }
-        Some(())
-    })();
-    if ok.is_none() {
-        return (x as i64, 1);
+        return (format!("{sign}{v}"), "1".into());
     }
-    let g = gcd(n, d).max(1);
-    n /= g;
-    d /= g;
-    if neg {
-        n = -n;
+    // n / (2^k * 5^k): cancel the factors 2 and 5 of n.
+    let (mut twos, mut fives) = (-scale, -scale);
+    while twos > 0 && n.is_multiple_of(2) {
+        n /= 2;
+        twos -= 1;
     }
-    match (i64::try_from(n), i64::try_from(d)) {
-        (Ok(n), Ok(d)) => (n, d),
-        _ => (x as i64, 1),
+    while fives > 0 && n.is_multiple_of(5) {
+        n /= 5;
+        fives -= 1;
     }
+    let mut d = String::from("1");
+    for _ in 0..twos {
+        d = decimal_mul_small(&d, 2);
+    }
+    for _ in 0..fives {
+        d = decimal_mul_small(&d, 5);
+    }
+    (format!("{sign}{n}"), d)
+}
+
+/// A non-negative decimal string times a small factor.
+fn decimal_mul_small(s: &str, k: u32) -> String {
+    let mut out = Vec::with_capacity(s.len() + 2);
+    let mut carry = 0u32;
+    for c in s.bytes().rev() {
+        let v = u32::from(c - b'0') * k + carry;
+        out.push(b'0' + (v % 10) as u8);
+        carry = v / 10;
+    }
+    while carry > 0 {
+        out.push(b'0' + (carry % 10) as u8);
+        carry /= 10;
+    }
+    out.reverse();
+    String::from_utf8(out).unwrap_or_default()
 }
 
 /// `a`, `b`, ..., `z`, `a1`, ...
