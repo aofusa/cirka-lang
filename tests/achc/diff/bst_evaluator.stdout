@@ -1,0 +1,9 @@
+[1,2,3,5,8,9]
+[True,False,True]
+4
+Node Leaf 1 (Node Leaf 2 Leaf)
+Right 14
+Right (-5)
+Left "div by zero"
+Right (-4)
+Add (Num (-1)) (Num 2)

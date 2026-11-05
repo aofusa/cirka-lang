@@ -1,0 +1,14 @@
+["hello","world","from","haskell","again"]
+hello world from haskell again
+["a","b","","c"]
+"x\ny\nz\n"
+"HELLO, WORLD 42"
+[65,122,48,57]
+"Hi!"
+"122333"
+[1,10,15]
+"09af"
+(True,True,False,True,False,True)
+("abc","123def")
+"\"quote\\\"d\\ttab\\n\""
+["three","two","one"]

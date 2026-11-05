@@ -48,6 +48,10 @@ achc = { path = "crates/achc" }
 # (cargo always uses unwinding for the test harness itself).
 [profile.dev]
 panic = "abort"
+# The integration tests compile hundreds of Haskell / CirkaLang programs with
+# the compiler built in this profile; without optimization they take most of
+# the CI time. Debug assertions and overflow checks stay on.
+opt-level = 1
 
 [profile.release]
 panic = "abort"

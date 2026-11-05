@@ -207,12 +207,26 @@ fn achc_desugar() {
 /// GHC prints the same and exits with the same code.
 #[test]
 fn achc_run() {
+    run_programs("achc-run", "run", &[0, 2]);
+}
+
+/// The differential corpus under tests/achc/diff/ (FEAT-0117): checked like
+/// the run tests. The expectations were produced by GHC 9.4 (`-O0`) and are
+/// compared with GHC again when `CIRKA_GHC` is set.
+#[test]
+fn achc_diff() {
+    // Optimized builds only: the run tests cover -O0, and the interpreter
+    // at -O0 makes the larger programs slow.
+    run_programs("achc-diff", "diff", &[2]);
+}
+
+fn run_programs(suite: &str, sub: &str, default_levels: &[u8]) {
     cirka_testkit::init();
     cirka_driver::native::ensure_runtime_built().unwrap();
     let cfg = cirka_driver::Config::from_env();
     let root = format!("{}/", repo_root().display());
     // A directory with a `Main.hs` is one program of several modules.
-    let cases: Vec<_> = discover(&repo_root().join("tests/achc/run"), &["hs"])
+    let cases: Vec<_> = discover(&repo_root().join("tests/achc").join(sub), &["hs"])
         .into_iter()
         .filter(|c| {
             c.path.file_name().is_some_and(|n| n == "Main.hs")
@@ -220,12 +234,12 @@ fn achc_run() {
                     .path
                     .ancestors()
                     .skip(1)
-                    .take_while(|d| !d.ends_with("run"))
+                    .take_while(|d| !d.ends_with(sub))
                     .any(|d| d.join("Main.hs").exists())
         })
         .collect();
     assert!(!cases.is_empty());
-    run_suite("achc-run", &cases, |c| {
+    run_suite(suite, &cases, |c| {
         let mut sm = SourceMap::new();
         let opts = cirka_driver::pipeline::Options::new(&c.name);
         let roots = vec![c.path.parent().unwrap().to_path_buf(), achc::lib_dir()];
@@ -292,7 +306,7 @@ fn achc_run() {
                 .split_whitespace()
                 .filter_map(|x| x.parse().ok())
                 .collect(),
-            None => vec![0, 2],
+            None => default_levels.to_vec(),
         };
         for level in levels {
             let mut opts = cirka_driver::pipeline::Options::new(&c.name);

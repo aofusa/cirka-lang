@@ -1,0 +1,12 @@
+Right ("alice",120)
+Left (Insufficient 100 500)
+Left (InvalidAmount (-5))
+Left (UnknownAccount "carol")
+Right ("alice",0)
+Left (Insufficient 40 41)
+OK Deposit 20 -> 120
+FAIL Withdraw 200: Insufficient 120 200
+OK Transfer "bob" 70 -> 50
+FAIL Transfer "zed" 1: UnknownAccount "zed"
+FAIL Withdraw 0: InvalidAmount 0
+OK Withdraw 50 -> 0

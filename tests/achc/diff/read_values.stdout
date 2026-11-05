@@ -1,0 +1,25 @@
+[1,2,3]
+[1,-2,3]
+(1,"a")
+(True,'x',2.5)
+Just (-3)
+Nothing
+[Just 1,Nothing,Just 3]
+-5
+350.0
+[Red,Green,Blue]
+P {px = 1, py = -2}
+[Circle 3,Rect 4 5]
+Left 4
+[(12,"abc")]
+[(7," rest")]
+[]
+[(Red," Green")]
+Just 42
+Nothing
+Nothing
+Nothing
+Nothing
+[Just 1,Nothing,Just 3,Nothing]
+True
+"hi\nthere"

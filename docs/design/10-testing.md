@@ -14,7 +14,7 @@
 | Core 実行 | `tests/core/*.core` + `.stdout` | 共通基盤 | 手書き Core が共通ドライバで動く |
 | aCHC 実行 | `tests/achc/run/**/*.{hs,chs}` + `.stdout` (`.stdin`, `.args`, `.exitcode`, `.stderr`, `.warn`)。`Main.hs` のあるディレクトリは複数モジュールの一つのプログラム (他のモジュールはテストにしない) | aCHC | 出力一致、debug ランタイムでリーク 0 |
 | aCHC エラー | `tests/achc/fail/**/*.{hs,chs}` + `.stderr` | aCHC | 診断コードとメッセージが一致 |
-| aCHC 差分 | `tests/achc/diff/**/*.hs` | aCHC | GHC の実行結果と stdout・終了コードが一致 (`CIRKA_GHC` 未設定ならスキップ) |
+| aCHC 差分 | `tests/achc/diff/**/*.hs` + `.stdout` (`.exitcode`) | aCHC | 期待値は GHC 9.4 (`-O0`) の出力。実行テストと同じ検査 (リーク 0・ネイティブとの一致) を -O2 だけで行い、`CIRKA_GHC` があれば GHC とも比べる (FEAT-0117) |
 | aCHC 互換計測 | `tests/achc/compat/` (GHC testsuite / nofib の一部) | aCHC | 合格率は目標にせず、失敗理由の分類を記録 (ADR-025) |
 | aCHC 検証 (後期) | `tests/achc/verify/{pass,fail}/**/*.{hs,chs}` | aCHC (H6〜) | 洗練型・契約・全域性が通る / 反例付きで失敗する (`CIRKA_Z3` 未設定ならスキップ) |
 | CirkaLang 実行 | `tests/cirkalang/run/v0.0.N/**/*.cirka` + `.stdout` | CirkaLang | 出力一致、リーク 0。版ごとにディレクトリを分ける |
@@ -88,7 +88,7 @@ cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo build -p cirka-runtime --profile release   (+ debug runtime)
 cargo test --workspace                           (ユニット・スナップショット・mir・core・achc run/fail・cirkalang run/fail)
-cargo test --test achc_diff                      (CIRKA_GHC があれば)
+cargo test --workspace の achc_diff               (GHC との比較は CIRKA_GHC があれば)
 cargo test --test cirkalang_verify               (CIRKA_Z3 があれば)
 cargo test --test achc_verify                    (後期 H6〜、CIRKA_Z3 があれば)
 ```

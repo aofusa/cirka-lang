@@ -1,0 +1,24 @@
+|Haskell is a purely |
+|functional          |
+|programming language|
+|with strong static  |
+|typing, lazy        |
+|evaluation and type |
+|inference.          |
+|Extraordinarily long|
+|words like          |
+|internationalization|
+|may exceed nothing. |
+11
+[19,10,20,18,12,19,10,20,10,20,19]
+vowels: 61
+consonants: 100
+Haskell (2,5)
+is (1,1)
+a (1,0)
+purely (2,4)
+functional (4,6)
+programming (3,8)
+20
+a bb ccc/dddd eeeee/ffffff
+["abcdef","g","hi"]

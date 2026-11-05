@@ -1,0 +1,12 @@
+rect: area=12.0 perimeter=14.0
+round circle of area 12.0
+triangle: area=6.0 perimeter=12.0
+triangle: area=30.0 perimeter=30.0
+rect: area=3.0 perimeter=7.0
+63.0
+[14.0,12.0,12.0,30.0,7.0]
+triangle
+4
+rect: area=4.0 perimeter=8.0
+round circle of area 3.0
+(30.0,3.0)

@@ -1,0 +1,14 @@
+Just 30
+Nothing
+Nothing
+Just [100,50,20]
+Nothing
+Just [1,2,3]
+Nothing
+Right 12345
+Left "bad digit: x"
+Right 42
+Left "too big"
+Left "bad digit: a"
+Left "e1"
+42

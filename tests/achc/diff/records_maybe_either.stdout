@@ -1,0 +1,12 @@
+Person {name = "Ann", age = 30, email = Nothing}
+Person {name = "Bob", age = 30, email = Just "bob@x.org"}
+Person {name = "Bob", age = 31, email = Just "bob@x.org"}
+[Right (Person {name = "Ann", age = 30, email = Nothing}),Left "bad age -4",Left "empty name"]
+[12,7]
+0
+Just 10
+(["bad age -1"],[Person {name = "Ann", age = 30, email = Nothing}])
+("a",[1])
+["bob@x.org"]
+(Just [1,2],Nothing)
+Just [1,22]

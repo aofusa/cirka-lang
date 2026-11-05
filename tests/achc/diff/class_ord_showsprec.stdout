@@ -1,0 +1,19 @@
+[P 1 "c",P 1 "z",P 2 "a",P 2 "b"]
+(LT,False,P 1 "r")
+[Rev 9,Rev 6,Rev 5,Rev 4,Rev 3,Rev 2,Rev 1,Rev 1]
+(Rev 1,Rev 4)
+(False,True,EQ)
+[Version [0,9] "d",Version [1,2] "a",Version [1,2,1] "c",Version [1,10] "b"]
+(False,EQ)
+[3,2,1]
+[(2,'a'),(3,'b'),(1,'c')]
+[Rev 9,Rev 5,Rev 4,Rev 3,Rev 1]
+1 + 2 * 3
+(1 + 2) * 3
+1 + 2 + (3 + 4)
+-(1 + (-2))
+(-1) * -2
+Just ((1 + 2) * 3)
+[1 + 2 * 3,-(1 + (-2))]
+(1 + 2 * 3)
+1 + (2 + 3)

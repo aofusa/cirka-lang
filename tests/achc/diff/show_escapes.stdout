@@ -1,0 +1,25 @@
+"a\"b\n\tc"
+'\''
+'"'
+"'"
+'\n'
+'\\'
+"back\\slash"
+"\1234\&5"
+"\SO\&H"
+"\SOH"
+"\200"
+"tab\there"
+"\233t\233"
+'\NUL'
+'\1114111'
+""
+["a","b\"c"]
+Just "x\ny"
+"\"nested\\\"quote\""
+('a',"b",'c')
+12 apples
+abcdef
+(5)
+5!
+6

@@ -1,0 +1,29 @@
+["name","age","city"]
+["alice","30","paris"]
+["bob","25","berlin"]
+["carol","","rome"]
+["dave","41",""]
+[3,3,3,3,3]
+[Just 30,Just 25,Nothing,Just 41]
+96
+|  name  |  age   |  city  |
+| alice  |   30   | paris  |
+|  bob   |   25   | berlin |
+| carol  |        |  rome  |
+|  dave  |   41   |        |
+|name    |age     |city    |
+|alice   |30      |paris   |
+|bob     |25      |berlin  |
+|carol   |        |rome    |
+|dave    |41      |        |
+|    name|     age|    city|
+|   alice|      30|   paris|
+|     bob|      25|  berlin|
+|   carol|        |    rome|
+|    dave|      41|        |
+[""]
+["","",""]
+["a","b","","c"]
+NAM-AGE-CIT
+"many spaces here"
+(["a","","b"],"x\ny\n")

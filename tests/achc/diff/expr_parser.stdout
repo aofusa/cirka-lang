@@ -1,0 +1,10 @@
+1 + 2 * 3 => 7
+(1 + 2) * 3 => 9
+10 / 3 - 1 => 2
+-(4 + 5) * 2 => -18
+2 * (3 + 4) * 5 => 70
+1 / (2 - 2) => error: division by zero
+3 + $ => error: unexpected character '$'
+(1 + 2 => error: expected )
+1 2 => error: trailing tokens: [TNum 2]
+100 - 1 - 1 - 1 => 97

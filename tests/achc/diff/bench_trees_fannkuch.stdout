@@ -1,0 +1,9 @@
+depth 4 nodes 31
+depth 6 nodes 127
+depth 8 nodes 511
+depth 10 nodes 2047
+20 trees of depth 6: 2540
+fannkuch checksum -502
+Pfannkuchen(7) = 16
+(-2,4)
+(-11,7)

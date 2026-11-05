@@ -1,0 +1,16 @@
+-- short-circuiting and laziness of undefined/error values
+main :: IO ()
+main = do
+  print (True || undefined)
+  print (False && error "never")
+  print (fst (1 :: Int, undefined :: Int))
+  print (length [undefined, undefined :: Int])
+  print (take 3 (1 : 2 : 3 : undefined :: [Int]))
+  print (any (> 10) [1 :: Int ..])
+  print (all (< 10) [1 :: Int ..])
+  print (elem 99 [1 :: Int ..])
+  print (const 5 (undefined :: Int) :: Int)
+  print (null (undefined : undefined :: [Int]))
+  print (or (map (> 100) [1 :: Int ..]))
+  print (case (undefined :: Int, 2 :: Int) of (_, b) -> b)
+  print (let f ~(a, b) = 0 :: Int in f (undefined :: (Int, Int)))

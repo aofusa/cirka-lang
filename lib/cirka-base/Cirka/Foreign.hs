@@ -220,6 +220,38 @@ instance Bits Bool where
 instance FiniteBits Bool where
   finiteBitSize _ = 1
 
+-- | Two's complement bit operations on `Integer` (infinitely sign
+-- extended), 32 bits at a time above the `Int` range.
+cirkaIntegerBits :: (Int -> Int -> Int) -> Integer -> Integer -> Integer
+cirkaIntegerBits f (IS a) (IS b) = IS (f a b)
+cirkaIntegerBits f a b =
+  let (ha, la) = divMod a 4294967296
+      (hb, lb) = divMod b 4294967296
+  in cirkaIntegerBits f ha hb * 4294967296 + toInteger (f (fromInteger la) (fromInteger lb))
+
+cirkaIntegerPopCount :: Integer -> Int
+cirkaIntegerPopCount (IS a) = cirkaPopCount a
+cirkaIntegerPopCount n =
+  let (h, l) = divMod n 4294967296
+  in cirkaPopCount (fromInteger l) + cirkaIntegerPopCount h
+
+instance Bits Integer where
+  (.&.) = cirkaIntegerBits primIntAnd
+  (.|.) = cirkaIntegerBits primIntOr
+  xor = cirkaIntegerBits primIntXor
+  complement x = negate x - 1
+  shiftL x n = x * 2 ^ n
+  shiftR x n = x `div` 2 ^ n
+  shift x n = if n >= 0 then shiftL x n else shiftR x (negate n)
+  rotate = shift
+  zeroBits = 0
+  bit i = 2 ^ i
+  testBit x i = odd (shiftR x i)
+  bitSizeMaybe _ = Nothing
+  bitSize _ = errorWithoutStackTrace "Data.Bits.bitSize(Integer)"
+  isSigned _ = True
+  popCount x = if x >= 0 then cirkaIntegerPopCount x else negate (cirkaIntegerPopCount (negate x))
+
 -- ---- storable ----
 
 class Storable a where

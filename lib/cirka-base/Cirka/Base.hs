@@ -342,12 +342,31 @@ instance Enum Double where
   pred x = x - 1
   toEnum = primIntToDouble
   fromEnum = primDoubleToInt
-  enumFrom x = x : enumFrom (x + 1)
-  enumFromThen x y = x : enumFromThen y (y + y - x)
-  enumFromTo x lim = takeWhile (<= lim + 1 / 2) (enumFrom x)
-  enumFromThenTo x y lim
-    | y >= x = takeWhile (<= lim + (y - x) / 2) (enumFromThen x y)
-    | otherwise = takeWhile (>= lim + (y - x) / 2) (enumFromThen x y)
+  enumFrom = cirkaNumEnumFrom
+  enumFromThen = cirkaNumEnumFromThen
+  enumFromTo = cirkaNumEnumFromTo
+  enumFromThenTo = cirkaNumEnumFromThenTo
+
+-- | GHC's numericEnumFrom family: the k-th element is `x + k * step`
+-- (not repeated addition), so rounding errors do not accumulate.
+cirkaNumEnumFrom :: Fractional a => a -> [a]
+cirkaNumEnumFrom x = go 0
+  where go k = (x + k) : go (k + 1)
+
+cirkaNumEnumFromThen :: Fractional a => a -> a -> [a]
+cirkaNumEnumFromThen x y = go 0
+  where
+    step = y - x
+    go k = (x + k * step) : go (k + 1)
+
+cirkaNumEnumFromTo :: (Ord a, Fractional a) => a -> a -> [a]
+cirkaNumEnumFromTo x lim = takeWhile (<= lim + 1 / 2) (cirkaNumEnumFrom x)
+
+cirkaNumEnumFromThenTo :: (Ord a, Fractional a) => a -> a -> a -> [a]
+cirkaNumEnumFromThenTo x y lim
+  | y >= x = takeWhile (<= lim + mid) (cirkaNumEnumFromThen x y)
+  | otherwise = takeWhile (>= lim + mid) (cirkaNumEnumFromThen x y)
+  where mid = (y - x) / 2
 
 -- ---- numbers ----
 
@@ -785,12 +804,10 @@ instance Enum Float where
   pred x = x - 1
   toEnum n = cirkaF (primIntToDouble n)
   fromEnum (CirkaFloat a) = primDoubleToInt a
-  enumFrom x = x : enumFrom (x + 1)
-  enumFromThen x y = x : enumFromThen y (y + y - x)
-  enumFromTo x lim = takeWhile (<= lim + 1 / 2) (enumFrom x)
-  enumFromThenTo x y lim
-    | y >= x = takeWhile (<= lim + (y - x) / 2) (enumFromThen x y)
-    | otherwise = takeWhile (>= lim + (y - x) / 2) (enumFromThen x y)
+  enumFrom = cirkaNumEnumFrom
+  enumFromThen = cirkaNumEnumFromThen
+  enumFromTo = cirkaNumEnumFromTo
+  enumFromThenTo = cirkaNumEnumFromThenTo
 
 -- ---- Word (FEAT-0114) ----
 
@@ -874,6 +891,21 @@ instance Integral a => Fractional (Ratio a) where
 instance Integral a => Real (Ratio a) where
   toRational (a :% b) = toInteger a :% toInteger b
 
+instance Integral a => RealFrac (Ratio a) where
+  properFraction (a :% b) =
+    let (q, r) = quotRem a b
+    in (fromInteger (toInteger q), r :% b)
+
+instance Integral a => Enum (Ratio a) where
+  succ x = x + 1
+  pred x = x - 1
+  toEnum n = fromIntegral n :% 1
+  fromEnum = truncate
+  enumFrom = cirkaNumEnumFrom
+  enumFromThen = cirkaNumEnumFromThen
+  enumFromTo = cirkaNumEnumFromTo
+  enumFromThenTo = cirkaNumEnumFromThenTo
+
 instance (Show a) => Show (Ratio a) where
   showsPrec p (a :% b) = showParen (p > 7) (showsPrec 8 a . showString " % " . showsPrec 8 b)
 
@@ -946,6 +978,12 @@ instance Semigroup [a] where
 
 instance Monoid [a] where
   mempty = []
+
+instance Semigroup b => Semigroup (a -> b) where
+  f <> g = \x -> f x <> g x
+
+instance Monoid b => Monoid (a -> b) where
+  mempty = \_ -> mempty
 
 instance Semigroup Ordering where
   LT <> _ = LT

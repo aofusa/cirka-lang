@@ -1,0 +1,26 @@
+-- isPrefixOf, isInfixOf, lookup, span, break, splitAt, elemIndex, tails, inits, subsequences
+import Data.List
+
+main :: IO ()
+main = do
+  print ("ab" `isPrefixOf` "abc", "bc" `isSuffixOf` "abc", "xx" `isInfixOf` "axxb", "q" `isInfixOf` "abc")
+  print (lookup 2 [(1, "a"), (2, "b"), (3, "c" :: String)])
+  print (lookup 9 [(1 :: Int, "a")])
+  print (span even [2, 4, 6, 7, 8 :: Int])
+  print (break (== ' ') "hello world")
+  print (splitAt 3 [1 .. 6 :: Int])
+  print (splitAt 10 "abc")
+  print (replicate 4 'z')
+  print (elemIndex 'c' "abcdef", elemIndex 'z' "abc")
+  print (findIndex (> 3) [1, 2, 3, 4, 5 :: Int])
+  print (elemIndices 1 [1, 2, 1, 3, 1 :: Int])
+  print (find (> 10) [1, 5, 20, 30 :: Int])
+  print (tails "abc")
+  print (inits "abc")
+  print (subsequences [1, 2, 3 :: Int])
+  print (permutations [1, 2, 3 :: Int])
+  print (stripPrefix "foo" "foobar")
+  print (dropWhileEnd (== ' ') "trim   ")
+  print (words "  the quick  brown fox ", unwords ["a", "b"], lines "x\ny\n", unlines ["p", "q"])
+  print (isSubsequenceOf "ace" "abcde")
+  print (zip "ab" (tails "ab"))

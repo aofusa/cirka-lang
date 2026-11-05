@@ -1,0 +1,10 @@
+[Mon,Tue,Wed,Thu,Fri,Sat,Sun]
+[Sat,Sun,Mon]
+(2,Fri)
+[Mon,Wed,Fri,Sun]
+(LT,True,Sun)
+(Sat,Tue)
+(True,True)
+(True,True,Circle (-2))
+[(Sat,Hearts),(Sat,Spades),(Sun,Hearts),(Sun,Spades)]
+Rect (-1) 2

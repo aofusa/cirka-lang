@@ -1,0 +1,15 @@
+[1,2,3]
+[3,2,1]
+(1 + (2 + (3 + 0)))
+(((0 + 1) + 2) + 3)
+(7,-17)
+(7,3)
+[1,2,3,4]
+[1,2,3,4,5]
+True
+["fig","kiwi","plum","apple","banana","cherry"]
+[["fig"],["kiwi","plum"],["apple"],["banana","cherry"]]
+(6,"apple")
+"cba"
+(True,False,True,False)
+(LT,GT,LT)

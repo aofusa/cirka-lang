@@ -1,0 +1,7 @@
+arith: 20
+swap: -7
+countdown: 5 4 3 2 1
+underflow: error: stack underflow at 1: Add
+loop: error: out of fuel
+empty: 
+dup: 49

@@ -1,0 +1,21 @@
+item         |  qty |     price |      total
+---------------------------------------------
+widget       |    4 |      2.50 |      10.00
+gadget       |   10 |     19.99 |     199.90
+thingamajig  |    1 |    120.05 |     120.05
+nut          |  250 |      0.05 |      12.50
+bolt         |  120 |      0.12 |      14.40
+=============================================
+TOTAL           385                   356.85
+
+name  | len | upper
+a     | 1   | A    
+hello | 5   | HELLO
+xy    | 2   | XY   
+
+  1. widget
+  2. gadget
+  3. thingamajig
+  4. nut
+  5. bolt
+[    ab][ab    ][abc]
