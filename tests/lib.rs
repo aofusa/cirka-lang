@@ -4,13 +4,36 @@ use cirka_testkit::{Case, Outcome};
 
 /// Parses `cirka-stats: allocs=N frees=M ...` from stderr.
 pub fn parse_stats(stderr: &str) -> Option<(u64, u64)> {
+    Some((stat(stderr, "allocs")?, stat(stderr, "frees")?))
+}
+
+/// One counter (`allocs`, `frees`, `max_live`, `forced`) of the
+/// `cirka-stats:` line.
+pub fn stat(stderr: &str, key: &str) -> Option<u64> {
     let line = stderr.lines().find(|l| l.starts_with("cirka-stats:"))?;
-    let get = |k: &str| -> Option<u64> {
-        line.split_whitespace()
-            .find_map(|w| w.strip_prefix(k))
-            .and_then(|v| v.parse().ok())
-    };
-    Some((get("allocs=")?, get("frees=")?))
+    let k = format!("{key}=");
+    line.split_whitespace()
+        .find_map(|w| w.strip_prefix(k.as_str()))
+        .and_then(|v| v.parse().ok())
+}
+
+/// The `-- max-allocs: N` and `-- max-forced: N` headers (allocations and
+/// evaluated thunks of a native run).
+fn check_limits(c: &Case, name: &str, stderr: &str) -> Result<(), String> {
+    for (h, key) in [("max-allocs", "allocs"), ("max-forced", "forced")] {
+        let Some(limit) = c.header.get(h) else {
+            continue;
+        };
+        let limit: u64 = limit
+            .trim()
+            .parse()
+            .map_err(|_| format!("bad `{h}` header"))?;
+        match stat(stderr, key) {
+            Some(n) if n <= limit => {}
+            n => return Err(format!("[{name}] {key} = {n:?}, more than {h}: {limit}")),
+        }
+    }
+    Ok(())
 }
 
 /// Builds `m` natively with the debug and release runtimes, runs it and
@@ -81,6 +104,9 @@ pub fn check_native_with(
                 "[{name}] exit code {} (interpreter: {})\n{}",
                 out.code, reference.exit_code, out.stderr
             ));
+        }
+        if let Err(e) = check_limits(c, name, &out.stderr) {
+            return Outcome::Fail(e);
         }
         if !leak_check {
             continue;

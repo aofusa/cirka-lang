@@ -44,6 +44,7 @@ pub unsafe extern "C" fn cirka_force(o: Obj) -> Obj {
             }
             BLACKHOLE => panic_msg(b"<<loop>>"),
             THUNK => {
+                STATS.get().forced += 1;
                 let code: extern "C" fn(Obj) -> Obj = core::mem::transmute(*word(o, 0));
                 (*o).kind = BLACKHOLE;
                 let r = code(o);
@@ -181,6 +182,8 @@ fn exit_sequence(code: i32) -> ! {
             io::ewrite_u64(s.frees);
             io::ewrite(b" max_live=");
             io::ewrite_u64(s.max_live);
+            io::ewrite(b" forced=");
+            io::ewrite_u64(s.forced);
             io::ewrite(b"\n");
         }
         if cfg!(feature = "debug-rt") && matches!(sys::env(c"CIRKA_LEAK_CHECK"), Some(b"1")) {

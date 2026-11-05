@@ -261,7 +261,16 @@ fn achc_run() {
             }
         }
         let mut reference = None;
-        for level in [0u8, 2] {
+        // `-- opt-levels: 2` limits a test to optimized builds (e.g. lazy
+        // accumulators that need a deep stack at -O0, like GHC -O0).
+        let levels: Vec<u8> = match c.header.get("opt-levels") {
+            Some(l) => l
+                .split_whitespace()
+                .filter_map(|x| x.parse().ok())
+                .collect(),
+            None => vec![0, 2],
+        };
+        for level in levels {
             let mut opts = cirka_driver::pipeline::Options::new(&c.name);
             opts.opt_level = level;
             opts.build_dir = cirka_testkit::work_dir("achc-run", &c.name);

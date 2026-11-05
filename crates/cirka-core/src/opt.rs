@@ -48,6 +48,16 @@ pub struct Stats {
     pub removed_globals: usize,
     /// Functions split into a worker and a wrapper.
     pub worker_wrapper: usize,
+    /// Dictionary fields moved to globals of their own.
+    pub dict_fields: usize,
+    /// Local functions lifted to top level.
+    pub lifted: usize,
+    /// Copies of overloaded functions specialized to constant dictionaries.
+    pub specialized: usize,
+    /// Thunks replaced by eager evaluation (`let!`).
+    pub strictified: usize,
+    /// Lazy bindings moved into the only `case` alternative using them.
+    pub floated_in: usize,
     /// Bindings restored because Lint rejected them (release builds only).
     pub reverted: usize,
 }
@@ -74,7 +84,28 @@ pub fn optimize_with_stats(p: &mut Program) -> Result<Stats, Diagnostic> {
         st.unpacked_fields += unpacked;
         lint_all(p, "unpack")?;
     }
+    st.dict_fields = crate::strict::float_dict_fields(p);
+    if st.dict_fields > 0 {
+        lint_all(p, "dict-fields")?;
+    }
     simplify_rounds(p, &mut st, &mut next)?;
+    // Local loops become top-level functions the analyses below reach.
+    st.lifted = crate::strict::lambda_lift(p, &mut next);
+    if st.lifted > 0 {
+        lint_all(p, "lambda-lift")?;
+        simplify_rounds(p, &mut st, &mut next)?;
+    }
+    // Overloaded functions called with known dictionaries; a second round
+    // reaches the calls exposed by the first.
+    for _ in 0..2 {
+        let n = crate::spec::specialize(p, &mut next);
+        if n == 0 {
+            break;
+        }
+        st.specialized += n;
+        lint_all(p, "specialize")?;
+        simplify_rounds(p, &mut st, &mut next)?;
+    }
     // Worker/wrapper splits strict functions over boxed numbers; the
     // simplifier then inlines the wrappers and removes the boxes.
     let split = crate::ww::worker_wrapper(p, &mut next);
@@ -82,6 +113,15 @@ pub fn optimize_with_stats(p: &mut Program) -> Result<Stats, Diagnostic> {
         st.worker_wrapper += split;
         lint_all(p, "worker-wrapper")?;
         simplify_rounds(p, &mut st, &mut next)?;
+    }
+    st.strictified = crate::strict::strictify(p, &mut next);
+    if st.strictified > 0 {
+        lint_all(p, "strictify")?;
+        simplify_rounds(p, &mut st, &mut next)?;
+    }
+    st.floated_in = crate::strict::float_in(p);
+    if st.floated_in > 0 {
+        lint_all(p, "float-in")?;
     }
     st.removed_globals += dce_globals(p);
     lint_all(p, "dce")?;
@@ -190,7 +230,7 @@ pub fn size(e: &Expr) -> usize {
 }
 
 /// Calls `f` on `e` and every sub-expression.
-fn walk(e: &Expr, f: &mut impl FnMut(&Expr)) {
+pub(crate) fn walk(e: &Expr, f: &mut impl FnMut(&Expr)) {
     f(e);
     match e {
         Expr::Var(_) | Expr::Global(_) | Expr::Lit(_) | Expr::Panic(..) => {}
@@ -218,7 +258,7 @@ fn walk(e: &Expr, f: &mut impl FnMut(&Expr)) {
 }
 
 /// Rebuilds `e` with `f` applied to each direct sub-expression.
-fn map_children(e: Expr, f: &mut impl FnMut(Expr) -> Expr) -> Expr {
+pub(crate) fn map_children(e: Expr, f: &mut impl FnMut(Expr) -> Expr) -> Expr {
     let bx = |f: &mut dyn FnMut(Expr) -> Expr, x: Box<Expr>| Box::new(f(*x));
     match e {
         Expr::Var(_) | Expr::Global(_) | Expr::Lit(_) | Expr::Panic(..) => e,
@@ -261,7 +301,7 @@ fn map_children(e: Expr, f: &mut impl FnMut(Expr) -> Expr) -> Expr {
 
 /// Replaces every occurrence of variable `x` by `with`. Binders are unique
 /// (after `uniquify`), so no capture can happen.
-fn replace_var(e: Expr, x: u32, with: &Expr) -> Expr {
+pub(crate) fn replace_var(e: Expr, x: u32, with: &Expr) -> Expr {
     match e {
         Expr::Var(v) if v.id == x => with.clone(),
         e => map_children(e, &mut |c| replace_var(c, x, with)),
@@ -288,7 +328,7 @@ fn occurs(e: &Expr, x: u32) -> bool {
 }
 
 /// Free term variables of `e`.
-fn free_vars(e: &Expr) -> HashSet<u32> {
+pub(crate) fn free_vars(e: &Expr) -> HashSet<u32> {
     fn binders(e: &Expr, out: &mut HashSet<u32>) {
         walk(e, &mut |s| match s {
             Expr::Lam(b, _) | Expr::LetStrict(b, _, _) | Expr::Let(Bind::NonRec(b, _), _) => {
@@ -321,7 +361,7 @@ fn free_vars(e: &Expr) -> HashSet<u32> {
 }
 
 /// Type substitution `e[t/v]` in every type annotation of `e`.
-fn subst_ty(e: &Expr, v: &TyVar, t: &Type) -> Expr {
+pub(crate) fn subst_ty(e: &Expr, v: &TyVar, t: &Type) -> Expr {
     let st = |ty: &Type| ty.subst(v, t);
     let sb = |b: &Binder| Binder::new(b.id.clone(), b.mult, b.ty.subst(v, t));
     let r = |x: &Expr| Box::new(subst_ty(x, v, t));

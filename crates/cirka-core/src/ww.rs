@@ -28,7 +28,7 @@ use std::collections::{HashMap, HashSet};
 
 /// The strictness of an expression: the variables certainly evaluated
 /// when the expression is evaluated to WHNF; `None` when it diverges.
-type Strict = Option<HashSet<u32>>;
+pub(crate) type Strict = Option<HashSet<u32>>;
 
 fn union(a: Strict, b: Strict) -> Strict {
     match (a, b) {
@@ -73,14 +73,14 @@ pub(crate) fn split_fun(e: &Expr) -> (Vec<(TyVar, Kind)>, Vec<Binder>, &Expr) {
     (tvs, xs, e)
 }
 
-struct Analysis<'a> {
-    p: &'a Program,
+pub(crate) struct Analysis<'a> {
+    pub(crate) p: &'a Program,
     /// Strict parameter positions of the top-level functions.
-    strict: HashMap<String, (usize, Vec<bool>)>,
+    pub(crate) strict: HashMap<String, (usize, Vec<bool>)>,
 }
 
 impl Analysis<'_> {
-    fn expr(&self, e: &Expr) -> Strict {
+    pub(crate) fn expr(&self, e: &Expr) -> Strict {
         match e {
             Expr::Var(x) => Some(HashSet::from([x.id])),
             Expr::Global(_) | Expr::Lit(_) | Expr::Lam(..) | Expr::TyLam(..) => {

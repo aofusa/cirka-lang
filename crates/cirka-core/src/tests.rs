@@ -300,3 +300,158 @@ fn opt_case_of_case() {
     assert!(m.contains("11") && m.contains("12"), "{m}");
     assert!(st.known_case >= 3, "{st:?}");
 }
+
+// ---- FEAT-0112: lambda lifting, specialization, strictify, float-in ----
+
+#[test]
+fn opt_lambda_lifts_saturated_local_loops() {
+    // A local loop capturing `n` becomes a global taking `n`; worker/wrapper
+    // then unboxes its strict accumulator.
+    let src = format!(
+        "{STRICT_INT}(extern arg () Int#)
+         (def main Int#
+           (let! (x Int# (extern arg))
+             (let ((n Int (con I# () x)))
+               (letrec ((go (-> Int Int Int)
+                          (lam ((acc Int) (i Int))
+                            (case i (s Int) Int
+                              ((I# k) (case n (t Int) Int
+                                ((I# m) (case (prim gt k m) (c Int#) Int
+                                  (0 (case acc (u Int) Int
+                                    ((I# a) (go (con I# () (prim add a k)) (con I# () (prim add k 1))))))
+                                  (_ acc)))))))))
+                 (case (go (con I# () 0) (con I# () 1)) (r Int) Int# ((I# v) v))))))"
+    );
+    let mut p = parse_program(FileId(0), &src).unwrap();
+    let st = opt::optimize_with_stats(&mut p).unwrap();
+    assert!(lint::lint_program(&p).is_empty(), "{}", print_program(&p));
+    assert_eq!(st.lifted, 1, "{st:?}");
+    let m = print::print_expr(&p.bind("main").unwrap().expr);
+    assert!(!m.contains("letrec") && m.contains("main$go"), "{m}");
+    assert!(
+        p.binds
+            .iter()
+            .any(|b| b.name.starts_with("main$go") && b.name.ends_with("$w"))
+    );
+}
+
+#[test]
+fn lambda_lift_keeps_functions_used_as_values() {
+    // `go` is passed to `twice` unapplied: lifting would build a partial
+    // application at every use, so the closure stays.
+    let src = format!(
+        "{PRELUDE}(def twice (-> (-> Int# Int#) Int# Int#) (lam ((f (-> Int# Int#)) (x Int#)) (f (f x))))
+         (def main Int#
+           (let! (k Int# 7)
+             (letrec ((go (-> Int# Int#) (lam ((i Int#)) (prim add i k))))
+               (twice go 1))))"
+    );
+    let mut p = parse_program(FileId(0), &src).unwrap();
+    let mut next = p.max_id() + 1;
+    assert_eq!(strict::lambda_lift(&mut p, &mut next), 0);
+}
+
+#[test]
+fn opt_specializes_constant_dictionaries() {
+    // `double` is overloaded over a one-method class; called with the
+    // constant dictionary it is specialized and the method call resolved.
+    let src = format!(
+        "{STRICT_INT}(data Add (a) (Add$Dict (-> a a a)))
+         (def plusInt (-> Int Int Int)
+           (lam ((x Int) (y Int))
+             (case x (s Int) Int ((I# a) (case y (t Int) Int ((I# b) (con I# () (prim add a b))))))))
+         (def dAddInt (Add Int) (con Add$Dict (Int) plusInt))
+         (def double (forall (a) (-> (Add a) Int# a a))
+           (tlam (a) (lam ((d (Add a)) (n Int#) (x a))
+             (case n (k Int#) a
+               (0 x)
+               (_ (case d (s (Add a)) a
+                 ((Add$Dict op) ((@ double a) d (prim sub n 1) (op x x)))))))))
+         (extern arg () Int#)
+         (def main Int#
+           (let! (c Int# (extern arg))
+             (case ((@ double Int) dAddInt c (con I# () 1)) (r Int) Int# ((I# v) v))))"
+    );
+    let mut p = parse_program(FileId(0), &src).unwrap();
+    let st = opt::optimize_with_stats(&mut p).unwrap();
+    assert!(lint::lint_program(&p).is_empty(), "{}", print_program(&p));
+    assert!(st.specialized >= 1, "{st:?}");
+    let all = print_program(&p);
+    // The specialized loop is monomorphic and unboxed.
+    let spec = p
+        .binds
+        .iter()
+        .find(|b| b.name.starts_with("double$s") && b.name.ends_with("$w"))
+        .unwrap_or_else(|| panic!("{all}"));
+    let s = print::print_expr(&spec.expr);
+    assert!(!s.contains("dAddInt") && !s.contains("I#"), "{s}");
+}
+
+#[test]
+fn strictify_evaluates_strict_arguments_eagerly() {
+    // `len` is strict in its list; the non-atomic argument `(build 3)` is
+    // evaluated with `let!` instead of being passed as a thunk.
+    let src = format!(
+        "{PRELUDE}(data L () (N) (C Int# L))
+         (def build (-> Int# L)
+           (lam ((n Int#)) (case n (k Int#) L (0 (con N ())) (_ (con C () n (build (prim sub n 1)))))))
+         (def len (-> L Int#)
+           (lam ((l L)) (case l (s L) Int# ((N) 0) ((C x r) (prim add 1 (len r))))))
+         (def main Int# (len (build 3)))"
+    );
+    let mut p = parse_program(FileId(0), &src).unwrap();
+    let mut next = p.max_id() + 1;
+    let n = strict::strictify(&mut p, &mut next);
+    assert!(lint::lint_program(&p).is_empty(), "{}", print_program(&p));
+    assert!(n >= 1);
+    let m = print::print_expr(&p.bind("main").unwrap().expr);
+    assert!(m.starts_with("(let! (s"), "{m}");
+}
+
+#[test]
+fn strictify_turns_forced_lets_strict() {
+    let src = format!(
+        "{PRELUDE}(def f (-> Int Int) (lam ((x Int)) x))
+         (def main Int#
+           (let ((t Int (f (con I# () 5))))
+             (case t (s Int) Int# ((I# v) v))))"
+    );
+    let mut p = parse_program(FileId(0), &src).unwrap();
+    let mut next = p.max_id() + 1;
+    assert_eq!(strict::strictify(&mut p, &mut next), 1);
+    assert!(lint::lint_program(&p).is_empty(), "{}", print_program(&p));
+    let m = print::print_expr(&p.bind("main").unwrap().expr);
+    assert!(m.starts_with("(let! (t"), "{m}");
+}
+
+#[test]
+fn float_in_moves_lets_into_their_only_alternative() {
+    let src = format!(
+        "{PRELUDE}(extern arg () Int#)
+         (def f Int
+           (let! (x Int# (extern arg))
+             (let ((b Int (con I# () x)))
+               (let! (c Int# (prim eq x 0))
+                 (case c (k Int#) Int (0 b) (_ (con I# () 1)))))))
+         (def main Int# 0)"
+    );
+    let mut p = parse_program(FileId(0), &src).unwrap();
+    assert_eq!(strict::float_in(&mut p), 1);
+    assert!(lint::lint_program(&p).is_empty(), "{}", print_program(&p));
+    let m = print::print_expr(&p.bind("f").unwrap().expr);
+    assert!(m.contains("(0 (let ((b"), "{m}");
+}
+
+#[test]
+fn dictionary_fields_become_globals() {
+    let src = format!(
+        "{PRELUDE}(data D (a) (D$Dict (-> a a)))
+         (def dInt (D Int) (con D$Dict (Int) (lam ((x Int)) x)))
+         (def main Int# 0)"
+    );
+    let mut p = parse_program(FileId(0), &src).unwrap();
+    assert_eq!(strict::float_dict_fields(&mut p), 1);
+    assert!(lint::lint_program(&p).is_empty(), "{}", print_program(&p));
+    let d = print::print_expr(&p.bind("dInt").unwrap().expr);
+    assert!(d.contains("dInt$f0"), "{d}");
+}

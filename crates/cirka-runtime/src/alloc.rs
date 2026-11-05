@@ -50,6 +50,8 @@ pub struct Stats {
     pub frees: u64,
     pub live: u64,
     pub max_live: u64,
+    /// Thunks evaluated (`cirka_force`).
+    pub forced: u64,
 }
 
 pub static STATS: Global<Stats> = Global::new(Stats {
@@ -57,6 +59,7 @@ pub static STATS: Global<Stats> = Global::new(Stats {
     frees: 0,
     live: 0,
     max_live: 0,
+    forced: 0,
 });
 
 #[inline(always)]

@@ -36,6 +36,9 @@
   -- runtime-env: CIRKA_STACK_SIZE=64M
   -- expect-leak: 1          (循環の警告テストなど、意図的なリーク)
   -- skip-backend: llvm      (インタプリタのみで実行)
+  -- opt-levels: 2           (aCHC の run テスト: 指定した最適化レベルだけで実行。既定は 0 と 2)
+  -- max-allocs: 3001000     (ネイティブ実行の確保回数の上限。CIRKA_STATS の allocs)
+  -- max-forced: 1001000     (ネイティブ実行で評価されたサンクの数の上限。CIRKA_STATS の forced)
   ```
 - `ACHC_BLESS=1` / `CIRKA_BLESS=1` で期待ファイルを更新。
 - 失敗時は生成した `.ll`・ダンプを `_build/test-failures/<name>/` に残す。
