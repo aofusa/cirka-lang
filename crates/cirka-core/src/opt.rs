@@ -128,19 +128,34 @@ pub fn optimize_with_stats(p: &mut Program) -> Result<Stats, Diagnostic> {
     Ok(st)
 }
 
+/// A global bound to `Λtvs. K ts args` (atoms).
+type KnownGlobal = (Vec<TyVar>, String, Vec<Type>, Vec<Expr>);
+
 /// Runs the simplifier to a fixed point (at most [`MAX_ITERS`] rounds).
 fn simplify_rounds(p: &mut Program, st: &mut Stats, next: &mut u32) -> Result<(), Diagnostic> {
     for _ in 0..MAX_ITERS {
         st.iterations += 1;
         let inl = inline_candidates(p);
-        let kg: HashMap<String, (String, Vec<Type>, Vec<Expr>)> = p
+        // Globals bound to a constructor of atoms, possibly under type
+        // abstractions (`$fMonad = Λr. Monad$Dict …`, the dictionary of a
+        // class instance for a type constructor): known under the
+        // corresponding type application (BUG-0011).
+        let kg: HashMap<String, KnownGlobal> = p
             .binds
             .iter()
-            .filter_map(|b| match &b.expr {
-                Expr::Con(k, ts, a) if a.iter().all(|e| e.is_atom()) => {
-                    Some((b.name.clone(), (k.clone(), ts.clone(), a.clone())))
+            .filter_map(|b| {
+                let mut tvs = Vec::new();
+                let mut e = &b.expr;
+                while let Expr::TyLam(v, _, x) = e {
+                    tvs.push(v.clone());
+                    e = x;
                 }
-                _ => None,
+                match e {
+                    Expr::Con(k, ts, a) if a.iter().all(|e| e.is_atom()) => {
+                        Some((b.name.clone(), (tvs, k.clone(), ts.clone(), a.clone())))
+                    }
+                    _ => None,
+                }
             })
             .collect();
         let mut changed = false;
@@ -420,6 +435,17 @@ pub(crate) fn subst_ty(e: &Expr, v: &TyVar, t: &Type) -> Expr {
     }
 }
 
+/// `cast e t`, collapsing `cast (cast e t0) t` to `cast e t` (casts only
+/// change types, and the lint checks the end-to-end cast).
+fn cast(e: Expr, t: Type) -> Expr {
+    match e {
+        Expr::Cast(x, _) => Expr::Cast(x, t),
+        Expr::Let(b, body) => Expr::Let(b, Box::new(cast(*body, t))),
+        Expr::LetStrict(b, r, body) => Expr::LetStrict(b, r, Box::new(cast(*body, t))),
+        e => Expr::Cast(Box::new(e), t),
+    }
+}
+
 /// A copy of `e` with fresh ids for every term binder and fresh type
 /// variables for every `Λ`.
 pub fn freshen(e: &Expr, next: &mut u32) -> Expr {
@@ -634,10 +660,11 @@ fn inline_candidates(p: &Program) -> HashMap<String, Expr> {
         while let Expr::TyLam(_, _, x) = body {
             body = x;
         }
-        // Aliases (`(+) = primIntAdd`) are inlined like small functions.
+        // Aliases (`(+) = primIntAdd`, or a cast of one such as
+        // `primBindIO = cast prim$io_bind`) are inlined like small functions.
         let alias = {
             let mut a = body;
-            while let Expr::TyApp(x, _) = a {
+            while let Expr::TyApp(x, _) | Expr::Cast(x, _) = a {
                 a = x;
             }
             matches!(a, Expr::Global(g) if *g != b.name)
@@ -695,7 +722,7 @@ struct Simp<'a> {
     evaluated: HashSet<u32>,
     /// Top-level bindings that are constructors applied to atoms
     /// (e.g. type-class dictionaries).
-    known_globals: &'a HashMap<String, (String, Vec<Type>, Vec<Expr>)>,
+    known_globals: &'a HashMap<String, KnownGlobal>,
     next: u32,
     changed: bool,
     st: Stats,
@@ -800,7 +827,10 @@ impl Simp<'_> {
                 Expr::Lam(b, Box::new(self.expr(*x)))
             }
             Expr::TyLam(v, k, x) => Expr::TyLam(v, k, Box::new(self.expr(*x))),
-            Expr::Cast(x, t) => Expr::Cast(Box::new(self.expr(*x)), t),
+            Expr::Cast(x, t) => {
+                let x = self.expr(*x);
+                cast(x, t)
+            }
             Expr::Let(Bind::NonRec(b, r), body) => {
                 let o = self.occ(b.id.id);
                 if o.count == 0 && b.mult != Mult::One {
@@ -853,6 +883,10 @@ impl Simp<'_> {
                 let h = self.callee(*h);
                 self.ty_apply(h, t)
             }
+            Expr::Cast(h, t) => {
+                let h = self.callee(*h);
+                cast(h, t)
+            }
             f => self.expr(f),
         }
     }
@@ -893,6 +927,29 @@ impl Simp<'_> {
                 self.hit();
                 self.st.floated += 1;
                 Expr::LetStrict(b, r, Box::new(self.apply(*body, a)))
+            }
+            // `(cast (λb. body) (t1 -> t2)) a` = `cast (body[b := cast a]) t2`:
+            // a cast only changes types (IO over `Unit# -> a`), so the
+            // application goes through it (BUG-0011).
+            Expr::Cast(h, Type::Fun(_, t1, t2)) if matches!(*h, Expr::Lam(..)) => {
+                let Expr::Lam(b, body) = *h else {
+                    unreachable!()
+                };
+                let a = if b.ty.alpha_eq(&t1) {
+                    a
+                } else {
+                    cast(a, b.ty.clone())
+                };
+                let r = self.beta(b, *body, a);
+                cast(r, *t2)
+            }
+            Expr::Cast(h, t) if matches!(*h, Expr::Let(..) | Expr::LetStrict(..)) => {
+                let f = match *h {
+                    Expr::Let(bind, body) => Expr::Let(bind, Box::new(cast(*body, t))),
+                    Expr::LetStrict(b, r, body) => Expr::LetStrict(b, r, Box::new(cast(*body, t))),
+                    _ => unreachable!(),
+                };
+                self.apply(f, a)
             }
             f => Expr::App(Box::new(f), Box::new(a)),
         }
@@ -1168,6 +1225,24 @@ impl Simp<'_> {
         known || small
     }
 
+    /// The known constructor of `x` when `cast x t` keeps its type: `t` is
+    /// its data type at the same type arguments.
+    fn cast_known(&self, x: &Expr, t: &Type) -> Option<(String, Vec<Type>, Vec<Expr>)> {
+        let Expr::Var(v) = x else { return None };
+        let con = self.known.get(&v.id)?;
+        let (d, _) = self.p.ctor(&con.0)?;
+        match t {
+            Type::Con(n, ts)
+                if *n == d.name
+                    && ts.len() == con.1.len()
+                    && ts.iter().zip(&con.1).all(|(a, b)| a.alpha_eq(b)) =>
+            {
+                Some(con.clone())
+            }
+            _ => None,
+        }
+    }
+
     /// Field types of constructor `c` at type arguments `ts` when all its
     /// fields are strict and not linear.
     fn strict_field_types(&self, c: &str, ts: &[Type]) -> Option<Vec<Type>> {
@@ -1266,6 +1341,14 @@ impl Simp<'_> {
                 self.case_default(Expr::Lit(Lit::Int(n)), b, res, alts)
             }
             Expr::Con(..) => self.known_con(s, b, res, alts),
+            // `case (cast x T) of …` with `x` a known constructor of `T` at
+            // the same type arguments (a cast that changed nothing).
+            Expr::Cast(x, t) if self.cast_known(&x, &t).is_some() => {
+                let con = self.cast_known(&x, &t).unwrap();
+                let Expr::Var(v) = &*x else { unreachable!() };
+                let lin = self.env.get(&v.id).is_none_or(|(m, _)| *m != Mult::Many);
+                self.known_scrut(Expr::Cast(x, t), lin, con, b, res, alts)
+            }
             Expr::Var(x) if self.known.contains_key(&x.id) => {
                 let con = self.known[&x.id].clone();
                 let lin = self.env.get(&x.id).is_none_or(|(m, _)| *m != Mult::Many);
@@ -1287,12 +1370,36 @@ impl Simp<'_> {
                 let rhs = alts.into_iter().next().unwrap().rhs;
                 self.expr(rhs)
             }
-            Expr::Global(g) if self.known_globals.contains_key(&g) => {
-                let con = self.known_globals[&g].clone();
-                self.known_scrut(Expr::Global(g), false, con, b, res, alts)
+            s @ (Expr::Global(_) | Expr::TyApp(..)) if self.known_global(&s).is_some() => {
+                let con = self.known_global(&s).unwrap();
+                self.known_scrut(s, false, con, b, res, alts)
             }
             s => self.case_default(s, b, res, alts),
         }
+    }
+
+    /// The constructor a global (applied to as many types as it abstracts)
+    /// is bound to, with the types substituted.
+    fn known_global(&self, e: &Expr) -> Option<(String, Vec<Type>, Vec<Expr>)> {
+        let mut tys = Vec::new();
+        let mut h = e;
+        while let Expr::TyApp(f, t) = h {
+            tys.push(t.clone());
+            h = f;
+        }
+        let Expr::Global(g) = h else { return None };
+        let (tvs, k, ts, args) = self.known_globals.get(g)?;
+        if tvs.len() != tys.len() {
+            return None;
+        }
+        tys.reverse();
+        let mut ts = ts.clone();
+        let mut args = args.clone();
+        for (v, t) in tvs.iter().zip(&tys) {
+            ts = ts.iter().map(|x| x.subst(v, t)).collect();
+            args = args.iter().map(|a| subst_ty(a, v, t)).collect();
+        }
+        Some((k.clone(), ts, args))
     }
 
     /// `case x as b of alts` where `x` (a variable or a global) is bound to

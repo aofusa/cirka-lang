@@ -112,11 +112,20 @@ fn free_tyvars(e: &Expr, out: &mut Vec<TyVar>) {
 // ---- dictionary fields ----
 
 /// Makes every field of a top-level constructor value atomic by moving
-/// non-atomic fields to globals `name$fN`. Returns the number moved.
+/// non-atomic fields to globals `name$fN`. A constructor under type
+/// abstractions (`Λr. Monad$Dict …`, an instance for a type constructor)
+/// moves each field to `name$fN = Λr. field`, referenced as `name$fN @r`
+/// (BUG-0011). Returns the number moved.
 pub fn float_dict_fields(p: &mut Program) -> usize {
     let mut new = Vec::new();
     for i in 0..p.binds.len() {
-        let Expr::Con(k, ts, args) = &p.binds[i].expr else {
+        let mut tvs: Vec<(TyVar, Kind)> = Vec::new();
+        let mut e = &p.binds[i].expr;
+        while let Expr::TyLam(v, k, x) = e {
+            tvs.push((v.clone(), k.clone()));
+            e = x;
+        }
+        let Expr::Con(k, ts, args) = e else {
             continue;
         };
         if args.iter().all(|a| a.is_atom()) {
@@ -139,15 +148,29 @@ pub fn float_dict_fields(p: &mut Program) -> usize {
                 continue;
             }
             let g = format!("{name}$f{j}");
-            atoms.push(Expr::Global(g.clone()));
+            let mut r = Expr::Global(g.clone());
+            let mut expr = a.clone();
+            let mut ty = ft;
+            for (v, k) in tvs.iter().rev() {
+                expr = Expr::TyLam(v.clone(), k.clone(), Box::new(expr));
+                ty = Type::Forall(v.clone(), k.clone(), Box::new(ty));
+            }
+            for (v, _) in &tvs {
+                r = Expr::TyApp(Box::new(r), Type::Var(v.clone()));
+            }
+            atoms.push(r);
             new.push(TopBind {
                 name: g,
-                ty: ft,
-                expr: a.clone(),
+                ty,
+                expr,
                 span,
             });
         }
-        p.binds[i].expr = Expr::Con(k.clone(), ts.clone(), atoms);
+        let mut con = Expr::Con(k.clone(), ts.clone(), atoms);
+        for (v, k) in tvs.into_iter().rev() {
+            con = Expr::TyLam(v, k, Box::new(con));
+        }
+        p.binds[i].expr = con;
     }
     let n = new.len();
     p.binds.extend(new);

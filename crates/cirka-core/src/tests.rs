@@ -553,6 +553,42 @@ fn dictionary_fields_become_globals() {
     assert!(d.contains("dInt$f0"), "{d}");
 }
 
+#[test]
+fn opt_resolves_polymorphic_dictionary_under_type_application() {
+    // An instance for a type constructor is `Λr. D$Dict …` with a lambda
+    // field: the field moves to `dF$f0 = Λr. λx. x`, and a method call
+    // through `dF @Int` is resolved and inlined (BUG-0011).
+    let src = format!(
+        "{PRELUDE}(data D (a) (D$Dict (-> a a)))
+         (def dF (forall (r) (D r)) (tlam (r) (con D$Dict (r) (lam ((x r)) x))))
+         (def main Int#
+           (case (@ dF Int) (d (D Int)) Int#
+             ((D$Dict f) (case (f (con I# () 5)) (s Int) Int# ((I# v) v)))))"
+    );
+    let mut p = parse_program(FileId(0), &src).unwrap();
+    assert!(lint::lint_program(&p).is_empty());
+    assert_eq!(strict::float_dict_fields(&mut p), 1);
+    assert!(lint::lint_program(&p).is_empty(), "{}", print_program(&p));
+    let f = print::print_expr(&p.bind("dF").unwrap().expr);
+    assert!(f.contains("dF$f0"), "{f}");
+    let (m, st) = opt_main(&src);
+    assert_eq!(m.trim(), "5");
+    assert!(st.known_case >= 1, "{st:?}");
+}
+
+#[test]
+fn opt_applies_through_casts() {
+    // `ret = cast retImpl` (IO's `primReturnIO` over `prim$io_return`) is
+    // inlined as an alias, and the application goes through the cast.
+    let src = format!(
+        "{PRELUDE}(def retImpl (-> Int Int) (lam ((x Int)) x))
+         (def ret (-> Int Int) (cast retImpl (-> Int Int)))
+         (def main Int# (case (ret (con I# () 7)) (s Int) Int# ((I# v) v)))"
+    );
+    let (m, _) = opt_main(&src);
+    assert_eq!(m.trim(), "7");
+}
+
 // ---- FEAT-0123: evaluated scrutinees, value fields, let! of a case ----
 
 #[test]

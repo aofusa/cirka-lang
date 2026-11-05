@@ -1,6 +1,6 @@
 # BUG-0011: Borrow モナドのループが線形な受け渡しより約 130 倍遅い
 
-- 状態: todo
+- 状態: in-progress
 - 重大度: major
 - 発見箇所: FEAT-0043 (`bench/n-body/own.chs` の借用版)
 - 関連: FEAT-0124, FEAT-0123
@@ -35,12 +35,28 @@ achc build -O2 -o nb n-body-borrow.chs && time ./nb 200000
 
 ## 原因
 
-未調査。候補: `Borrow` モナドの `>>=` が IO 相当のクロージャを毎回確保する、`UElem` の辞書渡しが特殊化されず
-`index` / `writeAt` が未知の関数呼び出しになる、ループの局所関数が worker/wrapper の対象外 (FEAT-0056)。
+`-O2` の Core (`--dump=core-opt`) を調べた結果、次の三つが重なっていた。
+
+1. **辞書が解決されない。** `Borrow r` の `Monad` インスタンスは型引数を取る辞書 `$fMonad = Λr. Monad$Dict …` で、
+   フィールドが原子でない (`Λa b. …` やラムダ)。既知コンストラクタ表は原子フィールドの `Con` だけを登録し、
+   `float_dict_fields` も `Λ` の下の `Con` を扱わないため、`>>=` のたびに `case ($fMonad @Unit) of Monad$Dict …` が残っていた。
+2. **IO の bind がインライン化されない。** `primBindIO = cast prim$io_bind` は `cast` のため別名とみなされず、
+   `(cast (λ…) T) a` も簡約されなかった。
+3. **状態トークンについての η 展開がない。** `Borrow r a` (= `IO a` = `Unit# -> a` の `cast`) を返すループ
+   (`pairs i j`) は、1 ステップごとに IO アクションのクロージャの木を作ってから実行する。GHC はここを
+   「state hack」 (IO を返す関数を状態トークンについて η 展開する) で消す。
 
 ## 修正
 
-- [ ] 回帰テストを追加 (確保回数か時間の上限)
-- [ ] 修正
+- [x] 1: `float_dict_fields` が `Λtvs. K …` の非原子フィールドを `name$fN = Λtvs. field` に出し、`name$fN @tvs` で参照する。
+  既知コンストラクタ表は `Λtvs. K ts atoms` を登録し、`g @ts` の `case` を型を代入して解決する
+- [x] 2: `cast` の別名をインライン化し、`(cast (λb. e) (t1 -> t2)) a` を `cast (e[b := a]) t2` に簡約する。
+  入れ子の `cast` はまとめ、`cast` の下の `let` は外に出す。`case (cast x T)` は `x` が `T` の同じ型引数の既知コンストラクタなら解決する
+- [x] 回帰テスト: `tests/achc/run/h3/borrow_loop.hs` (`max-allocs`。修正前 870,118 → 修正後 660,106)、
+  `cirka-core` の `opt_resolves_polymorphic_dictionary_under_type_application` / `opt_applies_through_casts`
+- [ ] 3: 状態トークンについての η 展開 (残り)
+
+計測 (n-body 借用版 2 万ステップ、`-O2`): 1.80 s → 1.27 s、確保 51.1M → 41.6M。線形な版 (100 万ステップで 0.45 s) との差はまだ大きく、
+残りは 3 による。
 
 ## メモ
