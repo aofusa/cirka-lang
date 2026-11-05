@@ -41,7 +41,8 @@ impl Header {
         let mut entries = BTreeMap::new();
         for line in text.lines() {
             let t = line.trim();
-            if t.is_empty() {
+            // Haskell `{-# LANGUAGE ... #-}` pragmas may precede the header.
+            if t.is_empty() || (t.starts_with("{-#") && t.ends_with("#-}")) {
                 continue;
             }
             let body = ["--", "//", ";", "#"]
@@ -582,6 +583,9 @@ mod tests {
             vec![("CIRKA_STACK_SIZE".into(), "64M".into())]
         );
         assert_eq!(h.entries.len(), 3);
+        let h =
+            Header::parse("{-# LANGUAGE LinearTypes #-}\n-- max-allocs: 3\nmodule Main where\n");
+        assert_eq!(h.get("max-allocs"), Some("3"));
         let h = Header::parse("// skip-backend: llvm\nfn main() {}");
         assert_eq!(h.get("skip-backend"), Some("llvm"));
     }
