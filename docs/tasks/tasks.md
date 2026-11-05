@@ -134,7 +134,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0122](features/FEAT-0122-hs-drop-release.md) | Drop / Release による RAII | done | P0 | 0121 |
 | [FEAT-0123](features/FEAT-0123-hs-unique-arrays.md) | 一意配列 (Cirka.Array) | done | P1 | 0121, 0022 |
 | [FEAT-0124](features/FEAT-0124-hs-borrowing.md) | 借用 (Ref / MutRef / Borrow モナド) | done | P1 | 0121 |
-| [FEAT-0125](features/FEAT-0125-hs-chs-mode.md) | .chs モード・CirkaOwnership・ownership レベル | todo | P1 | 0122 |
+| [FEAT-0125](features/FEAT-0125-hs-chs-mode.md) | .chs モード・CirkaOwnership・ownership レベル | done | P1 | 0122 |
 | [FEAT-0126](features/FEAT-0126-hs-cycles.md) | 循環の検出と局所回収器 | todo | P2 | 0112 |
 | [FEAT-0127](features/FEAT-0127-hs-regions.md) | リージョン (aCHC) | todo | P2 | 0124, 0049 |
 | [FEAT-0128](features/FEAT-0128-hs-linearity-inference.md) | 線形性の推論 (LType 一般化) | todo | P2 | 0121 |
@@ -279,5 +279,6 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [BUG-0007](bugs/BUG-0007-derived-read-gaps.md) | 導出した Read が演算子のフィールド名と逆引用符の中置構築子を読めない | todo | minor | FEAT-0119 |
 | [BUG-0008](bugs/BUG-0008-newtype-pattern-forces.md) | newtype の構築子パターンが値を評価してしまう | todo | major | FEAT-0119 |
 | [BUG-0009](bugs/BUG-0009-strict-linear-tuple.md) | タプルの成分の線形専用値が正格に評価されない | done | major | FEAT-0123 |
+| [BUG-0010](bugs/BUG-0010-test-header-after-pragma.md) | テストのヘッダが `{-# LANGUAGE #-}` の後にあると読まれない | done | major | FEAT-0125 |
 
 新しいチケットは `features/_TEMPLATE.md` / `bugs/_TEMPLATE.md` をコピーして作成する。

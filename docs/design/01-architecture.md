@@ -103,7 +103,7 @@ achc check Main.hs                          # 型・所有権検査のみ
 achc verify Main.hs                         # (後期 H6) 洗練型・契約の検証 (FEAT-0151, 0152)
 ```
 
-フラグ: `-O0|-O1|-O2`、`--ownership=off|warn|strict`、`--cycles=warn|error|collect`、`--runtime=release|debug`、`--emit=llvm|obj|exe`。
+フラグ: `-O0|-O1|-O2`、`--ownership=off|warn|strict` (`achc.toml` より優先)、`--cycles=warn|error|collect`、`--runtime=release|debug`、`--emit=llvm|obj|exe`。
 
 ```toml
 # achc.toml (tsconfig に相当)
@@ -116,7 +116,7 @@ source-dirs = ["src"]
 cirka-base = { path = "../lib/cirka-base" }
 
 [compiler]
-ownership = "warn"        # off | warn | strict : .hs に対する所有権関連の診断レベル
+ownership = "warn"        # off | warn | strict : .hs に対する所有権関連の診断レベル (02 §1.3)
 cycles = "warn"           # warn | error | collect
 default-extensions = []
 ```

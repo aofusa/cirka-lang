@@ -22,9 +22,41 @@ use cirka_diagnostics::{Diagnostic, Span};
 use infer::Tc;
 use types::*;
 
+/// The level of the ownership diagnostics of Haskell-mode modules (`.hs`
+/// files without `CirkaOwnership`, 02-language-extensions.md §1.3). Cirka
+/// mode modules are always checked at `Strict`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Ownership {
+    /// Leak diagnostics are not reported.
+    Off,
+    /// Leak diagnostics are warnings (the default of `achc`).
+    Warn,
+    /// Leak diagnostics are errors.
+    #[default]
+    Strict,
+}
+
+impl Ownership {
+    pub fn parse(s: &str) -> Option<Ownership> {
+        match s {
+            "off" => Some(Ownership::Off),
+            "warn" => Some(Ownership::Warn),
+            "strict" => Some(Ownership::Strict),
+            _ => None,
+        }
+    }
+}
+
+/// Ownership diagnostics that concern leaks only (an unconsumed linear
+/// value is still freed by reference counting; a `Release` resource is
+/// not released). The others (double use, linear-only values bound
+/// unrestrictedly, escaping borrows) guard memory safety and are errors in
+/// every mode.
+const LEAK_CODES: &[&str] = &["E0302", "E0304"];
+
 /// Type checks a renamed program. On success also returns warnings.
 pub fn typecheck(p: &achc_rename::Program) -> Result<tast::Program, Vec<Diagnostic>> {
-    typecheck_in(p, None, &|_| false)
+    typecheck_in(p, None, &|_| false, Ownership::Strict)
 }
 
 /// Like [`typecheck`]; with the source map, calls of `error` and
@@ -34,6 +66,7 @@ pub fn typecheck_in(
     p: &achc_rename::Program,
     sm: Option<&cirka_diagnostics::SourceMap>,
     is_library: &dyn Fn(&str) -> bool,
+    ownership: Ownership,
 ) -> Result<tast::Program, Vec<Diagnostic>> {
     let mut tc = Tc::new();
     if let Some(sm) = sm {
@@ -89,7 +122,27 @@ pub fn typecheck_in(
     if tc.errors.is_empty() {
         let files = p.modules.iter().map(|m| (m.name.clone(), m.file)).collect();
         let (errs, plan) = linear::check(&mut tc, &modules, &files);
-        tc.errors.extend(errs);
+        let haskell_mode: std::collections::HashSet<_> = p
+            .modules
+            .iter()
+            .filter(|m| !m.chs && !m.extensions.iter().any(|e| e == "CirkaOwnership"))
+            .map(|m| m.file)
+            .collect();
+        for mut d in errs {
+            let relaxed = ownership != Ownership::Strict
+                && d.code.as_deref().is_some_and(|c| LEAK_CODES.contains(&c))
+                && d.primary_span()
+                    .is_some_and(|s| haskell_mode.contains(&s.file));
+            if !relaxed {
+                tc.errors.push(d);
+            } else if ownership == Ownership::Warn {
+                d.severity = cirka_diagnostics::Severity::Warning;
+                tc.out.warnings.push(d.with_note(
+                    "a warning in a `.hs` file under `ownership = warn`; an error in `.chs` files, \
+                     with `CirkaOwnership` or under `--ownership=strict`",
+                ));
+            }
+        }
         if tc.errors.is_empty() && tc.has_ltype {
             raii::apply(&mut tc, &plan, &mut binds);
             // Strict-Linear (§6): fields of linear-only types are strict.

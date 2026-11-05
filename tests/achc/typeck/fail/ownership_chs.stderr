@@ -1,0 +1,6 @@
+error[E0302]: linear value is not consumed
+ --> tests/achc/typeck/fail/ownership_chs.chs:7:7
+  |
+7 | drop1 _ = ()
+  |       ^ a wildcard discards a value bound linearly
+  = note: match it with a variable and consume it, or use `consume`

@@ -1,0 +1,6 @@
+error[E0302]: linear variable `y` is not consumed
+ --> tests/achc/typeck/fail/ownership_pragma.hs:8:10
+  |
+8 | unused x y = x
+  |          ^ bound linearly here
+  = note: a linear value must be used exactly once

@@ -1,0 +1,14 @@
+warning[E0302]: linear value is not consumed
+ --> tests/achc/typeck/ok/ownership_warn.hs:8:7
+  |
+8 | drop1 _ = ()
+  |       ^ a wildcard discards a value bound linearly
+  = note: match it with a variable and consume it, or use `consume`
+  = note: a warning in a `.hs` file under `ownership = warn`; an error in `.chs` files, with `CirkaOwnership` or under `--ownership=strict`
+warning[E0302]: linear variable `y` is not consumed
+  --> tests/achc/typeck/ok/ownership_warn.hs:11:10
+   |
+11 | unused x y = x
+   |          ^ bound linearly here
+   = note: a linear value must be used exactly once
+   = note: a warning in a `.hs` file under `ownership = warn`; an error in `.chs` files, with `CirkaOwnership` or under `--ownership=strict`

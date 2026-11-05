@@ -480,14 +480,11 @@ impl Parser {
 
     // ---- module ----
 
-    pub fn module(&mut self, extensions: Vec<(String, Span)>) -> Module {
-        self.strict_data = extensions
-            .iter()
-            .any(|(e, _)| e == "StrictData" || e == "Strict");
-        self.strict = extensions.iter().any(|(e, _)| e == "Strict");
-        self.borrow_sugar = extensions
-            .iter()
-            .any(|(e, _)| e == "CirkaBorrow" || e == "CirkaOwnership");
+    pub fn module(&mut self, extensions: Vec<(String, Span)>, defaults: &[&str]) -> Module {
+        let on = |x: &str| defaults.contains(&x) || extensions.iter().any(|(e, _)| e == x);
+        self.strict_data = on("StrictData") || on("Strict");
+        self.strict = on("Strict");
+        self.borrow_sugar = on("CirkaBorrow") || on("CirkaOwnership");
         let start = self.span();
         let mut name = None;
         let mut exports = None;

@@ -8,6 +8,7 @@
 //! flags: -O0|-O1|-O2  --release (= -O2)  --runtime=release|debug
 //!        --dump=core,core-opt,mir,mir-opt,llvm (+ frontend stages)  --build-dir=DIR
 //!        --emit=llvm|exe  -l<lib> / -L<dir> (passed to the linker)
+//!        --NAME=VALUE (other options, checked by the frontend)
 //! ```
 
 use crate::Config;
@@ -86,6 +87,8 @@ pub fn parse_args(args: &[String]) -> Result<Args, String> {
                 build_dir = Some(PathBuf::from(&s["--build-dir=".len()..]))
             }
             s if s.starts_with("-l") || s.starts_with("-L") => opts.link_args.push(s.to_string()),
+            // Frontend options are checked by the frontend.
+            s if s.starts_with("--") && s.contains('=') => opts.frontend_flags.push(s.to_string()),
             s if s.starts_with('-') => return Err(format!("unknown option `{s}`")),
             s => {
                 if file.is_some() {
@@ -152,6 +155,10 @@ fn main_inner(tool: &'static str, usage: &str, frontend: Frontend) -> ExitCode {
     let is_core = args.file.extension().is_some_and(|e| e == "core");
     if is_core && let Some(st) = args.opts.frontend_dumps.iter().find(|s| *s != "all") {
         eprintln!("{tool}: unknown dump stage `{st}`\n{usage}");
+        return ExitCode::from(2);
+    }
+    if is_core && let Some(f) = args.opts.frontend_flags.first() {
+        eprintln!("{tool}: unknown option `{f}`\n{usage}");
         return ExitCode::from(2);
     }
     let program = if is_core {
@@ -235,4 +242,26 @@ fn load_core(sm: &mut SourceMap, path: &Path) -> Result<Program, Vec<Diagnostic>
     })?;
     let fid = sm.add(path.display().to_string(), text.clone());
     cirka_core::parse_program(fid, &text).map_err(|d| vec![d])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(s: &str) -> Result<Args, String> {
+        parse_args(&s.split_whitespace().map(String::from).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn frontend_flags_are_passed_through() {
+        let a = args("check --ownership=off -O0 --ownership=strict Main.hs").unwrap();
+        assert_eq!(a.command, Command::Check);
+        assert_eq!(a.opts.opt_level, 0);
+        assert_eq!(
+            a.opts.frontend_flags,
+            vec!["--ownership=off", "--ownership=strict"]
+        );
+        assert!(args("check --bogus Main.hs").is_err());
+        assert!(args("check -x Main.hs").is_err());
+    }
 }

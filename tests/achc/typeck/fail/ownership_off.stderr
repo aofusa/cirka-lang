@@ -1,0 +1,7 @@
+error[E0303]: linear variable `x` is used more than once
+ --> tests/achc/typeck/fail/ownership_off.hs:8:10
+  |
+8 | dup x = (x, x)
+  |     - bound linearly here
+  |          ^ first use
+  |             - second use

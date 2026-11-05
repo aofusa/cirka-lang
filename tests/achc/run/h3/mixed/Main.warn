@@ -1,0 +1,7 @@
+warning[E0302]: linear value is not consumed
+  --> tests/achc/run/h3/mixed/Main.hs:15:8
+   |
+15 | ignore _ = 0
+   |        ^ a wildcard discards a value bound linearly
+   = note: match it with a variable and consume it, or use `consume`
+   = note: a warning in a `.hs` file under `ownership = warn`; an error in `.chs` files, with `CirkaOwnership` or under `--ownership=strict`

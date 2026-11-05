@@ -11,7 +11,7 @@ aCHC は前期と後期に分けて進める (ADR-025, ADR-027)。前期 (H1–H
 | 拡張子 | モード | 既定で有効な拡張 |
 |--------|--------|------------------|
 | `.hs` | **Haskell モード** | なし (Haskell 2010 + `{-# LANGUAGE #-}` で明示した拡張) |
-| `.chs` | **Cirka モード** | `CirkaOwnership`(下記)、`BangPatterns`、`LambdaCase`、`ScopedTypeVariables` |
+| `.chs` | **Cirka モード** | `CirkaOwnership`(下記。`LinearTypes` を含む)、`BangPatterns`、`LambdaCase`、`ScopedTypeVariables` |
 
 - `.hs` に `{-# LANGUAGE CirkaOwnership #-}` を書けば `.chs` と同等になる。
 - 両モードのモジュールは相互に import できる。`.hs` 側から見た Cirka 型(`Unique a` など)も通常の型として扱われ、
@@ -31,6 +31,25 @@ aCHC は前期と後期に分けて進める (ADR-025, ADR-027)。前期 (H1–H
 | `CirkaExtern` | `extern "C" { ... }` ブロック、`import "C"` | §7 |
 
 個別に有効化することもできる。型・関数は `Cirka.*` モジュールに定義され、構文糖はそれらへの脱糖にすぎない。
+
+### 1.3 所有権の診断レベル (`ownership = off|warn|strict`)
+
+Haskell モードのモジュール (`.hs` で `CirkaOwnership` のないもの) の所有権に関する診断の重大度を、
+`--ownership=off|warn|strict` (`achc.toml` の `[compiler] ownership`。コマンドラインが優先) で選ぶ。`achc` の既定は `warn`。
+Cirka モードのモジュールは常に `strict`。
+
+| 診断 | `off` | `warn` | `strict` |
+|------|-------|--------|----------|
+| リークだけに関わるもの: E0302 (線形値を消費していない)、E0304 (`Release` のみの値を純粋な文脈で捨てた) | 報告しない | 同じコードの警告 | エラー |
+| メモリ安全性に関わるもの: E0301, E0303, E0310, E0320 | エラー | エラー | エラー |
+
+- 消費されない線形値も Perceus の RC で解放されるので、リークだけの診断を緩めても安全性は損なわれない
+  (`Release` の資源は解放されずに残る)。二重使用・線形専用値の無制限な束縛・借用の脱出は一意性と in-place 更新の
+  前提なので、どのレベルでも緩めない (ADR-042)。
+- 診断はモジュールごとに決まる: 線形値を束縛した位置のファイルのモードによる。
+- 実装 (FEAT-0125): 型検査器 (`achc_typeck::Ownership`) が線形性検査の診断を振り分ける。`.chs` の既定の拡張は
+  構文解析器に既定として渡し (`achc_syntax::CHS_EXTENSIONS`)、AST の pragma には加えない。共通のドライバは
+  知らない `--名前=値` のオプションをフロントエンドに渡す (`Options::frontend_flags`)。
 
 ### 1.2 サポートする GHC 拡張
 

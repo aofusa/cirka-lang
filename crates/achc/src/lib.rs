@@ -16,6 +16,25 @@ use std::path::{Path, PathBuf};
 /// Frontend stages accepted by `--dump=`.
 pub const DUMPS: &[&str] = &["rn", "tc"];
 
+/// The ownership level of `.hs` files given by the frontend options: the
+/// last `--ownership=off|warn|strict` (default `warn`, 02-language-extensions.md §1.3).
+pub fn ownership_level(opts: &Options) -> Result<achc_typeck::Ownership, Diagnostic> {
+    let mut level = achc_typeck::Ownership::Warn;
+    for f in &opts.frontend_flags {
+        match f.strip_prefix("--ownership=") {
+            Some(v) => {
+                level = achc_typeck::Ownership::parse(v).ok_or_else(|| {
+                    Diagnostic::error(format!(
+                        "invalid value `{v}` for `--ownership` (expected off, warn or strict)"
+                    ))
+                })?
+            }
+            None => return Err(Diagnostic::error(format!("unknown option `{f}`"))),
+        }
+    }
+    Ok(level)
+}
+
 /// Directory of the base library: `ACHC_LIB_DIR`, else
 /// `../lib/cirka-base` next to the executable's directory (installed
 /// layout), else the repository's `lib/cirka-base`.
@@ -59,6 +78,7 @@ pub fn compile(
             main_file.display()
         ))]
     })?;
+    let ownership = ownership_level(opts).map_err(|d| vec![d])?;
     let chs = main_file.extension().is_some_and(|e| e == "chs");
     let id = sm.add(main_file.display().to_string(), src.clone());
     let mut loader = achc_rename::FsLoader {
@@ -82,9 +102,12 @@ pub fn compile(
         )?;
     }
     let lib = lib_dir();
-    let tp = achc_typeck::typecheck_in(&rn, Some(sm), &|f| {
-        std::path::Path::new(f).starts_with(&lib)
-    })?;
+    let tp = achc_typeck::typecheck_in(
+        &rn,
+        Some(sm),
+        &|f| std::path::Path::new(f).starts_with(&lib),
+        ownership,
+    )?;
     dump_frontend(
         opts,
         "tc",
@@ -127,10 +150,18 @@ pub fn frontend(
             DUMPS.join(", ")
         ))]));
     }
+    let mut pkg_opts = None;
     let (main_file, mut roots, name) =
         if path.is_dir() || path.file_name().is_some_and(|f| f == "achc.toml") {
             match package::Package::load(path) {
-                Ok(p) => (p.main_file(), p.source_dirs(), p.name),
+                Ok(p) => {
+                    // `--ownership=` on the command line overrides achc.toml.
+                    let mut o = opts.clone();
+                    o.frontend_flags
+                        .insert(0, format!("--ownership={}", p.ownership));
+                    pkg_opts = Some(o);
+                    (p.main_file(), p.source_dirs(), p.name)
+                }
                 Err(e) => return Some(Err(vec![e])),
             }
         } else if path.extension().is_some_and(|e| e == "hs" || e == "chs") {
@@ -145,10 +176,35 @@ pub fn frontend(
             return None;
         };
     roots.push(lib_dir());
+    let opts = pkg_opts.as_ref().unwrap_or(opts);
     Some(compile(sm, &main_file, &roots, opts, &name).map(|c| {
         for w in &c.warnings {
             eprint!("{}", render(w, sm, Style::for_stderr()));
         }
         c.core
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn level(flags: &[&str]) -> Result<achc_typeck::Ownership, Diagnostic> {
+        let mut o = Options::new("t");
+        o.frontend_flags = flags.iter().map(|s| s.to_string()).collect();
+        ownership_level(&o)
+    }
+
+    #[test]
+    fn ownership_flags() {
+        use achc_typeck::Ownership::*;
+        assert_eq!(level(&[]).unwrap(), Warn);
+        assert_eq!(level(&["--ownership=off"]).unwrap(), Off);
+        assert_eq!(
+            level(&["--ownership=off", "--ownership=strict"]).unwrap(),
+            Strict
+        );
+        assert!(level(&["--ownership=loose"]).is_err());
+        assert!(level(&["--cycles=warn"]).is_err());
+    }
 }

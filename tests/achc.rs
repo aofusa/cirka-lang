@@ -95,28 +95,50 @@ fn achc_modules() {
 }
 
 /// Type checker tests (FEAT-0103) against the small library in
-/// tests/achc/typeck/lib: `ok/*.hs` type check and the inferred bindings
-/// of `Main` match `.tc`; `fail/*.hs` report the errors in `.stderr`.
+/// tests/achc/typeck/lib: `ok/*.hs` (and `.chs`) type check, the inferred
+/// bindings of `Main` match `.tc` and the warnings `.warn` (none when
+/// absent); `fail/*.hs` report the errors in `.stderr`. The ownership level
+/// is `strict` unless the header says `-- flags: --ownership=…`.
 #[test]
 fn achc_typeck() {
     let dir = repo_root().join("tests/achc/typeck");
     let root = format!("{}/", repo_root().display());
     let mut failed = Vec::new();
     for (sub, ok) in [("ok", true), ("fail", false)] {
-        let cases = discover(&dir.join(sub), &["hs"]);
+        let cases = discover(&dir.join(sub), &["hs", "chs"]);
         assert!(!cases.is_empty());
         for c in cases {
             let src = c.source();
             let mut sm = SourceMap::new();
             let id = sm.add(c.path.display().to_string(), src.clone());
             let mut loader = achc_rename::FsLoader {
-                roots: vec![dir.join("lib")],
+                roots: vec![dir.join("lib"), c.path.parent().unwrap().to_path_buf()],
             };
             let opts = achc_rename::Options::default();
-            let r = achc_rename::rename_program(&mut sm, id, &src, false, &mut loader, &opts)
-                .and_then(|p| achc_typeck::typecheck(&p));
+            let chs = c.path.extension().is_some_and(|e| e == "chs");
+            // `-- flags: --ownership=…` (default strict here).
+            let mut dopts = cirka_driver::pipeline::Options::new(&c.name);
+            dopts.frontend_flags = vec!["--ownership=strict".into()];
+            dopts.frontend_flags.extend(c.header.flags());
+            let level = achc::ownership_level(&dopts).unwrap();
+            let r = achc_rename::rename_program(&mut sm, id, &src, chs, &mut loader, &opts)
+                .and_then(|p| achc_typeck::typecheck_in(&p, None, &|_| false, level));
             let (ext, text) = match r {
-                Ok(p) => ("tc", achc_typeck::tast::print_module_binds(&p, "Main")),
+                Ok(p) => {
+                    let warn: String = p
+                        .warnings
+                        .iter()
+                        .map(|d| render(d, &sm, Style::Plain))
+                        .collect::<String>()
+                        .replace(&root, "");
+                    let wpath = c.sibling("warn");
+                    if (!warn.is_empty() || wpath.exists())
+                        && let Err(e) = check_expect(&wpath, &warn)
+                    {
+                        failed.push(format!("{sub}/{}: warnings: {e}", c.name));
+                    }
+                    ("tc", achc_typeck::tast::print_module_binds(&p, "Main"))
+                }
                 Err(errs) => (
                     "stderr",
                     errs.iter()
@@ -296,22 +318,30 @@ fn run_programs(suite: &str, sub: &str, default_levels: &[u8]) {
     let cfg = cirka_driver::Config::from_env();
     let root = format!("{}/", repo_root().display());
     // A directory with a `Main.hs` is one program of several modules.
-    let cases: Vec<_> = discover(&repo_root().join("tests/achc").join(sub), &["hs"])
+    // A directory with a `Main.hs` (or `Main.chs`) is one program of
+    // several modules.
+    let is_main = |p: &std::path::Path| {
+        p.file_name()
+            .is_some_and(|n| n == "Main.hs" || n == "Main.chs")
+    };
+    let cases: Vec<_> = discover(&repo_root().join("tests/achc").join(sub), &["hs", "chs"])
         .into_iter()
         .filter(|c| {
-            c.path.file_name().is_some_and(|n| n == "Main.hs")
+            is_main(&c.path)
                 || !c
                     .path
                     .ancestors()
                     .skip(1)
                     .take_while(|d| !d.ends_with(sub))
-                    .any(|d| d.join("Main.hs").exists())
+                    .any(|d| d.join("Main.hs").exists() || d.join("Main.chs").exists())
         })
         .collect();
     assert!(!cases.is_empty());
     run_suite(suite, &cases, |c| {
         let mut sm = SourceMap::new();
-        let opts = cirka_driver::pipeline::Options::new(&c.name);
+        let mut opts = cirka_driver::pipeline::Options::new(&c.name);
+        // `-- flags: --ownership=…` are frontend options.
+        opts.frontend_flags = c.header.flags();
         let roots = vec![c.path.parent().unwrap().to_path_buf(), achc::lib_dir()];
         let compiled = match achc::compile(&mut sm, &c.path, &roots, &opts, "test") {
             Ok(x) => x,
@@ -347,7 +377,8 @@ fn run_programs(suite: &str, sub: &str, default_levels: &[u8]) {
             .unwrap_or_default()
             .lines()
             .take(5)
-            .any(|l| l.trim() == "-- ghc: skip");
+            .any(|l| l.trim() == "-- ghc: skip")
+            || c.path.extension().is_some_and(|e| e == "chs");
         if !ghc_skip && let Some(r) = cirka_testkit::ghc_reference(&c.path, Some(&stdin), &[]) {
             match r {
                 Ok(g) => {

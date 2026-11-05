@@ -62,6 +62,9 @@ pub struct Options {
     /// Dumps of frontend stages (e.g. `rn`, `tt`), checked by the frontend;
     /// `all` requests every stage.
     pub frontend_dumps: Vec<String>,
+    /// Options of the form `--name=value` that the common driver does not
+    /// know (e.g. aCHC's `--ownership=`), in order; checked by the frontend.
+    pub frontend_flags: Vec<String>,
     /// Directory for intermediate files (default `_build/<name>`).
     pub build_dir: PathBuf,
     pub link_args: Vec<String>,
@@ -74,6 +77,7 @@ impl Options {
             runtime: RuntimeKind::Release,
             dumps: Vec::new(),
             frontend_dumps: Vec::new(),
+            frontend_flags: Vec::new(),
             build_dir: PathBuf::from("_build").join(name),
             link_args: Vec::new(),
         }

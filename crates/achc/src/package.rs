@@ -7,7 +7,7 @@
 //! source-dirs = ["src"]       # default: ["src"]
 //!
 //! [compiler]
-//! ownership = "warn"          # off | warn | strict (checked from H3)
+//! ownership = "warn"          # off | warn | strict (.hs files, 02 §1.3)
 //! cycles = "warn"             # warn | error | collect
 //! default-extensions = []
 //! ```

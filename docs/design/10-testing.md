@@ -30,9 +30,9 @@
 
 ## 2. テストハーネス (`tests/harness`)
 
-- 各テストファイル先頭のコメントでオプションを指定できる:
+- 各テストファイル先頭のコメントでオプションを指定できる (Haskell の `{-# ... #-}` の pragma の行は飛ばす。BUG-0010):
   ```
-  -- flags: -O2 --ownership=strict
+  -- flags: -O2 --ownership=strict   (aCHC の typeck / run テストは --ownership= を解釈する。typeck の既定は strict)
   -- runtime-env: CIRKA_STACK_SIZE=64M
   -- expect-leak: 1          (循環の警告テストなど、意図的なリーク)
   -- skip-backend: llvm      (インタプリタのみで実行)

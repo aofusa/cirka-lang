@@ -237,7 +237,10 @@ pub fn rename_program(
     let mut modules = Vec::new();
     for n in &order {
         let p = parsed.remove(n).unwrap();
-        let exts: Vec<String> = p.ast.extensions.iter().map(|e| e.0.clone()).collect();
+        let mut exts: Vec<String> = p.ast.extensions.iter().map(|e| e.0.clone()).collect();
+        if p.chs {
+            exts.extend(achc_syntax::CHS_EXTENSIONS.iter().map(|e| e.to_string()));
+        }
         let ast = r.module(&p.name, p.ast);
         modules.push(RnModule {
             name: p.name,
@@ -261,7 +264,12 @@ fn parse_one(
     opts: &Options,
     errs: &mut Vec<Diagnostic>,
 ) -> Parsed {
-    let (mut m, perrs) = achc_syntax::parse(file, src);
+    let defaults = if chs {
+        achc_syntax::CHS_EXTENSIONS
+    } else {
+        &[]
+    };
+    let (mut m, perrs) = achc_syntax::parse_with(file, src, defaults);
     errs.extend(perrs);
     let mut seen = HashSet::new();
     for (e, sp) in &m.extensions {

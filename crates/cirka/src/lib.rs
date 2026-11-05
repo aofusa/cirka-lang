@@ -120,6 +120,11 @@ pub fn frontend(
             DUMPS.join(", ")
         ))]));
     }
+    if let Some(f) = opts.frontend_flags.first() {
+        return Some(Err(vec![Diagnostic::error(format!(
+            "unknown option `{f}`"
+        ))]));
+    }
     let (main_file, mut roots, name) =
         if path.is_dir() || path.file_name().is_some_and(|f| f == "cirka.toml") {
             match package::Package::load(path) {

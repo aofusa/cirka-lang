@@ -1,0 +1,10 @@
+Main.drop1 :: forall a. a %1 -> ()
+Main.drop1 = (\($a45 :: a) -> match $a45 {
+    _ -> Cirka.Prim.()
+  })
+Main.unused :: forall a b. a %1 -> b %1 -> a
+Main.unused = (\($a46 :: a) -> (\($a47 :: b) -> match $a46 $a47 {
+    x#1 y#2 -> x#1
+  }))
+Main.r :: Char
+Main.r = ((Main.unused @Char @() 'a') (Main.drop1 @Char 'b'))
