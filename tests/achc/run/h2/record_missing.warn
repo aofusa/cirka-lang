@@ -1,0 +1,6 @@
+warning[W0617]: fields of `A` not initialised: `g`
+ --> tests/achc/run/h2/record_missing.hs:5:13
+  |
+5 |   print (g (A { f = 1 }))
+  |             ^^^^^^^^^^^
+  = note: using a missing field is a runtime error

@@ -1,0 +1,11 @@
+Point {px = 1.0, py = 2.0}
+(1.0,2.0,Point {px = 1.0, py = 5.0})
+[Circle {center = Point {px = 1.0, py = 2.0}, radius = 2.0},Rect {corner = Point {px = 0.0, py = 0.0}, width = 3.0, height = 4.0}]
+([12.0,12.0],24.0)
+(Circle {center = Point {px = 1.0, py = 2.0}, radius = 4.0},Rect {corner = Point {px = 0.0, py = 0.0}, width = 1.5, height = 2.0})
+(True,Point {px = 0.0, py = 0.0},3.0)
+default (verbose) at 3
+other at 1
+Config {name = "default", verbose = True, level = 3}
+([1,2,3],3)
+("default",3)

@@ -1,0 +1,1 @@
+<prog>: tests/achc/run/h2/record_missing.hs:5:13-23: Missing field in record construction g

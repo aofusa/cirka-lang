@@ -12,7 +12,7 @@
 | スナップショット | 各クレート `tests/` + `insta` | 全部 | AST / TT / Core / MIR / LLVM IR のダンプが期待どおり |
 | MIR 実行 | `tests/mir/*.mir` + `.stdout` | 共通基盤 | インタプリタとネイティブの出力・確保/解放回数が一致 |
 | Core 実行 | `tests/core/*.core` + `.stdout` | 共通基盤 | 手書き Core が共通ドライバで動く |
-| aCHC 実行 | `tests/achc/run/**/*.{hs,chs}` + `.stdout` (`.stdin`, `.args`, `.exitcode`) | aCHC | 出力一致、debug ランタイムでリーク 0 |
+| aCHC 実行 | `tests/achc/run/**/*.{hs,chs}` + `.stdout` (`.stdin`, `.args`, `.exitcode`, `.stderr`, `.warn`)。`Main.hs` のあるディレクトリは複数モジュールの一つのプログラム (他のモジュールはテストにしない) | aCHC | 出力一致、debug ランタイムでリーク 0 |
 | aCHC エラー | `tests/achc/fail/**/*.{hs,chs}` + `.stderr` | aCHC | 診断コードとメッセージが一致 |
 | aCHC 差分 | `tests/achc/diff/**/*.hs` | aCHC | GHC の実行結果と stdout・終了コードが一致 (`CIRKA_GHC` 未設定ならスキップ) |
 | aCHC 互換計測 | `tests/achc/compat/` (GHC testsuite / nofib の一部) | aCHC | 合格率は目標にせず、失敗理由の分類を記録 (ADR-025) |

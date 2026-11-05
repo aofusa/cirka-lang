@@ -199,7 +199,19 @@ fn achc_run() {
     cirka_driver::native::ensure_runtime_built().unwrap();
     let cfg = cirka_driver::Config::from_env();
     let root = format!("{}/", repo_root().display());
-    let cases = discover(&repo_root().join("tests/achc/run"), &["hs"]);
+    // A directory with a `Main.hs` is one program of several modules.
+    let cases: Vec<_> = discover(&repo_root().join("tests/achc/run"), &["hs"])
+        .into_iter()
+        .filter(|c| {
+            c.path.file_name().is_some_and(|n| n == "Main.hs")
+                || !c
+                    .path
+                    .ancestors()
+                    .skip(1)
+                    .take_while(|d| !d.ends_with("run"))
+                    .any(|d| d.join("Main.hs").exists())
+        })
+        .collect();
     assert!(!cases.is_empty());
     run_suite("achc-run", &cases, |c| {
         let mut sm = SourceMap::new();

@@ -1,0 +1,12 @@
+error[E0616]: constructor `S` does not have the required strict field(s): x
+ --> tests/achc/typeck/fail/strict_field.hs:8:5
+  |
+8 | s = S { y = 1 }
+  |     ^^^^^^^^^^^
+  = note: a strict field must be given when the record is constructed
+error[E0601]: no constructor has all these fields: `f`, `g`
+  --> tests/achc/typeck/fail/strict_field.hs:11:7
+   |
+11 | t v = v { f = 1, g = 2 }
+   |       ^^^^^^^^^^^^^^^^^^
+   = note: the fields of one record update must belong to one constructor

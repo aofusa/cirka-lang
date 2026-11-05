@@ -433,6 +433,23 @@ pub fn ghc_reference(
     let ghc = std::env::var("CIRKA_GHC").ok().filter(|s| !s.is_empty())?;
     let text = std::fs::read(src).ok()?;
     let mut key = text.clone();
+    // A `Main.hs` is a program of several modules: the other modules of
+    // its directory take part in the cache key.
+    let dir = src.parent().unwrap_or(Path::new("."));
+    if src.file_name().is_some_and(|n| n == "Main.hs") {
+        let mut mods = Vec::new();
+        walk(dir, &["hs"], &mut mods);
+        mods.sort();
+        for m in mods.iter().filter(|m| m.as_path() != src) {
+            key.extend_from_slice(
+                m.strip_prefix(dir)
+                    .unwrap_or(m)
+                    .to_string_lossy()
+                    .as_bytes(),
+            );
+            key.extend_from_slice(&std::fs::read(m).unwrap_or_default());
+        }
+    }
     key.extend_from_slice(stdin.unwrap_or_default());
     for a in args {
         key.extend_from_slice(a.as_bytes());
@@ -457,6 +474,7 @@ pub fn ghc_reference(
         .arg(&work)
         .arg("-o")
         .arg(&exe)
+        .arg(format!("-i{}", dir.display()))
         .arg(src)
         .output();
     let out = match out {

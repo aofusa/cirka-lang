@@ -218,6 +218,33 @@ impl Tc {
         self.errors.push(d);
     }
 
+    /// A source span as GHC prints it in runtime errors: `f.hs:3:5-12`,
+    /// or `f.hs:(3,5)-(4,2)` across lines.
+    pub(crate) fn ghc_loc(&self, sp: Span) -> Option<String> {
+        let (sm, _) = self.sources.as_ref()?;
+        if sp.is_dummy() {
+            return None;
+        }
+        let file = sm.get(sp.file)?;
+        let (l1, c1) = file.line_col(sp.start);
+        let (l2, c2) = file.line_col(sp.end.max(sp.start + 1) - 1);
+        Some(if l1 != l2 {
+            format!("{}:({l1},{c1})-({l2},{c2})", file.name)
+        } else if c1 != c2 {
+            format!("{}:{l1}:{c1}-{c2}", file.name)
+        } else {
+            format!("{}:{l1}:{c1}", file.name)
+        })
+    }
+
+    /// `msg` prefixed with the GHC location of `sp` when it is known.
+    fn located(&self, sp: Span, msg: &str) -> String {
+        match self.ghc_loc(sp) {
+            Some(l) => format!("{l}: {msg}"),
+            None => msg.to_string(),
+        }
+    }
+
     pub(crate) fn fresh_name(&mut self, base: &str) -> String {
         self.counter += 1;
         format!("{base}{}", self.counter)
@@ -776,6 +803,22 @@ impl Tc {
                     rhs: Rhs {
                         wheres: Vec::new(),
                         body: vec![(Vec::new(), tast::Expr::Local(res.clone(), fty.clone()))],
+                    },
+                    span: Span::DUMMY,
+                });
+            }
+            if cons.len() < info.cons.len() {
+                clauses.push(Clause {
+                    pats: vec![tast::Pat::Wild(pty.clone())],
+                    rhs: Rhs {
+                        wheres: Vec::new(),
+                        body: vec![(
+                            Vec::new(),
+                            tast::Expr::Error(
+                                format!("No match in record selector {}", short(&f)),
+                                fty.clone(),
+                            ),
+                        )],
                     },
                     span: Span::DUMMY,
                 });
@@ -2156,17 +2199,52 @@ impl Tc {
                 )),
             }
         }
+        let named = |i: usize| ci.field_names[i].as_deref().map(short).unwrap_or("?");
+        let missing: Vec<usize> = (0..ci.fields.len())
+            .filter(|&i| given[i].is_none() && ci.field_names[i].is_some())
+            .collect();
+        let strict: Vec<&str> = missing
+            .iter()
+            .filter(|&&i| ci.strict[i])
+            .map(|&i| named(i))
+            .collect();
+        if !strict.is_empty() {
+            self.error(
+                err(
+                    "E0616",
+                    sp,
+                    format!(
+                        "constructor `{}` does not have the required strict field(s): {}",
+                        short(&name),
+                        strict.join(", ")
+                    ),
+                )
+                .with_note("a strict field must be given when the record is constructed"),
+            );
+        } else if !missing.is_empty() {
+            let names: Vec<String> = missing.iter().map(|&i| format!("`{}`", named(i))).collect();
+            self.out.warnings.push(
+                Diagnostic::warning(format!(
+                    "fields of `{}` not initialised: {}",
+                    short(&name),
+                    names.join(", ")
+                ))
+                .with_code("W0617")
+                .with_label(sp, "")
+                .with_note("using a missing field is a runtime error"),
+            );
+        }
         for (i, g) in given.into_iter().enumerate() {
             let a = self.fresh();
             let ta = match g {
                 Some(x) => self.expr(x, &a),
-                None => {
-                    let fname = ci.field_names[i].as_deref().map(short).unwrap_or("?");
-                    tast::Expr::Error(
-                        format!("missing field in record construction {fname}"),
-                        a.clone(),
-                    )
-                }
+                None => tast::Expr::Error(
+                    self.located(
+                        sp,
+                        &format!("Missing field in record construction {}", named(i)),
+                    ),
+                    a.clone(),
+                ),
             };
             (f, ft) = self.app(sp, (f, ft), ta, &a);
         }
@@ -2223,12 +2301,14 @@ impl Tc {
             vals.push((fq, self.expr(v, &ft)));
         }
         let mut clauses = Vec::new();
+        let mut all = true;
         for c in &di.cons {
             let ci = self.cons[c].clone();
             if !names
                 .iter()
                 .all(|n| ci.field_names.iter().any(|f| f.as_deref() == Some(n)))
             {
+                all = false;
                 continue;
             }
             let vars: Vec<(String, Ty)> = ci
@@ -2259,17 +2339,33 @@ impl Tc {
                 span: sp,
             });
         }
-        clauses.push(Clause {
-            pats: vec![tast::Pat::Wild(rt.clone())],
-            rhs: Rhs {
-                wheres: Vec::new(),
-                body: vec![(
-                    Vec::new(),
-                    tast::Expr::Error("no constructor has all these fields".into(), rt.clone()),
-                )],
-            },
-            span: Span::DUMMY,
-        });
+        if clauses.is_empty() && vals.len() == fs.len() {
+            let shown: Vec<String> = names.iter().map(|n| format!("`{}`", short(n))).collect();
+            self.error(
+                err(
+                    "E0601",
+                    sp,
+                    format!("no constructor has all these fields: {}", shown.join(", ")),
+                )
+                .with_note("the fields of one record update must belong to one constructor"),
+            );
+        }
+        if !all {
+            clauses.push(Clause {
+                pats: vec![tast::Pat::Wild(rt.clone())],
+                rhs: Rhs {
+                    wheres: Vec::new(),
+                    body: vec![(
+                        Vec::new(),
+                        tast::Expr::Error(
+                            self.located(sp, "Non-exhaustive patterns in record update"),
+                            rt.clone(),
+                        ),
+                    )],
+                },
+                span: Span::DUMMY,
+            });
+        }
         let v = self.fresh_name("$c");
         let m = tast::Expr::Match(vec![(v.clone(), rt.clone())], clauses, rt.clone());
         (self.let_mono(&v, rt.clone(), tx, m), rt)

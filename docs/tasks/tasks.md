@@ -119,7 +119,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0112](features/FEAT-0112-hs-strictness.md) | 正格性解析と Strict/StrictData | done | P0 | 0033 |
 | [FEAT-0113](features/FEAT-0113-hs-io-exceptions.md) | IO・IORef・ハンドル・例外 | done | P0 | 0111 |
 | [FEAT-0114](features/FEAT-0114-hs-numerics.md) | 数値型と Integer | done | P0 | 0111 |
-| [FEAT-0115](features/FEAT-0115-hs-records-modules.md) | レコード構文とモジュールの完成 | todo | P1 | 0110 |
+| [FEAT-0115](features/FEAT-0115-hs-records-modules.md) | レコード構文とモジュールの完成 | done | P1 | 0110 |
 | [FEAT-0116](features/FEAT-0116-hs-ffi-h2010.md) | Haskell 2010 FFI (foreign import ccall) | todo | P1 | 0113 |
 | [FEAT-0117](features/FEAT-0117-hs-diff-corpus.md) | 差分テスト集 | todo | P1 | 0113, 0003 |
 | [FEAT-0118](features/FEAT-0118-hs-extensions.md) | GHC 拡張 (初期分) | todo | P1 | 0110 |
@@ -274,5 +274,6 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [BUG-0002](bugs/BUG-0002-opt-known-case-field-occurrences.md) | Core 簡約器の case-of-known でフィールドの束縛が消える | done | major | FEAT-0033 |
 | [BUG-0003](bugs/BUG-0003-codegen-closure-stub-captures.md) | 捕捉数の異なる同一関数のクロージャが入口スタブを共有する | done | critical | FEAT-0110 |
 | [BUG-0004](bugs/BUG-0004-exhaustiveness-var-column.md) | 変数を含む列の網羅性検査が誤って W0610 を出す | done | minor | FEAT-0110 |
+| [BUG-0005](bugs/BUG-0005-pattern-failure-message.md) | パターン照合の失敗の実行時エラーが GHC の文言・位置と異なる | todo | minor | FEAT-0104 |
 
 新しいチケットは `features/_TEMPLATE.md` / `bugs/_TEMPLATE.md` をコピーして作成する。

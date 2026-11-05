@@ -1,14 +1,17 @@
 Main.height :: Shape -> Int
 Main.height = (\($r0 :: Shape) -> match $r0 {
     (Rect _ $v0) -> $v0
+    _ -> error "No match in record selector height"
   })
 Main.radius :: Shape -> Int
 Main.radius = (\($r1 :: Shape) -> match $r1 {
     (Circle $v1) -> $v1
+    _ -> error "No match in record selector radius"
   })
 Main.width :: Shape -> Int
 Main.width = (\($r2 :: Shape) -> match $r2 {
     (Rect $v2 _) -> $v2
+    _ -> error "No match in record selector width"
   })
 Main.area :: Shape -> Int
 Main.area = (\($c42 :: Shape) -> match $c42 {
@@ -22,7 +25,7 @@ Main.grow = (\($a43 :: Shape) -> match $a43 {
         $c45 = s#4
       in match $c45 {
         (Circle $u44) -> (Main.Circle 1)
-        _ -> error "no constructor has all these fields"
+        _ -> error "Non-exhaustive patterns in record update"
       }
   })
 Main.pairs :: [(Int, Bool)]
