@@ -141,6 +141,9 @@ class Release (a :: LType) where
 - 同一スコープ内の複数の値は **束縛の逆順** に解放する(Rust と同じ)。
 - `Unique a`(`a :: Type`)は常に暗黙の `Drop` を持つ(メモリ解放)。
 - `Drop` を持つ型は **アフィン型**(高々1回使用)として振る舞う。持たない型は **線形型**(ちょうど1回)。
+- 前期の実装 (FEAT-0122): クラスと補助関数は `Cirka.Ownership` にある (`drop` は Prelude のリストの `drop` と名前が
+  重なるので、両方を使うときは修飾する)。線形専用の値を `IO` から返すには `returnL` を使う。例外経路での解放は未対応。
+  方式は [03-type-system.md](03-type-system.md) §3.1。
 
 ```haskell
 main :: IO ()

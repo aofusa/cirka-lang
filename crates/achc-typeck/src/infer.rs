@@ -1579,12 +1579,12 @@ impl Tc {
     fn rhs(&mut self, r: &ast::Rhs, res: &Ty) -> Rhs {
         let wheres = self.local_decls(&r.wheres);
         let body = match &r.body {
-            ast::RhsBody::Plain(e) => vec![(Vec::new(), self.expr(e, res))],
+            ast::RhsBody::Plain(e) => vec![(Vec::new(), self.marked(e, res))],
             ast::RhsBody::Guarded(gs) => gs
                 .iter()
                 .map(|g| {
                     let guards = g.guards.iter().map(|s| self.guard(s)).collect();
-                    (guards, self.expr(&g.body, res))
+                    (guards, self.marked(&g.body, res))
                 })
                 .collect(),
         };
@@ -1863,7 +1863,7 @@ impl Tc {
                     if self.has_ltype {
                         self.arg_tys.insert(a.span, at.clone());
                     }
-                    let ta = self.expr(a, &at);
+                    let ta = self.marked(a, &at);
                     return (tast::Expr::App(Box::new(tf), Box::new(ta)), rt);
                 }
                 let (at, rt) = match ft {
@@ -1888,7 +1888,7 @@ impl Tc {
                         self.omega_args.push((a.span, at.clone()));
                     }
                 }
-                let ta = self.expr(a, &at);
+                let ta = self.marked(a, &at);
                 (tast::Expr::App(Box::new(tf), Box::new(ta)), rt)
             }
             ExprKind::Lam(ps, body) => {
@@ -1935,7 +1935,7 @@ impl Tc {
                     for (n, t) in names.iter().zip(&tys) {
                         self.locals.insert(n.clone(), LocalKind::Mono(t.clone()));
                     }
-                    let b = self.expr(body, &res);
+                    let b = self.marked(body, &res);
                     let mut e = b;
                     for (n, t) in names.into_iter().zip(&tys).rev() {
                         e = tast::Expr::Lam(n, t.clone(), Box::new(e));
@@ -1944,7 +1944,7 @@ impl Tc {
                 } else {
                     let pats: Vec<tast::Pat> =
                         ps.iter().zip(&tys).map(|(p, t)| self.pat(p, t)).collect();
-                    let b = self.expr(body, &res);
+                    let b = self.marked(body, &res);
                     let vars: Vec<(String, Ty)> = tys
                         .iter()
                         .map(|t| (self.fresh_name("$l"), t.clone()))
@@ -1977,14 +1977,15 @@ impl Tc {
             ExprKind::Let(ds, body) => {
                 let gs = self.local_decls(ds);
                 let (b, t) = self.infer(body, expected);
+                let b = self.mark(body.span, b, &t);
                 (tast::Expr::Let(gs, Box::new(b)), t)
             }
             ExprKind::If(c, t, f) => {
                 let b = self.bool_ty();
                 let tc = self.expr(c, &b);
                 let res = expected.cloned().unwrap_or_else(|| self.fresh());
-                let tt = self.expr(t, &res);
-                let tf = self.expr(f, &res);
+                let tt = self.marked(t, &res);
+                let tf = self.marked(f, &res);
                 let e = self.match_on(
                     tc,
                     b,
@@ -2000,7 +2001,7 @@ impl Tc {
                     .iter()
                     .map(|g| {
                         let guards = g.guards.iter().map(|s| self.guard(s)).collect();
-                        (guards, self.expr(&g.body, &res))
+                        (guards, self.marked(&g.body, &res))
                     })
                     .collect();
                 let m = tast::Expr::Match(
@@ -2298,6 +2299,21 @@ impl Tc {
         (e, t)
     }
 
+    /// Checks an expression; with linear-only types, marks it with its span
+    /// for the insertions of FEAT-0122.
+    fn marked(&mut self, e: &ast::Expr, t: &Ty) -> tast::Expr {
+        let te = self.expr(e, t);
+        self.mark(e.span, te, t)
+    }
+
+    fn mark(&self, sp: Span, e: tast::Expr, t: &Ty) -> tast::Expr {
+        if self.has_ltype {
+            tast::Expr::Mark(sp, Box::new(e), t.clone())
+        } else {
+            e
+        }
+    }
+
     /// Records the kind annotation of a type variable (`LType`).
     fn note_tyvar_kind(&mut self, v: &str, k: Option<&ast::KindSig>) {
         if k == Some(&ast::KindSig::LType) {
@@ -2526,7 +2542,10 @@ impl Tc {
         };
         if rest.is_empty() {
             return match s {
-                Stmt::Expr(e) => self.infer(e, None),
+                Stmt::Expr(e) => {
+                    let (te, t) = self.infer(e, None);
+                    (self.mark(e.span, te, &t), t)
+                }
                 _ => {
                     let t = self.fresh();
                     (tast::Expr::Error("do".into(), t.clone()), t)
@@ -3216,7 +3235,7 @@ impl Tc {
                 self.finish_expr(f);
                 self.finish_expr(a);
             }
-            tast::Expr::Coerce(x, t) => {
+            tast::Expr::Coerce(x, t) | tast::Expr::Mark(_, x, t) => {
                 *t = self.final_ty(t);
                 self.finish_expr(x);
             }

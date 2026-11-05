@@ -13,6 +13,7 @@ mod classes;
 mod deriving;
 pub mod infer;
 mod linear;
+mod raii;
 pub mod tast;
 pub mod types;
 
@@ -85,12 +86,28 @@ pub fn typecheck_in(
         Some(name)
     });
     tc.solve_top();
+    if tc.errors.is_empty() {
+        let files = p.modules.iter().map(|m| (m.name.clone(), m.file)).collect();
+        let (errs, plan) = linear::check(&mut tc, &modules, &files);
+        tc.errors.extend(errs);
+        if tc.errors.is_empty() && tc.has_ltype {
+            raii::apply(&mut tc, &plan, &mut binds);
+            // Strict-Linear (§6): fields of linear-only types are strict.
+            let mut datas = std::mem::take(&mut tc.out.datas);
+            for d in datas.iter_mut() {
+                for c in d.cons.iter_mut() {
+                    for (f, s) in c.fields.iter().zip(c.strict.iter_mut()) {
+                        if tc.is_ltype(f) {
+                            *s = true;
+                        }
+                    }
+                }
+            }
+            tc.out.datas = datas;
+        }
+    }
     for g in binds.iter_mut() {
         tc.finish_group(g);
-    }
-    if tc.errors.is_empty() {
-        let errs = linear::check(&tc, &modules);
-        tc.errors.extend(errs);
     }
     if !tc.errors.is_empty() {
         let mut errs = std::mem::take(&mut tc.errors);

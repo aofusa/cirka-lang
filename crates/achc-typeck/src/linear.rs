@@ -163,32 +163,96 @@ fn is_ur(q: &ast::QName) -> bool {
 }
 
 struct Checker<'a> {
-    tc: &'a Tc,
+    tc: &'a mut Tc,
     errors: Vec<Diagnostic>,
     /// The linear variables in scope.
     linear: HashSet<String>,
-    /// Those of them whose type is linear-only (`LType`).
-    unique: HashSet<String>,
+    /// Those of them whose type is linear-only (`LType`), with the span of
+    /// their binder.
+    unique: HashMap<String, Span>,
+    plan: Plan,
+    /// Instances of `Drop` / `Release` found for types (by their text).
+    has_instance: HashMap<(&'static str, String), bool>,
+}
+
+/// Where a linear-only value left unused is given up (FEAT-0122,
+/// 03-type-system.md §3).
+#[derive(Clone, Debug)]
+enum Scope {
+    /// At the start of these (marked) expressions.
+    Exprs(Vec<Span>),
+    /// After the last statement (this expression) of an `IO` `do` block.
+    DoEnd(Span),
+}
+
+pub(crate) const DROP: &str = "Cirka.Ownership.Drop";
+pub(crate) const RELEASE: &str = "Cirka.Ownership.Release";
+
+/// An inserted `drop x` / `release x`.
+#[derive(Clone, Debug)]
+pub(crate) struct Insertion {
+    /// The marked expression.
+    pub span: Span,
+    /// After the expression (an `IO` action) instead of before it.
+    pub after: bool,
+    pub release: bool,
+    pub var: String,
+    pub ty: Ty,
+}
+
+/// What the checker found besides errors: insertions and the `let`
+/// bindings to evaluate strictly (Strict-Linear, §6).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Plan {
+    pub insertions: Vec<Insertion>,
+    pub strict_lets: HashSet<String>,
 }
 
 /// Checks the linearity of the program's bindings.
-pub(crate) fn check(tc: &Tc, modules: &[(String, Vec<Decl>)]) -> Vec<Diagnostic> {
+pub(crate) fn check(
+    tc: &mut Tc,
+    modules: &[(String, Vec<Decl>)],
+    files: &HashMap<String, cirka_diagnostics::FileId>,
+) -> (Vec<Diagnostic>, Plan) {
     if tc.lin_pats.is_empty() && !tc.has_ltype {
-        return Vec::new();
+        return (Vec::new(), Plan::default());
     }
     let mut c = Checker {
         tc,
         errors: Vec::new(),
         linear: HashSet::new(),
-        unique: HashSet::new(),
+        unique: HashMap::new(),
+        plan: Plan::default(),
+        has_instance: HashMap::new(),
     };
-    for (_, ds) in modules {
+    // `Unsafe.*` modules implement the escape hatches: not checked.
+    let unchecked: HashSet<cirka_diagnostics::FileId> = files
+        .iter()
+        .filter(|(m, _)| m.starts_with("Unsafe."))
+        .map(|(_, f)| *f)
+        .collect();
+    for (m, ds) in modules {
+        if m.starts_with("Unsafe.") {
+            continue;
+        }
         for d in ds {
             c.top_decl(d);
         }
     }
     c.uniqueness();
-    c.errors
+    c.errors.retain(|d| {
+        d.primary_span()
+            .is_none_or(|s| !unchecked.contains(&s.file))
+    });
+    (c.errors, c.plan)
+}
+
+/// The spans of the bodies of a right-hand side (marked by inference).
+fn rhs_spans(r: &Rhs) -> Vec<Span> {
+    match &r.body {
+        RhsBody::Plain(e) => vec![e.span],
+        RhsBody::Guarded(gs) => gs.iter().map(|g| g.body.span).collect(),
+    }
 }
 
 impl Checker<'_> {
@@ -224,11 +288,12 @@ impl Checker<'_> {
     /// E0301 for arguments and E0310 for instantiations (03-type-system.md
     /// §2.2): linear-only values must not reach unrestricted positions.
     fn uniqueness(&mut self) {
-        let tc = self.tc;
+        let tc = &*self.tc;
+        let mut errors = Vec::new();
         let mut seen: HashSet<Span> = HashSet::new();
         for (sp, name, v, t) in &tc.inst_checks {
             if tc.is_ltype(t) && seen.insert(*sp) {
-                self.errors.push(
+                errors.push(
                     Diagnostic::error(format!(
                         "the type variable `{}` of `{}` has kind `Type`, but is instantiated with the linear-only type `{}`",
                         display(v),
@@ -245,7 +310,7 @@ impl Checker<'_> {
         }
         for (sp, t) in &tc.omega_args {
             if tc.is_ltype(t) {
-                self.errors.push(
+                errors.push(
                     Diagnostic::error(format!(
                         "a value of the linear-only type `{}` is passed to an unrestricted argument",
                         show(&tc.zonk(t))
@@ -256,6 +321,133 @@ impl Checker<'_> {
                 );
             }
         }
+        self.errors.extend(errors);
+    }
+
+    /// Whether `Drop` / `Release` has an instance for a type.
+    fn instance(&mut self, class: &'static str, t: &Ty) -> bool {
+        let t = self.tc.zonk(t);
+        let key = (class, show(&t));
+        if let Some(&b) = self.has_instance.get(&key) {
+            return b;
+        }
+        let b = self.tc.closed_instance(class, &t).is_some();
+        self.has_instance.insert(key, b);
+        b
+    }
+
+    /// A linear-only variable not used in its scope: inserts `drop` (or,
+    /// at the end of an `IO` block, `release`) when the type has an
+    /// instance (Weaken-Drop / Weaken-Release). False when it must be an
+    /// error E0302.
+    fn weaken(&mut self, x: &str, sp: Span, scope: &Scope) -> bool {
+        let Some(t) = self.tc.pat_tys.get(&sp).cloned() else {
+            return false;
+        };
+        let t = self.tc.zonk(&t);
+        if self.instance(DROP, &t) {
+            match scope {
+                Scope::Exprs(spans) if !spans.is_empty() => {
+                    for s in spans {
+                        self.plan.insertions.push(Insertion {
+                            span: *s,
+                            after: false,
+                            release: false,
+                            var: x.to_string(),
+                            ty: t.clone(),
+                        });
+                    }
+                    true
+                }
+                Scope::DoEnd(s) => {
+                    self.plan.insertions.push(Insertion {
+                        span: *s,
+                        after: true,
+                        release: false,
+                        var: x.to_string(),
+                        ty: t,
+                    });
+                    true
+                }
+                Scope::Exprs(_) => false,
+            }
+        } else if self.instance(RELEASE, &t) {
+            match scope {
+                Scope::DoEnd(s) => {
+                    self.plan.insertions.push(Insertion {
+                        span: *s,
+                        after: true,
+                        release: true,
+                        var: x.to_string(),
+                        ty: t,
+                    });
+                }
+                Scope::Exprs(_) => self.errors.push(
+                    Diagnostic::error(format!(
+                        "`{}` of type `{}` can only be released in `IO`, but is discarded in a pure context",
+                        display(x),
+                        show(&t)
+                    ))
+                    .with_code("E0304")
+                    .with_label(sp, "bound here and not consumed")
+                    .with_note("the type has a `Release` instance but no `Drop` instance")
+                    .with_help("consume it explicitly, or bind it in an `IO` `do` block, whose end releases it"),
+                ),
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Joins the branches of a conditional. A linear-only variable used in
+    /// some branches and not in others is dropped at the start of the
+    /// others when its type has a `Drop` instance (the earliest point,
+    /// 03-type-system.md §3).
+    fn join_branches(&mut self, mut branches: Vec<(Usage, Vec<Span>)>) -> Usage {
+        let vars: Vec<(String, Span)> = self.unique.iter().map(|(k, v)| (k.clone(), *v)).collect();
+        for (x, sp) in vars {
+            let counts: Vec<Count> = branches
+                .iter()
+                .map(|(u, _)| u.get(&x).map(|u| u.count).unwrap_or(Count::Zero))
+                .collect();
+            if !(counts.contains(&Count::One) && counts.contains(&Count::Zero))
+                || counts
+                    .iter()
+                    .any(|c| matches!(c, Count::Many | Count::Maybe))
+            {
+                continue;
+            }
+            let Some(t) = self.tc.pat_tys.get(&sp).cloned() else {
+                continue;
+            };
+            if !self.instance(DROP, &t) {
+                continue;
+            }
+            let t = self.tc.zonk(&t);
+            for (u, spans) in branches.iter_mut() {
+                if u.contains_key(&x) || spans.is_empty() {
+                    continue;
+                }
+                for s in spans.iter() {
+                    self.plan.insertions.push(Insertion {
+                        span: *s,
+                        after: false,
+                        release: false,
+                        var: x.clone(),
+                        ty: t.clone(),
+                    });
+                }
+                u.insert(
+                    x.clone(),
+                    Use {
+                        count: Count::One,
+                        spans: Vec::new(),
+                    },
+                );
+            }
+        }
+        join(branches.into_iter().map(|(u, _)| u).collect())
     }
 
     fn mult(&self, t: &Ty) -> Mult {
@@ -318,7 +510,7 @@ impl Checker<'_> {
         let bound = self.params(ps);
         self.enter(&bound);
         let u = self.rhs(rhs);
-        self.close(u, &bound)
+        self.close(u, &bound, &Scope::Exprs(rhs_spans(rhs)))
     }
 
     /// The variables bound by the parameters of a clause or lambda.
@@ -412,7 +604,7 @@ impl Checker<'_> {
     }
 
     /// Checks the variables going out of scope and removes them.
-    fn close(&mut self, mut u: Usage, bound: &[(String, Mult, Span)]) -> Usage {
+    fn close(&mut self, mut u: Usage, bound: &[(String, Mult, Span)], scope: &Scope) -> Usage {
         for (x, m, sp) in bound {
             self.linear.remove(x);
             self.unique.remove(x);
@@ -435,6 +627,7 @@ impl Checker<'_> {
                         .with_label(*sp, "bound with multiplicity 0 here"),
                     );
                 }
+                (Mult::One, Count::Zero) if self.weaken(x, *sp, scope) => {}
                 (Mult::One, Count::Zero) => self.errors.push(
                     Diagnostic::error(format!("linear variable `{name}` is not consumed"))
                         .with_code("E0302")
@@ -487,7 +680,7 @@ impl Checker<'_> {
             if *m == Mult::One {
                 self.linear.insert(x.clone());
                 if self.ltype_at(*sp) {
-                    self.unique.insert(x.clone());
+                    self.unique.insert(x.clone(), *sp);
                 }
             }
         }
@@ -520,7 +713,7 @@ impl Checker<'_> {
             RhsBody::Plain(e) => self.expr(e),
             RhsBody::Guarded(gs) => self.guarded(gs),
         };
-        self.decls(&r.wheres, body)
+        self.decls(&r.wheres, body, &Scope::Exprs(rhs_spans(r)))
     }
 
     fn guarded(&mut self, gs: &[ast::GuardedExpr]) -> Usage {
@@ -534,11 +727,12 @@ impl Checker<'_> {
             }
             self.enter(&bound);
             let b = self.expr(&g.body);
-            let b = self.close(b, &bound);
+            let b = self.close(b, &bound, &Scope::Exprs(vec![g.body.span]));
             conds = add(conds, gu);
-            branches.push(b);
+            branches.push((b, vec![g.body.span]));
         }
-        add(conds, join(branches))
+        let joined = self.join_branches(branches);
+        add(conds, joined)
     }
 
     fn guard_stmt(&mut self, s: &Stmt, bound: &mut Vec<(String, Mult, Span)>) -> Usage {
@@ -567,7 +761,7 @@ impl Checker<'_> {
 
     /// `let`/`where` bindings around a body: each right-hand side is scaled
     /// by the usage of what it binds (03-type-system.md §2.3).
-    fn decls(&mut self, ds: &[Decl], body: Usage) -> Usage {
+    fn decls(&mut self, ds: &[Decl], body: Usage, scope: &Scope) -> Usage {
         if ds.is_empty() {
             return body;
         }
@@ -582,6 +776,14 @@ impl Checker<'_> {
                         lin_binders.push((f.name.clone(), Mult::One, f.span));
                     }
                     let u = self.decl_rhs(d);
+                    // Strict-Linear (§6): a `let` whose right-hand side uses
+                    // a linear variable is evaluated where it is bound.
+                    if ps.is_empty()
+                        && u.iter()
+                            .any(|(k, x)| self.linear.contains(k) && x.count != Count::Zero)
+                    {
+                        self.plan.strict_lets.insert(f.name.clone());
+                    }
                     match funs.get(&f.name) {
                         // Further clauses of the same function: one of them
                         // runs per call.
@@ -640,7 +842,7 @@ impl Checker<'_> {
                     if let Some(used) = used {
                         one.insert(v.clone(), used);
                     }
-                    self.close(one, &[b]);
+                    self.close(one, &[b], scope);
                 }
             }
             let mut u = u;
@@ -724,25 +926,30 @@ impl Checker<'_> {
                 let bound = self.params(ps);
                 self.enter(&bound);
                 let u = self.expr(b);
-                self.close(u, &bound)
+                self.close(u, &bound, &Scope::Exprs(vec![b.span]))
             }
             ExprKind::Let(ds, b) => {
                 self.enter_let(ds);
                 let bu = self.expr(b);
-                self.decls(ds, bu)
+                self.decls(ds, bu, &Scope::Exprs(vec![b.span]))
             }
             ExprKind::If(c, t, f) => {
                 let cu = self.expr(c);
                 let tu = self.expr(t);
                 let fu = self.expr(f);
-                add(cu, join(vec![tu, fu]))
+                let joined = self.join_branches(vec![(tu, vec![t.span]), (fu, vec![f.span])]);
+                add(cu, joined)
             }
             ExprKind::MultiIf(gs) => self.guarded(gs),
             ExprKind::Case(s, alts) => {
                 let su = self.expr(s);
                 let lin = self.consumes_linear(&su);
-                let bs = alts.iter().map(|a| self.alt(a, lin)).collect();
-                add(su, join(bs))
+                let bs = alts
+                    .iter()
+                    .map(|a| (self.alt(a, lin), rhs_spans(&a.rhs)))
+                    .collect();
+                let joined = self.join_branches(bs);
+                add(su, joined)
             }
             ExprKind::LamCase(alts) => {
                 // `\case` binds an argument of the arrow's multiplicity.
@@ -751,8 +958,11 @@ impl Checker<'_> {
                     .lin_pats
                     .get(&e.span)
                     .is_some_and(|m| self.mult(m) == Mult::One);
-                let bs = alts.iter().map(|a| self.alt(a, lin)).collect();
-                join(bs)
+                let bs = alts
+                    .iter()
+                    .map(|a| (self.alt(a, lin), rhs_spans(&a.rhs)))
+                    .collect();
+                self.join_branches(bs)
             }
             ExprKind::Do(ss) => {
                 // The statements of an `IO` block run once, in order
@@ -762,7 +972,11 @@ impl Checker<'_> {
                     |t| matches!(self.tc.zonk(t).spine().0, Ty::Con(c) if *c == prim("IO")),
                 );
                 if io {
-                    return self.io_stmts(ss);
+                    let last = match ss.last() {
+                        Some(Stmt::Expr(l)) => l.span,
+                        _ => e.span,
+                    };
+                    return self.io_stmts(ss, last);
                 }
                 let mut u = Usage::new();
                 for s in ss {
@@ -830,7 +1044,7 @@ impl Checker<'_> {
     /// it uses keep their count (U-Bind is checked on the argument's type,
     /// E0301). Other linear variables follow Linear Haskell.
     fn scale_arg(&self, mut u: Usage, m: Mult, sp: Span) -> Usage {
-        if m != Mult::Many || !u.keys().any(|k| self.unique.contains(k)) {
+        if m != Mult::Many || !u.keys().any(|k| self.unique.contains_key(k)) {
             return scale(u, m);
         }
         let first_order = self
@@ -842,7 +1056,7 @@ impl Checker<'_> {
             return scale(u, m);
         }
         for (k, x) in u.iter_mut() {
-            if !self.unique.contains(k) {
+            if !self.unique.contains_key(k) {
                 x.count = x.count.scale(m);
             }
         }
@@ -854,7 +1068,7 @@ impl Checker<'_> {
         self.pat_vars(&a.pat, Mult::One, linear, &mut bound);
         self.enter(&bound);
         let u = self.rhs(&a.rhs);
-        self.close(u, &bound)
+        self.close(u, &bound, &Scope::Exprs(rhs_spans(&a.rhs)))
     }
 
     /// Whether a scrutinee's usage consumes a linear variable: then the
@@ -865,28 +1079,29 @@ impl Checker<'_> {
     }
 
     /// The statements of an `IO` `do` block, each run once.
-    fn io_stmts(&mut self, ss: &[Stmt]) -> Usage {
+    fn io_stmts(&mut self, ss: &[Stmt], last: Span) -> Usage {
         let Some((s, rest)) = ss.split_first() else {
             return Usage::new();
         };
         match s {
             Stmt::Expr(e) => {
                 let u = self.expr(e);
-                add(u, self.io_stmts(rest))
+                let r = self.io_stmts(rest, last);
+                add(u, r)
             }
             Stmt::Bind(p, e, _) => {
                 let u = self.expr(e);
                 let mut bound = Vec::new();
                 self.pat_vars(p, Mult::One, false, &mut bound);
                 self.enter(&bound);
-                let r = self.io_stmts(rest);
-                let r = self.close(r, &bound);
+                let r = self.io_stmts(rest, last);
+                let r = self.close(r, &bound, &Scope::DoEnd(last));
                 add(u, r)
             }
             Stmt::Let(ds, _) => {
                 self.enter_let(ds);
-                let r = self.io_stmts(rest);
-                self.decls(ds, r)
+                let r = self.io_stmts(rest, last);
+                self.decls(ds, r, &Scope::DoEnd(last))
             }
         }
     }

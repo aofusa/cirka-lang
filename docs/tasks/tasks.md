@@ -131,7 +131,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 |---|---|---|---|---|
 | [FEAT-0120](features/FEAT-0120-hs-linear-types.md) | LinearTypes (多重度) | done | P0 | 0110 |
 | [FEAT-0121](features/FEAT-0121-hs-unique-ltype.md) | 種 LType と Unique 型 | done | P0 | 0120 |
-| [FEAT-0122](features/FEAT-0122-hs-drop-release.md) | Drop / Release による RAII | todo | P0 | 0121 |
+| [FEAT-0122](features/FEAT-0122-hs-drop-release.md) | Drop / Release による RAII | done | P0 | 0121 |
 | [FEAT-0123](features/FEAT-0123-hs-unique-arrays.md) | 一意配列 (Cirka.Array) | todo | P1 | 0121, 0022 |
 | [FEAT-0124](features/FEAT-0124-hs-borrowing.md) | 借用 (Ref / MutRef / Borrow モナド) | todo | P1 | 0121 |
 | [FEAT-0125](features/FEAT-0125-hs-chs-mode.md) | .chs モード・CirkaOwnership・ownership レベル | todo | P1 | 0122 |

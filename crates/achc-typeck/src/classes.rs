@@ -888,6 +888,21 @@ impl Tc {
         })
     }
 
+    /// The dictionary of a constraint on a closed type from the instances
+    /// alone (no constraint is deferred), if there is one.
+    pub(crate) fn closed_instance(&mut self, class: &str, t: &Ty) -> Option<tast::Expr> {
+        if !self.classes.contains_key(class) {
+            return None;
+        }
+        let n = self.wanted.len();
+        let r = self
+            .solve(&Pred::new(class, self.zonk(t)), &|_, _| true)
+            .ok();
+        let deferred = self.wanted.len() > n;
+        self.wanted.truncate(n);
+        if deferred { None } else { r }
+    }
+
     /// A dictionary for `p` from the givens and the instances. A
     /// constraint on a type variable that is not `local` goes to the
     /// enclosing scope as a new hole. `Err` is the unsolvable constraint.

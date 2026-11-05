@@ -1,0 +1,20 @@
+error[E0304]: `f` of type `File` can only be released in `IO`, but is discarded in a pure context
+  --> tests/achc/typeck/fail/raii.hs:22:21
+   |
+22 | pureDiscard n = let f = openFile n in n
+   |                     ^ bound here and not consumed
+   = note: the type has a `Release` instance but no `Drop` instance
+   = help: consume it explicitly, or bind it in an `IO` `do` block, whose end releases it
+error[E0304]: `f` of type `File` can only be released in `IO`, but is discarded in a pure context
+  --> tests/achc/typeck/fail/raii.hs:25:9
+   |
+25 | ignored f = 0
+   |         ^ bound here and not consumed
+   = note: the type has a `Release` instance but no `Drop` instance
+   = help: consume it explicitly, or bind it in an `IO` `do` block, whose end releases it
+error[E0302]: linear variable `p` is not consumed
+  --> tests/achc/typeck/fail/raii.hs:28:12
+   |
+28 | noInstance p = 1
+   |            ^ bound linearly here
+   = note: a linear value must be used exactly once

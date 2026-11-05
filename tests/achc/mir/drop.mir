@@ -1,0 +1,29 @@
+fn Main.main$init() -> ptr {
+entry:
+  let caf%0 = global Cirka.Base.$fShow112
+  let thk%1 = mkthunk Main.main$init$thk2()
+  tailcall Cirka.Base.print(caf%0, thk%1)
+}
+
+fn Main.main$init$thk2() -> ptr {
+entry:
+  let con%0 = alloc Int.I#(1)
+  let r%1 = call Cirka.Ownership.unique(con%0)
+  let con%2 = alloc Bool.False()
+  tailcall Main.pick(con%2, r%1)
+}
+
+fn Main.pick(a: ptr @owned, a: ptr @owned) -> ptr {
+entry:
+  let ev%2 = force a
+  switch ev%2 { Bool.True => alt1, Bool.False => alt2 }
+alt1:
+  drop ev%2
+  tailcall Cirka.Ownership.freeze(a)
+alt2:
+  drop ev%2
+  let caf%3 = global Cirka.Ownership.$fDrop174
+  let con%4 = alloc Int.I#(0)
+  tailcall Cirka.Ownership.dropThen(caf%3, a, con%4)
+}
+

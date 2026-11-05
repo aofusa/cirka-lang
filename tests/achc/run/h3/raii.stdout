@@ -1,0 +1,12 @@
+acquire a
+acquire b
+acquire c
+use b
+release c
+end of block
+release b
+release a
+7
+acquire main
+done
+release main

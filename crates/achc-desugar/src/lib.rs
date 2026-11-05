@@ -604,6 +604,7 @@ impl Ds {
                 let t = self.ty(t);
                 cast_poly(x, &t)
             }
+            tast::Expr::Mark(_, x, _) => self.expr(x),
             tast::Expr::Hole(_) | tast::Expr::OverLit(..) => {
                 self.ice("unresolved class dictionary".into());
                 c::Expr::Lit(c::Lit::Unit)

@@ -42,6 +42,10 @@ pub enum Expr {
     /// A representation-preserving conversion to the type (the
     /// dictionaries of newtype-derived instances).
     Coerce(Box<Expr>, Ty),
+    /// The expression at a source span with its type, where `drop` /
+    /// `release` may be inserted and linear-only arguments made strict
+    /// (FEAT-0122). Only during type checking.
+    Mark(Span, Box<Expr>, Ty),
 }
 
 #[derive(Clone, Debug)]
@@ -315,6 +319,7 @@ fn expr(e: &Expr, n: usize, s: &mut String) {
             expr(x, n, s);
             let _ = write!(s, " :: {})", show(t));
         }
+        Expr::Mark(_, x, _) => expr(x, n, s),
     }
 }
 
