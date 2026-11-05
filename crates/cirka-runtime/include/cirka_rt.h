@@ -62,6 +62,11 @@ void   *cirka_array_new(int64_t len, void *init);
 void   *cirka_f32_show_hs(double x);
 double  cirka_f32_round(double x);
 int64_t cirka_f64_bits(double x);
+/* Raw memory access for Foreign.Storable (kind: see mem.rs). */
+int64_t cirka_mem_read(int64_t addr, int64_t kind);
+void cirka_mem_write(int64_t addr, int64_t kind, int64_t val);
+double cirka_mem_read_f(int64_t addr, int64_t kind);
+void cirka_mem_write_f(int64_t addr, int64_t kind, double val);
 double  cirka_f64_from_bits(int64_t b);
 
 /* Integer (BYTES objects in cirka-bigint's encoding; arguments borrowed) */

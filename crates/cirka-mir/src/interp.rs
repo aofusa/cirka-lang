@@ -623,7 +623,27 @@ impl<'m> Interp<'m> {
             }
             Rhs::Extern { func, args } => {
                 let vals = self.operands(frame, args);
-                self.external(func, &vals)?
+                match m.extern_decl(func).and_then(|d| d.c_sig.as_ref()) {
+                    Some(sig) => {
+                        let a: Vec<crate::ffi::Arg> = vals
+                            .iter()
+                            .zip(&sig.params)
+                            .map(|(v, t)| {
+                                if t.is_float() {
+                                    crate::ffi::Arg::F(v.float())
+                                } else {
+                                    crate::ffi::Arg::I(v.int())
+                                }
+                            })
+                            .collect();
+                        match crate::ffi::call(func, &sig.params, sig.ret, &a) {
+                            Ok(crate::ffi::Ret::I(i)) => Val::I(i),
+                            Ok(crate::ffi::Ret::F(x)) => Val::F(x),
+                            Err(e) => return fault(e),
+                        }
+                    }
+                    None => self.external(func, &vals)?,
+                }
             }
             Rhs::Global(g) => {
                 if let Some(p) = self.globals.get(g) {
@@ -1181,6 +1201,18 @@ impl<'m> Interp<'m> {
                     Err(e) => Err(Exit::Panic(file_error(&path, "withFile", &e))),
                 }
             }
+            "cirka_mem_read" => crate::ffi::mem_read(a[0].int(), a[1].int())
+                .map(Val::I)
+                .or_else(fault),
+            "cirka_mem_write" => crate::ffi::mem_write(a[0].int(), a[1].int(), a[2].int())
+                .map(|_| unit)
+                .or_else(fault),
+            "cirka_mem_read_f" => crate::ffi::mem_read_f(a[0].int(), a[1].int())
+                .map(Val::F)
+                .or_else(fault),
+            "cirka_mem_write_f" => crate::ffi::mem_write_f(a[0].int(), a[1].int(), a[2].float())
+                .map(|_| unit)
+                .or_else(fault),
             "cirka_panic_bytes" => {
                 let b = self.bytes(a[0])?.clone();
                 Err(Exit::Panic(String::from_utf8_lossy(&b).into_owned()))

@@ -3,6 +3,8 @@
 
 pub mod big;
 pub mod borrow;
+#[allow(unsafe_code)] // The interpreter's FFI boundary (see the module comment).
+pub mod ffi;
 pub mod interp;
 pub mod ir;
 pub mod lower;
@@ -12,6 +14,7 @@ pub mod print;
 pub mod reuse;
 pub mod verify;
 
+pub use cirka_core::{CSig, CTy};
 pub use ir::*;
 pub use parse::parse;
 pub use print::print_module;

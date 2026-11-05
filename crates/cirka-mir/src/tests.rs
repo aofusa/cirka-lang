@@ -116,6 +116,7 @@ fn random_module(rng: &mut Rng) -> Module {
         } else {
             Some(Ty::I64)
         },
+        c_sig: None,
     });
     let nf = 1 + rng.below(3);
     for fi in 0..nf {
@@ -351,4 +352,29 @@ entry:
     assert_eq!(r.stats.allocs, 3, "{:?}", r.stats);
     assert_eq!(r.stats.reuses, 2);
     assert_eq!(r.leaked, 0);
+}
+
+#[test]
+fn c_signatures_round_trip_and_run() {
+    let src = "extern fn abs(i64) -> i64 as c(i32) -> i32\n\
+               extern fn ldexpf(f64, i64) -> f64 as c(f32, i32) -> f32\n\
+               extern fn cirka_write_i64(i64) -> void\n\
+               fn main() -> i64 {\n\
+               entry:\n\
+               let a = extern abs(-5)\n\
+               let _ = extern cirka_write_i64(a)\n\
+               ret 0\n\
+               }\n";
+    let m = parse(FileId(0), src).unwrap();
+    let d = m.extern_decl("ldexpf").unwrap();
+    assert_eq!(
+        d.c_sig.as_ref().unwrap().params,
+        vec![crate::CTy::F32, crate::CTy::I32]
+    );
+    let printed = print_module(&m);
+    assert!(printed.contains("as c(f32, i32) -> f32"), "{printed}");
+    let again = parse(FileId(0), &printed).unwrap();
+    assert_eq!(strip_spans(m.clone()), strip_spans(again));
+    let r = crate::interp::run(&m, b"", 1_000_000).unwrap();
+    assert_eq!(r.stdout, "5");
 }

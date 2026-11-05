@@ -294,8 +294,11 @@ impl Parser {
 
     fn extern_decl(&mut self, f: &Sexp) -> R<ExternDecl> {
         let l = f.list().unwrap();
-        if l.len() != 4 {
-            return err(f.span(), "expected (extern name (param types) result-type)");
+        if l.len() != 4 && l.len() != 5 {
+            return err(
+                f.span(),
+                "expected (extern name (param types) result-type [(c (c types) c-type)])",
+            );
         }
         let name = self.sym(&l[1], "an extern name")?.to_string();
         let mut params = Vec::new();
@@ -303,7 +306,38 @@ impl Parser {
             params.push(self.ty(p)?);
         }
         let ret = self.ty(&l[3])?;
-        Ok(ExternDecl { name, params, ret })
+        let c_sig = match l.get(4) {
+            None => None,
+            Some(s) => {
+                let parts = self.list(s, "a C signature")?;
+                let cty = |x: &Sexp| -> R<CTy> {
+                    match x {
+                        Sexp::Sym(n, _) => CTy::from_name(n).map_or_else(
+                            || err(x.span(), "expected a C type (i32, f64, ptr, ...)"),
+                            Ok,
+                        ),
+                        _ => err(x.span(), "expected a C type (i32, f64, ptr, ...)"),
+                    }
+                };
+                if parts.len() != 3 || !matches!(&parts[0], Sexp::Sym(k, _) if k == "c") {
+                    return err(s.span(), "expected (c (param C types) result C type)");
+                }
+                let mut ps = Vec::new();
+                for p in self.list(&parts[1], "C parameter types")? {
+                    ps.push(cty(p)?);
+                }
+                Some(CSig {
+                    params: ps,
+                    ret: cty(&parts[2])?,
+                })
+            }
+        };
+        Ok(ExternDecl {
+            name,
+            params,
+            ret,
+            c_sig,
+        })
     }
 
     fn def(&mut self, f: &Sexp) -> R<TopBind> {

@@ -49,9 +49,16 @@ pub fn print_program(p: &Program) -> String {
     for e in &p.externs {
         let names = Names::default();
         let ps: Vec<String> = e.params.iter().map(|t| names.ty(t)).collect();
+        let csig = match &e.c_sig {
+            Some(c) => {
+                let cs: Vec<&str> = c.params.iter().map(|t| t.name()).collect();
+                format!(" (c ({}) {})", cs.join(" "), c.ret.name())
+            }
+            None => String::new(),
+        };
         let _ = writeln!(
             s,
-            "(extern {} ({}) {})",
+            "(extern {} ({}) {}{csig})",
             e.name,
             ps.join(" "),
             names.ty(&e.ret)

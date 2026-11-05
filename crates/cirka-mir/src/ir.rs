@@ -340,6 +340,10 @@ pub struct ExternDecl {
     pub params: Vec<(Ty, Own)>,
     /// `None` = `void`.
     pub ret: Option<Ty>,
+    /// The C signature of a foreign function: the parameters are `i64`
+    /// (integers, pointers) or `f64`, and the backend converts them to
+    /// these C types at the call (and the result back).
+    pub c_sig: Option<cirka_core::CSig>,
 }
 
 /// A static immortal thunk evaluated on first use (a CAF).

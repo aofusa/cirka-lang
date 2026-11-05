@@ -104,6 +104,27 @@ callbackPtr :: Ref r (Callback f) -> Borrow r (FunPtr f)   -- C 側が保持し�
 - MIR: `extern f(args)` 命令。LLVM では `declare` + `call ccc`。構造体の値渡し・可変長引数は x86_64 SysV ABI に従い展開する。
 - `IO` 付きの呼び出しは `State#` トークンで順序付けられ、最適化で並べ替えられない。
 
+### 7.1 Haskell 2010 水準の実装 (FEAT-0116)
+
+- 共通 Core / MIR の `extern` 宣言に **C シグネチャ** (`(c (i32 ptr) i32)` / `as c(i32, ptr) -> i32`) を付けられる。
+  C の型は `i8 u8 i16 u16 i32 u32 i64 u64 f32 f64 ptr void` (x86_64 SysV のスカラー)。Core 側の値は整数とポインタが `Int#`、
+  浮動小数が `Double#`、`void` が `Unit#` のままで、LLVM バックエンドが呼び出しの前後で変換する
+  (`trunc` / `inttoptr` / `fptrunc`、結果は `sext` / `zext` / `ptrtoint` / `fpext`)。`i8`/`i16` の引数には `signext`/`zeroext` を付ける。
+  C シグネチャのない `extern` はランタイムの規約 (`Int#` = `int64_t` …) のまま。
+- 脱糖器は `foreign import ccall "[static] [h.h] name" f :: T` (`capi` も同じ扱い、`safe`/`unsafe` は無視) を、C シグネチャ付きの
+  `extern` と、引数の箱を開けて結果を箱に入れる Core のラッパに変換する。結果が `IO t` なら `Unit# ->` のラムダ (IO の表現) にする。
+  型は newtype を剥がして `Int`/`Double`/`Char` に達するまで辿り、途中で最初に現れた既知の型 (`CInt`→`i32`、`Word8`→`u8`、
+  `Float`→`f32`、`Ptr`→`ptr` …) で C の型を決める (利用者の newtype も渡せる)。同じ C 関数を異なる型で取り込むと E0618。
+  アドレスの取り込み (`&sym`)・`dynamic`・`wrapper` (コールバック) は FEAT-0047 まで E0618。
+- 値: `Ptr a` / `FunPtr a` はアドレスの `Int` の newtype。`CInt` などは `Int32` などの newtype で、`Int8`〜`Word32` は
+  符号拡張 / ゼロ拡張した `Int` の newtype (演算ごとに正規化)、`Word64` は `Word` の newtype。正規化してあるので
+  64 ビットのレジスタで渡しても ABI 上正しい。
+- メモリ: `peek`/`poke` はランタイムの `cirka_mem_read` / `cirka_mem_write` (`_f` は浮動小数)。`malloc`/`free`/`memcpy` などは
+  ライブラリ自身が `foreign import ccall` で呼ぶ。C ヒープのメモリは RC の対象外 (Rust の生ポインタと同じく利用者の責任)。
+- MIR インタプリタ (テストの基準) は `dlsym` で関数を探し、整数 6 個・浮動小数 8 個の引数を持つ固定の関数型で呼ぶ
+  (SysV は二つのレジスタクラスを独立に順に割り当て、余分な引数は無視されるため)。`float` は XMM の下位 32 ビット。
+  スタック渡しになる引数・可変長引数は扱えない (FEAT-0047)。これが `cirka-mir` で唯一の `unsafe` (`ffi.rs`)。
+
 ## 8. CirkaLang の記法
 
 ```

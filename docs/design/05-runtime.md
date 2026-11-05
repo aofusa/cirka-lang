@@ -91,6 +91,8 @@ int    main(int argc, char** argv);              // ランタイムが提供。c
 - `IORef` は `MUTVAR` オブジェクト (1 ワードの RC 管理フィールド)。`cirka_mutvar_new` / `read` (dup して返す) / `write`
   (新しい値を dup し、古い値を drop)。外部関数のポインタ引数は借用なので、所有権の受け渡しはランタイム側で数える。
 - システムコールは libc 経由(`read`/`write`/`open` …)。
+- 生メモリ (FEAT-0116、`Foreign.Storable`): `cirka_mem_read(addr, kind)` / `cirka_mem_write(addr, kind, val)` (kind: 0 `int8_t` 〜 6 `int64_t`)、
+  `cirka_mem_read_f` / `cirka_mem_write_f` (`float` / `double`)。アドレスは検査しない (C・GHC と同じ)。非整列アクセスを許す。
 
 ## 6. 例外
 

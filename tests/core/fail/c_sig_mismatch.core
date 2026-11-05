@@ -1,0 +1,3 @@
+; a C signature must agree with the Core types of the extern
+(extern sin (Int#) Double# (c (f64) f64))
+(def main Int# 0)

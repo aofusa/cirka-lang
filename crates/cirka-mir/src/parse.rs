@@ -312,6 +312,16 @@ impl Parser {
             }
         }
     }
+    fn c_ty(&mut self) -> PResult<cirka_core::CTy> {
+        let (s, _) = self.ident()?;
+        match cirka_core::CTy::from_name(&s) {
+            Some(t) => Ok(t),
+            None => {
+                self.pos -= 1;
+                self.err(format!("unknown C type `{s}`"))
+            }
+        }
+    }
     fn own(&mut self) -> PResult<Own> {
         match self.peek().clone() {
             Tok::At(s) if s == "owned" => {
@@ -447,7 +457,23 @@ impl Parser {
         } else {
             Some(self.ty()?)
         };
-        m.externs.push(ExternDecl { name, params, ret });
+        // `as c(i32, ptr) -> i32`: the C signature of a foreign function.
+        let c_sig = if self.is_kw("as") {
+            self.bump();
+            self.expect_kw("c")?;
+            let ps = self.comma_list("(", ")", |p| p.c_ty())?;
+            self.expect_sym("->")?;
+            let ret = self.c_ty()?;
+            Some(cirka_core::CSig { params: ps, ret })
+        } else {
+            None
+        };
+        m.externs.push(ExternDecl {
+            name,
+            params,
+            ret,
+            c_sig,
+        });
         Ok(())
     }
 

@@ -178,6 +178,35 @@ impl<'p> Linter<'p> {
                         return Err(format!("`{t}` is not a type of values"));
                     }
                 }
+                if let Some(c) = &e.c_sig {
+                    if c.params.len() != e.params.len() {
+                        return Err("the C signature has a different number of parameters".into());
+                    }
+                    let rep = |c: CTy| {
+                        if c.is_float() {
+                            Type::double()
+                        } else if c == CTy::Void {
+                            Type::unit()
+                        } else {
+                            Type::int()
+                        }
+                    };
+                    for (t, c) in e.params.iter().zip(&c.params) {
+                        if *c == CTy::Void || !t.alpha_eq(&rep(*c)) {
+                            return Err(format!(
+                                "parameter `{t}` cannot be passed as C `{}`",
+                                c.name()
+                            ));
+                        }
+                    }
+                    if !e.ret.alpha_eq(&rep(c.ret)) {
+                        return Err(format!(
+                            "result `{}` cannot be returned as C `{}`",
+                            e.ret,
+                            c.ret.name()
+                        ));
+                    }
+                }
                 Ok(())
             })();
             if let Err(m) = r {

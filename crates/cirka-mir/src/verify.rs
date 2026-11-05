@@ -604,6 +604,26 @@ impl<'a> FnVerifier<'a> {
                         args.len()
                     ));
                 }
+                if let Some(c) = &d.c_sig {
+                    let rep = |c: cirka_core::CTy| {
+                        if c.is_float() {
+                            Some(Ty::F64)
+                        } else if c == cirka_core::CTy::Void {
+                            None
+                        } else {
+                            Some(Ty::I64)
+                        }
+                    };
+                    let ok = c.params.len() == d.params.len()
+                        && c.params
+                            .iter()
+                            .zip(&d.params)
+                            .all(|(c, p)| rep(*c) == Some(p.0))
+                        && rep(c.ret) == d.ret;
+                    if !ok {
+                        self.error(format!("extern `{func}` does not match its C signature"));
+                    }
+                }
                 let tys: Vec<Ty> = d.params.iter().map(|p| p.0).collect();
                 let owns: Vec<Own> = d.params.iter().map(|p| p.1).collect();
                 self.args(st, args, &tys, &owns);

@@ -34,7 +34,12 @@ pub fn print_module(m: &Module) -> String {
                 s.push_str(" @owned");
             }
         }
-        let _ = writeln!(s, ") -> {}", e.ret.map(|t| t.name()).unwrap_or("void"));
+        let _ = write!(s, ") -> {}", e.ret.map(|t| t.name()).unwrap_or("void"));
+        if let Some(c) = &e.c_sig {
+            let ps: Vec<&str> = c.params.iter().map(|t| t.name()).collect();
+            let _ = write!(s, " as c({}) -> {}", ps.join(", "), c.ret.name());
+        }
+        s.push('\n');
     }
     for g in &m.globals {
         let _ = writeln!(s, "global {} = {}", g.name, g.init);

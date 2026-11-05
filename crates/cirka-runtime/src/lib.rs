@@ -13,6 +13,7 @@ pub mod bigint;
 pub mod debug;
 pub mod fs;
 pub mod io;
+pub mod mem;
 pub mod mutvar;
 pub mod object;
 pub mod start;

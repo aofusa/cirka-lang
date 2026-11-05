@@ -120,16 +120,22 @@ pub fn emit(m: &Module, opts: Options) -> String {
         if RUNTIME_DECLS.iter().any(|(n, _)| *n == e.name) {
             continue;
         }
-        let params: Vec<&str> = e.params.iter().map(|p| llty(p.0)).collect();
-        g.externs.insert(
-            e.name.clone(),
-            format!(
-                "{} @{}({})",
-                e.ret.map(llty).unwrap_or("void"),
-                e.name,
-                params.join(", ")
-            ),
-        );
+        let decl = match &e.c_sig {
+            Some(c) => {
+                let params: Vec<String> = c.params.iter().map(|t| c_param(*t)).collect();
+                format!("{} @{}({})", c_ll(c.ret), e.name, params.join(", "))
+            }
+            None => {
+                let params: Vec<&str> = e.params.iter().map(|p| llty(p.0)).collect();
+                format!(
+                    "{} @{}({})",
+                    e.ret.map(llty).unwrap_or("void"),
+                    e.name,
+                    params.join(", ")
+                )
+            }
+        };
+        g.externs.insert(e.name.clone(), decl);
     }
     for f in &m.funcs {
         g.function(f);
@@ -797,6 +803,10 @@ impl<'m> Gen<'m> {
             }
             Rhs::Extern { func, args } => {
                 let d = m.extern_decl(func).expect("ICE: undeclared extern");
+                if let Some(sig) = &d.c_sig {
+                    self.c_call(c, dst, func, sig, args, bound);
+                    return;
+                }
                 let tys: Vec<Ty> = d.params.iter().map(|p| p.0).collect();
                 let a = self.typed_args(f, args, Some(&tys));
                 match d.ret {
@@ -813,6 +823,66 @@ impl<'m> Gen<'m> {
                 c.line(&format!(
                     "{dst} = getelementptr i8, ptr @\"g.{gname}\", i64 0"
                 ));
+            }
+        }
+    }
+
+    /// A call of a foreign function: converts the `i64` / `f64` arguments
+    /// to the C types and the result back.
+    fn c_call(
+        &mut self,
+        c: &mut FnCtx<'_>,
+        dst: &str,
+        func: &str,
+        sig: &cirka_mir::CSig,
+        args: &[Operand],
+        bound: bool,
+    ) {
+        use cirka_mir::CTy;
+        let mut parts = Vec::new();
+        for (a, t) in args.iter().zip(&sig.params) {
+            let o = self.operand(a);
+            let v = match t {
+                CTy::I64 | CTy::U64 | CTy::F64 => o,
+                CTy::Ptr => {
+                    let x = c.t();
+                    c.line(&format!("{x} = inttoptr i64 {o} to ptr"));
+                    x
+                }
+                CTy::F32 => {
+                    let x = c.t();
+                    c.line(&format!("{x} = fptrunc double {o} to float"));
+                    x
+                }
+                t => {
+                    let x = c.t();
+                    c.line(&format!("{x} = trunc i64 {o} to {}", c_ll(*t)));
+                    x
+                }
+            };
+            parts.push(format!("{} {v}", c_param(*t)));
+        }
+        let call = format!("@{func}({})", parts.join(", "));
+        match sig.ret {
+            CTy::Void => {
+                c.line(&format!("call void {call}"));
+                if bound {
+                    c.line(&format!("{dst} = add i64 0, 0"));
+                }
+            }
+            CTy::I64 | CTy::U64 | CTy::F64 => {
+                c.line(&format!("{dst} = call {} {call}", c_ll(sig.ret)));
+            }
+            r => {
+                let x = c.t();
+                c.line(&format!("{x} = call {} {call}", c_ll(r)));
+                let conv = match r {
+                    CTy::Ptr => format!("ptrtoint ptr {x} to i64"),
+                    CTy::F32 => format!("fpext float {x} to double"),
+                    r if r.is_signed() => format!("sext {} {x} to i64", c_ll(r)),
+                    r => format!("zext {} {x} to i64", c_ll(r)),
+                };
+                c.line(&format!("{dst} = {conv}"));
             }
         }
     }
@@ -1336,5 +1406,31 @@ fn capture_slot(tys: &[Ty], i: usize) -> usize {
         tys[..i].iter().filter(|t| t.is_ptr()).count()
     } else {
         tys.iter().filter(|t| t.is_ptr()).count() + tys[..i].iter().filter(|t| !t.is_ptr()).count()
+    }
+}
+
+/// The LLVM type of a C scalar.
+fn c_ll(t: cirka_mir::CTy) -> &'static str {
+    use cirka_mir::CTy::*;
+    match t {
+        I8 | U8 => "i8",
+        I16 | U16 => "i16",
+        I32 | U32 => "i32",
+        I64 | U64 => "i64",
+        F32 => "float",
+        F64 => "double",
+        Ptr => "ptr",
+        Void => "void",
+    }
+}
+
+/// A C parameter or result type with the extension attribute that the
+/// System V ABI (as implemented by clang and gcc) expects for small integers.
+fn c_param(t: cirka_mir::CTy) -> String {
+    use cirka_mir::CTy::*;
+    match t {
+        I8 | I16 => format!("{} signext", c_ll(t)),
+        U8 | U16 => format!("{} zeroext", c_ll(t)),
+        _ => c_ll(t).to_string(),
     }
 }

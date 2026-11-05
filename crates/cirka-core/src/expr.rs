@@ -358,6 +358,94 @@ pub struct ExternDecl {
     pub name: String,
     pub params: Vec<Type>,
     pub ret: Type,
+    /// The C signature of a foreign function (FFI), when it differs from
+    /// the runtime's convention (`Int#` = `int64_t`, `Double#` = `double`,
+    /// `Bytes` = object pointer, `Unit#` result = `void`). The Core types
+    /// are then `Int#` (integers and pointers), `Double#` (floating point)
+    /// and `Unit#` (`void`); the backend converts at the call.
+    pub c_sig: Option<CSig>,
+}
+
+/// A C signature: parameter and result types.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CSig {
+    pub params: Vec<CTy>,
+    pub ret: CTy,
+}
+
+/// A C scalar type at the FFI boundary (x86_64 System V).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CTy {
+    I8,
+    U8,
+    I16,
+    U16,
+    I32,
+    U32,
+    I64,
+    U64,
+    F32,
+    F64,
+    /// Any data or function pointer (`void *`).
+    Ptr,
+    Void,
+}
+
+impl CTy {
+    pub const ALL: &'static [CTy] = &[
+        CTy::I8,
+        CTy::U8,
+        CTy::I16,
+        CTy::U16,
+        CTy::I32,
+        CTy::U32,
+        CTy::I64,
+        CTy::U64,
+        CTy::F32,
+        CTy::F64,
+        CTy::Ptr,
+        CTy::Void,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            CTy::I8 => "i8",
+            CTy::U8 => "u8",
+            CTy::I16 => "i16",
+            CTy::U16 => "u16",
+            CTy::I32 => "i32",
+            CTy::U32 => "u32",
+            CTy::I64 => "i64",
+            CTy::U64 => "u64",
+            CTy::F32 => "f32",
+            CTy::F64 => "f64",
+            CTy::Ptr => "ptr",
+            CTy::Void => "void",
+        }
+    }
+
+    pub fn from_name(s: &str) -> Option<CTy> {
+        CTy::ALL.iter().copied().find(|t| t.name() == s)
+    }
+
+    pub fn is_float(self) -> bool {
+        matches!(self, CTy::F32 | CTy::F64)
+    }
+
+    /// Bits of an integer type (`ptr` is 64).
+    pub fn int_bits(self) -> Option<u32> {
+        match self {
+            CTy::I8 | CTy::U8 => Some(8),
+            CTy::I16 | CTy::U16 => Some(16),
+            CTy::I32 | CTy::U32 => Some(32),
+            CTy::I64 | CTy::U64 | CTy::Ptr => Some(64),
+            _ => None,
+        }
+    }
+
+    pub fn is_signed(self) -> bool {
+        matches!(self, CTy::I8 | CTy::I16 | CTy::I32 | CTy::I64)
+    }
 }
 
 /// A top-level binding.

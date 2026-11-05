@@ -1,0 +1,33 @@
+; Foreign calls with C signatures (FEAT-0116): narrow integers, unsigned
+; results, float arguments and a pointer argument.
+(extern cirka_write_i64 (Int#) Unit#)
+(extern cirka_write_f64 (Double#) Unit#)
+(extern cirka_write_char (Int#) Unit#)
+(extern abs (Int#) Int# (c (i32) i32))
+(extern labs (Int#) Int# (c (i64) i64))
+(extern ldexpf (Double# Int#) Double# (c (f32 i32) f32))
+(extern toupper (Int#) Int# (c (i32) i32))
+(extern malloc (Int#) Int# (c (u64) ptr))
+(extern free (Int#) Unit# (c (ptr) void))
+(extern strlen (Int#) Int# (c (ptr) u64))
+(extern memset (Int# Int# Int#) Int# (c (ptr i32 u64) ptr))
+
+(def nl Unit# (extern cirka_write_char 10))
+
+(def main Int#
+  ; abs of -7 passed as i32 (the high bits of the i64 are dropped)
+  (let! (a Unit# (extern cirka_write_i64 (extern abs (prim sub 4294967296 7))))
+  (let! (b Unit# nl)
+  (let! (c Unit# (extern cirka_write_i64 (extern labs -42)))
+  (let! (d Unit# nl)
+  (let! (e Unit# (extern cirka_write_f64 (extern ldexpf 1.5 3)))
+  (let! (f Unit# nl)
+  (let! (g Unit# (extern cirka_write_char (extern toupper 113)))
+  (let! (h Unit# nl)
+  (let! (p Int# (extern malloc 8))
+  (let! (q Int# (extern memset p 97 7))
+  (let! (r Int# (extern memset (prim add p 7) 0 1))
+  (let! (s Unit# (extern cirka_write_i64 (extern strlen p)))
+  (let! (t Unit# nl)
+  (let! (u Unit# (extern free p))
+    0)))))))))))))))

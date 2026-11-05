@@ -304,6 +304,7 @@ impl<'p> Lowerer<'p> {
                 } else {
                     Some(l.rep(&e.ret))
                 },
+                c_sig: e.c_sig.clone(),
             });
         }
         l.m = m;
