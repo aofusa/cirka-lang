@@ -453,6 +453,12 @@ pub enum Prim {
     ArrayLen,
     ArrayGet,
     ArraySet,
+    ArrayUnique,
+    BytesGetI64,
+    BytesSetI64,
+    BytesGetF64,
+    BytesSetF64,
+    BytesUnique,
 }
 
 impl Prim {
@@ -505,6 +511,12 @@ impl Prim {
         Prim::ArrayLen,
         Prim::ArrayGet,
         Prim::ArraySet,
+        Prim::ArrayUnique,
+        Prim::BytesGetI64,
+        Prim::BytesSetI64,
+        Prim::BytesGetF64,
+        Prim::BytesSetF64,
+        Prim::BytesUnique,
     ];
 
     pub fn name(self) -> &'static str {
@@ -558,6 +570,12 @@ impl Prim {
             ArrayLen => "array_len",
             ArrayGet => "array_get",
             ArraySet => "array_set",
+            ArrayUnique => "array_unique",
+            BytesGetI64 => "bytes_get_i64",
+            BytesSetI64 => "bytes_set_i64",
+            BytesGetF64 => "bytes_get_f64",
+            BytesSetF64 => "bytes_set_f64",
+            BytesUnique => "bytes_unique",
         }
     }
 
@@ -601,6 +619,18 @@ impl Prim {
             ArrayGet => (&[Ptr, I64], Ptr),
             // array_set(a, i, v): consumes `v`, drops the old element; `a` must be unique.
             ArraySet => (&[Ptr, I64, Ptr], I64),
+            // array_unique(a): consumes `a`; returns it when unique, otherwise
+            // a fresh copy (elements dup'ed) and `a` is dropped.
+            ArrayUnique => (&[Ptr], Ptr),
+            // 8-byte words (element `i` at byte offset 8*i) of a BYTES
+            // object: the representation of unboxed arrays (FEAT-0123).
+            BytesGetI64 => (&[Ptr, I64], I64),
+            // bytes_set_i64(b, i, v): in-place store; `b` must be unique.
+            BytesSetI64 => (&[Ptr, I64, I64], I64),
+            BytesGetF64 => (&[Ptr, I64], F64),
+            BytesSetF64 => (&[Ptr, I64, F64], I64),
+            // bytes_unique(b): like array_unique for BYTES.
+            BytesUnique => (&[Ptr], Ptr),
         }
     }
 
@@ -614,6 +644,7 @@ impl Prim {
         match self {
             Prim::ArrayNew => &[1],
             Prim::ArraySet => &[2],
+            Prim::ArrayUnique | Prim::BytesUnique => &[0],
             _ => &[],
         }
     }

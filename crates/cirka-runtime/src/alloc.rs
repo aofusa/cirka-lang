@@ -52,6 +52,8 @@ pub struct Stats {
     pub max_live: u64,
     /// Thunks evaluated (`cirka_force`).
     pub forced: u64,
+    /// Shared arrays copied by an in-place update (`cirka_array_unique`).
+    pub array_copies: u64,
 }
 
 pub static STATS: Global<Stats> = Global::new(Stats {
@@ -60,6 +62,7 @@ pub static STATS: Global<Stats> = Global::new(Stats {
     live: 0,
     max_live: 0,
     forced: 0,
+    array_copies: 0,
 });
 
 #[inline(always)]

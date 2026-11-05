@@ -684,14 +684,15 @@ impl<'m> Interp<'m> {
                 self.heap[p as usize].kind = kind::BLACKHOLE;
                 let captured = self.heap[p as usize].fields.clone();
                 // The thunk entry stub passes captured values: owned
-                // parameters get a fresh reference.
+                // parameters are moved out of the thunk (it is evaluated
+                // once), leaving null slots that the update skips.
                 let g = &self.m.funcs[gi];
                 for (i, c) in captured.iter().enumerate() {
-                    if g.params[i].own == Own::Owned {
-                        self.dup(*c)?;
+                    if g.params[i].own == Own::Owned && matches!(c, Val::P(_)) {
+                        self.heap[p as usize].fields[i] = Val::Null;
                     }
                 }
-                let r = self.call(gi, captured.clone())?;
+                let r = self.call(gi, captured)?;
                 // Update: drop captured values, become an indirection.
                 let o = &mut self.heap[p as usize];
                 let old = std::mem::replace(&mut o.fields, vec![r]);
@@ -990,6 +991,78 @@ impl<'m> Interp<'m> {
                 let old = std::mem::replace(&mut o.fields[k as usize], a[2]);
                 self.drop_val(old)?;
                 Val::I(0)
+            }
+            BytesGetI64 | BytesGetF64 => {
+                let bs = self.bytes(a[0])?;
+                let k = i(1);
+                if k < 0 || (k as usize) >= bs.len() / 8 {
+                    return Err(Exit::Panic("index out of bounds".into()));
+                }
+                let w: [u8; 8] = bs[8 * k as usize..8 * k as usize + 8].try_into().unwrap();
+                let w = i64::from_le_bytes(w);
+                if p == BytesGetI64 {
+                    Val::I(w)
+                } else {
+                    Val::F(f64::from_bits(w as u64))
+                }
+            }
+            BytesSetI64 | BytesSetF64 => {
+                let Val::P(ptr) = a[0] else {
+                    return fault("bytes_set on a non-pointer");
+                };
+                let k = i(1);
+                let w = if p == BytesSetI64 {
+                    i(2)
+                } else {
+                    fl(2).to_bits() as i64
+                };
+                let o = self.obj_mut(ptr)?;
+                if o.rc != 1 {
+                    return fault("bytes_set on a shared object");
+                }
+                match &mut o.payload {
+                    Payload::Bytes(bs) if k >= 0 && (k as usize) < bs.len() / 8 => {
+                        let at = 8 * k as usize;
+                        bs[at..at + 8].copy_from_slice(&w.to_le_bytes());
+                    }
+                    Payload::Bytes(_) => return Err(Exit::Panic("index out of bounds".into())),
+                    _ => return fault("bytes_set on a non-bytes object"),
+                }
+                Val::I(0)
+            }
+            BytesUnique => {
+                let Val::P(ptr) = a[0] else {
+                    return fault("bytes_unique on a non-pointer");
+                };
+                let o = self.obj(ptr)?;
+                if o.rc == 1 {
+                    a[0]
+                } else {
+                    let Payload::Bytes(bs) = &o.payload else {
+                        return fault("bytes_unique on a non-bytes object");
+                    };
+                    let bs = bs.clone();
+                    let size = 16 + bs.len().div_ceil(8) * 8;
+                    self.drop_val(a[0])?;
+                    Val::P(self.alloc(kind::BYTES, 0, vec![], Payload::Bytes(bs), size))
+                }
+            }
+            ArrayUnique => {
+                let Val::P(p) = a[0] else {
+                    return fault("array_unique on a non-pointer");
+                };
+                let o = self.obj(p)?;
+                if o.rc == 1 {
+                    a[0]
+                } else {
+                    let fields = o.fields.clone();
+                    let n = fields.len();
+                    for &f in &fields {
+                        self.dup(f)?;
+                    }
+                    self.drop_val(a[0])?;
+                    Val::P(self.alloc(kind::ARRAY, 0, fields, Payload::Array, 16 + 8 * n))
+                }
             }
         })
     }

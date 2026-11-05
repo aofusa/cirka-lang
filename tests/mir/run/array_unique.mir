@@ -1,0 +1,40 @@
+type Int { I = 0 { v: i64 } }
+extern fn cirka_write_i64(i64) -> void
+extern fn cirka_write_char(i64) -> void
+
+// array_unique (FEAT-0123): a unique array is returned as is; a shared one
+// is copied (elements dup'ed) and the original keeps its contents.
+fn show(a: ptr @borrowed, i: i64) -> i64 {
+entry:
+  let e = prim array_get(a, i)
+  let v = proj e Int.I.v
+  let _ = extern cirka_write_i64(v)
+  let _ = extern cirka_write_char(32)
+  ret 0
+}
+
+fn main() -> i64 {
+entry:
+  let z = alloc Int.I(1)
+  let a = prim array_new(3, z)
+  // unique: same object
+  let b = prim array_unique(a)
+  let two = alloc Int.I(2)
+  let _ = prim array_set(b, 0, two)
+  let _ = call show(b, 0)
+  // shared: copied
+  dup b
+  let c = prim array_unique(b)
+  let same = prim ptr_eq(b, c)
+  let _ = extern cirka_write_i64(same)
+  let _ = extern cirka_write_char(32)
+  let nine = alloc Int.I(9)
+  let _ = prim array_set(c, 0, nine)
+  let _ = call show(b, 0)
+  let _ = call show(c, 0)
+  let _ = call show(c, 2)
+  let _ = extern cirka_write_char(10)
+  drop b
+  drop c
+  ret 0
+}

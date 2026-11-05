@@ -135,7 +135,8 @@ fn printer_disambiguates_shadowed_names() {
 /// Optimizes `src` and returns the printed `main`.
 fn opt_main(src: &str) -> (String, opt::Stats) {
     let mut p = parse_program(FileId(0), src).unwrap();
-    assert!(lint::lint_program(&p).is_empty());
+    let errs = lint::lint_program(&p);
+    assert!(errs.is_empty(), "{errs:?}");
     let st = opt::optimize_with_stats(&mut p).unwrap();
     assert!(lint::lint_program(&p).is_empty(), "{}", print_program(&p));
     let m = p.bind("main").unwrap();
@@ -454,4 +455,55 @@ fn dictionary_fields_become_globals() {
     assert!(lint::lint_program(&p).is_empty(), "{}", print_program(&p));
     let d = print::print_expr(&p.bind("dInt").unwrap().expr);
     assert!(d.contains("dInt$f0"), "{d}");
+}
+
+// ---- FEAT-0123: evaluated scrutinees, value fields, let! of a case ----
+
+#[test]
+fn opt_default_case_of_evaluated_variable() {
+    // let! x = mk 1 in case x of _ -> ...  ⇒  the default-only `case` (the
+    // `seq` of a bang pattern) disappears.
+    let src = format!(
+        "{PRELUDE}(extern mk (Int#) Int)
+         (def main Int#
+           (let! (x Int (extern mk 1))
+             (case x (s Int) Int# (_ (case s (t Int) Int# ((I# v) v))))))"
+    );
+    let (m, st) = opt_main(&src);
+    assert_eq!(m.matches("(case").count(), 1, "{m}");
+    assert!(st.known_case >= 1, "{st:?}");
+}
+
+#[test]
+fn opt_let_strict_of_constructor_with_value_fields() {
+    // let! p = P (I# x) y in case p of P a b -> a  ⇒  the pair is never
+    // built: the value field is floated out and `p` is a known constructor.
+    let src = format!(
+        "{PRELUDE}(extern arg () Int#)
+         (extern mk (Int#) Int)
+         (def main Int#
+           (let! (x Int# (extern arg))
+             (let! (y Int (extern mk x))
+               (let! (p (Pair Int Int) (con P (Int Int) (con I# () x) y))
+                 (case p (s (Pair Int Int)) Int# ((P a b) (case a (t Int) Int# ((I# v) v))))))))"
+    );
+    let (m, st) = opt_main(&src);
+    assert!(!m.contains("con P"), "{m}");
+    assert!(st.known_case >= 1, "{st:?}");
+}
+
+#[test]
+fn opt_let_strict_of_single_alternative_case() {
+    // let! t = (case q of P a b -> P b a) in case t of P c d -> c
+    //   ⇒ case q of P a b -> b  (no intermediate pair)
+    let src = format!(
+        "{PRELUDE}(extern mkp (Int#) (Pair Int Int))
+         (def main Int#
+           (let! (q (Pair Int Int) (extern mkp 1))
+             (let! (t (Pair Int Int) (case q (s (Pair Int Int)) (Pair Int Int) ((P a b) (con P (Int Int) b a))))
+               (case t (s2 (Pair Int Int)) Int# ((P c d) (case c (u Int) Int# ((I# v) v)))))))"
+    );
+    let (m, st) = opt_main(&src);
+    assert!(!m.contains("con P"), "{m}");
+    assert!(st.floated >= 1 && st.known_case >= 1, "{st:?}");
 }

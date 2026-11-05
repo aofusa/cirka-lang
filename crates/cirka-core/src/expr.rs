@@ -96,6 +96,16 @@ pub enum PrimOp {
     ArrayLen,
     ArrayGet,
     ArraySet,
+    /// `array_unique a`: consumes `a`; `a` itself when unique, otherwise a copy.
+    ArrayUnique,
+    /// 8-byte words of `Bytes` (unboxed arrays, FEAT-0123): `bytes_get64 b i`
+    /// is the `Int#` at byte offset `8*i`; `bytes_getf` the `Double#`.
+    BytesGet64,
+    BytesSet64,
+    BytesGetF,
+    BytesSetF,
+    /// `bytes_unique b`: consumes `b`; `b` itself when unique, otherwise a copy.
+    BytesUnique,
     /// Pointer equality of two boxed values (`Int#`).
     PtrEq,
 }
@@ -137,6 +147,12 @@ impl PrimOp {
         PrimOp::ArrayLen,
         PrimOp::ArrayGet,
         PrimOp::ArraySet,
+        PrimOp::ArrayUnique,
+        PrimOp::BytesGet64,
+        PrimOp::BytesSet64,
+        PrimOp::BytesGetF,
+        PrimOp::BytesSetF,
+        PrimOp::BytesUnique,
         PrimOp::PtrEq,
     ];
 
@@ -178,6 +194,12 @@ impl PrimOp {
             ArrayLen => "array_len",
             ArrayGet => "array_get",
             ArraySet => "array_set",
+            ArrayUnique => "array_unique",
+            BytesGet64 => "bytes_get64",
+            BytesSet64 => "bytes_set64",
+            BytesGetF => "bytes_getf",
+            BytesSetF => "bytes_setf",
+            BytesUnique => "bytes_unique",
             PtrEq => "ptr_eq",
         }
     }
@@ -190,7 +212,7 @@ impl PrimOp {
     pub fn ty_arity(self) -> usize {
         use PrimOp::*;
         match self {
-            ArrayNew | ArrayLen | ArrayGet | ArraySet | PtrEq => 1,
+            ArrayNew | ArrayLen | ArrayGet | ArraySet | ArrayUnique | PtrEq => 1,
             _ => 0,
         }
     }
@@ -219,6 +241,12 @@ impl PrimOp {
             ArrayLen => (vec![arr], i()),
             ArrayGet => (vec![arr, i()], elem),
             ArraySet => (vec![arr, i(), elem], Type::unit()),
+            ArrayUnique => (vec![arr.clone()], arr),
+            BytesGet64 => (vec![Type::bytes(), i()], i()),
+            BytesSet64 => (vec![Type::bytes(), i(), i()], Type::unit()),
+            BytesGetF => (vec![Type::bytes(), i()], d()),
+            BytesSetF => (vec![Type::bytes(), i(), d()], Type::unit()),
+            BytesUnique => (vec![Type::bytes()], Type::bytes()),
             PtrEq => (vec![elem.clone(), elem], i()),
         }
     }
@@ -229,7 +257,19 @@ impl PrimOp {
         use PrimOp::*;
         matches!(
             self,
-            Quot | Rem | BytesNew | BytesSet | BytesGet | ArrayNew | ArrayGet | ArraySet
+            Quot | Rem
+                | BytesNew
+                | BytesSet
+                | BytesGet
+                | ArrayNew
+                | ArrayGet
+                | ArraySet
+                | ArrayUnique
+                | BytesGet64
+                | BytesSet64
+                | BytesGetF
+                | BytesSetF
+                | BytesUnique
         )
     }
 }

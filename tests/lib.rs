@@ -7,7 +7,7 @@ pub fn parse_stats(stderr: &str) -> Option<(u64, u64)> {
     Some((stat(stderr, "allocs")?, stat(stderr, "frees")?))
 }
 
-/// One counter (`allocs`, `frees`, `max_live`, `forced`) of the
+/// One counter (`allocs`, `frees`, `max_live`, `forced`, `array_copies`) of the
 /// `cirka-stats:` line.
 pub fn stat(stderr: &str, key: &str) -> Option<u64> {
     let line = stderr.lines().find(|l| l.starts_with("cirka-stats:"))?;
@@ -17,10 +17,15 @@ pub fn stat(stderr: &str, key: &str) -> Option<u64> {
         .and_then(|v| v.parse().ok())
 }
 
-/// The `-- max-allocs: N` and `-- max-forced: N` headers (allocations and
-/// evaluated thunks of a native run).
+/// The `-- max-allocs: N`, `-- max-forced: N` and `-- max-array-copies: N`
+/// headers (allocations, evaluated thunks and copies of shared arrays by
+/// in-place updates of a native run).
 fn check_limits(c: &Case, name: &str, stderr: &str) -> Result<(), String> {
-    for (h, key) in [("max-allocs", "allocs"), ("max-forced", "forced")] {
+    for (h, key) in [
+        ("max-allocs", "allocs"),
+        ("max-forced", "forced"),
+        ("max-array-copies", "array_copies"),
+    ] {
         let Some(limit) = c.header.get(h) else {
             continue;
         };

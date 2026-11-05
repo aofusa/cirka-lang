@@ -35,8 +35,8 @@ aCHC と CirkaLang で共有する、Rust で書いた `#![no_std]` の静的ラ
 | `THUNK` | 未評価: `code_ptr` + 捕捉変数 |
 | `BLACKHOLE` | 評価中のサンク |
 | `IND` | 評価済みサンク → 値へのポインタ |
-| `ARRAY` | `len` + ポインタ要素 (boxed 配列) |
-| `BYTES` | `len` + 生バイト (非ボックス配列、`ByteArray#` 相当) |
+| `ARRAY` | `len` + ポインタ要素 (boxed 配列。aCHC の `Cirka.Array`) |
+| `BYTES` | `len` + 生バイト (非ボックス配列、`ByteArray#` 相当。aCHC の `Cirka.Array.Unboxed` は 8 バイトの語の列) |
 | `BIGINT` | (予約・未使用) 多倍長整数は `BYTES` に `cirka-bigint` の符号化 (符号 1 バイト + u32 limb のリトルエンディアン) で格納する (FEAT-0114) |
 | `FOREIGN` | 外部ポインタ + 解放関数 (`ForeignPtr`) |
 | `MUTVAR` | `IORef`/`STRef` |
@@ -57,6 +57,8 @@ void   cirka_mark_shared(void* obj);             // 到達可能な全オブジ�
 
 // 評価
 void*  cirka_force(void* thunk);                 // サンク評価 (ブラックホール・IND 書き換え)
+void*  cirka_array_unique(void* a);              // 一意なら a、共有ならコピー (in-place 更新の前。FEAT-0123)
+void*  cirka_bytes_unique(void* b);              // 同上 (BYTES)
 void*  cirka_apply_n(void* fun, size_t n, void** args);   // 未知関数の適用 (eval/apply)
 
 // 実行時エラー

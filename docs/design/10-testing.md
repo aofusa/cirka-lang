@@ -39,6 +39,7 @@
   -- opt-levels: 2           (aCHC の run テスト: 指定した最適化レベルだけで実行。既定は 0 と 2)
   -- max-allocs: 3001000     (ネイティブ実行の確保回数の上限。CIRKA_STATS の allocs)
   -- max-forced: 1001000     (ネイティブ実行で評価されたサンクの数の上限。CIRKA_STATS の forced)
+  -- max-array-copies: 0     (in-place 更新で共有配列をコピーした回数の上限。CIRKA_STATS の array_copies)
   ```
 - `ACHC_BLESS=1` / `CIRKA_BLESS=1` で期待ファイルを更新。
 - 失敗時は生成した `.ll`・ダンプを `_build/test-failures/<name>/` に残す。

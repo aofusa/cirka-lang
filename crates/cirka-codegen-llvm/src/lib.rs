@@ -78,6 +78,8 @@ const RUNTIME_DECLS: &[(&str, &str)] = &[
     ("cirka_panic", "void @cirka_panic(ptr, i64) noreturn"),
     ("cirka_bytes_new", "ptr @cirka_bytes_new(i64)"),
     ("cirka_array_new", "ptr @cirka_array_new(i64, ptr)"),
+    ("cirka_array_unique", "ptr @cirka_array_unique(ptr)"),
+    ("cirka_bytes_unique", "ptr @cirka_bytes_unique(ptr)"),
     (
         "llvm.fptosi.sat.i64.f64",
         "i64 @llvm.fptosi.sat.i64.f64(double)",
@@ -1006,6 +1008,38 @@ impl<'m> Gen<'m> {
                 "{dst} = call ptr @cirka_array_new(i64 {}, ptr {})",
                 a[0], a[1]
             )),
+            ArrayUnique => c.line(&format!(
+                "{dst} = call ptr @cirka_array_unique(ptr {})",
+                a[0]
+            )),
+            BytesUnique => c.line(&format!(
+                "{dst} = call ptr @cirka_bytes_unique(ptr {})",
+                a[0]
+            )),
+            BytesGetI64 | BytesSetI64 | BytesGetF64 | BytesSetF64 => {
+                // 8-byte words: index < len / 8.
+                let len = Self::load_field(c, &a[0], 0, Ty::I64);
+                let words = c.t();
+                c.line(&format!("{words} = lshr i64 {len}, 3"));
+                self.bounds(c, &words, &a[1]);
+                let base = Self::gep(c, &a[0], 16);
+                let ty = if matches!(p, BytesGetF64 | BytesSetF64) {
+                    "double"
+                } else {
+                    "i64"
+                };
+                let ep = c.t();
+                c.line(&format!(
+                    "{ep} = getelementptr inbounds {ty}, ptr {base}, i64 {}",
+                    a[1]
+                ));
+                if matches!(p, BytesGetI64 | BytesGetF64) {
+                    c.line(&format!("{dst} = load {ty}, ptr {ep}, align 8"));
+                } else {
+                    c.line(&format!("store {ty} {}, ptr {ep}, align 8", a[2]));
+                    c.line(&format!("{dst} = add i64 0, 0"));
+                }
+            }
             ArrayLen => {
                 let l = Self::load_field(c, &a[0], 0, Ty::I64);
                 c.line(&format!("{dst} = add i64 {l}, 0"));
@@ -1193,7 +1227,11 @@ impl<'m> Gen<'m> {
             let slot = capture_slot(&tys, i);
             let v = Self::load_field(&mut c, "%t", 1 + slot, tys[i]);
             if tys[i].is_ptr() && g.params[i].own == Own::Owned {
-                self.emit_dup(&mut c, &v);
+                // A thunk is evaluated once (it is a BLACKHOLE meanwhile), so
+                // an owned captured value is moved out of it, not dup'ed:
+                // `cirka_force` skips the null slot (04-memory-model.md §4).
+                let p = Self::gep(&mut c, "%t", 8 + 8 * (1 + slot));
+                c.line(&format!("store ptr null, ptr {p}, align 8"));
             }
             call_args.push(format!("{} {v}", llty(tys[i])));
         }

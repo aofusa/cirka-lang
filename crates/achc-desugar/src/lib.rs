@@ -367,6 +367,9 @@ impl Ds {
                     | "Cirka.Prim.Bytes"
                     | "Cirka.Prim.IO"
                     | "Cirka.Prim.IORef"
+                    | "Cirka.Prim.Array"
+                    | "Cirka.Prim.ArrayPair"
+                    | "Cirka.Prim.BytesPair"
                     | "Cirka.Prim.BigNat"
                     | "Cirka.Prim.Bool"
             )

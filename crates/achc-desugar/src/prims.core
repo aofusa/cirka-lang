@@ -12,6 +12,11 @@
 (data IO (a) :newtype (IO# (-> Unit# a)))
 ; A mutable reference (runtime MUTVAR) holding a value of type a.
 (data IORef (a) :newtype (IORef# Any))
+; An array and a value read from it (Cirka.Array, FEAT-0123): returning
+; both keeps the array unique across the read.
+(data ArrayPair (a b) (ArrayPair (Array a) b))
+; The same for unboxed arrays (BYTES of 8-byte words).
+(data BytesPair (b) (BytesPair Bytes b))
 ; A big integer (runtime BYTES in cirka-bigint's encoding), FEAT-0114.
 (data BigNat () :newtype (BigNat# Bytes))
 
@@ -344,6 +349,111 @@
 (def prim$get_arg (-> Int Unit# (List Char))
   (lam ((i Int) (w Unit#))
     (case i (i1 Int) (List Char) ((I# x) (prim$unpack (extern cirka_arg x))))))
+
+; ---- arrays (Cirka.Array, FEAT-0123) ----
+; Elements are stored lazily. `array_write` updates in place when the array
+; is unique (rc == 1) and copies it first otherwise (`array_unique`).
+
+(def prim$array_new (forall (a) (-> Int a (Array a)))
+  (tlam (a)
+    (lam ((n Int) (x a))
+      (case n (n1 Int) (Array a) ((I# k) (prim array_new (a) k x))))))
+
+(def prim$array_write (forall (a) (-> (Array a) Int a (Array a)))
+  (tlam (a)
+    (lam ((arr (Array a)) (n Int) (x a))
+      (case n (n1 Int) (Array a)
+        ((I# k)
+          (let! (b (Array a) (prim array_unique (a) arr))
+            (let! (u Unit# (prim array_set (a) b k x)) b)))))))
+
+(def prim$array_read (forall (a) (-> (Array a) Int (ArrayPair a a)))
+  (tlam (a)
+    (lam ((arr (Array a)) (n Int))
+      (case n (n1 Int) (ArrayPair a a)
+        ((I# k)
+          (let! (x a (prim array_get (a) arr k))
+            (con ArrayPair (a a) arr x)))))))
+
+(def prim$array_length (forall (a) (-> (Array a) (ArrayPair a Int)))
+  (tlam (a)
+    (lam ((arr (Array a)))
+      (let! (k Int# (prim array_len (a) arr))
+        (con ArrayPair (a Int) arr (con I# () k))))))
+
+(def prim$array_index (forall (a) (-> (Array a) Int a))
+  (tlam (a)
+    (lam ((arr (Array a)) (n Int))
+      (case n (n1 Int) a ((I# k) (prim array_get (a) arr k))))))
+
+(def prim$array_size (forall (a) (-> (Array a) Int))
+  (tlam (a)
+    (lam ((arr (Array a)))
+      (con I# () (prim array_len (a) arr)))))
+
+(def prim$array_thaw (forall (a) (-> (Array a) (Array a)))
+  (tlam (a)
+    (lam ((arr (Array a)))
+      (prim array_unique (a) arr))))
+
+; Unboxed arrays: a BYTES object of 8-byte words (`Int#` or `Double#`).
+; Elements are strict; writes are in place when the object is unique.
+
+(def prim$uarr_new (-> Int Bytes)
+  (lam ((n Int))
+    (case n (n1 Int) Bytes
+      ((I# k) (prim bytes_new (prim mul (case (prim lt k 0) (c Int#) Int# (1 0) (_ k)) 8))))))
+
+(def prim$uarr_size (-> Bytes Int)
+  (lam ((b Bytes)) (con I# () (prim shr (prim bytes_len b) 3))))
+
+(def prim$uarr_size_u (-> Bytes (BytesPair Int))
+  (lam ((b Bytes))
+    (let! (k Int# (prim shr (prim bytes_len b) 3))
+      (con BytesPair (Int) b (con I# () k)))))
+
+(def prim$uarr_thaw (-> Bytes Bytes)
+  (lam ((b Bytes)) (prim bytes_unique b)))
+
+(def prim$uarr_index_int (-> Bytes Int Int)
+  (lam ((b Bytes) (n Int))
+    (case n (n1 Int) Int ((I# k) (con I# () (prim bytes_get64 b k))))))
+
+(def prim$uarr_read_int (-> Bytes Int (BytesPair Int))
+  (lam ((b Bytes) (n Int))
+    (case n (n1 Int) (BytesPair Int)
+      ((I# k)
+        (let! (x Int# (prim bytes_get64 b k))
+          (con BytesPair (Int) b (con I# () x)))))))
+
+(def prim$uarr_write_int (-> Bytes Int Int Bytes)
+  (lam ((b Bytes) (n Int) (v Int))
+    (case n (n1 Int) Bytes
+      ((I# k)
+        (case v (v1 Int) Bytes
+          ((I# x)
+            (let! (c Bytes (prim bytes_unique b))
+              (let! (u Unit# (prim bytes_set64 c k x)) c))))))))
+
+(def prim$uarr_index_dbl (-> Bytes Int Double)
+  (lam ((b Bytes) (n Int))
+    (case n (n1 Int) Double ((I# k) (con D# () (prim bytes_getf b k))))))
+
+(def prim$uarr_read_dbl (-> Bytes Int (BytesPair Double))
+  (lam ((b Bytes) (n Int))
+    (case n (n1 Int) (BytesPair Double)
+      ((I# k)
+        (let! (x Double# (prim bytes_getf b k))
+          (con BytesPair (Double) b (con D# () x)))))))
+
+(def prim$uarr_write_dbl (-> Bytes Int Double Bytes)
+  (lam ((b Bytes) (n Int) (v Double))
+    (case n (n1 Int) Bytes
+      ((I# k)
+        (case v (v1 Double) Bytes
+          ((D# x)
+            (let! (c Bytes (prim bytes_unique b))
+              (let! (u Unit# (prim bytes_setf c k x)) c))))))))
 
 ; ---- references and files ----
 

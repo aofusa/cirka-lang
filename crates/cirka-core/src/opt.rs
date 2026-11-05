@@ -155,6 +155,7 @@ fn simplify_rounds(p: &mut Program, st: &mut Stats, next: &mut u32) -> Result<()
                 sub: HashMap::new(),
                 env: HashMap::new(),
                 known: HashMap::new(),
+                evaluated: HashSet::new(),
                 known_globals: &kg,
                 next: *next,
                 changed: false,
@@ -690,6 +691,8 @@ struct Simp<'a> {
     env: HashMap<u32, (Mult, bool)>,
     /// Variables known to be bound to a constructor applied to atoms.
     known: HashMap<u32, (String, Vec<Type>, Vec<Expr>)>,
+    /// Variables known to be evaluated (`let!` and case binders).
+    evaluated: HashSet<u32>,
     /// Top-level bindings that are constructors applied to atoms
     /// (e.g. type-class dictionaries).
     known_globals: &'a HashMap<String, (String, Vec<Type>, Vec<Expr>)>,
@@ -1029,6 +1032,41 @@ impl Simp<'_> {
         }
         if let Expr::Con(c, ts, args) = &r
             && args.iter().any(|a| !a.is_atom())
+            && args
+                .iter()
+                .all(|a| a.is_atom() || (matches!(a, Expr::Con(..)) && a.is_value()))
+            && !args.iter().any(|a| self.uses_linear(a))
+            && let Some(fts) = self.field_types(c, ts)
+        {
+            // let! b = K (K' x)  ⇒  let u = K' x in let! b = K u: the
+            // constructor arguments are values (built eagerly, no thunk),
+            // and `b` becomes a known constructor.
+            self.hit();
+            self.st.floated += 1;
+            let Expr::Con(c, ts, args) = r else {
+                unreachable!()
+            };
+            let mut binds = Vec::new();
+            let mut atoms = Vec::new();
+            for (a, ft) in args.into_iter().zip(fts) {
+                if a.is_atom() {
+                    atoms.push(a);
+                } else {
+                    let u = Binder::new(Id::new("v", self.next), Mult::Many, ft);
+                    self.next += 1;
+                    self.bind(&u);
+                    atoms.push(Expr::Var(u.id.clone()));
+                    binds.push((u, a));
+                }
+            }
+            let mut body = self.let_strict(b, Expr::Con(c, ts, atoms), k);
+            for (u, a) in binds.into_iter().rev() {
+                body = Expr::Let(Bind::NonRec(u, Box::new(a)), Box::new(body));
+            }
+            return body;
+        }
+        if let Expr::Con(c, ts, args) = &r
+            && args.iter().any(|a| !a.is_atom())
             && let Some(fts) = self.strict_field_types(c, ts)
         {
             // let! b = K e  ⇒  let! u = e in let! b = K u  (strict fields
@@ -1069,12 +1107,31 @@ impl Simp<'_> {
             return self.run(k);
         }
         self.remember(x, &r);
+        self.evaluated.insert(x);
         let body = self.run(k);
         if self.occ(x).count == 0 && b.mult != Mult::One && self.total(&r) && !self.uses_linear(&r)
         {
             self.hit();
             self.st.dead += 1;
             return body;
+        }
+        // let! b = (case s of p -> e) in case b of ...  ⇒
+        // case s of p -> let! b = e in case b of ...  (one alternative:
+        // nothing is duplicated; the next iteration may find `e` to be a
+        // known constructor). Both sides are simplified output here.
+        if let (Expr::Case(_, _, _, alts), Expr::Case(sc, _, res, _)) = (&r, &body)
+            && alts.len() == 1
+            && matches!(&**sc, Expr::Var(v) if v.id == x)
+        {
+            self.hit();
+            self.st.floated += 1;
+            let res = res.clone();
+            let Expr::Case(s, cb, _, alts) = r else {
+                unreachable!()
+            };
+            let alt = alts.into_iter().next().unwrap();
+            let rhs = Expr::LetStrict(b, Box::new(alt.rhs), Box::new(body));
+            return Expr::Case(s, cb, res, vec![Alt { con: alt.con, rhs }]);
         }
         Expr::LetStrict(b, Box::new(r), Box::new(body))
     }
@@ -1115,8 +1172,17 @@ impl Simp<'_> {
     /// fields are strict and not linear.
     fn strict_field_types(&self, c: &str, ts: &[Type]) -> Option<Vec<Type>> {
         let (d, i) = self.p.ctor(c)?;
+        if !d.ctors[i].strict.iter().all(|s| *s) {
+            return None;
+        }
+        self.field_types(c, ts)
+    }
+
+    /// The field types of constructor `c` at type arguments `ts`.
+    fn field_types(&self, c: &str, ts: &[Type]) -> Option<Vec<Type>> {
+        let (d, i) = self.p.ctor(c)?;
         let k = &d.ctors[i];
-        if d.linear || !k.strict.iter().all(|s| *s) || d.params.len() != ts.len() {
+        if d.linear || d.params.len() != ts.len() {
             return None;
         }
         let s: Vec<(TyVar, Type)> = d
@@ -1205,6 +1271,22 @@ impl Simp<'_> {
                 let lin = self.env.get(&x.id).is_none_or(|(m, _)| *m != Mult::Many);
                 self.known_scrut(Expr::Var(x), lin, con, b, res, alts)
             }
+            // `case x as b of _ -> e` with `x` already evaluated (e.g. the
+            // `seq` of a bang pattern on a `let!` variable): `e[b := x]`.
+            Expr::Var(x)
+                if self.evaluated.contains(&x.id)
+                    && matches!(alts.as_slice(), [a] if a.con == AltCon::Default)
+                    && self.env.get(&x.id).is_some_and(|(m, _)| *m == Mult::Many) =>
+            {
+                self.hit();
+                self.st.known_case += 1;
+                self.bind(&b);
+                let xv = Expr::Var(x);
+                self.transfer_occ(b.id.id, &xv);
+                self.sub.insert(b.id.id, xv);
+                let rhs = alts.into_iter().next().unwrap().rhs;
+                self.expr(rhs)
+            }
             Expr::Global(g) if self.known_globals.contains_key(&g) => {
                 let con = self.known_globals[&g].clone();
                 self.known_scrut(Expr::Global(g), false, con, b, res, alts)
@@ -1253,6 +1335,7 @@ impl Simp<'_> {
 
     fn case_default(&mut self, s: Expr, b: Binder, res: Type, alts: Vec<Alt>) -> Expr {
         self.bind(&b);
+        self.evaluated.insert(b.id.id);
         let scrut_var = match &s {
             Expr::Var(v) => Some(v.id),
             _ => None,

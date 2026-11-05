@@ -132,3 +132,64 @@ pub unsafe extern "C" fn cirka_array_new(len: i64, init: object::Obj) -> object:
         o
     }
 }
+
+/// `b` itself when it is unique (rc == 1), otherwise a fresh copy; `b` is
+/// consumed (dropped when copied). In-place updates of unboxed arrays go
+/// through this (FEAT-0123).
+///
+/// # Safety
+/// `b` must be a live BYTES object owned by the caller.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cirka_bytes_unique(b: object::Obj) -> object::Obj {
+    // SAFETY: b is a live BYTES object of `len` bytes after its length word;
+    // the copy has the same size.
+    unsafe {
+        if (*b).rc == 1 {
+            return b;
+        }
+        alloc::STATS.get().array_copies += 1;
+        let len = *object::word(b, 0) as i64;
+        let o = cirka_bytes_new(len);
+        core::ptr::copy_nonoverlapping(
+            object::word(b, 1) as *const u8,
+            object::word(o, 1) as *mut u8,
+            len as usize,
+        );
+        object::cirka_drop(b);
+        o
+    }
+}
+
+/// `a` itself when it is unique (rc == 1), otherwise a fresh copy whose
+/// elements are dup'ed; `a` is consumed (dropped when copied). In-place
+/// updates of `Unique (Array e)` go through this (FEAT-0123).
+///
+/// # Safety
+/// `a` must be a live ARRAY owned by the caller.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cirka_array_unique(a: object::Obj) -> object::Obj {
+    // SAFETY: a is a live array; the copy is a fresh allocation of the
+    // same length.
+    unsafe {
+        if (*a).rc == 1 {
+            return a;
+        }
+        alloc::STATS.get().array_copies += 1;
+        let len = *object::word(a, 0);
+        let o = alloc::cirka_alloc(16 + 8 * len) as object::Obj;
+        (*o).rc = 1;
+        (*o).tag = 0;
+        (*o).nptr = 0;
+        (*o).kind = object::ARRAY;
+        *object::word(o, 0) = len;
+        for i in 0..len {
+            let e = *object::word(a, 1 + i) as object::Obj;
+            if !e.is_null() {
+                object::cirka_dup(e);
+            }
+            *object::word(o, 1 + i) = e as usize;
+        }
+        object::cirka_drop(a);
+        o
+    }
+}

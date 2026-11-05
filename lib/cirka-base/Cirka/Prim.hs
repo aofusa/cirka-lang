@@ -9,6 +9,10 @@ data Char
 data Double
 data IO a
 data IORef a
+data Array e
+data ArrayPair e b = ArrayPair (Array e) b
+data Bytes
+data BytesPair b = BytesPair Bytes b
 data BigNat
 data Bool = False | True
 
@@ -68,6 +72,23 @@ foreign import prim "prog_name" primProgName :: IO [Char]
 foreign import prim "ioref_new" primNewIORef :: a -> IO (IORef a)
 foreign import prim "ioref_read" primReadIORef :: IORef a -> IO a
 foreign import prim "ioref_write" primWriteIORef :: IORef a -> a -> IO ()
+foreign import prim "array_new" primArrayNew :: Int -> e -> Array e
+foreign import prim "array_write" primArrayWrite :: Array e -> Int -> e -> Array e
+foreign import prim "array_read" primArrayRead :: Array e -> Int -> ArrayPair e e
+foreign import prim "array_length" primArrayLength :: Array e -> ArrayPair e Int
+foreign import prim "array_index" primArrayIndex :: Array e -> Int -> e
+foreign import prim "array_size" primArraySize :: Array e -> Int
+foreign import prim "array_thaw" primArrayThaw :: Array e -> Array e
+foreign import prim "uarr_new" primUArrNew :: Int -> Bytes
+foreign import prim "uarr_size" primUArrSize :: Bytes -> Int
+foreign import prim "uarr_size_u" primUArrSizeU :: Bytes -> BytesPair Int
+foreign import prim "uarr_thaw" primUArrThaw :: Bytes -> Bytes
+foreign import prim "uarr_index_int" primUArrIndexInt :: Bytes -> Int -> Int
+foreign import prim "uarr_read_int" primUArrReadInt :: Bytes -> Int -> BytesPair Int
+foreign import prim "uarr_write_int" primUArrWriteInt :: Bytes -> Int -> Int -> Bytes
+foreign import prim "uarr_index_dbl" primUArrIndexDbl :: Bytes -> Int -> Double
+foreign import prim "uarr_read_dbl" primUArrReadDbl :: Bytes -> Int -> BytesPair Double
+foreign import prim "uarr_write_dbl" primUArrWriteDbl :: Bytes -> Int -> Double -> Bytes
 foreign import prim "read_file" primReadFile :: [Char] -> IO [Char]
 foreign import prim "write_file" primWriteFile :: [Char] -> [Char] -> Int -> IO ()
 foreign import prim "get_char" primGetByte :: IO Int

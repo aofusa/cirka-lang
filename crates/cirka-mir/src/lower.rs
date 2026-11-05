@@ -1075,6 +1075,12 @@ impl<'p> Lowerer<'p> {
             PrimOp::ArrayLen => P::ArrayLen,
             PrimOp::ArrayGet => P::ArrayGet,
             PrimOp::ArraySet => P::ArraySet,
+            PrimOp::ArrayUnique => P::ArrayUnique,
+            PrimOp::BytesGet64 => P::BytesGetI64,
+            PrimOp::BytesSet64 => P::BytesSetI64,
+            PrimOp::BytesGetF => P::BytesGetF64,
+            PrimOp::BytesSetF => P::BytesSetF64,
+            PrimOp::BytesUnique => P::BytesUnique,
             PrimOp::PtrEq => P::PtrEq,
         };
         let mut ops = Vec::new();

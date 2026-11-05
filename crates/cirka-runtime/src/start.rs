@@ -184,6 +184,8 @@ fn exit_sequence(code: i32) -> ! {
             io::ewrite_u64(s.max_live);
             io::ewrite(b" forced=");
             io::ewrite_u64(s.forced);
+            io::ewrite(b" array_copies=");
+            io::ewrite_u64(s.array_copies);
             io::ewrite(b"\n");
         }
         if cfg!(feature = "debug-rt") && matches!(sys::env(c"CIRKA_LEAK_CHECK"), Some(b"1")) {

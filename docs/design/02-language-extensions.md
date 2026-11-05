@@ -93,6 +93,28 @@ write    :: Unique (Array e) %1 -> Int -> e -> Unique (Array e)   -- in-place
 read     :: Unique (Array e) %1 -> Int -> (Unique (Array e), Ur e)
 ```
 
+配列は `Cirka.Array` (要素は遅延・boxed) と `Cirka.Array.Unboxed` (`UElem` のインスタンス `Int`/`Double`/`Char`/`Bool`。
+要素は正格で 8 バイトの語に格納) が提供する (FEAT-0123)。両者は同じ名前の API を持つ:
+
+```haskell
+newArray :: Int -> e -> Unique (Array e)
+write    :: Unique (Array e) %1 -> Int -> e -> Unique (Array e)            -- in-place
+read     :: Unique (Array e) %1 -> Int -> (Unique (Array e), Ur e)        -- 要素は WHNF まで評価される
+length   :: Unique (Array e) %1 -> (Unique (Array e), Ur Int)
+modify   :: Unique (Array e) %1 -> Int -> (e -> e) -> Unique (Array e)
+swap     :: Unique (Array e) %1 -> Int -> Int -> Unique (Array e)
+thaw     :: Array e -> Unique (Array e)        -- 他に参照がなければそのまま、あればコピー
+fromListU :: [e] -> Unique (Array e)
+(!)      :: Array e -> Int -> e                -- 以下は不変の配列 (freeze したもの) の操作
+size     :: Array e -> Int
+fromList :: [e] -> Array e
+toList   :: Array e -> [e]
+generate :: Int -> (Int -> e) -> Array e
+accum    :: (e -> v -> e) -> Array e -> [(Int, v)] -> Array e   -- Cirka.Array のみ
+```
+
+範囲外の添字は実行時エラー (panic) になる。
+
 ### 3.2 利用者定義の線形専用型
 
 ```haskell

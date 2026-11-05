@@ -143,3 +143,30 @@ fn header_matches() {
     }
     assert_eq!(std::mem::size_of::<Header>(), 8);
 }
+
+#[test]
+fn array_unique_copies_only_shared_arrays() {
+    let _g = LOCK.lock().unwrap();
+    unsafe {
+        let e = con(0, &[7], 0);
+        let a = crate::cirka_array_new(4, e);
+        // Unique: returned as is.
+        let copies0 = crate::alloc::STATS.get().array_copies;
+        let b = crate::cirka_array_unique(a);
+        assert_eq!(b, a);
+        assert_eq!(crate::alloc::STATS.get().array_copies, copies0);
+        // Shared: a copy with the elements dup'ed; the original loses a reference.
+        cirka_dup(b);
+        let c = crate::cirka_array_unique(b);
+        assert_ne!(c, b);
+        assert_eq!((*b).rc, 1);
+        assert_eq!((*c).rc, 1);
+        assert_eq!(*word(c, 0), 4);
+        assert_eq!(*word(c, 1), e as usize);
+        assert_eq!((*e).rc, 8);
+        assert_eq!(crate::alloc::STATS.get().array_copies, copies0 + 1);
+        cirka_drop(b);
+        assert_eq!((*e).rc, 4);
+        cirka_drop(c);
+    }
+}
