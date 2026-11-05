@@ -62,6 +62,13 @@ void*  cirka_array_unique(void* a);              // 一意なら a、共有な�
 // 循環回収器 (--cycles=collect。04-memory-model.md §5、FEAT-0126)
 void   cirka_cycles_enable(void);                // 生成した cirka_main が最初に呼ぶ
 void   cirka_cycle_candidate(void* o);           // o (借用) を根に記録 (根のバッファが参照を 1 つ持つ)。有効でなければ何もしない
+
+// リージョン (04-memory-model.md §6、FEAT-0049)。セルは整数 (アドレス) で指す
+void*   cirka_region_new(void);                  // リージョン (FOREIGN オブジェクト、所有)
+int64_t cirka_region_free(void* r);              // 終了: 全セルを drop しページを返す (冪等)
+int64_t cirka_region_cell(void* r, void* v);     // v (借用) を持つ新しいセル
+void*   cirka_region_get(int64_t cell);          // セルの値 (呼び出し側の参照)
+int64_t cirka_region_set(int64_t cell, void* v); // セルの値を v (借用) に置き換え、古い値を drop
 void*  cirka_bytes_unique(void* b);              // 同上 (BYTES)
 void*  cirka_apply_n(void* fun, size_t n, void** args);   // 未知関数の適用 (eval/apply)
 

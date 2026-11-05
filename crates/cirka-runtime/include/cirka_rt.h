@@ -64,6 +64,12 @@ void   *cirka_bytes_unique(void *b);
 /* Cycle collector (--cycles=collect, 04-memory-model.md §5). */
 void    cirka_cycles_enable(void);
 void    cirka_cycle_candidate(void *o);
+/* Region arenas (04-memory-model.md §6). A cell is addressed by an integer. */
+void   *cirka_region_new(void);
+int64_t cirka_region_free(void *r);
+int64_t cirka_region_cell(void *r, void *v);
+void   *cirka_region_get(int64_t cell);
+int64_t cirka_region_set(int64_t cell, void *v);
 void   *cirka_f32_show_hs(double x);
 double  cirka_f32_round(double x);
 int64_t cirka_f64_bits(double x);

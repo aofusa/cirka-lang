@@ -1365,6 +1365,55 @@ impl<'m> Interp<'m> {
                 self.cycle_candidate(r)?;
                 Ok(r)
             }
+            // Regions (FEAT-0049): a FOREIGN object whose fields are the
+            // cells; a cell is addressed by (region << 32) | index.
+            "cirka_region_new" => Ok(Val::P(self.alloc(
+                kind::FOREIGN,
+                0,
+                vec![],
+                Payload::Con,
+                24,
+            ))),
+            "cirka_region_free" => {
+                let Val::P(r) = a[0] else {
+                    return fault("expected a region");
+                };
+                let o = self.obj_mut(r)?;
+                o.tag = 1;
+                for v in std::mem::take(&mut o.fields) {
+                    self.drop_val(v)?;
+                }
+                Ok(Val::I(0))
+            }
+            "cirka_region_cell" => {
+                let Val::P(r) = a[0] else {
+                    return fault("expected a region");
+                };
+                self.dup(a[1])?;
+                let o = self.obj_mut(r)?;
+                if o.tag != 0 {
+                    return fault("a cell of an ended region");
+                }
+                o.fields.push(a[1]);
+                Ok(Val::I(((r as i64) << 32) | (o.fields.len() as i64 - 1)))
+            }
+            "cirka_region_get" | "cirka_region_set" => {
+                let h = a[0].int();
+                let (r, i) = ((h >> 32) as u32, (h & 0xffff_ffff) as usize);
+                let o = self.obj(r)?;
+                if o.kind != kind::FOREIGN || o.tag != 0 || i >= o.fields.len() {
+                    return fault("a cell of an ended region");
+                }
+                if name == "cirka_region_get" {
+                    let v = o.fields[i];
+                    self.dup(v)?;
+                    return Ok(v);
+                }
+                self.dup(a[1])?;
+                let old = std::mem::replace(&mut self.obj_mut(r)?.fields[i], a[1]);
+                self.drop_val(old)?;
+                Ok(Val::I(0))
+            }
             "cirka_mutvar_read" => {
                 let Val::P(r) = a[0] else {
                     return fault("expected a mutvar");

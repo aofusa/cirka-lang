@@ -17,6 +17,7 @@ pub mod io;
 pub mod mem;
 pub mod mutvar;
 pub mod object;
+pub mod region;
 pub mod start;
 pub mod sys;
 
