@@ -131,6 +131,9 @@ struct Linter<'p> {
     tyvars: Vec<(TyVar, Kind)>,
     /// Variables whose usage differed between case branches.
     inconsistent: HashSet<u32>,
+    /// Data types whose kind is being computed (recursive types through
+    /// functions or newtypes).
+    visiting: std::cell::RefCell<Vec<String>>,
 }
 
 impl<'p> Linter<'p> {
@@ -142,6 +145,7 @@ impl<'p> Linter<'p> {
             vars: HashMap::new(),
             tyvars: Vec::new(),
             inconsistent: HashSet::new(),
+            visiting: Default::default(),
         }
     }
 
@@ -323,6 +327,7 @@ impl<'p> Linter<'p> {
                     vars: HashMap::new(),
                     tyvars: self.tyvars.clone(),
                     inconsistent: HashSet::new(),
+                    visiting: self.visiting.clone(),
                 };
                 inner.tyvars.push((v.clone(), k.clone()));
                 inner.type_kind(b)
@@ -377,7 +382,7 @@ impl<'p> Linter<'p> {
                     }
                     return Ok(k);
                 }
-                Ok(self.data_kind(d, args, &mut Vec::new()))
+                Ok(self.data_kind(d, args))
             }
         }
     }
@@ -406,14 +411,14 @@ impl<'p> Linter<'p> {
 
     /// Kind of a fully applied data type: LType when declared linear or when
     /// a field is linear (03-type-system.md §1.1).
-    fn data_kind(&self, d: &DataDecl, args: &[Type], visiting: &mut Vec<String>) -> Kind {
+    fn data_kind(&self, d: &DataDecl, args: &[Type]) -> Kind {
         if d.linear {
             return Kind::LType;
         }
-        if visiting.contains(&d.name) {
+        if self.visiting.borrow().contains(&d.name) {
             return Kind::Type;
         }
-        visiting.push(d.name.clone());
+        self.visiting.borrow_mut().push(d.name.clone());
         let s: Vec<(TyVar, Type)> = d
             .params
             .iter()
@@ -424,22 +429,20 @@ impl<'p> Linter<'p> {
         for c in &d.ctors {
             for f in &c.fields {
                 let ft = f.subst_all(&s);
-                if self.field_linear(&ft, visiting) {
+                if self.field_linear(&ft) {
                     k = Kind::LType;
                 }
             }
         }
-        visiting.pop();
+        self.visiting.borrow_mut().pop();
         k
     }
 
-    fn field_linear(&self, t: &Type, visiting: &mut Vec<String>) -> bool {
+    fn field_linear(&self, t: &Type) -> bool {
         match t {
             Type::Con(c, args) => match self.p.data(c) {
-                Some(d) if args.len() == d.params.len() => {
-                    self.data_kind(d, args, visiting) == Kind::LType
-                }
-                _ => c == ARRAY && args.first().is_some_and(|a| self.field_linear(a, visiting)),
+                Some(d) if args.len() == d.params.len() => self.data_kind(d, args) == Kind::LType,
+                _ => c == ARRAY && args.first().is_some_and(|a| self.field_linear(a)),
             },
             _ => matches!(self.kind(t), Ok(Kind::LType)),
         }
