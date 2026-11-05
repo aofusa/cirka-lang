@@ -145,7 +145,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | ID | タイトル | 状態 | 優先度 | 依存 |
 |---|---|---|---|---|
 | [FEAT-0130](features/FEAT-0130-hs-extern-block.md) | extern "C" ブロック (aCHC) | todo | P1 | 0116, 0122, 0047 |
-| [FEAT-0132](features/FEAT-0132-achc-evaluation.md) | aCHC の評価レポート | todo | P0 | 0117, 0125, 0043 |
+| [FEAT-0132](features/FEAT-0132-achc-evaluation.md) | aCHC の評価レポート | in-progress | P0 | 0117, 0125, 0043 |
 
 ### H5 高度な型システム (CirkaLang v0.0.4 の後)
 

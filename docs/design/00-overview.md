@@ -183,4 +183,4 @@ aCHC では遅延評価の knot-tying も加わる。詳細は [04-memory-model.
 | 7 | Haskell から何を捨て、何を残すべきか | aCHC → CirkaLang v0.1.0 |
 | 8 | 依存型・検証・効果を Haskell の拡張として入れたときの書き味と限界 (CirkaLang との比較) | aCHC 後期 (FEAT-0164) |
 
-計測結果は各チケット、`docs/design/bench-report.md`、aCHC の評価レポート (FEAT-0132)、各 CirkaLang 版のリリースチケットに記録する。
+計測結果は各チケット、`docs/design/bench-report.md`、aCHC の評価レポート ([achc-evaluation.md](achc-evaluation.md)、FEAT-0132)、各 CirkaLang 版のリリースチケットに記録する。

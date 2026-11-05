@@ -92,3 +92,52 @@ fn cirkalang_spec_for_current_version() {
         assert!(text.contains(section), "spec lacks `{section}`");
     }
 }
+
+/// Relative links in the documents under docs/ (design, tasks) and the top
+/// level point at files that exist (FEAT-0132: the evaluation report and
+/// the design documents cite each other and the tickets).
+#[test]
+fn doc_links_resolve() {
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+        for e in std::fs::read_dir(dir).unwrap().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                // docs/artifacts is git-ignored scratch output.
+                if !p.ends_with("artifacts") {
+                    walk(&p, out);
+                }
+            } else if p.extension().is_some_and(|x| x == "md") {
+                out.push(p);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(&root().join("docs"), &mut files);
+    files.push(root().join("AGENTS.md"));
+    let mut broken = Vec::new();
+    for f in &files {
+        let text = std::fs::read_to_string(f).unwrap();
+        let mut rest = text.as_str();
+        while let Some(i) = rest.find("](") {
+            rest = &rest[i + 2..];
+            let Some(j) = rest.find(')') else { break };
+            let target = &rest[..j];
+            rest = &rest[j..];
+            let path = target.split('#').next().unwrap();
+            if path.is_empty()
+                || path.contains("://")
+                || path.starts_with("mailto:")
+                || path.contains(' ')
+            {
+                continue;
+            }
+            if !f.parent().unwrap().join(path).exists() {
+                broken.push(format!(
+                    "{}: {target}",
+                    f.strip_prefix(root()).unwrap().display()
+                ));
+            }
+        }
+    }
+    assert!(broken.is_empty(), "broken links:\n{}", broken.join("\n"));
+}
