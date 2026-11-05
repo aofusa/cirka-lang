@@ -278,5 +278,6 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [BUG-0006](bugs/BUG-0006-lint-recursive-kind.md) | 関数型を介して自身を含むデータ型で Core Lint がスタックオーバーフローする | done | major | FEAT-0119 |
 | [BUG-0007](bugs/BUG-0007-derived-read-gaps.md) | 導出した Read が演算子のフィールド名と逆引用符の中置構築子を読めない | todo | minor | FEAT-0119 |
 | [BUG-0008](bugs/BUG-0008-newtype-pattern-forces.md) | newtype の構築子パターンが値を評価してしまう | todo | major | FEAT-0119 |
+| [BUG-0009](bugs/BUG-0009-strict-linear-tuple.md) | タプルの成分の線形専用値が正格に評価されない | done | major | FEAT-0123 |
 
 新しいチケットは `features/_TEMPLATE.md` / `bugs/_TEMPLATE.md` をコピーして作成する。

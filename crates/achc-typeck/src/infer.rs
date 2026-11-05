@@ -2066,7 +2066,10 @@ impl Tc {
                 let (mut f, mut ft) = self.con_expr(&tc);
                 for x in es {
                     let a = self.fresh();
-                    let ta = self.expr(x, &a);
+                    // Marked like constructor arguments: a linear-only
+                    // component is evaluated before the tuple is built
+                    // (Strict-Linear, BUG-0009).
+                    let ta = self.marked(x, &a);
                     (f, ft) = self.app(x.span, (f, ft), ta, &a);
                 }
                 (f, ft)
