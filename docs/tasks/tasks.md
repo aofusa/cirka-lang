@@ -123,7 +123,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0116](features/FEAT-0116-hs-ffi-h2010.md) | Haskell 2010 FFI (foreign import ccall) | done | P1 | 0113 |
 | [FEAT-0117](features/FEAT-0117-hs-diff-corpus.md) | 差分テスト集 | done | P1 | 0113, 0003 |
 | [FEAT-0118](features/FEAT-0118-hs-extensions.md) | GHC 拡張 (初期分) | done | P1 | 0110 |
-| [FEAT-0119](features/FEAT-0119-hs-compat-measure.md) | 互換性の計測 (GHC testsuite / nofib の一部) | todo | P2 | 0117 |
+| [FEAT-0119](features/FEAT-0119-hs-compat-measure.md) | 互換性の計測 (GHC testsuite / nofib の一部) | done | P2 | 0117 |
 
 ### H3 所有権拡張 (.chs)
 
@@ -275,5 +275,8 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [BUG-0003](bugs/BUG-0003-codegen-closure-stub-captures.md) | 捕捉数の異なる同一関数のクロージャが入口スタブを共有する | done | critical | FEAT-0110 |
 | [BUG-0004](bugs/BUG-0004-exhaustiveness-var-column.md) | 変数を含む列の網羅性検査が誤って W0610 を出す | done | minor | FEAT-0110 |
 | [BUG-0005](bugs/BUG-0005-pattern-failure-message.md) | パターン照合の失敗の実行時エラーが GHC の文言・位置と異なる | todo | minor | FEAT-0104 |
+| [BUG-0006](bugs/BUG-0006-lint-recursive-kind.md) | 関数型を介して自身を含むデータ型で Core Lint がスタックオーバーフローする | done | major | FEAT-0119 |
+| [BUG-0007](bugs/BUG-0007-derived-read-gaps.md) | 導出した Read が演算子のフィールド名と逆引用符の中置構築子を読めない | todo | minor | FEAT-0119 |
+| [BUG-0008](bugs/BUG-0008-newtype-pattern-forces.md) | newtype の構築子パターンが値を評価してしまう | todo | major | FEAT-0119 |
 
 新しいチケットは `features/_TEMPLATE.md` / `bugs/_TEMPLATE.md` をコピーして作成する。

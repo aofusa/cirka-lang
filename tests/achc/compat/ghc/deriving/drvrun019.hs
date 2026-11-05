@@ -1,0 +1,16 @@
+-- Imported from GHC 9.4.7 testsuite/tests/deriving/should_run/drvrun019.hs (BSD-3-Clause; see LICENSE in this directory).
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+
+-- Tests newtype deriving with
+-- a non-type constructor in the representation
+
+module Main where
+
+newtype Wrap m a = Wrap { unWrap :: m a }
+    deriving (Functor, Applicative, Monad, Eq)
+
+foo :: Int -> Wrap IO a -> Wrap IO ()
+foo 0 a = return ()
+foo n a = do { a; foo (n-1) a }
+
+main = do { unWrap (foo 3 (Wrap (putChar 'x'))); putChar '\n' }

@@ -55,3 +55,7 @@ path = "cirkalang.rs"
 [[test]]
 name = "achc"
 path = "achc.rs"
+
+[[test]]
+name = "achc_compat"
+path = "achc_compat.rs"

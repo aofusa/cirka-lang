@@ -61,6 +61,11 @@ GHC (Docker イメージに同梱、Ubuntu 24.04 の `ghc` パッケージ) を�
 - 合格率は目標にしない (ADR-025)。分類結果は「GC なし実行で何が問題になるか」「CirkaLang で何を捨てるか」の材料として
   `docs/design/compat-report.md` と aCHC 評価レポート (前期 FEAT-0132、後期 FEAT-0164) に記録する。
 - 後期 (H5) では GADTs・型族などを使う GHC testsuite のテストも計測対象に加え、前期との差を記録する。
+- 実装 (FEAT-0119): `scripts/import-compat.py` が GHC 9.4.7 の testsuite から選んだプログラムを `tests/achc/compat/ghc/`
+  に取り込む (LICENSE 同梱)。nofib は単一のライセンスを持たないためコミットせず、`CIRKA_NOFIB_DIR` から
+  `_build/compat/nofib` に取り込む。`scripts/compat.sh` (`tests/achc_compat.rs` の ignored テスト) が各プログラムを
+  子プロセスでビルド・実行し (コンパイラの異常終了も 1 本の分類で済む)、`docs/artifacts/compat/` に結果を書く。
+  `tests/achc/compat/baseline.tsv` で `pass` だったものが落ちると失敗する (回帰検出)。分類器は通常の `cargo test` で検査する。
 
 ## 5. 性能の計測
 
