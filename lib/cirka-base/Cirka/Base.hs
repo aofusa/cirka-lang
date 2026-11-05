@@ -22,6 +22,7 @@ infixr 6 <>
 infixr 5 ++
 infix 4 ==, /=, <, <=, >, >=, `elem`, `notElem`
 infixl 4 <$>, <$, <*>, *>, <*
+infixl 3 <|>
 infixr 3 &&
 infixr 2 ||
 infixl 1 >>=, >>
@@ -214,6 +215,24 @@ instance (Eq a, Eq b, Eq c, Eq d) => Eq (a, b, c, d) where
 
 instance (Ord a, Ord b, Ord c, Ord d) => Ord (a, b, c, d) where
   compare (a, b, c, d) (e, f, g, h) = compare (a, (b, c, d)) (e, (f, g, h))
+
+instance (Eq a, Eq b, Eq c, Eq d, Eq e) => Eq (a, b, c, d, e) where
+  (a, b, c, d, e) == (a', b', c', d', e') = (a, (b, c, d, e)) == (a', (b', c', d', e'))
+
+instance (Ord a, Ord b, Ord c, Ord d, Ord e) => Ord (a, b, c, d, e) where
+  compare (a, b, c, d, e) (a', b', c', d', e') = compare (a, (b, c, d, e)) (a', (b', c', d', e'))
+
+instance (Eq a, Eq b, Eq c, Eq d, Eq e, Eq f) => Eq (a, b, c, d, e, f) where
+  (a, b, c, d, e, f) == (a', b', c', d', e', f') = (a, (b, c, d, e, f)) == (a', (b', c', d', e', f'))
+
+instance (Ord a, Ord b, Ord c, Ord d, Ord e, Ord f) => Ord (a, b, c, d, e, f) where
+  compare (a, b, c, d, e, f) (a', b', c', d', e', f') = compare (a, (b, c, d, e, f)) (a', (b', c', d', e', f'))
+
+instance (Eq a, Eq b, Eq c, Eq d, Eq e, Eq f, Eq g) => Eq (a, b, c, d, e, f, g) where
+  (a, b, c, d, e, f, g) == (a', b', c', d', e', f', g') = (a, (b, c, d, e, f, g)) == (a', (b', c', d', e', f', g'))
+
+instance (Ord a, Ord b, Ord c, Ord d, Ord e, Ord f, Ord g) => Ord (a, b, c, d, e, f, g) where
+  compare (a, b, c, d, e, f, g) (a', b', c', d', e', f', g') = compare (a, (b, c, d, e, f, g)) (a', (b', c', d', e', f', g'))
 
 -- ---- Enum and Bounded ----
 
@@ -612,6 +631,33 @@ class Applicative m => Monad m where
 class Monad m => MonadFail m where
   fail :: String -> m a
 
+class Applicative f => Alternative f where
+  empty :: f a
+  (<|>) :: f a -> f a -> f a
+  some :: f a -> f [a]
+  many :: f a -> f [a]
+  some v = liftA2 (:) v (many v)
+  many v = some v <|> pure []
+
+class (Alternative m, Monad m) => MonadPlus m where
+  mzero :: m a
+  mplus :: m a -> m a -> m a
+  mzero = empty
+  mplus = (<|>)
+
+instance Alternative Maybe where
+  empty = Nothing
+  Nothing <|> r = r
+  l <|> _ = l
+
+instance MonadPlus Maybe
+
+instance Alternative [] where
+  empty = []
+  (<|>) = (++)
+
+instance MonadPlus []
+
 (<$>) :: Functor f => (a -> b) -> f a -> f b
 (<$>) = fmap
 
@@ -683,6 +729,27 @@ mapM_ f = foldr (\x k -> f x >> k) (return ())
 
 forM_ :: (Foldable t, Monad m) => t a -> (a -> m b) -> m ()
 forM_ = flip mapM_
+
+forM :: (Traversable t, Monad m) => t a -> (a -> m b) -> m (t b)
+forM = flip mapM
+
+void :: Functor f => f a -> f ()
+void x = () <$ x
+
+-- | Strict left fold (Data.List / Data.Foldable).
+foldl' :: Foldable t => (b -> a -> b) -> b -> t a -> b
+foldl' f z t = cirkaFoldlList f z (toList t)
+
+find :: Foldable t => (a -> Bool) -> t a -> Maybe a
+find p t = case filter p (toList t) of
+  [] -> Nothing
+  (x:_) -> Just x
+
+maximumBy :: Foldable t => (a -> a -> Ordering) -> t a -> a
+maximumBy cmp t = cirkaFoldl1List (\x y -> case cmp x y of { GT -> x; _ -> y }) (toList t)
+
+minimumBy :: Foldable t => (a -> a -> Ordering) -> t a -> a
+minimumBy cmp t = cirkaFoldl1List (\x y -> case cmp x y of { GT -> y; _ -> x }) (toList t)
 
 sequence_ :: (Foldable t, Monad m) => t (m a) -> m ()
 sequence_ = foldr (>>) (return ())
@@ -1063,6 +1130,13 @@ instance (Show a, Show b, Show c, Show d) => Show (a, b, c, d) where
 instance (Show a, Show b, Show c, Show d, Show e) => Show (a, b, c, d, e) where
   showsPrec _ (a, b, c, d, e) s = cirkaShowTuple [shows a, shows b, shows c, shows d, shows e] s
 
+instance (Show a, Show b, Show c, Show d, Show e, Show f) => Show (a, b, c, d, e, f) where
+  showsPrec _ (a, b, c, d, e, f) s = cirkaShowTuple [shows a, shows b, shows c, shows d, shows e, shows f] s
+
+instance (Show a, Show b, Show c, Show d, Show e, Show f, Show g) => Show (a, b, c, d, e, f, g) where
+  showsPrec _ (a, b, c, d, e, f, g) s =
+    cirkaShowTuple [shows a, shows b, shows c, shows d, shows e, shows f, shows g] s
+
 cirkaShowTuple :: [ShowS] -> ShowS
 cirkaShowTuple ss = showChar '(' . cirkaFoldr1List (\s r -> s . showChar ',' . r) ss . showChar ')'
 
@@ -1258,6 +1332,9 @@ putChar = primPutChar
 
 putStr :: String -> IO ()
 putStr = primPutStr
+
+cirkaPutErr :: String -> IO ()
+cirkaPutErr = primPutErrStr
 
 putStrLn :: String -> IO ()
 putStrLn s = primBindIO (putStr s) (\_ -> putChar '\n')

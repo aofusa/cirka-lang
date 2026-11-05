@@ -114,7 +114,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | ID | タイトル | 状態 | 優先度 | 依存 |
 |---|---|---|---|---|
 | [FEAT-0110](features/FEAT-0110-hs-typeclasses.md) | 型クラスと deriving | done | P0 | 0105 |
-| [FEAT-0111](features/FEAT-0111-cirka-base.md) | cirka-base: Prelude と基本モジュール (縮小版) | todo | P0 | 0110 |
+| [FEAT-0111](features/FEAT-0111-cirka-base.md) | cirka-base: Prelude と基本モジュール (縮小版) | done | P0 | 0110 |
 | [FEAT-0112](features/FEAT-0112-hs-strictness.md) | 正格性解析と Strict/StrictData | todo | P0 | 0033 |
 | [FEAT-0113](features/FEAT-0113-hs-io-exceptions.md) | IO・IORef・ハンドル・例外 | todo | P0 | 0111 |
 | [FEAT-0114](features/FEAT-0114-hs-numerics.md) | 数値型と Integer | todo | P0 | 0111 |
@@ -272,6 +272,6 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [BUG-0001](bugs/BUG-0001-runtime-unit-test-race.md) | ランタイムの単体テストが並列実行で時々異常終了する | done | minor | FEAT-0013 |
 | [BUG-0002](bugs/BUG-0002-opt-known-case-field-occurrences.md) | Core 簡約器の case-of-known でフィールドの束縛が消える | done | major | FEAT-0033 |
 | [BUG-0003](bugs/BUG-0003-codegen-closure-stub-captures.md) | 捕捉数の異なる同一関数のクロージャが入口スタブを共有する | done | critical | FEAT-0110 |
-| [BUG-0004](bugs/BUG-0004-exhaustiveness-var-column.md) | 変数を含む列の網羅性検査が誤って W0610 を出す | todo | minor | FEAT-0110 |
+| [BUG-0004](bugs/BUG-0004-exhaustiveness-var-column.md) | 変数を含む列の網羅性検査が誤って W0610 を出す | done | minor | FEAT-0110 |
 
 新しいチケットは `features/_TEMPLATE.md` / `bugs/_TEMPLATE.md` をコピーして作成する。

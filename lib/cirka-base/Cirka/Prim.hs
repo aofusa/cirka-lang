@@ -59,6 +59,7 @@ foreign import prim "io_return" primReturnIO :: a -> IO a
 foreign import prim "io_bind" primBindIO :: IO a -> (a -> IO b) -> IO b
 foreign import prim "put_char" primPutChar :: Char -> IO ()
 foreign import prim "put_str" primPutStr :: [Char] -> IO ()
+foreign import prim "put_err_str" primPutErrStr :: [Char] -> IO ()
 foreign import prim "get_char" primGetByte :: IO Int
 foreign import prim "exit" primExit :: Int -> IO a
 foreign import prim "arg_count" primArgCount :: IO Int

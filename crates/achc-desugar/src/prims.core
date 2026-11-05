@@ -13,6 +13,7 @@
 
 (extern cirka_write_char (Int#) Unit#)
 (extern cirka_write_bytes (Bytes) Unit#)
+(extern cirka_ewrite_bytes (Bytes) Unit#)
 (extern cirka_panic_bytes (Bytes) Unit#)
 (extern cirka_exit (Int#) Unit#)
 (extern cirka_read_byte () Int#)
@@ -293,6 +294,11 @@
       ((Nil) (con Unit ()))
       ((Cons c r) (case c (c1 Char) Unit
         ((C# x) (let! (u Unit# (extern cirka_write_char x)) (prim$put_str r w))))))))
+
+; Writes a string to stderr (as one block of bytes).
+(def prim$put_err_str (-> (List Char) Unit# Unit)
+  (lam ((s (List Char)) (w Unit#))
+    (let! (u Unit# (extern cirka_ewrite_bytes (prim$pack s))) (con Unit ()))))
 
 (def prim$get_char (-> Unit# Int)
   (lam ((w Unit#)) (con I# () (extern cirka_read_byte))))
