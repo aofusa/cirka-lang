@@ -147,6 +147,126 @@ pub extern "C" fn cirka_f64_to_bytes(x: f64) -> Obj {
     unsafe { crate::cirka_bytes_from(buf.as_ptr(), n) }
 }
 
+/// `show` of a `Double` in Haskell's format (GHC's `showFloat`): the
+/// shortest digits that round-trip, in fixed notation when the decimal
+/// exponent is in 0..=7 (`0.1`, `1234567.0`) and otherwise in scientific
+/// notation (`1.0e-2`, `1.0e7`).
+#[unsafe(no_mangle)]
+pub extern "C" fn cirka_f64_show_hs(x: f64) -> Obj {
+    let mut out = [0u8; 64];
+    let n = show_hs(x, &mut out);
+    // SAFETY: `out` holds `n` initialized bytes.
+    unsafe { crate::cirka_bytes_from(out.as_ptr(), n) }
+}
+
+/// Parses a decimal floating-point literal (correctly rounded); NaN when
+/// it is not one.
+///
+/// # Safety
+/// `o` must be a live BYTES object (borrowed).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cirka_parse_f64(o: Obj) -> f64 {
+    // SAFETY: guaranteed by the caller.
+    let b = unsafe { bytes_of(o) };
+    core::str::from_utf8(b)
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(f64::NAN)
+}
+
+fn show_hs(x: f64, out: &mut [u8; 64]) -> usize {
+    let mut n = 0;
+    let mut push = |out: &mut [u8; 64], s: &[u8]| {
+        let k = s.len().min(64 - n);
+        out[n..n + k].copy_from_slice(&s[..k]);
+        n += k;
+    };
+    if x.is_nan() {
+        push(out, b"NaN");
+        return n;
+    }
+    if x.is_sign_negative() {
+        push(out, b"-");
+    }
+    if x.is_infinite() {
+        push(out, b"Infinity");
+        return n;
+    }
+    if x == 0.0 {
+        push(out, b"0.0");
+        return n;
+    }
+    // Shortest digits `d.ddd` and exponent from `{:e}`.
+    let mut buf = [0u8; 64];
+    let mut f = Fmt {
+        buf: &mut buf,
+        len: 0,
+    };
+    let _ = core::fmt::write(&mut f, format_args!("{:e}", x.abs()));
+    let len = f.len;
+    let s = &buf[..len];
+    let epos = s.iter().position(|&c| c == b'e').unwrap_or(len);
+    let mut digits = [0u8; 32];
+    let mut nd = 0;
+    for &c in &s[..epos] {
+        if c.is_ascii_digit() && nd < 32 {
+            digits[nd] = c;
+            nd += 1;
+        }
+    }
+    let mut exp: i32 = 0;
+    let mut neg = false;
+    for &c in &s[(epos + 1).min(len)..] {
+        match c {
+            b'-' => neg = true,
+            b'0'..=b'9' => exp = exp * 10 + (c - b'0') as i32,
+            _ => {}
+        }
+    }
+    if neg {
+        exp = -exp;
+    }
+    // x = 0.d1d2.. * 10^e
+    let e = exp + 1;
+    let digits = &digits[..nd];
+    if (0..=7).contains(&e) {
+        let e = e as usize;
+        if e == 0 {
+            push(out, b"0.");
+            push(out, digits);
+        } else {
+            for i in 0..e {
+                push(out, &[*digits.get(i).unwrap_or(&b'0')]);
+            }
+            push(out, b".");
+            if nd > e {
+                push(out, &digits[e..]);
+            } else {
+                push(out, b"0");
+            }
+        }
+    } else {
+        push(out, &digits[..1]);
+        push(out, b".");
+        if nd > 1 {
+            push(out, &digits[1..]);
+        } else {
+            push(out, b"0");
+        }
+        push(out, b"e");
+        let mut eb = [0u8; 12];
+        let mut f = Fmt {
+            buf: &mut [0u8; 64],
+            len: 0,
+        };
+        let _ = core::fmt::write(&mut f, format_args!("{}", e - 1));
+        let k = f.len;
+        eb[..k].copy_from_slice(&f.buf[..k]);
+        push(out, &eb[..k]);
+    }
+    n
+}
+
 /// Writes a Unicode scalar value as UTF-8.
 #[unsafe(no_mangle)]
 pub extern "C" fn cirka_write_char(c: i64) {

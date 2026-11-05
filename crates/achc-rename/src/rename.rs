@@ -28,6 +28,9 @@ fn builtin_type(n: &str) -> bool {
     matches!(n, "[]" | "()" | "->") || is_tuple_name(n)
 }
 
+/// The base library module that defines the Prelude's entities.
+pub const BASE_MODULE: &str = "Cirka.Base";
+
 pub struct Renamer {
     pub errors: Vec<Diagnostic>,
     exports: HashMap<String, Exports>,
@@ -73,7 +76,7 @@ impl Build<Expr> for ExprBuilder<'_> {
     fn negate(&mut self, span: Span, e: Expr) -> Result<Expr, ()> {
         let neg = Expr {
             kind: ExprKind::Var(QName {
-                qual: Some("Prelude".into()),
+                qual: Some(self.0.base_module().into()),
                 name: "negate".into(),
                 span,
             }),
@@ -112,6 +115,16 @@ impl Build<Pat> for PatBuilder<'_> {
 }
 
 impl Renamer {
+    /// The module defining the names wired into syntax (`negate`):
+    /// `Cirka.Base` when the program has it, else `Prelude`.
+    fn base_module(&self) -> &'static str {
+        if self.module == BASE_MODULE || self.exports.contains_key(BASE_MODULE) {
+            BASE_MODULE
+        } else {
+            "Prelude"
+        }
+    }
+
     pub fn new() -> Renamer {
         Renamer {
             errors: Vec::new(),

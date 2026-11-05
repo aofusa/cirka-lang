@@ -1,0 +1,19 @@
+[Red,Green,Blue]
+(Green,Green,2,Green,[Red,Green,Blue])
+(True,EQ,Blue)
+(Blue,Green)
+[Circle 1.5,Rect {width = 2, height = 3},Unit,Circle (-2.0)]
+Rect {width = -1, height = 4}
+(Rect {width = 5, height = 6},Circle 2.0)
+(True,True,True)
+Node (Node Leaf 1 Leaf) 2 (Node Leaf (-3) Leaf)
+(True,False,GT)
+(3 :+ 4,Neg (1 :+ (-2)),Neg (Neg (0 :+ 0)))
+Neg (1 :+ 2)
+(Wrap {unwrap = Just 3},True)
+Wrap {unwrap = Just (-4)}
+P (-1) (Just Red) [1.5,-0.25] ('\'',"q\"uote\n")
+True
+("(Just (-5))","Just (Left (3,'x'))")
+[(1,"a"),(2,"b")]
+((7,-8),-3.5e-2,[True,False])

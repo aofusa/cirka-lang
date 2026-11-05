@@ -1,6 +1,18 @@
 module Main where
 
-class Show a where
-  show :: a -> String
+class Describe a where
+  describe :: a -> String
+
+class Default a where
+  def :: a
+
+instance Describe Bool where
+  describe _ = "bool"
+
+noInstance :: String
+noInstance = describe 'c'
+
+ambiguous :: String
+ambiguous = describe def
 
 main = return ()

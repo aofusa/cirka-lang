@@ -1,5 +1,18 @@
-error[E0001]: type classes are not supported yet (aCHC H2, FEAT-0110)
- --> tests/achc/typeck/fail/classes.hs:3:1
-  |
-3 | class Show a where
-  | ^^^^^^^^^^^^^^^^^^
+error[E0608]: no instance for `Describe Char`
+  --> tests/achc/typeck/fail/classes.hs:13:14
+   |
+13 | noInstance = describe 'c'
+   |              ^^^^^^^^
+   = help: declare an instance, or derive it with a `deriving` clause
+error[E0609]: ambiguous type variable in the constraint `Describe t31`
+  --> tests/achc/typeck/fail/classes.hs:16:13
+   |
+16 | ambiguous = describe def
+   |             ^^^^^^^^
+   = help: add a type annotation that fixes the type (e.g. `:: Int`)
+error[E0609]: ambiguous type variable in the constraint `Default t31`
+  --> tests/achc/typeck/fail/classes.hs:16:22
+   |
+16 | ambiguous = describe def
+   |                      ^^^
+   = help: add a type annotation that fixes the type (e.g. `:: Int`)

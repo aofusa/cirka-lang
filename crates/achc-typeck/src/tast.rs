@@ -30,6 +30,12 @@ pub enum Expr {
     Match(Vec<(String, Ty)>, Vec<Clause>, Ty),
     /// Runtime error (missing record field, failed match).
     Error(String, Ty),
+    /// A class dictionary to be found by constraint solving (only during
+    /// type checking).
+    Hole(u32),
+    /// An overloaded numeric literal at a type with the `Num` /
+    /// `Fractional` dictionary in a hole (only during type checking).
+    OverLit(Lit, Ty, u32),
 }
 
 #[derive(Clone, Debug)]
@@ -61,6 +67,9 @@ pub enum Pat {
     As(String, Ty, Box<Pat>),
     Lazy(Box<Pat>),
     Bang(Box<Pat>),
+    /// An overloaded numeric literal: matches when the `Bool`-valued test
+    /// (`(== lit)`) applied to the scrutinee is `True`.
+    OverLit(Lit, Box<Expr>, Ty),
 }
 
 #[derive(Clone, Debug)]
@@ -122,6 +131,7 @@ pub struct Program {
     pub binds: Vec<BindGroup>,
     /// `Main.main`, if present.
     pub main: Option<String>,
+    pub warnings: Vec<cirka_diagnostics::Diagnostic>,
 }
 
 // ---- printing (`--dump=tc`) ----
@@ -235,6 +245,7 @@ pub fn pat(p: &Pat) -> String {
         Pat::As(v, _, p) => format!("{v}@{}", pat(p)),
         Pat::Lazy(p) => format!("~{}", pat(p)),
         Pat::Bang(p) => format!("!{}", pat(p)),
+        Pat::OverLit(l, _, _) => format!("{}?", lit(l)),
     }
 }
 
@@ -283,6 +294,12 @@ fn expr(e: &Expr, n: usize, s: &mut String) {
         }
         Expr::Error(m, _) => {
             let _ = write!(s, "error {m:?}");
+        }
+        Expr::Hole(h) => {
+            let _ = write!(s, "?dict{h}");
+        }
+        Expr::OverLit(l, _, h) => {
+            let _ = write!(s, "(fromLit ?dict{h} {})", lit(l));
         }
     }
 }

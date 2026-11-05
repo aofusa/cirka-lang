@@ -6,9 +6,11 @@
 //! with let-polymorphism. Bindings with a signature are checked against it
 //! (and may be polymorphically recursive). The output is a typed program
 //! (`tast`) in which syntactic sugar is gone except pattern matching.
-//! Type classes come with H2 (FEAT-0110); until then a class constraint
-//! is E0001.
+//! Type classes (FEAT-0110) use dictionary passing (`classes`); derived
+//! instances are generated as instance declarations (`deriving`).
 
+mod classes;
+mod deriving;
 pub mod infer;
 pub mod tast;
 pub mod types;
@@ -28,7 +30,17 @@ pub fn typecheck(p: &achc_rename::Program) -> Result<tast::Program, Vec<Diagnost
         .collect();
     tc.declare_types(&modules);
     let mut binds = tc.field_selectors();
-    let mut values = Vec::new();
+    let (mut values, class_binds) = tc.declare_classes(&modules);
+    binds.extend(class_binds);
+    // Derived instances join the declared ones.
+    let mut with_derived = modules.clone();
+    for (m, d) in tc.derive_instances(&modules) {
+        if let Some(x) = with_derived.iter_mut().find(|x| x.0 == m) {
+            x.1.push(d);
+        }
+    }
+    let (inst_values, dfuns) = tc.declare_instances(&with_derived);
+    values.extend(inst_values);
     for (m, ds) in &modules {
         for d in ds {
             if matches!(d, Decl::Fun(..) | Decl::PatBind(..) | Decl::TypeSig(..)) {
@@ -37,6 +49,7 @@ pub fn typecheck(p: &achc_rename::Program) -> Result<tast::Program, Vec<Diagnost
         }
     }
     binds.extend(tc.bind_group(&values, true));
+    binds.extend(dfuns);
     // `main :: IO t` in the main module.
     let main = p.modules.last().and_then(|m| {
         let name = format!("{}.main", m.name);
@@ -48,6 +61,7 @@ pub fn typecheck(p: &achc_rename::Program) -> Result<tast::Program, Vec<Diagnost
         tc.unify(span, &io, &t);
         Some(name)
     });
+    tc.solve_top();
     for g in binds.iter_mut() {
         tc.finish_group(g);
     }

@@ -19,7 +19,7 @@ use cirka_diagnostics::{Diagnostic, FileId, SourceMap, Span};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-pub use rename::display_name;
+pub use rename::{BASE_MODULE, display_name};
 
 /// The module of the built-in syntax and primitives.
 pub const PRIM: &str = "Cirka.Prim";

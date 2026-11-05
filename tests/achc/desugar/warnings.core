@@ -9,12 +9,12 @@
   (tlam (a)
     (lam ((a (List a)))
       (case a (s (List a)) a
-        ((Cons f~392 f~393) f~392)
+        ((Cons f~443 f~444) f~443)
         (_ (panic "non-exhaustive patterns" a))))))
 
 (def Main.dup (-> Bool Int)
   (lam ((a Bool))
     (con I# () 1)))
 
-(def Main.main (-> Unit# Unit)
+(def Main.main (IO Unit)
   ((@ Prelude.return Unit) (con Unit ())))

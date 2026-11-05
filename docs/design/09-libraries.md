@@ -41,6 +41,17 @@ lib/cirka-base/
 脱糖器の Core 定義 `prim$p` (`crates/achc-desugar/src/prims.core`) にある。`Data/Char.hs` は文字の判定と変換の小さな部分集合。
 型クラス導入 (H2, FEAT-0110) で `Num`・`Eq`・`Ord`・`Show` などに置き換える。
 
+#### H2 時点 (FEAT-0110)
+
+- `Cirka/Base.hs` が Prelude の実体 (GHC の `GHC.Base` 等に相当)。GHC と同じクラス階層
+  (`Eq`/`Ord`/`Enum`/`Bounded`/`Num`/`Real`/`Integral`/`Fractional`/`Floating`/`RealFrac`/`RealFloat`/`Show`/`Read`/
+  `Semigroup`/`Monoid`/`Functor`/`Applicative`/`Monad`/`MonadFail`/`Foldable`/`Traversable`) とインスタンス、リスト・文字列・IO の関数を定義する。
+  内部の補助関数は `cirka` で始める。
+- `Prelude.hs` は GHC の Prelude と同じ名前だけを `Cirka.Base` から再エクスポートする (`toList` などは出さない)。
+  `Data.*` モジュール (FEAT-0111) は `Cirka.Base` から必要なものを再エクスポートする。
+- `Integer` は FEAT-0114 まで `Int` (64 ビット) の別名、`Float` は `Double` の別名。`Rational` は `Ratio Int`。
+- `show :: Double` は GHC と同じ形式 (`0.1`・`1.0e-2`・`1.23456789e7`) をランタイムの `cirka_f64_show_hs` で出す。
+
 ### 1.3 数値
 
 | 型 | 実装 |

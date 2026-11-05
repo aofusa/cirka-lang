@@ -1,6 +1,7 @@
 //! Hindley–Milner inference with let-polymorphism over the renamed AST,
 //! elaborating it into the typed program (`tast`).
 
+use crate::classes::{app_all, wrap_dicts};
 use crate::tast::{self, BindGroup, Clause, Guard, Rhs};
 use crate::types::*;
 use achc_syntax::ast::{self, ConFields, Decl, ExprKind, PatKind, Stmt, TypeKind};
@@ -44,7 +45,40 @@ enum LocalKind {
 
 /// Marker for references to a binding of the group being inferred; replaced
 /// by the group's type variables after generalization.
-const REC: &str = "#rec";
+pub(crate) const REC: &str = "#rec";
+
+/// A class constraint to solve; its dictionary fills `hole`.
+#[derive(Clone, Debug)]
+pub(crate) struct Wanted {
+    pub pred: Pred,
+    pub hole: u32,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub struct ClassInfo {
+    pub module: String,
+    /// The class variable (a unique type variable name).
+    pub var: String,
+    pub kind: Kind,
+    pub supers: Vec<String>,
+    /// Methods (global names) with their schemes: the class variable and
+    /// the class constraint first, then the method's own.
+    pub methods: Vec<(String, Scheme)>,
+    /// Methods with a default definition.
+    pub defaults: HashSet<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct InstInfo {
+    pub class: String,
+    pub vars: Vec<String>,
+    pub head: Ty,
+    pub ctx: Vec<Pred>,
+    /// The dictionary function.
+    pub dfun: String,
+    pub span: Span,
+}
 
 pub struct Tc {
     metas: Vec<Meta>,
@@ -58,9 +92,28 @@ pub struct Tc {
     /// Bindings of groups being inferred, to their quantified variables.
     rec_tvs: HashMap<String, Vec<String>>,
     fields: HashMap<String, Vec<(String, usize)>>,
-    counter: u32,
+    pub(crate) counter: u32,
     pub errors: Vec<Diagnostic>,
     pub out: tast::Program,
+    pub classes: HashMap<String, ClassInfo>,
+    pub instances: Vec<InstInfo>,
+    pub(crate) wanted: Vec<Wanted>,
+    /// Dictionaries in scope (signature contexts, instance contexts).
+    pub(crate) givens: Vec<(Pred, tast::Expr)>,
+    /// Solutions of the dictionary holes.
+    pub(crate) dict_sol: HashMap<u32, tast::Expr>,
+    holes: u32,
+    /// Dictionary parameters of the bindings of a group, for recursive
+    /// references (`REC`).
+    rec_dicts: HashMap<String, Vec<(String, Ty)>>,
+    /// Constraints of the contexts met by `ast_ty`.
+    pub(crate) qual_preds: Vec<Pred>,
+    /// Schemes of generated bindings (default and instance methods).
+    pub(crate) extra_sigs: HashMap<String, Scheme>,
+    /// Fixity of constructor operators (derived `Show` / `Read`).
+    pub(crate) con_fixity: HashMap<String, (ast::Assoc, u8)>,
+    /// Top-level value names of all modules (for deriving helpers).
+    pub(crate) top_names: HashSet<String>,
 }
 
 impl Tc {
@@ -79,6 +132,17 @@ impl Tc {
             counter: 0,
             errors: Vec::new(),
             out: tast::Program::default(),
+            classes: HashMap::new(),
+            instances: Vec::new(),
+            wanted: Vec::new(),
+            givens: Vec::new(),
+            dict_sol: HashMap::new(),
+            holes: 0,
+            rec_dicts: HashMap::new(),
+            qual_preds: Vec::new(),
+            extra_sigs: HashMap::new(),
+            con_fixity: HashMap::new(),
+            top_names: HashSet::new(),
         };
         // Built-in syntax: lists and unit.
         let a = || Ty::Var("a".into());
@@ -95,7 +159,13 @@ impl Tc {
         tc
     }
 
-    fn add_data(&mut self, name: &str, params: Vec<String>, kinds: Vec<Kind>, newtype: bool) {
+    pub(crate) fn add_data(
+        &mut self,
+        name: &str,
+        params: Vec<String>,
+        kinds: Vec<Kind>,
+        newtype: bool,
+    ) {
         self.datas.insert(
             name.to_string(),
             DataInfo {
@@ -107,7 +177,7 @@ impl Tc {
         );
     }
 
-    fn add_con(&mut self, name: &str, data: &str, fields: Vec<Ty>, strict: Vec<bool>) {
+    pub(crate) fn add_con(&mut self, name: &str, data: &str, fields: Vec<Ty>, strict: Vec<bool>) {
         let n = fields.len();
         self.datas
             .get_mut(data)
@@ -137,11 +207,11 @@ impl Tc {
         tc
     }
 
-    fn error(&mut self, d: Diagnostic) {
+    pub(crate) fn error(&mut self, d: Diagnostic) {
         self.errors.push(d);
     }
 
-    fn fresh_name(&mut self, base: &str) -> String {
+    pub(crate) fn fresh_name(&mut self, base: &str) -> String {
         self.counter += 1;
         format!("{base}{}", self.counter)
     }
@@ -156,7 +226,7 @@ impl Tc {
         Ty::Meta(self.metas.len() as u32 - 1)
     }
 
-    fn shallow(&self, t: &Ty) -> Ty {
+    pub(crate) fn shallow(&self, t: &Ty) -> Ty {
         let mut t = t.clone();
         while let Ty::Meta(m) = t {
             match &self.metas[m as usize].sol {
@@ -171,8 +241,57 @@ impl Tc {
         match self.shallow(t) {
             Ty::App(f, a) => Ty::App(Box::new(self.zonk(&f)), Box::new(self.zonk(&a))),
             Ty::Fun(a, b) => Ty::Fun(Box::new(self.zonk(&a)), Box::new(self.zonk(&b))),
+            Ty::Forall(vs, b) => Ty::Forall(vs, Box::new(self.zonk(&b))),
             t => t,
         }
+    }
+
+    /// Metas of `t`.
+    pub(crate) fn metas_of(&self, t: &Ty, out: &mut Vec<u32>) {
+        match self.shallow(t) {
+            Ty::Meta(m) => {
+                if !out.contains(&m) {
+                    out.push(m)
+                }
+            }
+            Ty::App(a, b) | Ty::Fun(a, b) => {
+                self.metas_of(&a, out);
+                self.metas_of(&b, out);
+            }
+            Ty::Forall(_, b) => self.metas_of(&b, out),
+            _ => {}
+        }
+    }
+
+    pub(crate) fn meta_level(&self, m: u32) -> u32 {
+        self.metas[m as usize].level
+    }
+
+    pub(crate) fn set_meta_level(&mut self, m: u32, l: u32) {
+        let x = &mut self.metas[m as usize].level;
+        if *x > l {
+            *x = l;
+        }
+    }
+
+    pub(crate) fn solve_meta(&mut self, m: u32, t: Ty) {
+        self.metas[m as usize].sol = Some(t);
+    }
+
+    pub(crate) fn level(&self) -> u32 {
+        self.level
+    }
+
+    /// A new dictionary hole for `p`.
+    pub(crate) fn want(&mut self, p: Pred, span: Span) -> u32 {
+        self.holes += 1;
+        let h = self.holes;
+        self.wanted.push(Wanted {
+            pred: p,
+            hole: h,
+            span,
+        });
+        h
     }
 
     /// Occurs check and level adjustment before binding meta `m`.
@@ -189,11 +308,12 @@ impl Tc {
                 false
             }
             Ty::App(a, b) | Ty::Fun(a, b) => self.occurs(m, level, &a) || self.occurs(m, level, &b),
+            Ty::Forall(_, b) => self.occurs(m, level, &b),
             _ => false,
         }
     }
 
-    fn unify_raw(&mut self, a: &Ty, b: &Ty) -> Result<(), UErr> {
+    pub(crate) fn unify_raw(&mut self, a: &Ty, b: &Ty) -> Result<(), UErr> {
         let a = self.shallow(a);
         let b = self.shallow(b);
         match (&a, &b) {
@@ -263,9 +383,27 @@ impl Tc {
     }
 
     pub fn instantiate(&mut self, s: &Scheme) -> (Ty, Vec<Ty>) {
+        let (t, inst, _) = self.instantiate_q(s);
+        (t, inst)
+    }
+
+    /// Instantiates a scheme with fresh metas, also its constraints.
+    pub fn instantiate_q(&mut self, s: &Scheme) -> (Ty, Vec<Ty>, Vec<Pred>) {
         let inst: Vec<Ty> = s.vars.iter().map(|_| self.fresh()).collect();
         let sub: Vec<(String, Ty)> = s.vars.iter().cloned().zip(inst.iter().cloned()).collect();
-        (s.ty.subst(&sub), inst)
+        let preds = s.preds.iter().map(|p| p.subst(&sub)).collect();
+        (s.ty.subst(&sub), inst, preds)
+    }
+
+    /// `name @inst` applied to a dictionary hole per constraint.
+    fn global_ref(&mut self, name: &str, s: &Scheme, span: Span) -> (tast::Expr, Ty) {
+        let (t, inst, preds) = self.instantiate_q(s);
+        let mut e = tast::Expr::Global(name.to_string(), inst);
+        for p in preds {
+            let h = self.want(p, span);
+            e = tast::Expr::App(Box::new(e), Box::new(tast::Expr::Hole(h)));
+        }
+        (e, t)
     }
 
     /// Metas of `t` above the current level.
@@ -373,15 +511,10 @@ impl Tc {
                 Ty::con(&tc, args)
             }
             TypeKind::Qual(ctx, b) => {
-                if let Some(c) = ctx.first() {
-                    self.error(
-                        err(
-                            "E0001",
-                            c.class.span,
-                            "type classes are not supported yet (aCHC H2, FEAT-0110)",
-                        )
-                        .with_help("remove the class constraint and use a concrete type"),
-                    );
+                for c in ctx {
+                    if let Some(p) = self.constraint(c, tvs, bind_new) {
+                        self.qual_preds.push(p);
+                    }
                 }
                 self.ast_ty(b, tvs, bind_new)
             }
@@ -397,10 +530,40 @@ impl Tc {
         }
     }
 
+    /// A class constraint `C t` of a context.
+    pub(crate) fn constraint(
+        &mut self,
+        c: &ast::Constraint,
+        tvs: &mut Vec<(String, Ty)>,
+        bind_new: bool,
+    ) -> Option<Pred> {
+        let class = c.class.text();
+        if !self.classes.contains_key(&class) {
+            self.error(err(
+                "E0201",
+                c.class.span,
+                format!("class `{}` is not defined", short(&class)),
+            ));
+            return None;
+        }
+        if c.types.len() != 1 {
+            self.error(err(
+                "E0001",
+                c.class.span,
+                "multi-parameter type classes are not supported",
+            ));
+            return None;
+        }
+        let t = self.ast_ty(&c.types[0], tvs, bind_new);
+        Some(Pred::new(&class, t))
+    }
+
     /// The scheme of a type signature.
     pub fn sig_scheme(&mut self, t: &ast::Type) -> Scheme {
         let mut tvs = Vec::new();
+        let saved = std::mem::take(&mut self.qual_preds);
         let ty = self.ast_ty(t, &mut tvs, true);
+        let preds = std::mem::replace(&mut self.qual_preds, saved);
         Scheme {
             vars: tvs
                 .into_iter()
@@ -409,6 +572,7 @@ impl Tc {
                     _ => None,
                 })
                 .collect(),
+            preds,
             ty,
         }
     }
@@ -434,16 +598,7 @@ impl Tc {
                         );
                         self.syn_module.insert(name, m.clone());
                     }
-                    Decl::Class(c) => self.error(err(
-                        "E0001",
-                        c.span,
-                        "type classes are not supported yet (aCHC H2, FEAT-0110)",
-                    )),
-                    Decl::Instance(i) => self.error(err(
-                        "E0001",
-                        i.span,
-                        "instance declarations are not supported yet (aCHC H2, FEAT-0110)",
-                    )),
+                    Decl::Class(c) => self.declare_class_name(m, c),
                     _ => {}
                 }
             }
@@ -631,13 +786,8 @@ impl Tc {
                 .cloned()
                 .zip(info.kinds.clone())
                 .collect();
-            self.globals.insert(
-                f.clone(),
-                Scheme {
-                    vars: info.params.clone(),
-                    ty: ty.clone(),
-                },
-            );
+            self.globals
+                .insert(f.clone(), Scheme::poly(info.params.clone(), ty.clone()));
             out.push(BindGroup::NonRec(tast::Bind {
                 name: f,
                 tvs,
@@ -707,11 +857,15 @@ impl Tc {
         // Signatures are known up front.
         let mut sig_schemes: HashMap<String, Scheme> = HashMap::new();
         for b in &binds {
-            if let Some((t, _)) = sigs.get(&b.name) {
-                let s = self.sig_scheme(t);
-                sig_schemes.insert(b.name.clone(), s.clone());
-                self.bind_name(&b.name, top, LocalKind::Let(s));
-            }
+            let s = match sigs.get(&b.name) {
+                Some((t, _)) => self.sig_scheme(t),
+                None => match self.extra_sigs.get(&b.name) {
+                    Some(s) => s.clone(),
+                    None => continue,
+                },
+            };
+            sig_schemes.insert(b.name.clone(), s.clone());
+            self.bind_name(&b.name, top, LocalKind::Let(s));
         }
         // Names bound by each binding (pattern bindings bind several).
         let bound: Vec<Vec<String>> = binds
@@ -771,6 +925,7 @@ impl Tc {
                 .collect();
             let mut results: Vec<tast::Bind> = Vec::new();
             if !infer_ids.is_empty() {
+                let wstart = self.wanted.len();
                 self.level += 1;
                 let mut tys = Vec::new();
                 for &i in &infer_ids {
@@ -808,6 +963,13 @@ impl Tc {
                 // Generalize function bindings; pattern bindings stay
                 // monomorphic.
                 let generalize = infer_ids.iter().all(|&i| binds[i].pat.is_none());
+                // The monomorphism restriction: a group with a binding
+                // without arguments does not generalize constrained
+                // variables.
+                let restricted = !generalize
+                    || infer_ids.iter().any(|&i| {
+                        matches!(binds[i].clauses.first(), Some(Decl::Fun(_, args, _, _)) if args.is_empty())
+                    });
                 let mut ms = Vec::new();
                 if generalize {
                     for t in &tys {
@@ -820,26 +982,40 @@ impl Tc {
                         }
                     }
                 }
+                let new = self.wanted.split_off(wstart);
+                let (ctx, mine) = self.generalize_preds(new, &mut ms, &tys, restricted);
                 let tvs: Vec<String> = (0..ms.len())
                     .map(|i| self.fresh_name(&format!("{}#", tv_letter(i))))
                     .collect();
                 for (m, v) in ms.iter().zip(&tvs) {
                     self.metas[*m as usize].sol = Some(Ty::Var(v.clone()));
                 }
+                let ctx: Vec<Pred> = ctx
+                    .into_iter()
+                    .map(|p| Pred::new(&p.class, self.zonk(&p.ty)))
+                    .collect();
+                let dicts = self.dict_params(&ctx);
+                self.solve_with(mine, &dicts);
                 for r in rhss {
                     for (name, t, e) in r {
                         let t = self.zonk(&t);
                         let s = Scheme {
                             vars: tvs.clone(),
+                            preds: ctx.clone(),
                             ty: t.clone(),
                         };
                         self.bind_name(&name, top, LocalKind::Let(s));
                         self.rec_tvs.insert(name.clone(), tvs.clone());
-                        let ktvs = tvs.iter().map(|v| (v.clone(), kind_of(v, &t))).collect();
+                        self.rec_dicts.insert(name.clone(), dicts.clone());
+                        let (e, full) = wrap_dicts(&dicts, e, t);
+                        let ktvs = tvs
+                            .iter()
+                            .map(|v| (v.clone(), self.kind_in(v, &full)))
+                            .collect();
                         results.push(tast::Bind {
                             name,
                             tvs: ktvs,
-                            ty: t,
+                            ty: full,
                             rhs: e,
                             span: Span::DUMMY,
                         });
@@ -856,16 +1032,30 @@ impl Tc {
                     continue;
                 }
                 self.rec_tvs.insert(b.name.clone(), s.vars.clone());
+                self.rec_dicts.insert(b.name.clone(), Vec::new());
+                let dicts = self.dict_params(&s.preds);
+                let gstart = self.givens.len();
+                for (p, (d, t)) in s.preds.iter().zip(&dicts) {
+                    self.givens
+                        .push((p.clone(), tast::Expr::Local(d.clone(), t.clone())));
+                }
+                let wstart = self.wanted.len();
+                self.level += 1;
                 let e = self.fun_bind(&b.clauses, &s.ty, b.span);
+                self.level -= 1;
+                let new = self.wanted.split_off(wstart);
+                self.solve_sig(new, &s.vars);
+                self.givens.truncate(gstart);
+                let (e, full) = wrap_dicts(&dicts, e, s.ty.clone());
                 let tvs = s
                     .vars
                     .iter()
-                    .map(|v| (v.clone(), kind_of(v, &s.ty)))
+                    .map(|v| (v.clone(), self.kind_in(v, &full)))
                     .collect();
                 results.push(tast::Bind {
                     name: b.name.clone(),
                     tvs,
-                    ty: s.ty.clone(),
+                    ty: full,
                     rhs: e,
                     span: b.span,
                 });
@@ -1115,12 +1305,43 @@ impl Tc {
     }
 
     /// A reference to a global needed by syntactic sugar.
-    fn sugar(&mut self, name: &str, span: Span) -> (tast::Expr, Ty) {
-        match self.globals.get(name).cloned() {
-            Some(s) => {
-                let (t, inst) = self.instantiate(&s);
-                (tast::Expr::Global(name.to_string(), inst), t)
+    /// A name wired into syntax (`Prelude.x`): the base library defines it
+    /// in `Cirka.Base` (re-exported by `Prelude`); small test preludes
+    /// define it in `Prelude` itself.
+    pub(crate) fn wired(&self, name: &str) -> String {
+        if let Some(short) = name.strip_prefix("Prelude.") {
+            let b = format!("{}.{short}", achc_rename::BASE_MODULE);
+            if self.globals.contains_key(&b)
+                || self.classes.contains_key(&b)
+                || self.cons.contains_key(&b)
+            {
+                return b;
             }
+        }
+        name.to_string()
+    }
+
+    /// Whether matching `p` can fail (it needs `MonadFail` in `do`).
+    fn failable(&self, p: &tast::Pat) -> bool {
+        match p {
+            tast::Pat::Var(..) | tast::Pat::Wild(_) | tast::Pat::Lazy(_) => false,
+            tast::Pat::As(_, _, q) | tast::Pat::Bang(q) => self.failable(q),
+            tast::Pat::Con(c, _, ps) => {
+                let many = self
+                    .cons
+                    .get(c)
+                    .and_then(|k| self.datas.get(&k.data))
+                    .is_none_or(|d| d.cons.len() != 1);
+                many || ps.iter().any(|q| self.failable(q))
+            }
+            tast::Pat::Lit(..) | tast::Pat::OverLit(..) => true,
+        }
+    }
+
+    fn sugar(&mut self, name: &str, span: Span) -> (tast::Expr, Ty) {
+        let name = &self.wired(name);
+        match self.globals.get(name).cloned() {
+            Some(s) => self.global_ref(name, &s, span),
             None => {
                 self.error(err(
                     "E0201",
@@ -1446,7 +1667,7 @@ impl Tc {
         if q.qual.is_none() {
             match self.locals.get(&name).cloned() {
                 Some(LocalKind::Mono(t)) => return (tast::Expr::Local(name, t.clone()), t),
-                Some(LocalKind::Let(s)) => return self.let_ref(&name, &s),
+                Some(LocalKind::Let(s)) => return self.let_ref(&name, &s, q.span),
                 None => {
                     self.error(err(
                         "E0201",
@@ -1471,7 +1692,7 @@ impl Tc {
             return (tast::Expr::Error(name, t.clone()), t);
         }
         match self.globals.get(&name).cloned() {
-            Some(s) => self.let_ref(&name, &s),
+            Some(s) => self.let_ref(&name, &s, q.span),
             None => {
                 self.error(err(
                     "E0201",
@@ -1485,7 +1706,7 @@ impl Tc {
     }
 
     /// A reference to a let-bound name (monomorphic inside its own group).
-    fn let_ref(&mut self, name: &str, s: &Scheme) -> (tast::Expr, Ty) {
+    fn let_ref(&mut self, name: &str, s: &Scheme, span: Span) -> (tast::Expr, Ty) {
         if s.vars.is_empty()
             && let Some(tvs) = self.rec_tvs.get(name)
             && tvs.is_empty()
@@ -1495,26 +1716,49 @@ impl Tc {
                 s.ty.clone(),
             );
         }
-        let (t, inst) = self.instantiate(s);
-        (tast::Expr::Global(name.to_string(), inst), t)
+        self.global_ref(name, s, span)
     }
 
-    fn lit(&mut self, l: &ast::Lit, _sp: Span) -> (tast::Expr, Ty) {
+    fn lit(&mut self, l: &ast::Lit, sp: Span) -> (tast::Expr, Ty) {
         match l {
-            ast::Lit::Int(n) => (
-                tast::Expr::Lit(tast::Lit::Int(*n as i64)),
-                self.lit_ty("Int"),
-            ),
-            ast::Lit::Frac(x) => (
-                tast::Expr::Lit(tast::Lit::Double(*x)),
-                self.lit_ty("Double"),
-            ),
+            ast::Lit::Int(n) => {
+                if let Some(c) = self.overloaded("Prelude.Num", "Prelude.fromInteger") {
+                    let t = self.fresh();
+                    let h = self.want(Pred::new(&c, t.clone()), sp);
+                    return (
+                        tast::Expr::OverLit(tast::Lit::Int(*n as i64), t.clone(), h),
+                        t,
+                    );
+                }
+                (
+                    tast::Expr::Lit(tast::Lit::Int(*n as i64)),
+                    self.lit_ty("Int"),
+                )
+            }
+            ast::Lit::Frac(x) => {
+                if let Some(c) = self.overloaded("Prelude.Fractional", "Prelude.fromRational") {
+                    let t = self.fresh();
+                    let h = self.want(Pred::new(&c, t.clone()), sp);
+                    return (tast::Expr::OverLit(tast::Lit::Double(*x), t.clone(), h), t);
+                }
+                (
+                    tast::Expr::Lit(tast::Lit::Double(*x)),
+                    self.lit_ty("Double"),
+                )
+            }
             ast::Lit::Char(c) => (tast::Expr::Lit(tast::Lit::Char(*c)), self.lit_ty("Char")),
             ast::Lit::Str(s) => {
                 let c = self.lit_ty("Char");
                 (tast::Expr::Lit(tast::Lit::Str(s.clone())), Ty::list(c))
             }
         }
+    }
+
+    /// The class of overloaded literals when the Prelude defines it.
+    fn overloaded(&self, class: &str, method: &str) -> Option<String> {
+        let class = self.wired(class);
+        (self.classes.contains_key(&class) && self.globals.contains_key(&self.wired(method)))
+            .then_some(class)
     }
 
     fn list_lit(&mut self, items: Vec<tast::Expr>, a: &Ty) -> tast::Expr {
@@ -1625,10 +1869,20 @@ impl Tc {
                 let body = if let tast::Pat::Var(n, t) = &tp {
                     tast::Expr::Lam(n.clone(), t.clone(), Box::new(r))
                 } else {
-                    let fail = tast::Expr::Error(
-                        "pattern match failure in do expression".into(),
-                        rt.clone(),
-                    );
+                    let msg = "Pattern match failure in do expression".to_string();
+                    let fail_fn = self.wired("Prelude.fail");
+                    let fail = if self.failable(&tp) && self.globals.contains_key(&fail_fn) {
+                        // `fail "..."` of `MonadFail` (Haskell 2010 §3.14 with
+                        // the MonadFail proposal).
+                        let (f, ft) = self.sugar("Prelude.fail", *bsp);
+                        let s = tast::Expr::Lit(tast::Lit::Str(msg));
+                        let st = Ty::list(Ty::Con(prim("Char")));
+                        let (e, et) = self.app(*bsp, (f, ft), s, &st);
+                        self.unify(*bsp, &et, &rt);
+                        e
+                    } else {
+                        tast::Expr::Error(msg, rt.clone())
+                    };
                     let m = tast::Expr::Match(
                         vec![(v.clone(), x.clone())],
                         vec![
@@ -1924,6 +2178,27 @@ impl Tc {
 
     // ---- patterns ----
 
+    /// The pattern of an overloaded literal: `(== lit)` with an `Eq`
+    /// dictionary (Haskell 2010 §3.17.2), or a plain literal pattern once
+    /// the type is known to be `Int` / `Double`.
+    fn overlit_pat(&mut self, l: tast::Lit, h: u32, t: &Ty, sp: Span) -> tast::Pat {
+        let eq = self.want(Pred::new(&self.wired("Prelude.Eq"), t.clone()), sp);
+        let x = format!("lit${}", self.holes);
+        let test = tast::Expr::Lam(
+            x.clone(),
+            t.clone(),
+            Box::new(app_all(
+                tast::Expr::Global(self.wired("Prelude.=="), vec![t.clone()]),
+                vec![
+                    tast::Expr::Hole(eq),
+                    tast::Expr::Local(x, t.clone()),
+                    tast::Expr::OverLit(l.clone(), t.clone(), h),
+                ],
+            )),
+        );
+        tast::Pat::OverLit(l, Box::new(test), t.clone())
+    }
+
     pub fn pat(&mut self, p: &ast::Pat, t: &Ty) -> tast::Pat {
         let sp = p.span;
         match &p.kind {
@@ -1938,6 +2213,7 @@ impl Tc {
                 self.unify(sp, t, &lt);
                 match e {
                     tast::Expr::Lit(l) => tast::Pat::Lit(l, t.clone()),
+                    tast::Expr::OverLit(l, _, h) => self.overlit_pat(l, h, t, sp),
                     _ => tast::Pat::Wild(t.clone()),
                 }
             }
@@ -1945,6 +2221,12 @@ impl Tc {
                 let (e, lt) = self.lit(l, sp);
                 self.unify(sp, t, &lt);
                 match e {
+                    tast::Expr::OverLit(tast::Lit::Int(n), _, h) => {
+                        self.overlit_pat(tast::Lit::Int(-n), h, t, sp)
+                    }
+                    tast::Expr::OverLit(tast::Lit::Double(x), _, h) => {
+                        self.overlit_pat(tast::Lit::Double(-x), h, t, sp)
+                    }
                     tast::Expr::Lit(tast::Lit::Int(n)) => {
                         tast::Pat::Lit(tast::Lit::Int(-n), t.clone())
                     }
@@ -2094,6 +2376,59 @@ impl Tc {
     pub fn finish_expr(&self, e: &mut tast::Expr) {
         match e {
             tast::Expr::Local(_, t) | tast::Expr::Error(_, t) => *t = self.final_ty(t),
+            tast::Expr::Hole(h) => {
+                let mut d = match self.dict_sol.get(h) {
+                    Some(d) => d.clone(),
+                    None => {
+                        tast::Expr::Error("unsolved class constraint".into(), Ty::Con(unit_tc()))
+                    }
+                };
+                self.finish_expr(&mut d);
+                *e = d;
+            }
+            tast::Expr::OverLit(l, t, h) => {
+                let t = self.final_ty(t);
+                let int = Ty::Con(prim("Int"));
+                let dbl = Ty::Con(prim("Double"));
+                let lit = |l: tast::Lit| tast::Expr::Lit(l);
+                *e = match (&*l, &t) {
+                    (tast::Lit::Int(n), t) if *t == int => lit(tast::Lit::Int(*n)),
+                    (tast::Lit::Int(n), t) if *t == dbl => lit(tast::Lit::Double(*n as f64)),
+                    (tast::Lit::Double(x), t) if *t == dbl => lit(tast::Lit::Double(*x)),
+                    (tast::Lit::Int(n), _) => {
+                        let mut d = tast::Expr::Hole(*h);
+                        self.finish_expr(&mut d);
+                        let f =
+                            tast::Expr::Global(self.wired("Prelude.fromInteger"), vec![t.clone()]);
+                        tast::Expr::App(
+                            Box::new(tast::Expr::App(Box::new(f), Box::new(d))),
+                            Box::new(lit(tast::Lit::Int(*n))),
+                        )
+                    }
+                    (tast::Lit::Double(x), _) => {
+                        let mut d = tast::Expr::Hole(*h);
+                        self.finish_expr(&mut d);
+                        let (n, q) = rational_of(*x);
+                        let ratio = tast::Expr::App(
+                            Box::new(tast::Expr::App(
+                                Box::new(tast::Expr::Con(
+                                    self.wired("Prelude.:%"),
+                                    vec![int.clone()],
+                                )),
+                                Box::new(lit(tast::Lit::Int(n))),
+                            )),
+                            Box::new(lit(tast::Lit::Int(q))),
+                        );
+                        let f =
+                            tast::Expr::Global(self.wired("Prelude.fromRational"), vec![t.clone()]);
+                        tast::Expr::App(
+                            Box::new(tast::Expr::App(Box::new(f), Box::new(d))),
+                            Box::new(ratio),
+                        )
+                    }
+                    (l, _) => lit(l.clone()),
+                };
+            }
             tast::Expr::Global(n, inst) => {
                 if inst.len() == 1 && inst[0] == Ty::Con(REC.into()) {
                     *inst = self
@@ -2101,6 +2436,18 @@ impl Tc {
                         .get(n.as_str())
                         .map(|vs| vs.iter().map(|v| Ty::Var(v.clone())).collect())
                         .unwrap_or_default();
+                    if let Some(ds) = self.rec_dicts.get(n.as_str())
+                        && !ds.is_empty()
+                    {
+                        let mut x = e.clone();
+                        for (d, t) in ds {
+                            x = tast::Expr::App(
+                                Box::new(x),
+                                Box::new(tast::Expr::Local(d.clone(), t.clone())),
+                            );
+                        }
+                        *e = x;
+                    }
                 } else {
                     for t in inst.iter_mut() {
                         *t = self.final_ty(t);
@@ -2194,6 +2541,28 @@ impl Tc {
                 self.finish_pat(q);
             }
             tast::Pat::Lazy(q) | tast::Pat::Bang(q) => self.finish_pat(q),
+            tast::Pat::OverLit(l, test, t) => {
+                let ft = self.final_ty(t);
+                let lit = match (&*l, &ft) {
+                    (tast::Lit::Int(n), Ty::Con(c)) if *c == prim("Int") => {
+                        Some(tast::Lit::Int(*n))
+                    }
+                    (tast::Lit::Int(n), Ty::Con(c)) if *c == prim("Double") => {
+                        Some(tast::Lit::Double(*n as f64))
+                    }
+                    (tast::Lit::Double(x), Ty::Con(c)) if *c == prim("Double") => {
+                        Some(tast::Lit::Double(*x))
+                    }
+                    _ => None,
+                };
+                match lit {
+                    Some(l) => *p = tast::Pat::Lit(l, ft),
+                    None => {
+                        *t = ft;
+                        self.finish_expr(test);
+                    }
+                }
+            }
         }
     }
 
@@ -2202,8 +2571,52 @@ impl Tc {
             Ty::Meta(_) => Ty::Con(unit_tc()),
             Ty::App(f, a) => Ty::App(Box::new(self.final_ty(&f)), Box::new(self.final_ty(&a))),
             Ty::Fun(a, b) => Ty::Fun(Box::new(self.final_ty(&a)), Box::new(self.final_ty(&b))),
+            Ty::Forall(vs, b) => Ty::Forall(vs, Box::new(self.final_ty(&b))),
             t => t,
         }
+    }
+}
+
+/// `x` as a fraction `n / d` in lowest terms, from its shortest decimal
+/// representation (`0.1` is `1/10`, as the literal is written).
+pub(crate) fn rational_of(x: f64) -> (i64, i64) {
+    fn gcd(a: i128, b: i128) -> i128 {
+        if b == 0 { a.abs() } else { gcd(b, a % b) }
+    }
+    let s = format!("{x:e}");
+    let (mant, exp) = s.split_once('e').unwrap_or((&s, "0"));
+    let exp: i32 = exp.parse().unwrap_or(0);
+    let neg = mant.starts_with('-');
+    let mant = mant.trim_start_matches('-');
+    let (ip, fp) = mant.split_once('.').unwrap_or((mant, ""));
+    let digits = format!("{ip}{fp}");
+    let scale = exp - fp.len() as i32;
+    let mut n: i128 = digits.parse().unwrap_or(0);
+    let mut d: i128 = 1;
+    let ok = (|| {
+        if scale >= 0 {
+            for _ in 0..scale {
+                n = n.checked_mul(10)?;
+            }
+        } else {
+            for _ in 0..-scale {
+                d = d.checked_mul(10)?;
+            }
+        }
+        Some(())
+    })();
+    if ok.is_none() {
+        return (x as i64, 1);
+    }
+    let g = gcd(n, d).max(1);
+    n /= g;
+    d /= g;
+    if neg {
+        n = -n;
+    }
+    match (i64::try_from(n), i64::try_from(d)) {
+        (Ok(n), Ok(d)) => (n, d),
+        _ => (x as i64, 1),
     }
 }
 
@@ -2217,7 +2630,7 @@ fn tv_letter(i: usize) -> String {
     }
 }
 
-enum UErr {
+pub(crate) enum UErr {
     Mismatch,
     Rigid(String),
     Occurs,
@@ -2229,7 +2642,7 @@ pub fn kind_of(v: &str, t: &Ty) -> Kind {
     applied_arity(v, t).map(Kind::arity).unwrap_or(Kind::Star)
 }
 
-fn applied_arity(v: &str, t: &Ty) -> Option<usize> {
+pub(crate) fn applied_arity(v: &str, t: &Ty) -> Option<usize> {
     match t {
         Ty::App(..) => {
             let (h, args) = t.spine();
@@ -2240,6 +2653,7 @@ fn applied_arity(v: &str, t: &Ty) -> Option<usize> {
             here.or_else(|| args.iter().find_map(|a| applied_arity(v, a)))
         }
         Ty::Fun(a, b) => applied_arity(v, a).or_else(|| applied_arity(v, b)),
+        Ty::Forall(_, b) => applied_arity(v, b),
         _ => None,
     }
 }

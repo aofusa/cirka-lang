@@ -36,6 +36,21 @@ foreign import prim "dbl_le" primDoubleLe :: Double -> Double -> Bool
 foreign import prim "int_to_double" primIntToDouble :: Int -> Double
 foreign import prim "double_to_int" primDoubleToInt :: Double -> Int
 foreign import prim "show_double" primShowDouble :: Double -> [Char]
+foreign import prim "dbl_show_hs" primShowDoubleHs :: Double -> [Char]
+foreign import prim "dbl_parse" primReadDouble :: [Char] -> Double
+foreign import prim "dbl_exp" primDoubleExp :: Double -> Double
+foreign import prim "dbl_log" primDoubleLog :: Double -> Double
+foreign import prim "dbl_sin" primDoubleSin :: Double -> Double
+foreign import prim "dbl_cos" primDoubleCos :: Double -> Double
+foreign import prim "dbl_tan" primDoubleTan :: Double -> Double
+foreign import prim "dbl_asin" primDoubleAsin :: Double -> Double
+foreign import prim "dbl_acos" primDoubleAcos :: Double -> Double
+foreign import prim "dbl_atan" primDoubleAtan :: Double -> Double
+foreign import prim "dbl_sinh" primDoubleSinh :: Double -> Double
+foreign import prim "dbl_cosh" primDoubleCosh :: Double -> Double
+foreign import prim "dbl_tanh" primDoubleTanh :: Double -> Double
+foreign import prim "dbl_atan2" primDoubleAtan2 :: Double -> Double -> Double
+foreign import prim "dbl_pow" primDoublePow :: Double -> Double -> Double
 
 foreign import prim "char_ord" primCharOrd :: Char -> Int
 foreign import prim "char_chr" primCharChr :: Int -> Char

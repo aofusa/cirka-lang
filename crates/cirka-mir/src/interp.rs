@@ -1010,6 +1010,39 @@ impl<'m> Interp<'m> {
                 )))
             }
             "sqrt" => Ok(Val::F(a[0].float().sqrt())),
+            "exp" => Ok(Val::F(a[0].float().exp())),
+            "log" => Ok(Val::F(a[0].float().ln())),
+            "sin" => Ok(Val::F(a[0].float().sin())),
+            "cos" => Ok(Val::F(a[0].float().cos())),
+            "tan" => Ok(Val::F(a[0].float().tan())),
+            "asin" => Ok(Val::F(a[0].float().asin())),
+            "acos" => Ok(Val::F(a[0].float().acos())),
+            "atan" => Ok(Val::F(a[0].float().atan())),
+            "sinh" => Ok(Val::F(a[0].float().sinh())),
+            "cosh" => Ok(Val::F(a[0].float().cosh())),
+            "tanh" => Ok(Val::F(a[0].float().tanh())),
+            "atan2" => Ok(Val::F(a[0].float().atan2(a[1].float()))),
+            "pow" => Ok(Val::F(a[0].float().powf(a[1].float()))),
+            "cirka_f64_show_hs" => {
+                let b = show_hs(a[0].float()).into_bytes();
+                let size = 16 + b.len().div_ceil(8) * 8;
+                Ok(Val::P(self.alloc(
+                    kind::BYTES,
+                    0,
+                    vec![],
+                    Payload::Bytes(b),
+                    size,
+                )))
+            }
+            "cirka_parse_f64" => {
+                let b = self.bytes(a[0])?.clone();
+                Ok(Val::F(
+                    std::str::from_utf8(&b)
+                        .ok()
+                        .and_then(|s| s.parse::<f64>().ok())
+                        .unwrap_or(f64::NAN),
+                ))
+            }
             "cirka_flush" => Ok(unit),
             "cirka_exit" => Err(Exit::Code(a[0].int() as i32)),
             "cirka_read_byte" => {
@@ -1072,6 +1105,39 @@ impl std::fmt::Write for StrW<'_> {
 
 /// Formatting of `cirka_write_f64` (shared with the runtime: Rust's
 /// shortest round-trip `Display`).
+/// `show` of a `Double` in Haskell's format (same as the runtime's
+/// `cirka_f64_show_hs`).
+pub fn show_hs(x: f64) -> String {
+    if x.is_nan() {
+        return "NaN".into();
+    }
+    let sign = if x.is_sign_negative() { "-" } else { "" };
+    if x.is_infinite() {
+        return format!("{sign}Infinity");
+    }
+    if x == 0.0 {
+        return format!("{sign}0.0");
+    }
+    let s = format!("{:e}", x.abs());
+    let (m, e) = s.split_once('e').unwrap_or((&s, "0"));
+    let digits: String = m.chars().filter(|c| c.is_ascii_digit()).collect();
+    let e: i32 = e.parse::<i32>().unwrap_or(0) + 1;
+    if (0..=7).contains(&e) {
+        let e = e as usize;
+        if e == 0 {
+            return format!("{sign}0.{digits}");
+        }
+        let int: String = (0..e)
+            .map(|i| digits.as_bytes().get(i).map(|b| *b as char).unwrap_or('0'))
+            .collect();
+        let frac = if digits.len() > e { &digits[e..] } else { "0" };
+        format!("{sign}{int}.{frac}")
+    } else {
+        let rest = if digits.len() > 1 { &digits[1..] } else { "0" };
+        format!("{sign}{}.{rest}e{}", &digits[..1], e - 1)
+    }
+}
+
 pub fn format_f64(x: f64) -> String {
     format!("{x}")
 }

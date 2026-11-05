@@ -7,10 +7,10 @@
 
 (def Main.zipW (forall (a b c) (-> (-> a b c) (List a) (List b) (List c)))
   (tlam (a b c)
-    (lam ((a~393 (-> a b c)) (a~394 (List a)) (a~395 (List b)))
-      (case a~394 (s~411 (List a)) (List c)
-        ((Cons f~399 f~400) (case a~395 (s~410 (List b)) (List c)
-            ((Cons f~404 f~405) (con Cons (c) (a~393 f~399 f~404) ((@ Main.zipW a b c) a~393 f~400 f~405)))
+    (lam ((a~444 (-> a b c)) (a~445 (List a)) (a~446 (List b)))
+      (case a~445 (s~462 (List a)) (List c)
+        ((Cons f~450 f~451) (case a~446 (s~461 (List b)) (List c)
+            ((Cons f~455 f~456) (con Cons (c) (a~444 f~450 f~455) ((@ Main.zipW a b c) a~444 f~451 f~456)))
             (_ (con Nil (c)))))
         (_ (con Nil (c)))))))
 
@@ -28,5 +28,5 @@
       ((True) (con I# () 0))
       (_ (Prelude.+ a (con I# () 1))))))
 
-(def Main.main (-> Unit# Unit)
+(def Main.main (IO Unit)
   (Cirka.Prim.putStr (Main.name (con Main.Red ()))))

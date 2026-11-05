@@ -2,7 +2,7 @@
 //! into the common Core (06-ir.md §1).
 //!
 //! - Types: `Int` / `Char` / `Double` are boxed (`I#` / `C#` / `D#`),
-//!   `IO a` is `Unit# -> a`, built-in syntax gets plain Core names
+//!   `IO a` is a newtype of `Unit# -> a`, built-in syntax gets plain Core names
 //!   (`List` with `Nil` / `Cons`, `Unit`, `TupleN`), and every other data
 //!   type keeps its qualified Haskell name.
 //! - Evaluation stays lazy: Core `let` and non-atomic arguments are thunks.
@@ -13,6 +13,7 @@
 //! - `foreign import prim "p"` binds to the Core definition `prim$p` of
 //!   `prims.core`; the declared type must equal the primitive's type.
 
+use achc_typeck::infer::kind_of;
 use achc_typeck::tast::{self, BindGroup, Clause, Guard, Pat};
 use achc_typeck::types::*;
 use cirka_core as c;
@@ -51,9 +52,11 @@ pub fn desugar(p: &tast::Program) -> Result<Output, Vec<Diagnostic>> {
             .map(|e| Diagnostic::ice(format!("Core Lint after desugaring: {}", e.message)))
             .collect());
     }
+    let mut warnings = p.warnings.clone();
+    warnings.extend(d.warnings);
     Ok(Output {
         program: prog,
-        warnings: d.warnings,
+        warnings,
     })
 }
 
@@ -101,6 +104,33 @@ struct Ds {
     warnings: Vec<Diagnostic>,
 }
 
+/// `t` with `IO a` replaced by its representation `Unit# -> a`.
+fn io_rep(t: &c::Type) -> c::Type {
+    match t {
+        c::Type::Con(n, args) if n == "IO" && args.len() == 1 => {
+            c::Type::fun(c::Mult::Many, c::Type::unit(), io_rep(&args[0]))
+        }
+        c::Type::Con(n, args) => c::Type::Con(n.clone(), args.iter().map(io_rep).collect()),
+        c::Type::App(h, args) => {
+            c::Type::App(Box::new(io_rep(h)), args.iter().map(io_rep).collect())
+        }
+        c::Type::Fun(m, a, b) => c::Type::Fun(*m, Box::new(io_rep(a)), Box::new(io_rep(b))),
+        c::Type::Forall(v, k, b) => c::Type::Forall(v.clone(), k.clone(), Box::new(io_rep(b))),
+        t => t.clone(),
+    }
+}
+
+/// `e` (of a type with the same quantifiers as `ty`) cast to `ty`.
+fn cast_poly(e: c::Expr, ty: &c::Type) -> c::Expr {
+    match ty {
+        c::Type::Forall(v, k, b) => {
+            let inner = cast_poly(c::Expr::TyApp(Box::new(e), c::Type::Var(v.clone())), b);
+            c::Expr::TyLam(v.clone(), k.clone(), Box::new(inner))
+        }
+        t => c::Expr::Cast(Box::new(e), t.clone()),
+    }
+}
+
 fn core_tname(n: &str) -> String {
     if n == list_tc() {
         return "List".into();
@@ -139,7 +169,9 @@ fn local_name(n: &str) -> String {
 fn is_true(e: &tast::Expr) -> bool {
     match e {
         tast::Expr::Con(c, _) => c == &prim("True"),
-        tast::Expr::Global(g, _) => g == "Prelude.otherwise",
+        tast::Expr::Global(g, _) => {
+            g == "Prelude.otherwise" || *g == format!("{}.otherwise", achc_rename::BASE_MODULE)
+        }
         _ => false,
     }
 }
@@ -253,6 +285,13 @@ impl Ds {
         match t {
             Ty::Var(v) => c::Type::Var(self.tv(v)),
             Ty::Meta(_) => c::Type::con("Unit"),
+            Ty::Forall(vs, b) => {
+                let body = self.ty(b);
+                vs.iter().rev().fold(body, |acc, v| {
+                    let k = Ds::kind(&kind_of(v, b));
+                    c::Type::Forall(self.tv(v), k, Box::new(acc))
+                })
+            }
             Ty::Fun(a, b) => {
                 let a = self.ty(a);
                 let b = self.ty(b);
@@ -262,9 +301,6 @@ impl Ds {
                 let (h, args) = t.spine();
                 let args: Vec<c::Type> = args.iter().map(|a| self.ty(a)).collect();
                 match h {
-                    Ty::Con(n) if *n == prim("IO") && args.len() == 1 => {
-                        c::Type::fun(c::Mult::Many, c::Type::unit(), args[0].clone())
-                    }
                     Ty::Con(n) if *n == prim("->") && args.len() == 2 => {
                         c::Type::fun(c::Mult::Many, args[0].clone(), args[1].clone())
                     }
@@ -369,6 +405,13 @@ impl Ds {
                     expr: c::Expr::Global(target),
                     span: f.span,
                 }),
+                // `IO` primitives are written against the representation.
+                Some(t) if t.alpha_eq(&io_rep(&ty)) => out.binds.push(c::TopBind {
+                    name: f.name.clone(),
+                    ty: ty.clone(),
+                    expr: cast_poly(c::Expr::Global(target), &ty),
+                    span: f.span,
+                }),
                 Some(t) => self.errors.push(
                     Diagnostic::error(format!(
                         "the type of primitive `{}` does not match its declaration",
@@ -418,6 +461,10 @@ impl Ds {
                 } else {
                     self.ty(&r)
                 };
+                let f = c::Expr::Cast(
+                    Box::new(f),
+                    c::Type::fun(c::Mult::Many, c::Type::unit(), rt.clone()),
+                );
                 let r = self.id("r");
                 out.binds.push(c::TopBind {
                     name: "main".into(),
@@ -540,6 +587,10 @@ impl Ds {
             tast::Expr::Error(m, t) => {
                 let t = self.ty(t);
                 c::Expr::Panic(m.clone(), t)
+            }
+            tast::Expr::Hole(_) | tast::Expr::OverLit(..) => {
+                self.ice("unresolved class dictionary".into());
+                c::Expr::Lit(c::Lit::Unit)
             }
         }
     }
@@ -1024,6 +1075,27 @@ impl Ds {
                     }],
                 )
             }
+            Pat::OverLit(_, test, _) => {
+                row.pats.remove(0);
+                let rest = self.matcher(&cols[1..], vec![row], fail, res);
+                let t = self.expr(&test);
+                let call = c::Expr::app(t, [c::Expr::Var(v)]);
+                c::Expr::Case(
+                    Box::new(call),
+                    c::Binder::new(self.id("k"), c::Mult::Many, c::Type::con("Bool")),
+                    res.clone(),
+                    vec![
+                        c::Alt {
+                            con: c::AltCon::Con("True".into(), Vec::new()),
+                            rhs: rest,
+                        },
+                        c::Alt {
+                            con: c::AltCon::Default,
+                            rhs: fail.clone(),
+                        },
+                    ],
+                )
+            }
             p => {
                 self.ice(format!("unexpected pattern {}", tast::pat(&p)));
                 fail.clone()
@@ -1033,7 +1105,11 @@ impl Ds {
 
     fn pat_ty(&mut self, p: &Pat) -> Ty {
         match p {
-            Pat::Var(_, t) | Pat::Wild(t) | Pat::Lit(_, t) | Pat::As(_, t, _) => t.clone(),
+            Pat::Var(_, t)
+            | Pat::Wild(t)
+            | Pat::Lit(_, t)
+            | Pat::As(_, t, _)
+            | Pat::OverLit(_, _, t) => t.clone(),
             Pat::Con(k, inst, _) => {
                 let data = self.con(k).data;
                 Ty::con(&data, inst.clone())

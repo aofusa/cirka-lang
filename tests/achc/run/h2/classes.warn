@@ -1,0 +1,6 @@
+warning[W0610]: non-exhaustive patterns
+  --> tests/achc/run/h2/classes.hs:94:7
+   |
+94 |   let Just y = lookup 2 [(1, "one"), (2, "two")]
+   |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: a value not matched by any equation is a runtime error

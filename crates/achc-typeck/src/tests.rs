@@ -183,6 +183,19 @@ fn type_errors() {
     assert!(e[0].contains("E0606"), "{e:?}");
     let e = errs("main = 1\n");
     assert!(e[0].starts_with("E0601"), "{e:?}");
-    let e = errs("class C a where\n  m :: a -> a\nf :: C a => a -> a\nf x = x\nmain = return ()\n");
-    assert!(e[0].starts_with("E0001"), "{e:?}");
+    let e = errs("class C a where\n  m :: a -> a\nf = m 'c'\nmain = return ()\n");
+    assert!(e[0].starts_with("E0608"), "{e:?}");
+    let e = errs(
+        "class C a where\n  m :: a -> Bool\nclass D a where\n  d :: a\nf = m d\nmain = return ()\n",
+    );
+    assert!(e[0].starts_with("E0609"), "{e:?}");
+    let e = errs("class C a where\n  m :: a -> a\nf :: a -> a\nf x = m x\nmain = return ()\n");
+    assert!(e[0].starts_with("E0608"), "{e:?}");
+    let e = errs(
+        "class C a where\n  m :: a\ninstance C Bool where\n  m = True\ninstance C Bool where\n  m = False\nmain = return ()\n",
+    );
+    assert!(e[0].starts_with("E0612"), "{e:?}");
+    let e =
+        errs("data T = T\nclass C a where\n  m :: a\ndata U = U deriving (C)\nmain = return ()\n");
+    assert!(e[0].starts_with("E0615"), "{e:?}");
 }

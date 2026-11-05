@@ -39,6 +39,9 @@ pub enum Ty {
     Con(String),
     App(Box<Ty>, Box<Ty>),
     Fun(Box<Ty>, Box<Ty>),
+    /// `forall vs. t`: only in the fields of class dictionaries (methods
+    /// with their own type variables) and the variables bound to them.
+    Forall(Vec<String>, Box<Ty>),
 }
 
 impl Ty {
@@ -82,6 +85,12 @@ impl Ty {
             Ty::Meta(_) | Ty::Con(_) => self.clone(),
             Ty::App(f, a) => Ty::App(Box::new(f.subst(s)), Box::new(a.subst(s))),
             Ty::Fun(a, b) => Ty::Fun(Box::new(a.subst(s)), Box::new(b.subst(s))),
+            // Bound variables are unique names: no capture.
+            Ty::Forall(vs, b) => {
+                let inner: Vec<(String, Ty)> =
+                    s.iter().filter(|(n, _)| !vs.contains(n)).cloned().collect();
+                Ty::Forall(vs.clone(), Box::new(b.subst(&inner)))
+            }
         }
     }
 
@@ -97,14 +106,72 @@ impl Ty {
                 a.vars(out);
                 b.vars(out);
             }
+            Ty::Forall(vs, b) => {
+                let mut inner = Vec::new();
+                b.vars(&mut inner);
+                for v in inner {
+                    if !vs.contains(&v) && !out.contains(&v) {
+                        out.push(v);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Head type constructor (`Maybe` of `Maybe Int`, `->` of functions).
+    pub fn head_con(&self) -> Option<String> {
+        match self.spine().0 {
+            Ty::Con(c) => Some(c.clone()),
+            Ty::Fun(..) => Some(prim("->")),
+            _ => None,
         }
     }
 }
 
-/// A type scheme `forall vs. t`.
+/// A class constraint `C t`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Pred {
+    pub class: String,
+    pub ty: Ty,
+}
+
+impl Pred {
+    pub fn new(class: &str, ty: Ty) -> Pred {
+        Pred {
+            class: class.to_string(),
+            ty,
+        }
+    }
+
+    pub fn subst(&self, s: &[(String, Ty)]) -> Pred {
+        Pred::new(&self.class, self.ty.subst(s))
+    }
+
+    /// The type of a dictionary for this constraint.
+    pub fn dict_ty(&self) -> Ty {
+        Ty::App(
+            Box::new(Ty::Con(self.class.clone())),
+            Box::new(self.ty.clone()),
+        )
+    }
+}
+
+/// `C t` for diagnostics.
+pub fn show_pred(p: &Pred) -> String {
+    let t = show(&p.ty);
+    if t.contains(' ') && !t.starts_with('[') && !t.starts_with('(') {
+        format!("{} ({t})", short(&p.class))
+    } else {
+        format!("{} {t}", short(&p.class))
+    }
+}
+
+/// A type scheme `forall vs. ctx => t`. A value of the scheme takes one
+/// dictionary per constraint of `preds`, in order.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Scheme {
     pub vars: Vec<String>,
+    pub preds: Vec<Pred>,
     pub ty: Ty,
 }
 
@@ -112,6 +179,15 @@ impl Scheme {
     pub fn mono(ty: Ty) -> Scheme {
         Scheme {
             vars: Vec::new(),
+            preds: Vec::new(),
+            ty,
+        }
+    }
+
+    pub fn poly(vars: Vec<String>, ty: Ty) -> Scheme {
+        Scheme {
+            vars,
+            preds: Vec::new(),
             ty,
         }
     }
@@ -175,6 +251,21 @@ fn show_prec(t: &Ty, p: u8, s: &mut String) {
             let _ = write!(s, "t{m}");
         }
         Ty::Con(c) => s.push_str(short(c)),
+        Ty::Forall(vs, b) => {
+            if p > 0 {
+                s.push('(');
+            }
+            s.push_str("forall");
+            for v in vs {
+                s.push(' ');
+                s.push_str(achc_rename::display_name(v));
+            }
+            s.push_str(". ");
+            show_prec(b, 0, s);
+            if p > 0 {
+                s.push(')');
+            }
+        }
         Ty::Fun(a, b) => {
             if p > 0 {
                 s.push('(');
