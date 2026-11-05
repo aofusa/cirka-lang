@@ -1,0 +1,7 @@
+Pair "one" 1
+('x',True)
+5
+('q',-3)
+(Left (1,2),Right (2,1))
+(Just 1,[2.5])
+6

@@ -12,6 +12,7 @@
 mod classes;
 mod deriving;
 pub mod infer;
+mod linear;
 pub mod tast;
 pub mod types;
 
@@ -85,6 +86,10 @@ pub fn typecheck_in(
     tc.solve_top();
     for g in binds.iter_mut() {
         tc.finish_group(g);
+    }
+    if tc.errors.is_empty() {
+        let errs = linear::check(&tc, &modules);
+        tc.errors.extend(errs);
     }
     if !tc.errors.is_empty() {
         let mut errs = std::mem::take(&mut tc.errors);

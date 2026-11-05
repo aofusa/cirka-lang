@@ -1,4 +1,4 @@
-error[E0602]: cannot construct the infinite type `t32 ~ t32 -> t33`
+error[E0602]: cannot construct the infinite type `t30 ~ t30 -> t31`
  --> tests/achc/typeck/fail/infinite.hs:3:12
   |
 3 | self f = f f

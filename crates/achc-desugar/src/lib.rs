@@ -307,6 +307,11 @@ impl Ds {
                     Ty::Con(n) if *n == prim("->") && args.len() == 2 => {
                         c::Type::fun(c::Mult::Many, args[0].clone(), args[1].clone())
                     }
+                    // LinearTypes: multiplicities are erased (ADR-037).
+                    Ty::Con(n) if *n == prim("#FUN") && args.len() == 3 => {
+                        c::Type::fun(c::Mult::Many, args[1].clone(), args[2].clone())
+                    }
+                    Ty::Con(n) if is_mult_con(n) => c::Type::con("Unit"),
                     Ty::Con(n) if *n == prim("Bytes") => c::Type::bytes(),
                     Ty::Con(n) => {
                         if let Some(k) = tuple_arity(n) {

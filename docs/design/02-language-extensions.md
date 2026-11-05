@@ -60,9 +60,14 @@ e :: a %0 -> b         -- (Cirka 追加) 消去: 実行時に存在しない引�
 data Ur a where Ur :: a -> Ur a        -- 無制限値を線形文脈で運ぶ
 ```
 
-- `%1` を `⊸` と書いてもよい(`UnicodeSyntax` 有効時)。
+- `%1` を `⊸` と書いてもよい (拡張の指定は不要。`UnicodeSyntax` の他の記号は未対応)。
 - `let`/`where` 束縛の多重度は GHC と同じく注釈 `let %1 x = ...` で指定できる。省略時は推論(GHC と異なり aCHC は推論する: [03-type-system.md](03-type-system.md) §2.3)。
 - **`%0` は aCHC の追加**。`%0` の引数は実行時に消去され、値を実行時に使うことは型エラー。
+- データ構築子は線形関数 (`Just :: a %1 -> Maybe a`) として扱う。`Ur` だけはフィールドを無制限に束縛する。
+- 前期の実装 (FEAT-0120) では `let %1 x = ...` の注釈はまだ書けない (推論のみ)。`Prelude.Linear` は linear-base の
+  最小部分 (`Ur`/`unur`/`forget`、線形の `id`/`const`/`($)`/`(&)`/`(.)`/`swap`、`Consumable`/`Dupable`/`Movable` と
+  基本型のインスタンス、`lseq`) を、`Unsafe.Linear` は `toLinear` を提供する。実装方式は
+  [03-type-system.md](03-type-system.md) §2.4。
 
 ## 3. 一意性型 (`CirkaUnique`)
 

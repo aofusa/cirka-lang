@@ -36,6 +36,50 @@ pub fn mp_args(t: &Ty) -> Option<Vec<&Ty>> {
     }
 }
 
+/// `FUN m a b`: an arrow with multiplicity `m` (LinearTypes). The
+/// unrestricted arrow is always [`Ty::Fun`].
+pub fn fun_tc() -> String {
+    prim("#FUN")
+}
+
+/// The multiplicities as types: `%1`, `%Many`, `%0`.
+pub fn mult_one() -> Ty {
+    Ty::Con(prim("#One"))
+}
+
+pub fn mult_many() -> Ty {
+    Ty::Con(prim("#Many"))
+}
+
+pub fn mult_zero() -> Ty {
+    Ty::Con(prim("#Zero"))
+}
+
+pub fn is_mult_con(c: &str) -> bool {
+    matches!(
+        c.strip_prefix("Cirka.Prim.#"),
+        Some("One" | "Many" | "Zero")
+    )
+}
+
+/// `a %m -> b` (the plain arrow when `m` is `Many`).
+pub fn mul_fun(m: Ty, a: Ty, b: Ty) -> Ty {
+    if m == mult_many() {
+        Ty::fun(a, b)
+    } else {
+        Ty::con(&fun_tc(), vec![m, a, b])
+    }
+}
+
+/// The multiplicity, argument and result of an arrow with a multiplicity.
+pub fn as_mul_fun(t: &Ty) -> Option<(&Ty, &Ty, &Ty)> {
+    let (h, args) = t.spine();
+    match (h, args.as_slice()) {
+        (Ty::Con(c), [m, a, b]) if *c == fun_tc() => Some((m, a, b)),
+        _ => None,
+    }
+}
+
 pub fn tuple_arity(name: &str) -> Option<usize> {
     let n = name.strip_prefix("Cirka.Prim.(")?.strip_suffix(')')?;
     if !n.is_empty() && n.chars().all(|c| c == ',') {
@@ -326,6 +370,27 @@ fn show_prec(t: &Ty, p: u8, s: &mut String) {
             }
         }
         Ty::App(..) => {
+            if let Some((m, a, b)) = as_mul_fun(t) {
+                if p > 0 {
+                    s.push('(');
+                }
+                show_prec(a, 1, s);
+                s.push_str(" %");
+                match m {
+                    Ty::Con(c) if is_mult_con(c) => s.push_str(match c.as_str() {
+                        "Cirka.Prim.#One" => "1",
+                        "Cirka.Prim.#Zero" => "0",
+                        _ => "Many",
+                    }),
+                    m => show_prec(m, 2, s),
+                }
+                s.push_str(" -> ");
+                show_prec(b, 0, s);
+                if p > 0 {
+                    s.push(')');
+                }
+                return;
+            }
             let (h, args) = t.spine();
             if let Ty::Con(c) = h {
                 if *c == list_tc() && args.len() == 1 {

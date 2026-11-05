@@ -1503,6 +1503,33 @@ impl Parser {
                 span: start.to(self.prev_span()),
             });
         }
+        // LinearTypes: `a %m -> b`, `a ⊸ b`.
+        if self.at_varsym("⊸") {
+            self.bump();
+            let r = self.ty()?;
+            return Ok(Type {
+                kind: TypeKind::MulFun(Multiplicity::One, Box::new(t), Box::new(r)),
+                span: start.to(self.prev_span()),
+            });
+        }
+        if self.at_varsym("%") {
+            self.bump();
+            let m = match self.cur() {
+                Tok::Int(1) => Multiplicity::One,
+                Tok::Int(0) => Multiplicity::Zero,
+                Tok::ConId(_, ref n) if n == "One" => Multiplicity::One,
+                Tok::ConId(_, ref n) if n == "Many" => Multiplicity::Many,
+                Tok::VarId(None, ref v) => Multiplicity::Var(v.clone()),
+                _ => return self.expected("a multiplicity (`1`, `0`, `Many` or a variable)"),
+            };
+            self.bump();
+            self.expect(&Tok::RArrow)?;
+            let r = self.ty()?;
+            return Ok(Type {
+                kind: TypeKind::MulFun(m, Box::new(t), Box::new(r)),
+                span: start.to(self.prev_span()),
+            });
+        }
         Ok(t)
     }
 

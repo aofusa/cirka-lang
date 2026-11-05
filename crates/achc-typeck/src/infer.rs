@@ -155,6 +155,11 @@ pub struct Tc {
     /// Type variables in scope (ScopedTypeVariables): those bound by an
     /// explicit `forall` of the signatures of the enclosing bindings.
     scoped: Vec<(String, Ty)>,
+    /// LinearTypes: the multiplicity of the arrow each argument (by the
+    /// span of the argument expression) is passed to, and of the arrow each
+    /// parameter pattern (by its span) is bound by, when it is not `Many`.
+    pub(crate) lin_args: HashMap<Span, Ty>,
+    pub(crate) lin_pats: HashMap<Span, Ty>,
     /// Top-level value names of all modules (for deriving helpers).
     pub(crate) top_names: HashSet<String>,
     /// Source files and their modules, for the call stack of `error`
@@ -191,6 +196,8 @@ impl Tc {
             con_fixity: HashMap::new(),
             gnd_pending: Vec::new(),
             scoped: Vec::new(),
+            lin_args: HashMap::new(),
+            lin_pats: HashMap::new(),
             top_names: HashSet::new(),
             sources: None,
         };
@@ -413,6 +420,16 @@ impl Tc {
                 self.unify_raw(a1, a2)?;
                 self.unify_raw(b1, b2)
             }
+            // `a -> b` is `FUN Many a b`.
+            (Ty::Fun(a1, b1), t @ Ty::App(..)) | (t @ Ty::App(..), Ty::Fun(a1, b1))
+                if as_mul_fun(t).is_some() =>
+            {
+                let (m, a2, b2) = as_mul_fun(t).unwrap();
+                let (m, a2, b2) = (m.clone(), a2.clone(), b2.clone());
+                self.unify_raw(&m, &mult_many())?;
+                self.unify_raw(a1, &a2)?;
+                self.unify_raw(b1, &b2)
+            }
             // `m a ~ (r -> a)` with `m := (->) r`.
             (Ty::App(f, x), Ty::Fun(a1, b1)) | (Ty::Fun(a1, b1), Ty::App(f, x)) => {
                 let arrow = Ty::App(Box::new(Ty::Con(prim("->"))), a1.clone());
@@ -426,6 +443,18 @@ impl Tc {
 
     /// Unifies `expected` with `actual`, reporting at `span`.
     pub fn unify(&mut self, span: Span, expected: &Ty, actual: &Ty) -> bool {
+        // A linear (or `%0`) function can be used where an unrestricted one
+        // is expected (not under other type constructors: variance).
+        if let Ty::Fun(ea, eb) = self.shallow(expected)
+            && let a = self.shallow(actual)
+            && let Some((m, aa, ab)) = as_mul_fun(&a)
+            && matches!(self.shallow(m), Ty::Con(c) if is_mult_con(&c))
+        {
+            let (aa, ab) = (aa.clone(), ab.clone());
+            if self.unify_raw(&ea, &aa).is_ok() && self.unify_raw(&eb, &ab).is_ok() {
+                return true;
+            }
+        }
         match self.unify_raw(expected, actual) {
             Ok(()) => true,
             Err(e) => {
@@ -596,6 +625,23 @@ impl Tc {
                 self.ast_ty(b, tvs, bind_new)
             }
             TypeKind::Kinded(b, _) => self.ast_ty(b, tvs, bind_new),
+            TypeKind::MulFun(m, a, b) => {
+                let m = match m {
+                    ast::Multiplicity::One => mult_one(),
+                    ast::Multiplicity::Zero => mult_zero(),
+                    ast::Multiplicity::Many => mult_many(),
+                    ast::Multiplicity::Var(v) => {
+                        let vt = ast::Type {
+                            kind: TypeKind::Var(v.clone()),
+                            span: t.span,
+                        };
+                        self.ast_ty(&vt, tvs, bind_new)
+                    }
+                };
+                let a = self.ast_ty(a, tvs, bind_new);
+                let b = self.ast_ty(b, tvs, bind_new);
+                mul_fun(m, a, b)
+            }
             TypeKind::Forall(vs, b) => {
                 // A nested `forall` (RankNTypes): a polymorphic argument
                 // or field.
@@ -1375,8 +1421,16 @@ impl Tc {
         // Split the expected type into argument and result types.
         let mut args = Vec::new();
         let mut res = ty.clone();
+        let mut mults = Vec::new();
         for _ in 0..arity {
             let r = self.shallow(&res);
+            if let Some((m, a, b)) = as_mul_fun(&r) {
+                mults.push(Some(m.clone()));
+                args.push(a.clone());
+                res = b.clone();
+                continue;
+            }
+            mults.push(None);
             match r {
                 Ty::Fun(a, b) => {
                     args.push(*a);
@@ -1408,6 +1462,11 @@ impl Tc {
         let mut tclauses = Vec::new();
         for c in clauses {
             if let Decl::Fun(_, ps, rhs, sp) = c {
+                for (p, m) in ps.iter().zip(&mults) {
+                    if let Some(m) = m {
+                        self.lin_pats.insert(p.span, m.clone());
+                    }
+                }
                 let pats = ps.iter().zip(&args).map(|(p, t)| self.pat(p, t)).collect();
                 let rhs = self.rhs(rhs, &res);
                 tclauses.push(Clause {
@@ -1704,6 +1763,13 @@ impl Tc {
             ExprKind::App(f, a) => {
                 let (tf, ft) = self.infer(f, None);
                 let ft = self.shallow(&ft);
+                if let Some((m, at, rt)) = as_mul_fun(&ft) {
+                    self.lin_args.insert(a.span, m.clone());
+                    let (at, rt) = (at.clone(), rt.clone());
+                    let at = self.con_arg_ty(a, at);
+                    let ta = self.expr(a, &at);
+                    return (tast::Expr::App(Box::new(tf), Box::new(ta)), rt);
+                }
                 let (at, rt) = match ft {
                     Ty::Fun(a, r) => (*a, *r),
                     other => {
@@ -1715,12 +1781,43 @@ impl Tc {
                         (a, r)
                     }
                 };
+                let at = self.con_arg_ty(a, at);
                 let ta = self.expr(a, &at);
                 (tast::Expr::App(Box::new(tf), Box::new(ta)), rt)
             }
             ExprKind::Lam(ps, body) => {
-                let tys: Vec<Ty> = ps.iter().map(|_| self.fresh()).collect();
-                let res = self.fresh();
+                // Parameter types and multiplicities from the expected type.
+                let mut tys: Vec<Ty> = Vec::new();
+                let mut mults: Vec<Ty> = Vec::new();
+                let mut cur = expected.map(|t| self.shallow(t));
+                for p in ps {
+                    match cur.as_ref().map(|t| (as_mul_fun(t), t)) {
+                        Some((Some((m, a, b)), _)) => {
+                            let (m, a, b) = (self.shallow(m), a.clone(), self.shallow(b));
+                            if m != mult_many() {
+                                self.lin_pats.insert(p.span, m.clone());
+                            }
+                            mults.push(m);
+                            tys.push(a);
+                            cur = Some(b);
+                        }
+                        Some((None, Ty::Fun(a, b))) => {
+                            let (a, b) = ((**a).clone(), self.shallow(b));
+                            mults.push(mult_many());
+                            tys.push(a);
+                            cur = Some(b);
+                        }
+                        _ => {
+                            mults.push(mult_many());
+                            tys.push(self.fresh());
+                            cur = None;
+                        }
+                    }
+                }
+                let res = match cur {
+                    Some(t) if tys.len() == ps.len() => t,
+                    _ => self.fresh(),
+                };
                 let simple: Option<Vec<String>> = ps
                     .iter()
                     .map(|p| match &p.kind {
@@ -1764,7 +1861,12 @@ impl Tc {
                     }
                     e
                 };
-                (te, Ty::funs(tys, res))
+                let ty = tys
+                    .into_iter()
+                    .zip(mults)
+                    .rev()
+                    .fold(res, |r, (a, m)| mul_fun(m, a, r));
+                (te, ty)
             }
             ExprKind::Let(ds, body) => {
                 let gs = self.local_decls(ds);
@@ -1820,18 +1922,29 @@ impl Tc {
             }
             ExprKind::LamCase(alts) => {
                 let st = self.fresh();
+                let mut mult = mult_many();
                 let res = expected
-                    .and_then(|t| match self.shallow(t) {
-                        Ty::Fun(_, r) => Some(*r),
-                        _ => None,
+                    .and_then(|t| {
+                        let t = self.shallow(t);
+                        if let Some((m, _, r)) = as_mul_fun(&t) {
+                            mult = m.clone();
+                            return Some(r.clone());
+                        }
+                        match t {
+                            Ty::Fun(_, r) => Some(*r),
+                            _ => None,
+                        }
                     })
                     .unwrap_or_else(|| self.fresh());
+                if mult != mult_many() {
+                    self.lin_pats.insert(sp, mult.clone());
+                }
                 let clauses = self.alts(alts, &st, &res);
                 let v = self.fresh_name("$c");
                 let m = tast::Expr::Match(vec![(v.clone(), st.clone())], clauses, res.clone());
                 (
                     tast::Expr::Lam(v, st.clone(), Box::new(m)),
-                    Ty::fun(st, res),
+                    mul_fun(mult, st, res),
                 )
             }
             ExprKind::Do(ss) => self.do_stmts(ss, sp),
@@ -1933,6 +2046,31 @@ impl Tc {
                 let t = self.fresh();
                 (tast::Expr::Error("error".into(), t.clone()), t)
             }
+        }
+    }
+
+    /// LinearTypes: data constructors are linear functions. An argument
+    /// headed by a constructor is checked against the expected type with
+    /// its linear arrows made unrestricted (the multiplicity is erased and
+    /// the linearity checker treats constructor fields as linear).
+    fn con_arg_ty(&self, a: &ast::Expr, t: Ty) -> Ty {
+        fn con_headed(e: &ast::Expr) -> bool {
+            match &e.kind {
+                ExprKind::Con(_) => true,
+                ExprKind::App(f, _) | ExprKind::Paren(f) => con_headed(f),
+                _ => false,
+            }
+        }
+        if !con_headed(a) {
+            return t;
+        }
+        let t = self.shallow(&t);
+        match as_mul_fun(&t) {
+            Some((_, x, r)) => {
+                let r = self.con_arg_ty(a, r.clone());
+                Ty::fun(x.clone(), r)
+            }
+            None => t,
         }
     }
 

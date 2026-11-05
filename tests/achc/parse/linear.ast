@@ -1,0 +1,15 @@
+(module Linear
+  (language LinearTypes)
+  (sig (f) (-> %1 a (-> %0 b a)))
+  (fun f (x _)
+    x
+  )
+  (sig (g) (-> (-> %m a b) (-> %m a (-> %Many b (tuple b b)))))
+  (fun g (h x y)
+    (tuple (h x) y)
+  )
+  (sig (k) (-> %1 a a))
+  (fun k (x)
+    x
+  )
+)

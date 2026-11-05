@@ -1,0 +1,66 @@
+error[E0303]: linear variable `x` is used more than once
+ --> tests/achc/typeck/fail/linear.hs:6:10
+  |
+6 | dup x = (x, x)
+  |     - bound linearly here
+  |          ^ first use
+  |             - second use
+  = note: a value passed to an unrestricted argument (`a -> b`) may be used many times
+error[E0302]: linear value is not consumed
+ --> tests/achc/typeck/fail/linear.hs:9:7
+  |
+9 | drop1 _ = ()
+  |       ^ a wildcard discards a value bound linearly
+  = note: match it with a variable and consume it, or use `consume`
+error[E0302]: linear variable `y` is not consumed
+  --> tests/achc/typeck/fail/linear.hs:12:10
+   |
+12 | unused x y = x
+   |          ^ bound linearly here
+   = note: a linear value must be used exactly once
+error[E0303]: linear variable `n` is used more than once
+  --> tests/achc/typeck/fail/linear.hs:15:28
+   |
+15 | viaUnrestricted n = negate n
+   |                 - bound linearly here
+   |                            ^ used here, in a position that may run more than once
+   = note: a value passed to an unrestricted argument (`a -> b`) may be used many times
+error[E0302]: linear variable `x` is not consumed on every path
+  --> tests/achc/typeck/fail/linear.hs:18:12
+   |
+18 | branches b x y = if b then x else y
+   |            ^ bound linearly here
+   = note: every branch must use a linear value exactly once
+error[E0302]: linear variable `y` is not consumed on every path
+  --> tests/achc/typeck/fail/linear.hs:18:14
+   |
+18 | branches b x y = if b then x else y
+   |              ^ bound linearly here
+   = note: every branch must use a linear value exactly once
+error[E0303]: linear variable `v` is used more than once
+  --> tests/achc/typeck/fail/linear.hs:21:19
+   |
+21 | inLambda = \v -> (v, v)
+   |             - bound linearly here
+   |                   ^ first use
+   |                      - second use
+   = note: a value passed to an unrestricted argument (`a -> b`) may be used many times
+error[E0302]: linear value is not consumed
+  --> tests/achc/typeck/fail/linear.hs:25:7
+   |
+25 |   (a, _) -> a
+   |       ^ a wildcard discards a value bound linearly
+   = note: match it with a variable and consume it, or use `consume`
+error[E0303]: `x` has multiplicity 0 but is used at run time
+  --> tests/achc/typeck/fail/linear.hs:28:12
+   |
+28 | erased x = x
+   |        ^ bound with multiplicity 0 here
+   |            ^ used here
+error[E0303]: linear variable `x` is used more than once
+  --> tests/achc/typeck/fail/linear.hs:31:22
+   |
+31 | letTwice x = let y = x in (y, y)
+   |          - bound linearly here
+   |                      ^ used here, in a position that may run more than once
+   = note: a value passed to an unrestricted argument (`a -> b`) may be used many times

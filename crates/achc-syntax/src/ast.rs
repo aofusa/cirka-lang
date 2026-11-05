@@ -214,6 +214,21 @@ pub enum TypeKind {
     Forall(Vec<Ident>, Box<Type>),
     /// `(t :: k)` (KindSignatures).
     Kinded(Box<Type>, KindSig),
+    /// `a %m -> b` / `a ⊸ b` (LinearTypes).
+    MulFun(Multiplicity, Box<Type>, Box<Type>),
+}
+
+/// The multiplicity of an arrow (LinearTypes).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Multiplicity {
+    /// `%0` (aCHC: an argument that is not used).
+    Zero,
+    /// `%1`, `%One`, `⊸`.
+    One,
+    /// `%Many` (the same as `->`).
+    Many,
+    /// `%m`: multiplicity polymorphism.
+    Var(String),
 }
 
 /// A kind written in the source (KindSignatures): `*` / `Type` and arrows.

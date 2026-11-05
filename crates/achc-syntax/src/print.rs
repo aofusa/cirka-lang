@@ -89,6 +89,15 @@ pub fn ty(t: &Type) -> String {
             format!("(forall ({}) {})", v.join(" "), ty(b))
         }
         TypeKind::Kinded(t, k) => format!("(:: {} {})", ty(t), kind(k)),
+        TypeKind::MulFun(m, a, b) => {
+            let m = match m {
+                Multiplicity::Zero => "0".to_string(),
+                Multiplicity::One => "1".to_string(),
+                Multiplicity::Many => "Many".to_string(),
+                Multiplicity::Var(v) => v.clone(),
+            };
+            format!("(-> %{m} {} {})", ty(a), ty(b))
+        }
     }
 }
 

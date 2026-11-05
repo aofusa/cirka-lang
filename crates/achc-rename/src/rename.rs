@@ -1266,6 +1266,9 @@ impl Renamer {
             ),
             TypeKind::Forall(vs, b) => TypeKind::Forall(vs.clone(), Box::new(self.ty(b))),
             TypeKind::Kinded(b, k) => TypeKind::Kinded(Box::new(self.ty(b)), k.clone()),
+            TypeKind::MulFun(m, a, b) => {
+                TypeKind::MulFun(m.clone(), Box::new(self.ty(a)), Box::new(self.ty(b)))
+            }
         };
         Type { kind, span: t.span }
     }

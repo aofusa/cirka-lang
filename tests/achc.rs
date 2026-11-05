@@ -271,7 +271,14 @@ fn run_programs(suite: &str, sub: &str, default_levels: &[u8]) {
             .map(|s| s.trim().parse().unwrap())
             .unwrap_or(0);
         let want_err = std::fs::read_to_string(c.sibling("stderr")).ok();
-        if let Some(r) = cirka_testkit::ghc_reference(&c.path, Some(&stdin), &[]) {
+        // `-- ghc: skip` in the header: the program uses aCHC extensions
+        // beyond GHC (e.g. inferred let multiplicities, FEAT-0120).
+        let ghc_skip = std::fs::read_to_string(&c.path)
+            .unwrap_or_default()
+            .lines()
+            .take(5)
+            .any(|l| l.trim() == "-- ghc: skip");
+        if !ghc_skip && let Some(r) = cirka_testkit::ghc_reference(&c.path, Some(&stdin), &[]) {
             match r {
                 Ok(g) => {
                     let want = std::fs::read_to_string(c.sibling("stdout")).unwrap_or_default();

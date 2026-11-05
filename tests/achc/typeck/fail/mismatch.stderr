@@ -1,4 +1,4 @@
-error[E0601]: couldn't match expected type `[t29]` with actual type `Int`
+error[E0601]: couldn't match expected type `[t27]` with actual type `Int`
  --> tests/achc/typeck/fail/mismatch.hs:4:7
   |
 4 | f x = x ++ [1]

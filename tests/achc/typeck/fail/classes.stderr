@@ -4,13 +4,13 @@ error[E0608]: no instance for `Describe Char`
 13 | noInstance = describe 'c'
    |              ^^^^^^^^
    = help: declare an instance, or derive it with a `deriving` clause
-error[E0609]: ambiguous type variable in the constraint `Describe t31`
+error[E0609]: ambiguous type variable in the constraint `Describe t29`
   --> tests/achc/typeck/fail/classes.hs:16:13
    |
 16 | ambiguous = describe def
    |             ^^^^^^^^
    = help: add a type annotation that fixes the type (e.g. `:: Int`)
-error[E0609]: ambiguous type variable in the constraint `Default t31`
+error[E0609]: ambiguous type variable in the constraint `Default t29`
   --> tests/achc/typeck/fail/classes.hs:16:22
    |
 16 | ambiguous = describe def
