@@ -178,3 +178,22 @@ FEAT-0043 で image に `time` を追加した)。下限を超えたものだけ
 ### 次の作業
 
 FEAT-0056 (値渡しの引数・局所関数の unboxing)、BUG-0011、`UElem` の特殊化、CirkaLang v0.0.2 の配列 (FEAT-0211) の後に再計測する。
+
+## 評価済みの引数の unboxing と局所ループの特殊化 (FEAT-0056)
+
+`/usr/bin/time` による 1 回の計測 (アイドル状態のホスト、変更前と変更後のバイナリを交互に実行)。上の節とは計測方法が違うので、比較は同じ表の中で行う。
+
+| 実装 | 引数 | 変更前 | 変更後 | Rust (FEAT-0043 の表) |
+|------|-----:|------:|------:|------:|
+| CirkaLang mandelbrot | 1000 | 1.99 s | **0.15 s** | 0.12 s |
+| CirkaLang spectral-norm | 1000 | 2.58 s | **0.75 s** | 0.20 s |
+| CirkaLang n-body | 1,000,000 | 2.90 s | **1.12 s** | (5,000,000 で 0.66 s) |
+| aCHC spectral-norm `plain.hs` | 1000 | 1.79 s | **0.45 s** | 0.20 s |
+| aCHC array-sort `own.chs` | 1,000,000 | 1.17 s | **0.54 s** | 0.12 s |
+| aCHC n-body `own.chs` | 1,000,000 | 0.71 s | **0.45 s** | |
+| aCHC mandelbrot `plain.hs` | 1000 | 2.64 s | 2.45 s | 0.12 s |
+
+- CirkaLang の mandelbrot は Rust の約 1.3 倍になり、この題材では G3 (1.5 倍以内) に届いた。内側のループの確保は n=200 で 413 万回 → 5.6 万回。
+- aCHC の mandelbrot `plain.hs` は局所ループが持ち上げ・特殊化されるようになったが、`go` の引数が失敗しうる遅延束縛 (`read` した引数) に依存するので
+  サンクが残る (Haskell の意味から来る制約)。
+- 次回の `scripts/bench.sh` による計測で上の表を更新する。

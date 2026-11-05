@@ -264,6 +264,62 @@ fn opt_worker_wrapper_unboxes_strict_loops() {
 }
 
 #[test]
+fn opt_worker_wrapper_unboxes_parameters_passed_evaluated() {
+    // `loop` returns `acc` without using `step` when `n` is 0, so it is not
+    // strict in `step`; but every call passes `step` evaluated (a
+    // constructor, or `step` itself), so `step` is unboxed as well
+    // (FEAT-0056).
+    let src = format!(
+        "{STRICT_INT}(def loop (-> Int# Int Int Int)
+           (lam ((n Int#) (step Int) (acc Int))
+             (case n (k Int#) Int
+               (0 acc)
+               (_ (case step (s Int) Int
+                 ((I# d) (case acc (t Int) Int
+                   ((I# a) (loop (prim sub n 1) step (con I# () (prim add a d)))))))))))
+         (extern arg () Int#)
+         (def main Int#
+           (let! (x Int# (extern arg))
+             (case (loop x (con I# () x) (con I# () 0)) (r Int) Int# ((I# v) v))))"
+    );
+    let mut p = parse_program(FileId(0), &src).unwrap();
+    let st = opt::optimize_with_stats(&mut p).unwrap();
+    assert!(lint::lint_program(&p).is_empty(), "{}", print_program(&p));
+    assert_eq!(st.worker_wrapper, 1, "{st:?}");
+    let w = p.bind("loop$w").expect("worker");
+    assert_eq!(w.ty.to_string(), "(-> Int# (-> Int# (-> Int# Int#)))");
+    assert!(!print::print_expr(&w.expr).contains("I#"));
+}
+
+#[test]
+fn worker_wrapper_keeps_lazy_parameters_passed_unevaluated() {
+    // A caller passes a lazily bound, possibly failing value for the
+    // non-strict `step`: evaluating it before the call could fail, so
+    // `step` stays boxed.
+    let src = format!(
+        "{STRICT_INT}(def loop (-> Int# Int Int Int)
+           (lam ((n Int#) (step Int) (acc Int))
+             (case n (k Int#) Int
+               (0 acc)
+               (_ (case step (s Int) Int
+                 ((I# d) (case acc (t Int) Int
+                   ((I# a) (loop (prim sub n 1) step (con I# () (prim add a d)))))))))))
+         (extern arg () Int#)
+         (def main Int#
+           (let! (x Int# (extern arg))
+             (let ((bad Int (case x (k Int#) Int (0 (panic \"zero\" Int)) (_ (con I# () x)))))
+               (case (loop x bad (con I# () 0)) (r Int) Int# ((I# v) v)))))"
+    );
+    let mut p = parse_program(FileId(0), &src).unwrap();
+    let ev = crate::ww::evaluated_params(&p);
+    assert_eq!(ev["loop"], vec![true, false, true]);
+    opt::optimize(&mut p).unwrap();
+    assert!(lint::lint_program(&p).is_empty(), "{}", print_program(&p));
+    let w = p.bind("loop$w").expect("worker");
+    assert_eq!(w.ty.to_string(), "(-> Int# (-> Int (-> Int# Int#)))");
+}
+
+#[test]
 fn opt_unpacks_strict_boxed_fields() {
     let src = format!(
         "{STRICT_INT}(data V () (V (! Int) (! Int)) (W Int))
@@ -384,6 +440,45 @@ fn opt_specializes_constant_dictionaries() {
         .binds
         .iter()
         .find(|b| b.name.starts_with("double$s") && b.name.ends_with("$w"))
+        .unwrap_or_else(|| panic!("{all}"));
+    let s = print::print_expr(&spec.expr);
+    assert!(!s.contains("dAddInt") && !s.contains("I#"), "{s}");
+}
+
+#[test]
+fn opt_specializes_lifted_overloaded_local_loops() {
+    // An overloaded local loop capturing `k`, called with a constant
+    // dictionary from a second local function: lifting the outer group
+    // first keeps the calls saturated, the lifted function takes its
+    // dictionary first, and specialization makes it monomorphic.
+    let src = format!(
+        "{STRICT_INT}(data Add (a) (Add$Dict (-> a a a)))
+         (def plusInt (-> Int Int Int)
+           (lam ((x Int) (y Int))
+             (case x (s Int) Int ((I# a) (case y (t Int) Int ((I# b) (con I# () (prim add a b))))))))
+         (def dAddInt (Add Int) (con Add$Dict (Int) plusInt))
+         (extern arg () Int#)
+         (def main Int#
+           (let! (k Int# (extern arg))
+             (letrec ((go (forall (a) (-> (Add a) Int# a a))
+                        (tlam (a) (lam ((d (Add a)) (n Int#) (x a))
+                          (case (prim lt n k) (c Int#) a
+                            (0 x)
+                            (_ (case d (s (Add a)) a
+                              ((Add$Dict op) ((@ go a) d (prim add n 1) (op x x))))))))))
+               (letrec ((run (-> Int# Int)
+                          (lam ((m Int#)) ((@ go Int) dAddInt m (con I# () 1)))))
+                 (case (run 0) (r Int) Int# ((I# v) v))))))"
+    );
+    let mut p = parse_program(FileId(0), &src).unwrap();
+    let st = opt::optimize_with_stats(&mut p).unwrap();
+    assert!(lint::lint_program(&p).is_empty(), "{}", print_program(&p));
+    assert!(st.lifted >= 1 && st.specialized >= 1, "{st:?}");
+    let all = print_program(&p);
+    let spec = p
+        .binds
+        .iter()
+        .find(|b| b.name.starts_with("main$go$s") && b.name.ends_with("$w"))
         .unwrap_or_else(|| panic!("{all}"));
     let s = print::print_expr(&spec.expr);
     assert!(!s.contains("dAddInt") && !s.contains("I#"), "{s}");

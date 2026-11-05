@@ -21,6 +21,12 @@
 //! where `⟦body⟧` replaces each return `K e` by `e` (and calls of `f`
 //! itself in return position by calls of the worker). The strictness
 //! analysis is a greatest fixed point over all top-level functions.
+//!
+//! A parameter in which `f` is not strict is unboxed too when every call
+//! of `f` passes a value whose evaluation is free of effects and failure
+//! (FEAT-0056, [`evaluated_params`]): evaluating it before the call then
+//! cannot change the meaning either. This covers call-by-value frontends
+//! (CirkaLang) and loops whose accumulators are only used on some paths.
 
 use crate::expr::*;
 use crate::ty::*;
@@ -208,6 +214,215 @@ pub(crate) fn strictness(p: &Program) -> HashMap<String, (usize, Vec<bool>)> {
     }
 }
 
+/// Primitive operations without effects that cannot fail.
+fn total_prim(op: PrimOp) -> bool {
+    use PrimOp::*;
+    matches!(
+        op,
+        Add | Sub
+            | Mul
+            | Neg
+            | And
+            | Or
+            | Xor
+            | Eq
+            | Ne
+            | Lt
+            | Le
+            | Gt
+            | Ge
+            | FAdd
+            | FSub
+            | FMul
+            | FDiv
+            | FNeg
+            | FEq
+            | FLt
+            | FLe
+            | IntToDouble
+            | BytesLen
+            | ArrayLen
+    )
+}
+
+/// Size bound of an argument evaluated early (it may be work the callee
+/// does not need).
+const SPEC_SIZE: usize = 24;
+
+/// Whether evaluating `e` (to WHNF) now is cheap and certainly terminates
+/// without effects or failure, given the variables `ev` already evaluated.
+fn speculatable(e: &Expr, ev: &HashSet<u32>, size: &mut usize) -> bool {
+    *size += 1;
+    if *size > SPEC_SIZE {
+        return false;
+    }
+    match e {
+        Expr::Lit(_) | Expr::Lam(..) | Expr::TyLam(..) | Expr::Con(..) => true,
+        Expr::Var(x) => ev.contains(&x.id),
+        Expr::Cast(e, _) => speculatable(e, ev, size),
+        Expr::Prim(op, _, args) => {
+            total_prim(*op) && args.iter().all(|a| speculatable(a, ev, size))
+        }
+        Expr::LetStrict(b, rhs, body) => {
+            if !speculatable(rhs, ev, size) {
+                return false;
+            }
+            let mut ev = ev.clone();
+            ev.insert(b.id.id);
+            speculatable(body, &ev, size)
+        }
+        Expr::Let(Bind::NonRec(_, rhs), body) => rhs.is_value() && speculatable(body, ev, size),
+        Expr::Case(scrut, b, _, alts) => {
+            if !speculatable(scrut, ev, size) {
+                return false;
+            }
+            let mut ev = ev.clone();
+            ev.insert(b.id.id);
+            alts.iter().all(|a| speculatable(&a.rhs, &ev, size))
+        }
+        _ => false,
+    }
+}
+
+/// For every top-level function, the parameters that are certainly values
+/// (or safely evaluable) at every call: the greatest fixed point over the
+/// saturated calls. A function used other than by a saturated call (passed
+/// as a value, partially applied) gets none.
+pub(crate) fn evaluated_params(p: &Program) -> HashMap<String, Vec<bool>> {
+    let mut arity: HashMap<&str, usize> = HashMap::new();
+    for b in &p.binds {
+        let (_, xs, _) = split_fun(&b.expr);
+        if !xs.is_empty() {
+            arity.insert(&b.name, xs.len());
+        }
+    }
+    let mut ev: HashMap<String, Vec<bool>> = arity
+        .iter()
+        .map(|(n, k)| (n.to_string(), vec![true; *k]))
+        .collect();
+    loop {
+        let mut changed = false;
+        for b in &p.binds {
+            let (_, xs, body) = split_fun(&b.expr);
+            let mut env = HashSet::new();
+            if let Some(e) = ev.get(&b.name) {
+                for (x, ok) in xs.iter().zip(e) {
+                    if *ok {
+                        env.insert(x.id.id);
+                    }
+                }
+            }
+            let mut w = CallWalk {
+                arity: &arity,
+                ev: &mut ev,
+                changed: false,
+            };
+            w.expr(if xs.is_empty() { &b.expr } else { body }, &env);
+            changed |= w.changed;
+        }
+        if !changed {
+            return ev;
+        }
+    }
+}
+
+struct CallWalk<'a> {
+    arity: &'a HashMap<&'a str, usize>,
+    ev: &'a mut HashMap<String, Vec<bool>>,
+    changed: bool,
+}
+
+impl CallWalk<'_> {
+    fn clear(&mut self, f: &str, from: usize) {
+        if let Some(e) = self.ev.get_mut(f) {
+            for x in e.iter_mut().skip(from) {
+                if *x {
+                    *x = false;
+                    self.changed = true;
+                }
+            }
+        }
+    }
+
+    fn expr(&mut self, e: &Expr, env: &HashSet<u32>) {
+        match e {
+            Expr::Global(g) => self.clear(g, 0),
+            Expr::App(..) => {
+                let (h, args) = e.collect_args();
+                let mut head = h;
+                while let Expr::TyApp(x, _) = head {
+                    head = x;
+                }
+                match head {
+                    Expr::Global(g)
+                        if self.arity.get(g.as_str()).is_some_and(|&k| args.len() >= k) =>
+                    {
+                        let k = self.arity[g.as_str()];
+                        for (i, a) in args.iter().take(k).enumerate() {
+                            let ok = match a {
+                                Expr::Var(x) => env.contains(&x.id),
+                                _ => speculatable(a, env, &mut 0),
+                            };
+                            if !ok
+                                && let Some(v) = self.ev.get_mut(g.as_str())
+                                && v[i]
+                            {
+                                v[i] = false;
+                                self.changed = true;
+                            }
+                        }
+                    }
+                    _ => self.expr(head, env),
+                }
+                for a in args {
+                    self.expr(a, env);
+                }
+            }
+            Expr::TyApp(f, _) | Expr::Cast(f, _) | Expr::TyLam(_, _, f) => self.expr(f, env),
+            Expr::Lam(_, b) => self.expr(b, env),
+            Expr::Con(_, _, args) | Expr::Prim(_, _, args) | Expr::Extern(_, args) => {
+                for a in args {
+                    self.expr(a, env);
+                }
+            }
+            Expr::Let(bind, body) => match bind {
+                Bind::NonRec(b, rhs) => {
+                    self.expr(rhs, env);
+                    // A constructor or literal bound lazily is no thunk.
+                    if matches!(&**rhs, Expr::Con(..) | Expr::Lit(_)) {
+                        let mut env = env.clone();
+                        env.insert(b.id.id);
+                        self.expr(body, &env);
+                    } else {
+                        self.expr(body, env);
+                    }
+                }
+                Bind::Rec(bs) => {
+                    for (_, rhs) in bs {
+                        self.expr(rhs, env);
+                    }
+                    self.expr(body, env);
+                }
+            },
+            Expr::LetStrict(b, rhs, body) => {
+                self.expr(rhs, env);
+                let mut env = env.clone();
+                env.insert(b.id.id);
+                self.expr(body, &env);
+            }
+            Expr::Case(scrut, b, _, alts) => {
+                self.expr(scrut, env);
+                let mut env = env.clone();
+                env.insert(b.id.id);
+                for a in alts {
+                    self.expr(&a.rhs, &env);
+                }
+            }
+            Expr::Var(_) | Expr::Lit(_) | Expr::Panic(..) => {}
+        }
+    }
+}
+
 /// The constructor and field type of a box type.
 pub(crate) fn box_of(p: &Program, t: &Type) -> Option<(String, Type)> {
     let Type::Con(d, args) = t else { return None };
@@ -266,6 +481,7 @@ struct Plan {
 /// Returns the number of functions split.
 pub fn worker_wrapper(p: &mut Program, next: &mut u32) -> usize {
     let strict = strictness(p);
+    let evaluated = evaluated_params(p);
     let mut plans = Vec::new();
     for b in &p.binds {
         if b.name == "main" || b.name.ends_with("$w") {
@@ -278,10 +494,18 @@ pub fn worker_wrapper(p: &mut Program, next: &mut u32) -> usize {
         let Some((_, st)) = strict.get(&b.name) else {
             continue;
         };
+        let ev = evaluated.get(&b.name);
         let unbox: Vec<Option<(String, Type)>> = xs
             .iter()
             .zip(st)
-            .map(|(x, s)| if *s { box_of(p, &x.ty) } else { None })
+            .enumerate()
+            .map(|(i, (x, s))| {
+                if *s || ev.is_some_and(|e| e[i]) {
+                    box_of(p, &x.ty)
+                } else {
+                    None
+                }
+            })
             .collect();
         // The result type after the parameters.
         // The signature's type variables are those of the `Λ`s (which

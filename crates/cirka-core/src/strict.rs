@@ -19,7 +19,7 @@
 //! reported may change.
 
 use crate::expr::*;
-use crate::opt::{free_vars, freshen, map_children, replace_var, walk};
+use crate::opt::{free_vars, freshen, map_children, walk};
 use crate::ty::*;
 use crate::ww::{Analysis, split_fun, strictness};
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -163,11 +163,19 @@ const MAX_LIFT_PARAMS: usize = 5;
 /// Returns the number of lifted functions.
 pub fn lambda_lift(p: &mut Program, next: &mut u32) -> usize {
     let mut names: HashSet<String> = p.binds.iter().map(|b| b.name.clone()).collect();
+    // Type class dictionaries (data types built by a `…$Dict` constructor).
+    let dict_types: HashSet<String> = p
+        .datas
+        .iter()
+        .filter(|d| d.ctors.len() == 1 && d.ctors[0].name.ends_with("$Dict"))
+        .map(|d| d.name.clone())
+        .collect();
     let mut lifted = 0;
     let mut i = 0;
     while i < p.binds.len() {
         let e = p.binds[i].expr.clone();
         let mut l = Lifter {
+            dict_types: &dict_types,
             tys: binder_types(&e),
             scope: Vec::new(),
             owner: p.binds[i].name.clone(),
@@ -195,7 +203,11 @@ pub fn lambda_lift(p: &mut Program, next: &mut u32) -> usize {
     lifted
 }
 
+/// A `let(rec)` group and its body.
+type Group = (Vec<(Binder, Expr)>, Expr);
+
 struct Lifter<'a> {
+    dict_types: &'a HashSet<String>,
     tys: HashMap<u32, Binder>,
     /// Type variables bound by enclosing `Λ`s.
     scope: Vec<(TyVar, Kind)>,
@@ -213,30 +225,41 @@ impl Lifter<'_> {
                 self.scope.pop();
                 Expr::TyLam(v, k, Box::new(b))
             }
+            // The group is lifted before its body, so that local functions
+            // of the body calling it see a top-level function, not a free
+            // variable they would have to take as a parameter.
             Expr::Let(Bind::NonRec(b, r), body) => {
                 let r = self.expr(*r);
-                let body = self.expr(*body);
-                self.lift(vec![(b, r)], body, false)
+                self.lift(vec![(b, r)], *body, false)
             }
             Expr::Let(Bind::Rec(bs), body) => {
                 let bs = bs.into_iter().map(|(b, r)| (b, self.expr(r))).collect();
-                let body = self.expr(*body);
-                self.lift(bs, body, true)
+                self.lift(bs, *body, true)
             }
             e => map_children(e, &mut |c| self.expr(c)),
         }
     }
 
-    /// `let(rec) bs in body`, with the group lifted when possible.
+    /// `let(rec) bs in body`, with the group lifted when possible; the body
+    /// is processed afterwards.
     fn lift(&mut self, bs: Vec<(Binder, Expr)>, body: Expr, rec: bool) -> Expr {
-        let keep = |bs: Vec<(Binder, Expr)>, body: Expr| {
-            if rec {
-                Expr::Let(Bind::Rec(bs), Box::new(body))
-            } else {
-                let (b, r) = bs.into_iter().next().unwrap();
-                Expr::Let(Bind::NonRec(b, Box::new(r)), Box::new(body))
+        match self.try_lift(bs, body) {
+            Ok(body) => self.expr(body),
+            Err((bs, body)) => {
+                let body = self.expr(body);
+                if rec {
+                    Expr::Let(Bind::Rec(bs), Box::new(body))
+                } else {
+                    let (b, r) = bs.into_iter().next().unwrap();
+                    Expr::Let(Bind::NonRec(b, Box::new(r)), Box::new(body))
+                }
             }
-        };
+        }
+    }
+
+    /// The body with the group lifted, or the group and body unchanged.
+    fn try_lift(&mut self, bs: Vec<(Binder, Expr)>, body: Expr) -> Result<Expr, Group> {
+        let keep = |bs: Vec<(Binder, Expr)>, body: Expr| Err((bs, body));
         let mut arity = HashMap::new();
         for (b, r) in &bs {
             let (_, xs, _) = split_fun(r);
@@ -282,9 +305,42 @@ impl Lifter<'_> {
             .filter(|(v, _)| ftv.contains(v))
             .cloned()
             .collect();
-        // The call replacing each function of the group.
-        let mut calls = Vec::new();
-        for (b, _) in &bs {
+        // Each function's own type parameters and dictionary parameters
+        // come first in the lifted function
+        // (`Λouter. Λown. λdicts. λcaptured. λrest. body`), so that its
+        // calls keep the shape `f @τ̄ d… e…` the specializer looks for.
+        let mut owns = Vec::new();
+        for (b, r) in &bs {
+            let mut own = Vec::new();
+            let mut inner = r;
+            while let Expr::TyLam(v, k, x) = inner {
+                own.push((v.clone(), k.clone()));
+                inner = x;
+            }
+            let mut ity = b.ty.clone();
+            for (w, _) in &own {
+                match ity {
+                    Type::Forall(v, _, t) => ity = t.subst(&v, &Type::Var(w.clone())),
+                    _ => return keep(bs, body),
+                }
+            }
+            let mut dicts = Vec::new();
+            while let Expr::Lam(x, rest) = inner
+                && matches!(&x.ty, Type::Con(d, _) if self.dict_types.contains(d))
+            {
+                let Type::Fun(_, _, t) = ity else {
+                    return keep(bs, body);
+                };
+                dicts.push(x.clone());
+                ity = *t;
+                inner = rest;
+            }
+            owns.push((own, dicts, inner.clone(), ity));
+        }
+        // The head replacing each function of the group, and the number of
+        // its dictionary arguments.
+        let mut heads = Vec::new();
+        for ((b, _), (_, dicts, _, _)) in bs.iter().zip(&owns) {
             let mut name = format!("{}${}", self.owner, b.id.name);
             let mut k = 1;
             while self.names.contains(&name) {
@@ -292,36 +348,78 @@ impl Lifter<'_> {
                 name = format!("{}${}{k}", self.owner, b.id.name);
             }
             self.names.insert(name.clone());
-            let mut call = Expr::Global(name.clone());
-            for (v, _) in &tvs {
-                call = Expr::TyApp(Box::new(call), Type::Var(v.clone()));
-            }
-            for x in &params {
-                call = Expr::App(Box::new(call), Box::new(Expr::Var(x.id.clone())));
-            }
-            calls.push((b.id.id, name, call));
+            heads.push((b.id.id, name, dicts.len()));
         }
-        let subst = |mut e: Expr| {
-            for (x, _, c) in &calls {
-                e = replace_var(e, *x, c);
-            }
-            e
-        };
-        for ((b, r), (_, name, _)) in bs.iter().zip(&calls) {
-            let mut e = subst(r.clone());
-            let mut ty = b.ty.clone();
-            for x in params.iter().rev() {
+        let outer: Vec<Type> = tvs.iter().map(|(v, _)| Type::Var(v.clone())).collect();
+        let subst = |e: Expr| replace_heads(e, &heads, &outer, &params);
+        for ((own, dicts, inner, ity), (_, name, _)) in owns.into_iter().zip(&heads) {
+            let mut e = subst(inner);
+            let mut ty = ity;
+            for x in dicts.iter().chain(&params).rev() {
                 e = Expr::Lam(x.clone(), Box::new(e));
                 ty = Type::fun(Mult::Many, x.ty.clone(), ty);
             }
-            for (v, k) in tvs.iter().rev() {
+            for (v, k) in tvs.iter().chain(&own).rev() {
                 e = Expr::TyLam(v.clone(), k.clone(), Box::new(e));
                 ty = Type::Forall(v.clone(), k.clone(), Box::new(ty));
             }
             self.out.push((name.clone(), ty, e));
         }
-        subst(body)
+        Ok(subst(body))
     }
+}
+
+/// Replaces each call `x @τ̄ d… e…` of a lifted function `x` (heads: its
+/// id, global name and number of dictionary arguments) by
+/// `g @outer @τ̄ d… captured… e…`. The calls are saturated ([`saturated`]).
+fn replace_heads(
+    e: Expr,
+    heads: &[(u32, String, usize)],
+    outer: &[Type],
+    params: &[Binder],
+) -> Expr {
+    // The whole chain `x @τ̄ a…` is matched before recursing, so that `x`
+    // is never replaced apart from its type arguments.
+    let rec = |c: Expr| replace_heads(c, heads, outer, params);
+    let mut n = 0;
+    let mut g = &e;
+    while let Expr::App(f, _) = g {
+        n += 1;
+        g = f;
+    }
+    let mut ntys = 0;
+    while let Expr::TyApp(f, _) = g {
+        ntys += 1;
+        g = f;
+    }
+    let target = match g {
+        Expr::Var(x) => heads.iter().find(|(id, _, nd)| *id == x.id && n >= *nd),
+        _ => None,
+    };
+    let Some((_, name, nd)) = target else {
+        return map_children(e, &mut |c| rec(c));
+    };
+    let mut args = Vec::new();
+    let mut h = e;
+    while let Expr::App(f, a) = h {
+        args.push(rec(*a));
+        h = *f;
+    }
+    args.reverse();
+    let mut tys = Vec::new();
+    while let Expr::TyApp(f, t) = h {
+        tys.push(t);
+        h = *f;
+    }
+    tys.reverse();
+    debug_assert_eq!(tys.len(), ntys);
+    let mut call = Expr::Global(name.clone());
+    for t in outer.iter().cloned().chain(tys) {
+        call = Expr::TyApp(Box::new(call), t);
+    }
+    let rest = args.split_off(*nd);
+    let captured = params.iter().map(|x| Expr::Var(x.id.clone()));
+    Expr::app(call, args.into_iter().chain(captured).chain(rest))
 }
 
 /// Every occurrence in `e` of a function of `arity` is the head of a call

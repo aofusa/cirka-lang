@@ -95,7 +95,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0053](features/FEAT-0053-target-macos.md) | macOS ターゲットへの移植 | todo | P2 | 0052, 0045 |
 | [FEAT-0054](features/FEAT-0054-target-windows.md) | Windows ターゲットへの移植 | todo | P2 | 0052, 0045 |
 | [FEAT-0055](features/FEAT-0055-list-fusion.md) | リスト融合 (foldr/build) | todo | P2 | 0112 |
-| [FEAT-0056](features/FEAT-0056-ww-call-by-value-local.md) | worker/wrapper の拡張 (値渡しの引数・局所関数) | todo | P1 | 0041 |
+| [FEAT-0056](features/FEAT-0056-ww-call-by-value-local.md) | worker/wrapper の拡張 (値渡しの引数・局所関数) | done | P1 | 0041 |
 
 
 ## aCHC
