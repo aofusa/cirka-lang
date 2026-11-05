@@ -1,6 +1,6 @@
 # BUG-0011: Borrow モナドのループが線形な受け渡しより約 130 倍遅い
 
-- 状態: in-progress
+- 状態: done
 - 重大度: major
 - 発見箇所: FEAT-0043 (`bench/n-body/own.chs` の借用版)
 - 関連: FEAT-0124, FEAT-0123
@@ -54,9 +54,22 @@ achc build -O2 -o nb n-body-borrow.chs && time ./nb 200000
   入れ子の `cast` はまとめ、`cast` の下の `let` は外に出す。`case (cast x T)` は `x` が `T` の同じ型引数の既知コンストラクタなら解決する
 - [x] 回帰テスト: `tests/achc/run/h3/borrow_loop.hs` (`max-allocs`。修正前 870,118 → 修正後 660,106)、
   `cirka-core` の `opt_resolves_polymorphic_dictionary_under_type_application` / `opt_applies_through_casts`
-- [ ] 3: 状態トークンについての η 展開 (残り)
+- [x] 3: `io::io_arity` (06-ir.md §1.6、ADR-046): IO 的な型を返す関数 (トップレベルと局所 `letrec`) を、
+  状態トークンを取る worker `f$io` と常にインライン化される wrapper に分ける。簡約器には、アトムの適用を `case` の選択肢へ押し込む規則、
+  `cast` を `case` へ押し込む規則、1 回だけ使われるラムダをラムダの中へ移す規則、newtype の `case (cast x N)` の規則を加えた
+- [x] 回帰テストの上限を下げる (`borrow_loop.hs`: 修正後 60,103 回、`max-allocs: 100000`)、
+  `cirka-core` の `opt_gives_io_functions_the_state_token`
 
-計測 (n-body 借用版 2 万ステップ、`-O2`): 1.80 s → 1.27 s、確保 51.1M → 41.6M。線形な版 (100 万ステップで 0.45 s) との差はまだ大きく、
-残りは 3 による。
+計測 (n-body 借用版、`-O2`):
+
+| | 2 万ステップ | 20 万ステップ | 確保 (2 万ステップ) |
+|---|---|---|---|
+| 修正前 | 1.80 s | 28.6 s | 51.1M |
+| 1・2 の後 | 1.27 s | — | 41.6M |
+| 3 の後 | 0.11 s | 0.91 s | 3.8M |
+| 線形な版 | — | 0.13 s | 760 (20 万ステップ) |
+
+評価済みのサンクは 15.4M 回から 278 回になった。残りの約 7 倍の差は、bind を通る `Double` の箱 (1 ステップ約 190 回) によるもので、
+FEAT-0057 で扱う。
 
 ## メモ

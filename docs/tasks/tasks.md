@@ -96,6 +96,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0054](features/FEAT-0054-target-windows.md) | Windows ターゲットへの移植 | todo | P2 | 0052, 0045 |
 | [FEAT-0055](features/FEAT-0055-list-fusion.md) | リスト融合 (foldr/build) | todo | P2 | 0112 |
 | [FEAT-0056](features/FEAT-0056-ww-call-by-value-local.md) | worker/wrapper の拡張 (値渡しの引数・局所関数) | done | P1 | 0041 |
+| [FEAT-0057](features/FEAT-0057-io-result-unboxing.md) | IO の結果の unboxing (bind を通る値の箱を消す) | todo | P2 | BUG-0011 |
 
 
 ## aCHC
@@ -281,7 +282,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [BUG-0008](bugs/BUG-0008-newtype-pattern-forces.md) | newtype の構築子パターンが値を評価してしまう | todo | major | FEAT-0119 |
 | [BUG-0009](bugs/BUG-0009-strict-linear-tuple.md) | タプルの成分の線形専用値が正格に評価されない | done | major | FEAT-0123 |
 | [BUG-0010](bugs/BUG-0010-test-header-after-pragma.md) | テストのヘッダが `{-# LANGUAGE #-}` の後にあると読まれない | done | major | FEAT-0125 |
-| [BUG-0011](bugs/BUG-0011-borrow-monad-overhead.md) | Borrow モナドのループが線形な受け渡しより約 130 倍遅い | in-progress | major | FEAT-0043 |
+| [BUG-0011](bugs/BUG-0011-borrow-monad-overhead.md) | Borrow モナドのループが線形な受け渡しより約 130 倍遅い | done | major | FEAT-0043 |
 | [BUG-0012](bugs/BUG-0012-dead-join-undefined-param.md) | どこからも飛ばれない合流ブロックの引数が LLVM IR で未定義になる | done | major | BUG-0011 |
 
 新しいチケットは `features/_TEMPLATE.md` / `bugs/_TEMPLATE.md` をコピーして作成する。

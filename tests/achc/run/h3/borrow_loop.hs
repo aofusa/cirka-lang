@@ -2,13 +2,13 @@
 {-# LANGUAGE RankNTypes #-}
 -- ghc: skip
 -- opt-levels: 2
--- max-allocs: 700000
+-- max-allocs: 100000
 -- max-array-copies: 0
 -- A loop updating an unboxed array in place through `borrowMut` and the
 -- `Borrow` monad (BUG-0011). The monad's dictionary (`Λr. Monad$Dict …`)
--- is resolved and IO's bind is inlined through its cast, so each step
--- allocates only the closures of the do block: 66 per step here, 87
--- before the fix.
+-- is resolved, IO's bind is inlined through its cast, and `go` takes the
+-- state token (`go$io`): each step allocates only the boxes of the values
+-- passed through bind (6 per step; 87 before the fix).
 module Main where
 
 import Cirka.Ownership

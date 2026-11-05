@@ -171,8 +171,8 @@ FEAT-0043 で image に `time` を追加した)。下限を超えたものだけ
 - **リストによる代用**: CirkaLang v0.0.1 には配列がないので n-body・spectral-norm はリストで書いている (v0.0.2 の FEAT-0211 で書き直す)。
 - **遅延評価**: `plain.hs` は局所ループの累積引数・`where` の束縛がサンクになる (GHC は正格性解析と unboxing で除く)。
   fannkuch-redux は要素を強制しないと `take`/`zip` のサンクの連鎖が際限なく伸び、1 GB を使っていた (ベンチ側で強制するよう修正)。
-- **借用の抽象化のコスト** (BUG-0011): n-body の `own.chs` を `borrowMut` と `Borrow` モナドで書くと、線形に受け渡す版の約 130 倍遅い。
-  現在の `own.chs` は線形版。
+- **借用の抽象化のコスト** (BUG-0011): n-body の `own.chs` を `borrowMut` と `Borrow` モナドで書くと、線形に受け渡す版の約 130 倍遅かった。
+  BUG-0011 の修正 (06-ir.md §1.6) の後は約 7 倍 (20 万ステップで 0.91 s 対 0.13 s)。現在の `own.chs` は線形版。
 - binary-trees が Rust より速いのは、M1 から変わらず本ランタイムのサイズクラス別フリーリストが glibc malloc より軽いため。
 
 ### 次の作業

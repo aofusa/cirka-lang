@@ -4,6 +4,7 @@
 
 pub mod build;
 pub mod expr;
+pub mod io;
 pub mod lint;
 pub mod opt;
 pub mod parse;

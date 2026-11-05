@@ -50,6 +50,8 @@ pub struct Stats {
     pub worker_wrapper: usize,
     /// Dictionary fields moved to globals of their own.
     pub dict_fields: usize,
+    /// Functions given a state-token worker (`io::io_arity`).
+    pub io_arity: usize,
     /// Local functions lifted to top level.
     pub lifted: usize,
     /// Copies of overloaded functions specialized to constant dictionaries.
@@ -89,6 +91,12 @@ pub fn optimize_with_stats(p: &mut Program) -> Result<Stats, Diagnostic> {
         lint_all(p, "dict-fields")?;
     }
     simplify_rounds(p, &mut st, &mut next)?;
+    // Functions returning IO take the state token (BUG-0011).
+    st.io_arity = crate::io::io_arity(p, &mut next);
+    if st.io_arity > 0 {
+        lint_all(p, "io-arity")?;
+        simplify_rounds(p, &mut st, &mut next)?;
+    }
     // Local loops become top-level functions the analyses below reach.
     st.lifted = crate::strict::lambda_lift(p, &mut next);
     if st.lifted > 0 {
@@ -437,11 +445,32 @@ pub(crate) fn subst_ty(e: &Expr, v: &TyVar, t: &Type) -> Expr {
 
 /// `cast e t`, collapsing `cast (cast e t0) t` to `cast e t` (casts only
 /// change types, and the lint checks the end-to-end cast).
+/// A lambda, possibly under casts and type abstractions.
+fn is_lam(e: &Expr) -> bool {
+    match e {
+        Expr::Lam(..) => true,
+        Expr::Cast(x, _) | Expr::TyLam(_, _, x) => is_lam(x),
+        _ => false,
+    }
+}
+
 fn cast(e: Expr, t: Type) -> Expr {
     match e {
         Expr::Cast(x, _) => Expr::Cast(x, t),
         Expr::Let(b, body) => Expr::Let(b, Box::new(cast(*body, t))),
         Expr::LetStrict(b, r, body) => Expr::LetStrict(b, r, Box::new(cast(*body, t))),
+        Expr::Case(s, b, _, alts) => Expr::Case(
+            s,
+            b,
+            t.clone(),
+            alts.into_iter()
+                .map(|a| Alt {
+                    con: a.con,
+                    rhs: cast(a.rhs, t.clone()),
+                })
+                .collect(),
+        ),
+        Expr::Panic(m, _) => Expr::Panic(m, t),
         e => Expr::Cast(Box::new(e), t),
     }
 }
@@ -676,7 +705,8 @@ fn inline_candidates(p: &Program) -> HashMap<String, Expr> {
         let once = uses.get(b.name.as_str()) == Some(&1);
         // A wrapper of the worker/wrapper split only calls its worker: it
         // is always inlined, even though the worker may call it back.
-        let wrapper = p.bind(&format!("{}$w", b.name)).is_some();
+        let wrapper =
+            p.bind(&format!("{}$w", b.name)).is_some() || crate::io::is_wrapper(&b.name, body);
         if wrapper || ((small || once) && !recursive(&b.name)) {
             out.insert(b.name.clone(), b.expr.clone());
         }
@@ -943,6 +973,20 @@ impl Simp<'_> {
                 let r = self.beta(b, *body, a);
                 cast(r, *t2)
             }
+            // `(case s of p -> e) a` = `case s of p -> e a` (`a` an atom).
+            Expr::Case(s, b, Type::Fun(_, _, r), alts) if a.is_atom() => {
+                self.hit();
+                self.st.floated += 1;
+                let alts = alts
+                    .into_iter()
+                    .map(|alt| Alt {
+                        con: alt.con,
+                        rhs: self.apply(alt.rhs, a.clone()),
+                    })
+                    .collect();
+                Expr::Case(s, b, *r, alts)
+            }
+            Expr::Panic(m, Type::Fun(_, _, r)) => Expr::Panic(m, *r),
             Expr::Cast(h, t) if matches!(*h, Expr::Let(..) | Expr::LetStrict(..)) => {
                 let f = match *h {
                     Expr::Let(bind, body) => Expr::Let(bind, Box::new(cast(*body, t))),
@@ -1060,7 +1104,9 @@ impl Simp<'_> {
         let o = self.occ(x);
         // Constructor values stay bound: that costs the same allocation and
         // keeps `case x` (case-of-known-constructor) and atomic fields.
-        if o.count == 1 && !o.in_lam && !matches!(r, Expr::Con(..)) {
+        // A lambda may also move into a lambda: it is a value, so no work is
+        // repeated (the continuations of IO's bind, BUG-0011).
+        if o.count == 1 && (!o.in_lam || is_lam(&r)) && !matches!(r, Expr::Con(..)) {
             // Moved to its only use, where the thunk would be forced.
             self.hit();
             self.st.inlined_once += 1;
@@ -1225,6 +1271,32 @@ impl Simp<'_> {
         known || small
     }
 
+    /// The field type of newtype `t` when `alts` is its one constructor
+    /// alternative.
+    fn newtype_field(&self, t: &Type, alts: &[Alt]) -> Option<Type> {
+        let [
+            Alt {
+                con: AltCon::Con(k, fs),
+                ..
+            },
+        ] = alts
+        else {
+            return None;
+        };
+        let Type::Con(n, ts) = t else { return None };
+        let (d, i) = self.p.ctor(k)?;
+        if !d.newtype || d.name != *n || fs.len() != 1 || ts.len() != d.params.len() {
+            return None;
+        }
+        let s: Vec<(TyVar, Type)> = d
+            .params
+            .iter()
+            .map(|(v, _)| v.clone())
+            .zip(ts.iter().cloned())
+            .collect();
+        Some(d.ctors[i].fields[0].subst_all(&s))
+    }
+
     /// The known constructor of `x` when `cast x t` keeps its type: `t` is
     /// its data type at the same type arguments.
     fn cast_known(&self, x: &Expr, t: &Type) -> Option<(String, Vec<Type>, Vec<Expr>)> {
@@ -1341,6 +1413,28 @@ impl Simp<'_> {
                 self.case_default(Expr::Lit(Lit::Int(n)), b, res, alts)
             }
             Expr::Con(..) => self.known_con(s, b, res, alts),
+            // `case (cast x N) of K g -> e` for a newtype `N` (represented
+            // as its field): `e[g := cast x F]`.
+            Expr::Cast(x, t)
+                if self.newtype_field(&t, &alts).is_some()
+                    && (x.is_atom() || self.occ(b.id.id).count == 0) =>
+            {
+                let ft = self.newtype_field(&t, &alts).unwrap();
+                self.hit();
+                self.st.known_case += 1;
+                let alt = alts.into_iter().next().unwrap();
+                let AltCon::Con(_, fs) = alt.con else {
+                    unreachable!()
+                };
+                self.bind(&b);
+                if x.is_atom() {
+                    let xb = Expr::Cast(x.clone(), t);
+                    self.transfer_occ(b.id.id, &xb);
+                    self.sub.insert(b.id.id, xb);
+                }
+                let g = fs.into_iter().next().unwrap();
+                self.let_lazy(g, cast(*x, ft), K::Expr(alt.rhs))
+            }
             // `case (cast x T) of …` with `x` a known constructor of `T` at
             // the same type arguments (a cast that changed nothing).
             Expr::Cast(x, t) if self.cast_known(&x, &t).is_some() => {

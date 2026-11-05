@@ -589,6 +589,32 @@ fn opt_applies_through_casts() {
     assert_eq!(m.trim(), "7");
 }
 
+#[test]
+fn opt_gives_io_functions_the_state_token() {
+    // `loop` returns an IO action (a newtype over `Unit# -> a`): it gets a
+    // worker `loop$io` taking the token, and running `loop 3` becomes a
+    // direct call without building the action's closure (BUG-0011).
+    let src = format!(
+        "{PRELUDE}(data IO (a) :newtype (IO# (-> Unit# a)))
+         (def ret (-> Int (IO Int)) (lam ((x Int)) (cast (lam ((w Unit#)) x) (IO Int))))
+         (def loop (-> Int# (IO Int))
+           (lam ((n Int#))
+             (case n (k Int#) (IO Int)
+               (0 (ret (con I# () 7)))
+               (_ (loop (prim sub n 1))))))
+         (def main Int#
+           (case ((cast (loop 3) (-> Unit# Int)) unit) (r Int) Int# ((I# v) v)))"
+    );
+    let mut p = parse_program(FileId(0), &src).unwrap();
+    assert!(lint::lint_program(&p).is_empty());
+    let st = opt::optimize_with_stats(&mut p).unwrap();
+    let all = print_program(&p);
+    assert!(lint::lint_program(&p).is_empty(), "{all}");
+    assert!(st.io_arity >= 1, "{st:?}");
+    let m = print::print_expr(&p.bind("main").unwrap().expr);
+    assert!(m.contains("(loop$io 3 unit)"), "{m}");
+}
+
 // ---- FEAT-0123: evaluated scrutinees, value fields, let! of a case ----
 
 #[test]
