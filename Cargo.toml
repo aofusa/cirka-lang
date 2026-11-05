@@ -25,6 +25,7 @@ needless_range_loop = "allow"
 [workspace.dependencies]
 cirka-diagnostics = { path = "crates/cirka-diagnostics" }
 cirka-core = { path = "crates/cirka-core" }
+cirka-bigint = { path = "crates/cirka-bigint" }
 cirka-mir = { path = "crates/cirka-mir" }
 cirka-codegen-llvm = { path = "crates/cirka-codegen-llvm" }
 cirka-smt = { path = "crates/cirka-smt" }

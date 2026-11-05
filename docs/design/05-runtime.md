@@ -37,7 +37,7 @@ aCHC と CirkaLang で共有する、Rust で書いた `#![no_std]` の静的ラ
 | `IND` | 評価済みサンク → 値へのポインタ |
 | `ARRAY` | `len` + ポインタ要素 (boxed 配列) |
 | `BYTES` | `len` + 生バイト (非ボックス配列、`ByteArray#` 相当) |
-| `BIGINT` | 多倍長整数 (符号 + limb 配列) |
+| `BIGINT` | (予約・未使用) 多倍長整数は `BYTES` に `cirka-bigint` の符号化 (符号 1 バイト + u32 limb のリトルエンディアン) で格納する (FEAT-0114) |
 | `FOREIGN` | 外部ポインタ + 解放関数 (`ForeignPtr`) |
 | `MUTVAR` | `IORef`/`STRef` |
 | `MVAR` | `MVar` (並行性導入後) |

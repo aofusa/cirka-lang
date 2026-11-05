@@ -63,6 +63,7 @@ MIR には **インタプリタ** (`cirka-mir::interp`) を用意し、コード
 | `cirka-mir` | lib | MIR・テキスト形式・Core→MIR・Perceus・検証器・インタプリタ | core |
 | `cirka-codegen-llvm` | lib | MIR → LLVM IR テキスト | mir |
 | `cirka-runtime` | staticlib (`#![no_std]`) | オブジェクト表現・RC・アロケータ・サンク・I/O・スレッド・起動 | `libc` のみ |
+| `cirka-bigint` | lib (`#![no_std]`) | 多倍長整数の演算 (加減乗除・10 進変換・`f64` との正確な変換)。確保をせず呼び出し側のバッファに書く。ランタイムと MIR インタプリタが共有 | なし |
 | `cirka-smt` | lib | SMT-LIB2 生成・Z3 呼び出し・キャッシュ・反例 | diagnostics |
 | `cirka-bindgen` | lib + bin | libclang による C ヘッダ取り込み (出力は aCHC / CirkaLang 両方) | |
 | `cirka-driver` | lib | Core 以降のパイプライン実行・外部ツール起動・`_build/`・`.env` 設定 | core, mir, codegen |

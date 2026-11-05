@@ -820,6 +820,12 @@ impl<'m> Interp<'m> {
         ))
     }
 
+    /// A new BYTES object (one allocation, as in the runtime).
+    fn new_bytes(&mut self, b: Vec<u8>) -> Val {
+        let size = 16 + b.len().div_ceil(8) * 8;
+        Val::P(self.alloc(kind::BYTES, 0, vec![], Payload::Bytes(b), size))
+    }
+
     fn bytes(&self, v: Val) -> R<&Vec<u8>> {
         let Val::P(p) = v else {
             return fault("expected a bytes object");
@@ -1023,8 +1029,34 @@ impl<'m> Interp<'m> {
             "tanh" => Ok(Val::F(a[0].float().tanh())),
             "atan2" => Ok(Val::F(a[0].float().atan2(a[1].float()))),
             "pow" => Ok(Val::F(a[0].float().powf(a[1].float()))),
+            "cirka_f32_show_hs" => Ok(self.new_bytes(show_hs(a[0].float(), true).into_bytes())),
+            "cirka_f32_round" => Ok(Val::F(a[0].float() as f32 as f64)),
+            "cirka_f64_bits" => Ok(Val::I(a[0].float().to_bits() as i64)),
+            "cirka_f64_from_bits" => Ok(Val::F(f64::from_bits(a[0].int() as u64))),
+            "cirka_big_from_int" => Ok(self.new_bytes(crate::big::from_int(a[0].int()))),
+            "cirka_big_from_double" => Ok(self.new_bytes(crate::big::from_double(a[0].float()))),
+            "cirka_big_fits_int" => Ok(Val::I(crate::big::fits_int(self.bytes(a[0])?))),
+            "cirka_big_to_int" => Ok(Val::I(crate::big::to_int(self.bytes(a[0])?))),
+            "cirka_big_to_double" => Ok(Val::F(crate::big::to_double(self.bytes(a[0])?))),
+            "cirka_big_cmp" => {
+                let x = self.bytes(a[0])?.clone();
+                Ok(Val::I(crate::big::cmp(&x, self.bytes(a[1])?)))
+            }
+            "cirka_big_op" => {
+                let x = self.bytes(a[1])?.clone();
+                let r = crate::big::op(a[0].int(), &x, self.bytes(a[2])?);
+                Ok(self.new_bytes(r))
+            }
+            "cirka_big_show" => {
+                let r = crate::big::show(self.bytes(a[0])?);
+                Ok(self.new_bytes(r))
+            }
+            "cirka_big_read" => {
+                let r = crate::big::read(self.bytes(a[0])?, a[1].int() != 0);
+                Ok(self.new_bytes(r))
+            }
             "cirka_f64_show_hs" => {
-                let b = show_hs(a[0].float()).into_bytes();
+                let b = show_hs(a[0].float(), false).into_bytes();
                 let size = 16 + b.len().div_ceil(8) * 8;
                 Ok(Val::P(self.alloc(
                     kind::BYTES,
@@ -1182,7 +1214,7 @@ impl std::fmt::Write for StrW<'_> {
 /// shortest round-trip `Display`).
 /// `show` of a `Double` in Haskell's format (same as the runtime's
 /// `cirka_f64_show_hs`).
-pub fn show_hs(x: f64) -> String {
+pub fn show_hs(x: f64, single: bool) -> String {
     if x.is_nan() {
         return "NaN".into();
     }
@@ -1193,7 +1225,11 @@ pub fn show_hs(x: f64) -> String {
     if x == 0.0 {
         return format!("{sign}0.0");
     }
-    let s = format!("{:e}", x.abs());
+    let s = if single {
+        format!("{:e}", x.abs() as f32)
+    } else {
+        format!("{:e}", x.abs())
+    };
     let (m, e) = s.split_once('e').unwrap_or((&s, "0"));
     let digits: String = m.chars().filter(|c| c.is_ascii_digit()).collect();
     let e: i32 = e.parse::<i32>().unwrap_or(0) + 1;

@@ -59,6 +59,21 @@ void   *cirka_arg(int64_t i);
 void   *cirka_bytes_from(const uint8_t *p, size_t len);
 void   *cirka_bytes_new(int64_t len);
 void   *cirka_array_new(int64_t len, void *init);
+void   *cirka_f32_show_hs(double x);
+double  cirka_f32_round(double x);
+int64_t cirka_f64_bits(double x);
+double  cirka_f64_from_bits(int64_t b);
+
+/* Integer (BYTES objects in cirka-bigint's encoding; arguments borrowed) */
+void   *cirka_big_from_int(int64_t x);
+int64_t cirka_big_fits_int(void *a);
+int64_t cirka_big_to_int(void *a);
+double  cirka_big_to_double(void *a);
+void   *cirka_big_from_double(double x);
+void   *cirka_big_op(int64_t op, void *a, void *b);
+int64_t cirka_big_cmp(void *a, void *b);
+void   *cirka_big_show(void *a);
+void   *cirka_big_read(void *digits, int64_t neg);
 
 /* provided by generated code */
 int64_t cirka_main(void);

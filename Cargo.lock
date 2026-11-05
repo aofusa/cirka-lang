@@ -67,6 +67,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "cirka-bigint"
+version = "0.0.1"
+
+[[package]]
 name = "cirka-bindgen"
 version = "0.0.1"
 dependencies = [
@@ -125,6 +129,7 @@ dependencies = [
 name = "cirka-mir"
 version = "0.0.1"
 dependencies = [
+ "cirka-bigint",
  "cirka-core",
  "cirka-diagnostics",
 ]
@@ -132,6 +137,9 @@ dependencies = [
 [[package]]
 name = "cirka-runtime"
 version = "0.0.1"
+dependencies = [
+ "cirka-bigint",
+]
 
 [[package]]
 name = "cirka-smt"

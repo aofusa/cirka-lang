@@ -1,0 +1,12 @@
+[package]
+name = "cirka-bigint"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Allocation-free arbitrary-precision integer arithmetic shared by the runtime and the MIR interpreter"
+
+[lib]
+doctest = false
+
+[lints]
+workspace = true

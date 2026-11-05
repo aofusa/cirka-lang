@@ -154,9 +154,36 @@ pub extern "C" fn cirka_f64_to_bytes(x: f64) -> Obj {
 #[unsafe(no_mangle)]
 pub extern "C" fn cirka_f64_show_hs(x: f64) -> Obj {
     let mut out = [0u8; 64];
-    let n = show_hs(x, &mut out);
+    let n = show_hs(x, false, &mut out);
     // SAFETY: `out` holds `n` initialized bytes.
     unsafe { crate::cirka_bytes_from(out.as_ptr(), n) }
+}
+
+/// `show` of a `Float` (a double holding a single-precision value): the
+/// shortest digits identifying the single-precision number.
+#[unsafe(no_mangle)]
+pub extern "C" fn cirka_f32_show_hs(x: f64) -> Obj {
+    let mut out = [0u8; 64];
+    let n = show_hs(x, true, &mut out);
+    // SAFETY: `out` holds `n` initialized bytes.
+    unsafe { crate::cirka_bytes_from(out.as_ptr(), n) }
+}
+
+/// `x` rounded to single precision (`Float` arithmetic).
+#[unsafe(no_mangle)]
+pub extern "C" fn cirka_f32_round(x: f64) -> f64 {
+    x as f32 as f64
+}
+
+/// The IEEE bits of `x` (`decodeFloat`, `isNegativeZero` …).
+#[unsafe(no_mangle)]
+pub extern "C" fn cirka_f64_bits(x: f64) -> i64 {
+    x.to_bits() as i64
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn cirka_f64_from_bits(b: i64) -> f64 {
+    f64::from_bits(b as u64)
 }
 
 /// Parses a decimal floating-point literal (correctly rounded); NaN when
@@ -174,7 +201,7 @@ pub unsafe extern "C" fn cirka_parse_f64(o: Obj) -> f64 {
         .unwrap_or(f64::NAN)
 }
 
-fn show_hs(x: f64, out: &mut [u8; 64]) -> usize {
+fn show_hs(x: f64, single: bool, out: &mut [u8; 64]) -> usize {
     let mut n = 0;
     let mut push = |out: &mut [u8; 64], s: &[u8]| {
         let k = s.len().min(64 - n);
@@ -202,7 +229,11 @@ fn show_hs(x: f64, out: &mut [u8; 64]) -> usize {
         buf: &mut buf,
         len: 0,
     };
-    let _ = core::fmt::write(&mut f, format_args!("{:e}", x.abs()));
+    if single {
+        let _ = core::fmt::write(&mut f, format_args!("{:e}", x.abs() as f32));
+    } else {
+        let _ = core::fmt::write(&mut f, format_args!("{:e}", x.abs()));
+    }
     let len = f.len;
     let s = &buf[..len];
     let epos = s.iter().position(|&c| c == b'e').unwrap_or(len);

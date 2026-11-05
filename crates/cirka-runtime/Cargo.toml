@@ -15,3 +15,6 @@ debug-rt = []
 
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
+
+[dependencies]
+cirka-bigint = { path = "../cirka-bigint" }

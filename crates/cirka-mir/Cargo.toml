@@ -10,3 +10,4 @@ workspace = true
 [dependencies]
 cirka-diagnostics.workspace = true
 cirka-core.workspace = true
+cirka-bigint.workspace = true
