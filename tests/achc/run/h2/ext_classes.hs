@@ -43,6 +43,13 @@ instance Pretty [Char] where
 instance Pretty (Maybe Int) where
   pretty = maybe "none" show
 
+-- A class without parameters.
+class Config where
+  verbose :: Bool
+
+instance Config where
+  verbose = True
+
 showAll :: Show (f Int) => f Int -> String
 showAll = show
 
@@ -58,3 +65,4 @@ main = do
   putStrLn (pretty "hi")
   putStrLn (pretty (Just (3 :: Int)))
   putStrLn (showAll (Just 5))
+  print verbose

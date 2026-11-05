@@ -37,3 +37,4 @@ main = do
   print (read "3.25" :: Float, read "18446744073709551615" :: Word, show (2 ^ 70 :: Integer))
   print (sum (map fromIntegral [1 .. 100 :: Int]) :: Integer, [10 ^ 18, 10 ^ 19 .. 5 * 10 ^ 19 :: Integer])
   print (1e30 :: Rational, 5e-324 :: Double, 2.5e-3 :: Rational, -1.5e20 :: Rational, 1e-40 :: Float)
+  print (scaleFloat 30000 1 :: Double, scaleFloat (maxBound :: Int) (1 :: Double), scaleFloat minBound (1 :: Double), scaleFloat 3 (1.5 :: Float))

@@ -84,21 +84,13 @@ impl Tc {
     /// First pass: the class name and its variable.
     pub(crate) fn declare_class_name(&mut self, m: &str, c: &ast::ClassDecl) {
         let name = format!("{m}.{}", c.name.name);
-        if c.params.is_empty() {
-            self.error(err(
-                "E0001",
-                c.span,
-                "a class needs at least one type parameter",
-            ));
-        }
-        let mut vars: Vec<String> = c
+        // A class without parameters (NullaryTypeClasses) has a packed
+        // constraint type with no arguments.
+        let vars: Vec<String> = c
             .params
             .iter()
             .map(|p| self.fresh_name(&format!("{}#", p.name)))
             .collect();
-        if vars.is_empty() {
-            vars.push("a#".into());
-        }
         let kinds = vec![Kind::Star; vars.len()];
         self.add_data(&name, vars.clone(), kinds.clone(), false);
         self.classes.insert(

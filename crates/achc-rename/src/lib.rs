@@ -107,6 +107,7 @@ pub const SUPPORTED_EXTENSIONS: &[&str] = &[
     "TupleSections",
     "MultiWayIf",
     "RankNTypes",
+    "Rank2Types",
     "MultiParamTypeClasses",
     "FlexibleInstances",
     "FlexibleContexts",

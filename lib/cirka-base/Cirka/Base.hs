@@ -448,8 +448,14 @@ class (RealFrac a, Floating a) => RealFloat a where
     (m, n) -> if m == 0 then 0 else n + floatDigits x
   significand x = case decodeFloat x of
     (m, _) -> encodeFloat m (negate (floatDigits x))
+  -- The exponent is clamped like GHC's (beyond the range the result is
+  -- 0 or infinite anyway).
   scaleFloat k x = if k == 0 || x == 0 || isNaN x || isInfinite x then x else
-    case decodeFloat x of (m, n) -> encodeFloat m (n + k)
+    case decodeFloat x of
+      (m, n) -> case floatRange x of
+        (lo, hi) ->
+          let b = hi - lo + 4 * floatDigits x
+          in encodeFloat m (n + max (negate b) (min b k))
   atan2 y x
     | x > 0 = atan (y / x)
     | x == 0 && y > 0 = pi / 2
