@@ -172,6 +172,15 @@ pub fn optimize_with_stats(p: &mut Program) -> Result<Stats, Diagnostic> {
         lint_all(p, "float-in")?;
         simplify_rounds(p, &mut st, &mut next)?;
     }
+    // The passes above evaluate lazily bound arguments early, which makes
+    // them values: unbox the parameters that only now are always passed
+    // evaluated (FEAT-0068).
+    let split = crate::ww::worker_wrapper(p, &mut next);
+    if split > 0 {
+        st.worker_wrapper += split;
+        lint_all(p, "worker-wrapper")?;
+        simplify_rounds(p, &mut st, &mut next)?;
+    }
     st.unique_checks = crate::uniq::redundant_unique(p);
     if st.unique_checks > 0 {
         lint_all(p, "uniq")?;

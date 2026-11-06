@@ -292,6 +292,61 @@ fn opt_worker_wrapper_unboxes_parameters_passed_evaluated() {
 }
 
 #[test]
+fn worker_wrapper_splits_workers_again() {
+    // A worker can get arguments that became values after it was split: a
+    // `$w` function is split like any other (FEAT-0068).
+    let src = format!(
+        "{STRICT_INT}(def loop$w (-> Int# Int Int#)
+           (lam ((n Int#) (step Int))
+             (case n (k Int#) Int#
+               (0 0)
+               (_ (case step (s Int) Int#
+                 ((I# d) (loop$w (prim sub n d) (con I# () d))))))))
+         (extern arg () Int#)
+         (def main Int#
+           (let! (x Int# (extern arg))
+             (loop$w x (con I# () x))))"
+    );
+    let mut p = parse_program(FileId(0), &src).unwrap();
+    opt::optimize(&mut p).unwrap();
+    assert!(lint::lint_program(&p).is_empty(), "{}", print_program(&p));
+    let w = p.bind("loop$w$w").expect("worker of the worker");
+    assert_eq!(w.ty.to_string(), "(-> Int# (-> Int# Int#))");
+    assert!(!print_program(&p).contains("con I#"));
+}
+
+#[test]
+fn opt_unboxes_parameters_that_become_values_late() {
+    // The shape of a loop with a seed (FEAT-0068): `step` is unused when the
+    // loop ends, so `go` is not strict in it, and its next value divides, so
+    // it is no value before the strictness passes see that `next` forces it.
+    // Only a worker/wrapper round after those passes can unbox it.
+    let src = format!(
+        "{STRICT_INT}(data R () (R Int#))
+         (extern arg () Int#)
+         (def next (-> Int R Int#)
+           (lam ((s Int) (r R))
+             (case s (t Int) Int#
+               ((I# x) (case r (u R) Int# ((R y) (prim add x y)))))))
+         (def go (-> Int# Int Int# Int#)
+           (lam ((n Int#) (step Int) (acc Int#))
+             (case n (k Int#) Int#
+               (0 acc)
+               (_ (let ((t Int (case step (b Int) Int
+                                 ((I# x) (con I# () (prim rem x 7))))))
+                    (go (prim sub n 1) t (prim add acc (next t (con R () n)))))))))
+         (def main Int#
+           (let! (x Int# (extern arg))
+             (go x (con I# () x) 0)))"
+    );
+    let mut p = parse_program(FileId(0), &src).unwrap();
+    opt::optimize(&mut p).unwrap();
+    assert!(lint::lint_program(&p).is_empty(), "{}", print_program(&p));
+    let all = print_program(&p);
+    assert!(!all.contains("con I#"), "{all}");
+}
+
+#[test]
 fn worker_wrapper_keeps_lazy_parameters_passed_unevaluated() {
     // A caller passes a lazily bound, possibly failing value for the
     // non-strict `step`: evaluating it before the call could fail, so
