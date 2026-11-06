@@ -873,3 +873,50 @@ fn lint_rejects_misplaced_unboxed_tuples() {
     let errs = lint::render_errors(&lint::lint_program(&p));
     assert!(errs.contains("unboxed tuple"), "{errs}");
 }
+
+#[test]
+fn opt_floats_single_alternative_cases_out_of_strict_lets() {
+    // `let! x = case a of W b -> I# (f b) in …`: the case moves out, so `x`
+    // is a known constructor and its box disappears (FEAT-0066).
+    let src = format!(
+        "{STRICT_INT}(data W () (W Int#))
+         (extern arg () Int#)
+         (def get (-> W Int# Int#)
+           (lam ((w W) (n Int#))
+             (let! (x Int (case w (s W) Int ((W b) (con I# () (prim add b n)))))
+               (let! (y Int# (prim mul n 2))
+                 (case x (t Int) Int# ((I# v) (prim add v y)))))))
+         (def main Int# (get (con W () (extern arg)) (extern arg)))"
+    );
+    let mut p = parse_program(FileId(0), &src).unwrap();
+    opt::optimize(&mut p).unwrap();
+    assert!(lint::lint_program(&p).is_empty(), "{}", print_program(&p));
+    let all = print_program(&p);
+    assert!(!all.contains("con I#"), "{all}");
+}
+
+#[test]
+fn whnf_params_need_values_at_every_call() {
+    // `go` gets an evaluated `W` from `main` and itself (through a newtype
+    // pattern and constructor); `h` gets a thunk.
+    let src = format!(
+        "{STRICT_INT}(data W () (W Int#))
+         (data N () :newtype (N W))
+         (extern arg () Int#)
+         (def go (-> N Int# Int#)
+           (lam ((v N) (i Int#))
+             (case i (k Int#) Int#
+               (0 0)
+               (_ (case v (s N) Int# ((N w) (let ((u N (con N () w))) (go u (prim sub i 1)))))))))
+         (def h (-> W Int#) (lam ((w W)) (case w (s W) Int# ((W b) b))))
+         (def main Int#
+           (let! (a Int# (extern arg))
+             (let ((t W (case a (k Int#) W (_ (con W () a)))))
+               (prim add (go (con N () (con W () a)) a) (h t)))))"
+    );
+    let p = parse_program(FileId(0), &src).unwrap();
+    let ev = crate::ww::whnf_params(&p);
+    // (The `Int#` argument is no value but never needs forcing.)
+    assert!(ev["go"][0]);
+    assert_eq!(ev["h"], vec![false]);
+}

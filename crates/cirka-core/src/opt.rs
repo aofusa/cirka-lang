@@ -1305,6 +1305,27 @@ impl Simp<'_> {
             let rhs = Expr::LetStrict(b, Box::new(alt.rhs), Box::new(body));
             return Expr::Case(s, cb, res, vec![Alt { con: alt.con, rhs }]);
         }
+        // let! b = (case s of p -> e) in k  ⇒  case s of p -> let! b = e in k
+        // for any `k` of a known type when `s` is a variable (FEAT-0066):
+        // the same evaluation order (nothing is duplicated, and no use
+        // moves), `e` may be a constructor that the next iteration makes
+        // known (an element read and boxed by `(!)`), and no join point
+        // separates the fields' last use from `k` (reuse).
+        if let Expr::Case(s, _, _, alts) = &r
+            && alts.len() == 1
+            && matches!(&**s, Expr::Var(_))
+            && b.mult == Mult::Many
+            && let Some(res) = crate::strict::type_of(self.p, &HashMap::new(), &body)
+        {
+            self.hit();
+            self.st.floated += 1;
+            let Expr::Case(s, cb, _, alts) = r else {
+                unreachable!()
+            };
+            let alt = alts.into_iter().next().unwrap();
+            let rhs = Expr::LetStrict(b, Box::new(alt.rhs), Box::new(body));
+            return Expr::Case(s, cb, res, vec![Alt { con: alt.con, rhs }]);
+        }
         Expr::LetStrict(b, Box::new(r), Box::new(body))
     }
 

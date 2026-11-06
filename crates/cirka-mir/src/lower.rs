@@ -106,6 +106,8 @@ struct Pending {
     body: Expr,
     /// Closure convention: pointer parameters and result.
     closure: bool,
+    /// Parameters every call passes evaluated (FEAT-0066): not forced.
+    whnf: Vec<bool>,
 }
 
 /// Builder for one MIR function.
@@ -417,12 +419,18 @@ impl<'p> Lowerer<'p> {
             };
             self.tops.insert(b.name.clone(), top);
         }
+        let evaluated = core::ww::whnf_params(p);
         for b in &p.binds {
             let (params, body) = lam_chain(&b.expr);
             let name = match &self.tops[&b.name] {
                 Top::Fun { mir, .. } | Top::Const { mir } => mir.clone(),
                 Top::Caf { global } => format!("{global}$init"),
             };
+            let whnf = evaluated
+                .get(&b.name)
+                .filter(|e| e.len() == params.len())
+                .cloned()
+                .unwrap_or_default();
             self.pending.push(Pending {
                 name,
                 env: Env::new(),
@@ -430,6 +438,7 @@ impl<'p> Lowerer<'p> {
                 params,
                 body: body.clone(),
                 closure: false,
+                whnf,
             });
         }
         while let Some(job) = self.pending.pop() {
@@ -480,7 +489,7 @@ impl<'p> Lowerer<'p> {
             );
         }
         let mut unbox = Vec::new();
-        for b in &job.params {
+        for (i, b) in job.params.iter().enumerate() {
             let native = self.rep(&b.ty);
             let r = if job.closure { Ty::Ptr } else { native };
             let v = fb.f.new_var(b.id.name.clone(), r);
@@ -496,7 +505,7 @@ impl<'p> Lowerer<'p> {
                     Bound::Val {
                         op: Operand::Var(v),
                         ty: b.ty.clone(),
-                        whnf: !r.is_ptr(),
+                        whnf: !r.is_ptr() || job.whnf.get(i) == Some(&true),
                     },
                 );
             }
@@ -944,6 +953,7 @@ impl<'p> Lowerer<'p> {
             params: vec![],
             body: e.clone(),
             closure: false,
+            whnf: vec![],
         });
         Operand::Var(fb.let_(
             "thk",
@@ -1164,10 +1174,17 @@ impl<'p> Lowerer<'p> {
                 Some(body)
             }
             Expr::Let(Bind::NonRec(b, rhs), body) => {
-                let atomic = matches!(&**rhs, Expr::Var(_));
+                // A variable, maybe under newtype constructors (FEAT-0066).
+                let mut atom = &**rhs;
+                while let Expr::Con(c, _, args) = atom
+                    && self.is_newtype_ctor(c)
+                {
+                    atom = &args[0];
+                }
+                let atomic = matches!(atom, Expr::Var(_));
                 let v = self.lazy(fb, env, rhs)?;
                 let whnf = if atomic {
-                    match &**rhs {
+                    match atom {
                         Expr::Var(i) => {
                             matches!(env.get(&i.id), Some(Bound::Val { whnf: true, .. }))
                         }
@@ -1254,6 +1271,7 @@ impl<'p> Lowerer<'p> {
                 params,
                 body: body.clone(),
                 closure: false,
+                whnf: vec![],
             });
         }
     }
@@ -1322,6 +1340,7 @@ impl<'p> Lowerer<'p> {
                 params: vec![],
                 body: rhs.clone(),
                 closure: false,
+                whnf: vec![],
             });
             thunks.push(fb.let_(
                 &b.id.name,
@@ -1395,6 +1414,7 @@ impl<'p> Lowerer<'p> {
             params,
             body: body.clone(),
             closure: true,
+            whnf: vec![],
         });
         Operand::Var(fb.let_(
             "clo",

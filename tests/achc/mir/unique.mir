@@ -46,8 +46,7 @@ entry:
 
 fn Main.pass(a: ptr @owned) -> ptr {
 entry:
-  let ev%1 = force a
-  ret ev%1
+  ret a
 }
 
 fn Main.shared(a: ptr @owned) -> ptr {

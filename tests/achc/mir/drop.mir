@@ -15,15 +15,14 @@ entry:
 
 fn Main.pick(a: ptr @owned, a: ptr @owned) -> ptr {
 entry:
-  let ev%2 = force a
-  switch ev%2 { Bool.True => alt1, Bool.False => alt2 }
+  switch a { Bool.True => alt1, Bool.False => alt2 }
 alt1:
-  drop ev%2
+  drop a
   tailcall Cirka.Ownership.freeze(a)
 alt2:
-  drop ev%2
-  let caf%3 = global Cirka.Ownership.$fDrop174
-  let con%4 = alloc Int.I#(0)
-  tailcall Cirka.Ownership.dropThen(caf%3, a, con%4)
+  drop a
+  let caf%2 = global Cirka.Ownership.$fDrop174
+  let con%3 = alloc Int.I#(0)
+  tailcall Cirka.Ownership.dropThen(caf%2, a, con%3)
 }
 

@@ -289,6 +289,18 @@ fn speculatable(e: &Expr, ev: &HashSet<u32>, size: &mut usize) -> bool {
 /// saturated calls. A function used other than by a saturated call (passed
 /// as a value, partially applied) gets none.
 pub(crate) fn evaluated_params(p: &Program) -> HashMap<String, Vec<bool>> {
+    params_at_calls(p, false)
+}
+
+/// For every top-level function, the parameters that every call passes
+/// already evaluated (FEAT-0066): an evaluated variable, a literal, a
+/// lambda or a constructor (not of a newtype), never an expression to
+/// evaluate first. Code generation then skips forcing them.
+pub fn whnf_params(p: &Program) -> HashMap<String, Vec<bool>> {
+    params_at_calls(p, true)
+}
+
+fn params_at_calls(p: &Program, values: bool) -> HashMap<String, Vec<bool>> {
     let mut arity: HashMap<&str, usize> = HashMap::new();
     for b in &p.binds {
         let (_, xs, _) = split_fun(&b.expr);
@@ -313,9 +325,11 @@ pub(crate) fn evaluated_params(p: &Program) -> HashMap<String, Vec<bool>> {
                 }
             }
             let mut w = CallWalk {
+                p,
                 arity: &arity,
                 ev: &mut ev,
                 changed: false,
+                values,
             };
             w.expr(if xs.is_empty() { &b.expr } else { body }, &env);
             changed |= w.changed;
@@ -327,12 +341,29 @@ pub(crate) fn evaluated_params(p: &Program) -> HashMap<String, Vec<bool>> {
 }
 
 struct CallWalk<'a> {
+    p: &'a Program,
     arity: &'a HashMap<&'a str, usize>,
     ev: &'a mut HashMap<String, Vec<bool>>,
     changed: bool,
+    /// Only values count (not speculatable expressions).
+    values: bool,
 }
 
 impl CallWalk<'_> {
+    /// A literal, lambda or constructor: built as a value, not a thunk (a
+    /// newtype constructor is its field).
+    fn is_value(&self, e: &Expr, env: &HashSet<u32>) -> bool {
+        match e {
+            Expr::Lit(_) | Expr::Lam(..) => true,
+            Expr::Var(x) => env.contains(&x.id),
+            Expr::Con(c, _, args) => {
+                !self.p.ctor(c).is_some_and(|(d, _)| d.newtype)
+                    || args.first().is_some_and(|a| self.is_value(a, env))
+            }
+            _ => false,
+        }
+    }
+
     fn clear(&mut self, f: &str, from: usize) {
         if let Some(e) = self.ev.get_mut(f) {
             for x in e.iter_mut().skip(from) {
@@ -361,6 +392,7 @@ impl CallWalk<'_> {
                         for (i, a) in args.iter().take(k).enumerate() {
                             let ok = match a {
                                 Expr::Var(x) => env.contains(&x.id),
+                                _ if self.values => self.is_value(a, env),
                                 _ => speculatable(a, env, &mut 0),
                             };
                             if !ok
@@ -389,7 +421,7 @@ impl CallWalk<'_> {
                 Bind::NonRec(b, rhs) => {
                     self.expr(rhs, env);
                     // A constructor or literal bound lazily is no thunk.
-                    if matches!(&**rhs, Expr::Con(..) | Expr::Lit(_)) {
+                    if self.is_value(rhs, env) && !matches!(&**rhs, Expr::Lam(..)) {
                         let mut env = env.clone();
                         env.insert(b.id.id);
                         self.expr(body, &env);
@@ -415,7 +447,16 @@ impl CallWalk<'_> {
                 let mut env = env.clone();
                 env.insert(b.id.id);
                 for a in alts {
-                    self.expr(&a.rhs, &env);
+                    // The field of a newtype is the evaluated scrutinee.
+                    if let AltCon::Con(c, fs) = &a.con
+                        && self.p.ctor(c).is_some_and(|(d, _)| d.newtype)
+                    {
+                        let mut env = env.clone();
+                        env.extend(fs.iter().map(|f| f.id.id));
+                        self.expr(&a.rhs, &env);
+                    } else {
+                        self.expr(&a.rhs, &env);
+                    }
                 }
             }
             Expr::Var(_) | Expr::Lit(_) | Expr::Panic(..) => {}

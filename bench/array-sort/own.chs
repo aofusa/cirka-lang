@@ -1,4 +1,5 @@
 {-# LANGUAGE LinearTypes #-}
+{-# LANGUAGE BangPatterns #-}
 -- In-place quicksort of a unique unboxed array (FEAT-0123; the GHC baseline
 -- plain.hs uses STUArray). The array is only ever updated through
 -- `Unique (UArray Int)`, so every write is in place.
@@ -37,9 +38,10 @@ qsort u lo hi
   | otherwise = case partition u lo hi of
       (u', Ur m) -> qsort (qsort u' lo (m - 1)) (m + 1) hi
 
--- Checks the order and sums a sample of the elements.
+-- Checks the order and sums a sample of the elements (the accumulator is
+-- strict, as in rust/main.rs: a lazy one builds a chain of n thunks).
 check :: A.UArray Int -> Int -> Int -> Int -> Bool -> (Int, Bool)
-check a n i acc ok
+check a n i !acc ok
   | i >= n = (acc, ok)
   | otherwise =
       let x = a A.! i
