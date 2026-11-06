@@ -13,6 +13,7 @@
 |-----|---------|
 | 関数 | `define tailcc <ret> @<mangled>(...)` |
 | `tailcall` | `musttail call tailcc ...` + `ret` (末尾呼び出し保証) |
+| 自己末尾呼び出し (`tailcall f` を `f` の中で) | 引数を phi に持つループの先頭 `tailrec` への `br` (入口 `entry` → `tailrec` → `bb0`、引数は `%vN.in`)。LLVM のループ最適化が効く (FEAT-0066) |
 | `call` (非末尾) | `call tailcc` |
 | 複数の結果を返す関数 (`-> (ptr, i64)`、FEAT-0065) | 構造体を返す `define tailcc { ptr, i64 }`。`ret (a, b)` は `insertvalue`、`let (a, b) = call` は `call` と `extractvalue` |
 | `extern f(...)` | `call ccc` (C ABI。構造体の値渡しは `clang` の ABI 規則に従って展開)。C シグネチャ付きなら引数を C の型へ (`trunc`/`inttoptr`/`fptrunc`)、結果を `i64`/`double` へ (`sext`/`zext`/`ptrtoint`/`fpext`) 変換する |

@@ -105,6 +105,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0063](features/FEAT-0063-numeric-loop-codegen.md) | 数値ループの生成コード (libm の組み込み関数・一意性検査のインライン化・要素の TBAA・冗長な一意性検査の除去) | done | P1 | 0058 |
 | [FEAT-0064](features/FEAT-0064-fannkuch-unique-arrays.md) | fannkuch-redux の一意な配列版と、読み出しの組・累積引数の箱の除去 | done | P1 | 0041, 0123 |
 | [FEAT-0065](features/FEAT-0065-multi-value-returns.md) | 複数の値の返却 (組の結果の CPR) | done | P1 | 0041, 0056 |
+| [FEAT-0066](features/FEAT-0066-array-sort-strict-loops.md) | array-sort の差の調査 (要素の箱・ループの force・自己末尾呼び出しのループ化) | done | P1 | 0056, 0063, 0065 |
 
 
 ## aCHC

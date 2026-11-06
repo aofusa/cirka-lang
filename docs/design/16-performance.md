@@ -80,6 +80,7 @@ Rust は安全性の一部を実行時の検査で担保し、最適化はクレ
 | Core | IO の結果の unboxing | FEAT-0057 |
 | Core | インライン化した読み出しの組の除去 (`let!` の連鎖を通す case の移動)、float-in の拡張 | 済 (FEAT-0064) |
 | Core / MIR / LLVM | 複数の値の返却 (組・`Ur` の結果の CPR) | 済 (FEAT-0065) |
+| Core / MIR / LLVM | 単一選択肢の `case` の `let!` からの移動、評価済みで渡される引数の force の省略、自己末尾呼び出しのループ化 | 済 (FEAT-0066) |
 | Core | リスト融合 | FEAT-0055 |
 | Core | 配列要素の単相化 (`UElem`) | FEAT-0059 |
 | Core | 静的な関数引数での特殊化 (関数を受け取る再帰関数の写し。高階関数の箱を消す) | 済 (FEAT-0061) |
