@@ -665,3 +665,64 @@ fn opt_let_strict_of_single_alternative_case() {
     assert!(!m.contains("con P"), "{m}");
     assert!(st.floated >= 1 && st.known_case >= 1, "{st:?}");
 }
+
+// ---- FEAT-0061: specialization on static function arguments ----
+
+#[test]
+fn opt_specializes_static_function_arguments() {
+    // `sumf` passes `f` unchanged to itself and only calls it: the call
+    // with a lambda (capturing `k`) gets a copy `sumf$f1 k …` in which the
+    // lambda is applied in place, so `I#` boxes no longer cross a call.
+    let src = format!(
+        "{PRELUDE}(extern arg () Int#)
+         (def sumf (-> (-> Int Int) Int# Int# Int#)
+           (lam ((f (-> Int Int)) (i Int#) (acc Int#))
+             (case (prim ge i 10) (c Int#) Int#
+               (0 (case (f (con I# () i)) (r Int) Int#
+                    ((I# v) (sumf f (prim add i 1) (prim add acc v)))))
+               (_ acc))))
+         (def main Int#
+           (let! (k Int# (extern arg))
+             (sumf (lam ((x Int)) (case x (s Int) Int ((I# y) (con I# () (prim mul y k))))) 0 0)))"
+    );
+    let mut p = parse_program(FileId(0), &src).unwrap();
+    assert!(lint::lint_program(&p).is_empty());
+    let st = opt::optimize_with_stats(&mut p).unwrap();
+    let all = print_program(&p);
+    assert!(lint::lint_program(&p).is_empty(), "{all}");
+    assert!(st.fun_args >= 1, "{st:?}");
+    let m = print::print_expr(&p.bind("main").unwrap().expr);
+    assert!(m.contains("sumf$f1") && !m.contains("lam"), "{m}");
+    let copy = p
+        .binds
+        .iter()
+        .find(|b| b.name.starts_with("sumf$f1"))
+        .map(|b| print::print_expr(&b.expr))
+        .unwrap();
+    assert!(!copy.contains("con I#"), "{copy}");
+}
+
+#[test]
+fn opt_keeps_function_arguments_that_change_or_escape() {
+    // `f` is not static: the recursive call passes another function, and
+    // `g` stores its function in a constructor. Neither is copied.
+    let src = format!(
+        "{PRELUDE}(extern arg () Int#)
+         (data Box () (B (-> Int# Int#)))
+         (def h (-> Int# Int#) (lam ((x Int#)) (prim add x 1)))
+         (def f (-> (-> Int# Int#) Int# Int#)
+           (lam ((k (-> Int# Int#)) (i Int#))
+             (case i (c Int#) Int# (0 (k 0)) (_ (f h (prim sub i 1))))))
+         (def g (-> (-> Int# Int#) Int# Box)
+           (lam ((k (-> Int# Int#)) (i Int#))
+             (case i (c Int#) Box (0 (con B () k)) (_ (g k (prim sub i 1))))))
+         (def main Int#
+           (let! (n Int# (extern arg))
+             (case (g h n) (b Box) Int# ((B q) (prim add (f h n) (q 1))))))"
+    );
+    let mut p = parse_program(FileId(0), &src).unwrap();
+    let st = opt::optimize_with_stats(&mut p).unwrap();
+    let all = print_program(&p);
+    assert!(lint::lint_program(&p).is_empty(), "{all}");
+    assert_eq!(st.fun_args, 0, "{all}");
+}

@@ -100,7 +100,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0058](features/FEAT-0058-llvm-optimization-hints.md) | 最適化のヒントを LLVM の属性・メタデータまで運ぶ | done | P1 | 0014, 0021, 0022 |
 | [FEAT-0059](features/FEAT-0059-array-element-specialization.md) | 配列要素の単相化 (UElem の特殊化) | done | P1 | 0041, 0056 |
 | [FEAT-0060](features/FEAT-0060-runtime-lto.md) | ランタイムの高速経路のインライン化 (bitcode と LTO) | todo | P2 | 0014, 0051 |
-| [FEAT-0061](features/FEAT-0061-core-cse-specconstr.md) | 共通部分式除去・ループ不変式の移動・SpecConstr とゼロコストの回帰テスト | todo | P1 | 0041 |
+| [FEAT-0061](features/FEAT-0061-core-cse-specconstr.md) | 共通部分式除去・ループ不変式の移動・SpecConstr とゼロコストの回帰テスト | in-progress | P1 | 0041 |
 | [FEAT-0062](features/FEAT-0062-mir-uniqueness-attrs.md) | 一意性と再利用トークンを MIR の型で区別し引数に nonnull / noalias / readonly を付ける | todo | P2 | 0058 |
 
 

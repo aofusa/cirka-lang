@@ -56,6 +56,9 @@ pub struct Stats {
     pub lifted: usize,
     /// Copies of overloaded functions specialized to constant dictionaries.
     pub specialized: usize,
+    /// Copies of recursive functions specialized to known function
+    /// arguments (`sat`).
+    pub fun_args: usize,
     /// Thunks replaced by eager evaluation (`let!`).
     pub strictified: usize,
     /// Lazy bindings moved into the only `case` alternative using them.
@@ -112,6 +115,18 @@ pub fn optimize_with_stats(p: &mut Program) -> Result<Stats, Diagnostic> {
         }
         st.specialized += n;
         lint_all(p, "specialize")?;
+        simplify_rounds(p, &mut st, &mut next)?;
+    }
+    // Recursive functions called with known functions for parameters they
+    // pass along unchanged (FEAT-0061); a second round reaches the calls in
+    // the copies.
+    for _ in 0..2 {
+        let n = crate::sat::specialize_fun_args(p, &mut next);
+        if n == 0 {
+            break;
+        }
+        st.fun_args += n;
+        lint_all(p, "fun-args")?;
         simplify_rounds(p, &mut st, &mut next)?;
     }
     // Worker/wrapper splits strict functions over boxed numbers; the

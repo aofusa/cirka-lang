@@ -9,6 +9,7 @@ pub mod lint;
 pub mod opt;
 pub mod parse;
 pub mod print;
+pub mod sat;
 pub mod sexp;
 pub mod spec;
 pub mod strict;
