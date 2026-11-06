@@ -214,6 +214,9 @@ struct FnCtx<'a> {
     /// phi incoming values per MIR block: (value list, predecessor label).
     phis: HashMap<usize, Vec<(Vec<String>, String)>>,
     tokens: HashSet<Var>,
+    /// Self tail calls turned into jumps to the loop header: (arguments,
+    /// predecessor label).
+    self_tail: Vec<(Vec<String>, String)>,
 }
 
 impl FnCtx<'_> {
@@ -479,6 +482,7 @@ impl<'m> Gen<'m> {
             cur: String::new(),
             phis: HashMap::new(),
             tokens: HashSet::new(),
+            self_tail: Vec::new(),
         };
         for b in &f.blocks {
             for i in &b.instrs {
@@ -555,10 +559,12 @@ impl<'m> Gen<'m> {
             }
             block_bodies.push(std::mem::take(&mut c.body));
         }
+        let looped = !c.self_tail.is_empty();
+        let in_suffix = if looped { ".in" } else { "" };
         let params: Vec<String> = f
             .params
             .iter()
-            .map(|p| format!("{} {}", llty(f.ty(p.var)), var(p.var)))
+            .map(|p| format!("{} {}{in_suffix}", llty(f.ty(p.var)), var(p.var)))
             .collect();
         // LLVM 18's tail recursion elimination turns `ret` into `ret acc +
         // x` in a function that adds to the result of a call of itself,
@@ -578,6 +584,24 @@ impl<'m> Gen<'m> {
             mangle(&f.name),
             params.join(", ")
         );
+        if looped {
+            // entry → tailrec (the parameters as phis) → bb0.
+            self.out.push_str("entry:\n  br label %tailrec\ntailrec:\n");
+            for (k, p) in f.params.iter().enumerate() {
+                let x = var(p.var);
+                let mut parts = vec![format!("[ {x}.in, %entry ]")];
+                for (vals, pred) in &c.self_tail {
+                    parts.push(format!("[ {}, %{pred} ]", vals[k]));
+                }
+                let _ = writeln!(
+                    self.out,
+                    "  {x} = phi {} {}",
+                    llty(f.ty(p.var)),
+                    parts.join(", ")
+                );
+            }
+            self.out.push_str("  br label %bb0\n");
+        }
         for (bi, body) in block_bodies.iter().enumerate() {
             let _ = writeln!(self.out, "{}:", bb_label(bi));
             // A join block no jump reaches (e.g. after a `panic`) has no
@@ -692,6 +716,14 @@ impl<'m> Gen<'m> {
     fn try_tail(&mut self, c: &mut FnCtx<'_>, rhs: &Rhs) -> bool {
         let f = c.f;
         match rhs {
+            // A self tail call jumps back to the loop header (`tailrec`),
+            // so that LLVM's loop optimizations see a loop (FEAT-0066).
+            Rhs::Call { func, args } if *func == f.name && args.len() == f.params.len() => {
+                let vals = args.iter().map(|a| self.operand(a)).collect();
+                c.self_tail.push((vals, c.cur.clone()));
+                c.line("br label %tailrec");
+                true
+            }
             Rhs::Call { func, args } => {
                 let Some(g) = self.funcs.get(func.as_str()).copied() else {
                     return false;
@@ -1277,6 +1309,13 @@ impl<'m> Gen<'m> {
                     self.emit_panic(c, "no matching switch arm");
                 }
             }
+            Terminator::TailCall { func, args }
+                if *func == f.name && args.len() == f.params.len() =>
+            {
+                let vals = args.iter().map(|a| self.operand(a)).collect();
+                c.self_tail.push((vals, c.cur.clone()));
+                c.line("br label %tailrec");
+            }
             Terminator::TailCall { func, args } => {
                 let g = self.funcs[func.as_str()];
                 let tys = g.param_tys();
@@ -1309,6 +1348,7 @@ impl<'m> Gen<'m> {
             cur: "entry".into(),
             phis: HashMap::new(),
             tokens: HashSet::new(),
+            self_tail: Vec::new(),
         };
         let mut caps = Vec::new();
         for i in 0..ncap {
@@ -1382,6 +1422,7 @@ impl<'m> Gen<'m> {
             cur: "entry".into(),
             phis: HashMap::new(),
             tokens: HashSet::new(),
+            self_tail: Vec::new(),
         };
         let mut call_args = Vec::new();
         for i in 0..tys.len() {
@@ -1699,7 +1740,7 @@ entry:
         let ir = ir();
         // Functions do not unwind while panics abort.
         assert!(
-            ir.contains("define tailcc i64 @\"_C3len\"(ptr %v0, i64 %v1) #0 {"),
+            ir.contains("define tailcc i64 @\"_C3len\"(ptr %v0.in, i64 %v1.in) #0 {"),
             "{ir}"
         );
         assert!(ir.contains("attributes #0 = { nounwind }"), "{ir}");
@@ -1864,5 +1905,46 @@ entry:
             "{ir}"
         );
         assert!(ir.contains("\"disable-tail-calls\"=\"true\""), "{ir}");
+    }
+
+    /// A self tail call jumps back to a loop header whose phis are the
+    /// parameters, so LLVM sees a loop (FEAT-0066).
+    #[test]
+    fn self_tail_calls_become_loops() {
+        let src = "fn sum(n: i64, acc: i64) -> i64 {
+entry:
+  switch n { 0 => done, default => rec }
+done:
+  ret acc
+rec:
+  let m = prim sub(n, 1)
+  let a = prim add(acc, n)
+  tailcall sum(m, a)
+}
+
+fn main() -> i64 {
+entry:
+  let r = call sum(10, 0)
+  ret r
+}
+";
+        let m = cirka_mir::parse::parse(cirka_diagnostics::FileId(0), src).unwrap();
+        let ir = emit(&m, Options { debug_rt: false });
+        assert!(
+            ir.contains("define tailcc i64 @\"_C3sum\"(i64 %v0.in, i64 %v1.in) #0 {"),
+            "{ir}"
+        );
+        assert!(
+            ir.contains(
+                "entry:\n  br label %tailrec\ntailrec:\n  %v0 = phi i64 [ %v0.in, %entry ], "
+            ),
+            "{ir}"
+        );
+        assert!(ir.contains("br label %tailrec"), "{ir}");
+        assert_eq!(
+            ir.matches("musttail call tailcc i64 @\"_C3sum\"").count(),
+            1,
+            "{ir}"
+        );
     }
 }
