@@ -9,3 +9,6 @@ workspace = true
 
 [dependencies]
 cirka-mir.workspace = true
+
+[dev-dependencies]
+cirka-diagnostics.workspace = true

@@ -66,7 +66,10 @@ fn esc_bytes(b: &[u8]) -> String {
 
 /// Runtime functions and their LLVM signatures.
 const RUNTIME_DECLS: &[(&str, &str)] = &[
-    ("cirka_alloc", "ptr @cirka_alloc(i64)"),
+    (
+        "cirka_alloc",
+        "noalias nonnull ptr @cirka_alloc(i64) nounwind",
+    ),
     ("cirka_free_object", "void @cirka_free_object(ptr)"),
     ("cirka_free_raw", "void @cirka_free_raw(ptr)"),
     ("cirka_dup", "void @cirka_dup(ptr)"),
@@ -75,7 +78,10 @@ const RUNTIME_DECLS: &[(&str, &str)] = &[
     ("cirka_drop_reuse", "ptr @cirka_drop_reuse(ptr)"),
     ("cirka_force", "ptr @cirka_force(ptr)"),
     ("cirka_mk_pap", "ptr @cirka_mk_pap(ptr, i64, ptr)"),
-    ("cirka_panic", "void @cirka_panic(ptr, i64) noreturn"),
+    (
+        "cirka_panic",
+        "void @cirka_panic(ptr, i64) cold noreturn nounwind",
+    ),
     ("cirka_bytes_new", "ptr @cirka_bytes_new(i64)"),
     ("cirka_array_new", "ptr @cirka_array_new(i64, ptr)"),
     ("cirka_array_unique", "ptr @cirka_array_unique(ptr)"),
@@ -103,6 +109,10 @@ struct Gen<'m> {
     externs: BTreeMap<String, String>,
     label_counter: usize,
 }
+
+/// TBAA access tags (metadata emitted by `entry_and_cafs`).
+const TBAA_HEADER: &str = ", !tbaa !5";
+const TBAA_FIELD: &str = ", !tbaa !6";
 
 /// Generates the LLVM IR text of a whole program.
 pub fn emit(m: &Module, opts: Options) -> String {
@@ -313,7 +323,7 @@ impl<'m> Gen<'m> {
             self.fresh_label("dup.slow"),
             self.fresh_label("dup.done"),
         );
-        c.line(&format!("{rc} = load i32, ptr {o}, align 8"));
+        c.line(&format!("{rc} = load i32, ptr {o}, align 8{TBAA_HEADER}"));
         c.line(&format!("{pos} = icmp sgt i32 {rc}, 0"));
         c.line(&format!(
             "br i1 {pos}, label %{inc}, label %{slow}, !prof !0"
@@ -321,7 +331,7 @@ impl<'m> Gen<'m> {
         c.label(&inc);
         let rc1 = c.t();
         c.line(&format!("{rc1} = add i32 {rc}, 1"));
-        c.line(&format!("store i32 {rc1}, ptr {o}, align 8"));
+        c.line(&format!("store i32 {rc1}, ptr {o}, align 8{TBAA_HEADER}"));
         c.line(&format!("br label %{done}"));
         c.label(&slow);
         let neg = c.t();
@@ -347,7 +357,7 @@ impl<'m> Gen<'m> {
         let other = self.fresh_label("drop.other");
         let shared = self.fresh_label("drop.shared");
         let done = self.fresh_label("drop.done");
-        c.line(&format!("{rc} = load i32, ptr {o}, align 8"));
+        c.line(&format!("{rc} = load i32, ptr {o}, align 8{TBAA_HEADER}"));
         c.line(&format!("{gt1} = icmp sgt i32 {rc}, 1"));
         c.line(&format!(
             "br i1 {gt1}, label %{dec}, label %{slow}, !prof !0"
@@ -355,7 +365,7 @@ impl<'m> Gen<'m> {
         c.label(&dec);
         let rc1 = c.t();
         c.line(&format!("{rc1} = sub i32 {rc}, 1"));
-        c.line(&format!("store i32 {rc1}, ptr {o}, align 8"));
+        c.line(&format!("store i32 {rc1}, ptr {o}, align 8{TBAA_HEADER}"));
         c.line(&format!("br label %{done}"));
         c.label(&slow);
         let is1 = c.t();
@@ -376,13 +386,19 @@ impl<'m> Gen<'m> {
 
     fn store_field(c: &mut FnCtx<'_>, base: &str, slot: usize, ty: Ty, val: &str) {
         let p = Self::gep(c, base, 8 + 8 * slot);
-        c.line(&format!("store {} {val}, ptr {p}, align 8", llty(ty)));
+        c.line(&format!(
+            "store {} {val}, ptr {p}, align 8{TBAA_FIELD}",
+            llty(ty)
+        ));
     }
 
     fn load_field(c: &mut FnCtx<'_>, base: &str, slot: usize, ty: Ty) -> String {
         let p = Self::gep(c, base, 8 + 8 * slot);
         let r = c.t();
-        c.line(&format!("{r} = load {}, ptr {p}, align 8", llty(ty)));
+        c.line(&format!(
+            "{r} = load {}, ptr {p}, align 8{TBAA_FIELD}",
+            llty(ty)
+        ));
         r
     }
 
@@ -484,7 +500,7 @@ impl<'m> Gen<'m> {
             .collect();
         let _ = writeln!(
             self.out,
-            "define tailcc {} {}({}) {{",
+            "define tailcc {} {}({}) #0 {{",
             llty(f.ret),
             mangle(&f.name),
             params.join(", ")
@@ -568,7 +584,7 @@ impl<'m> Gen<'m> {
             self.fresh_label("dspec.shared"),
             self.fresh_label("dspec.done"),
         );
-        c.line(&format!("{rc} = load i32, ptr {xo}, align 8"));
+        c.line(&format!("{rc} = load i32, ptr {xo}, align 8{TBAA_HEADER}"));
         c.line(&format!("{is1} = icmp eq i32 {rc}, 1"));
         c.line(&format!("br i1 {is1}, label %{uniq}, label %{shared}"));
         c.label(&uniq);
@@ -717,7 +733,7 @@ impl<'m> Gen<'m> {
                     }
                 };
                 c.line(&format!(
-                    "store i64 {}, ptr {obj}, align 8",
+                    "store i64 {}, ptr {obj}, align 8{TBAA_HEADER}",
                     header_word(1, def.tag, def.nptr(), kind::CON)
                 ));
                 for (i, a) in args.iter().enumerate() {
@@ -730,7 +746,10 @@ impl<'m> Gen<'m> {
                 let def = m.ctor(*ctor);
                 let ty = def.fields[*field as usize].ty;
                 let p = Self::gep(c, &var(*obj), 8 + 8 * def.slot(*field as usize));
-                c.line(&format!("{dst} = load {}, ptr {p}, align 8", llty(ty)));
+                c.line(&format!(
+                    "{dst} = load {}, ptr {p}, align 8{TBAA_FIELD}",
+                    llty(ty)
+                ));
             }
             Rhs::Call { func, args } => {
                 let Some(g) = self.funcs.get(func.as_str()).copied() else {
@@ -773,7 +792,7 @@ impl<'m> Gen<'m> {
                     )
                 };
                 c.line(&format!(
-                    "store i64 {}, ptr {obj}, align 8",
+                    "store i64 {}, ptr {obj}, align 8{TBAA_HEADER}",
                     header_word(1, tag, nptr, k)
                 ));
                 Self::store_field(c, &obj, 0, Ty::Ptr, &stub);
@@ -978,7 +997,10 @@ impl<'m> Gen<'m> {
             PtrEq => cmp(c, "icmp eq", "ptr"),
             IsUnique => {
                 let rc = c.t();
-                c.line(&format!("{rc} = load i32, ptr {}, align 8", a[0]));
+                c.line(&format!(
+                    "{rc} = load i32, ptr {}, align 8{TBAA_HEADER}",
+                    a[0]
+                ));
                 let t = c.t();
                 c.line(&format!("{t} = icmp eq i32 {rc}, 1"));
                 c.line(&format!("{dst} = zext i1 {t} to i64"));
@@ -1124,7 +1146,9 @@ impl<'m> Gen<'m> {
                 let (val, ty) = if sty == Ty::Ptr {
                     let tp = Self::gep(c, &s, 4);
                     let tag = c.t();
-                    c.line(&format!("{tag} = load i16, ptr {tp}, align 4"));
+                    // No `!range`: it made mandelbrot 10% slower and helped
+                    // nowhere (FEAT-0058).
+                    c.line(&format!("{tag} = load i16, ptr {tp}, align 4{TBAA_HEADER}"));
                     (tag, "i16")
                 } else {
                     (s.clone(), llty(sty))
@@ -1194,7 +1218,7 @@ impl<'m> Gen<'m> {
         call_args.extend(args.iter().cloned());
         if !borrowed {
             let rc = c.t();
-            c.line(&format!("{rc} = load i32, ptr %env, align 8"));
+            c.line(&format!("{rc} = load i32, ptr %env, align 8{TBAA_HEADER}"));
             let u = c.t();
             c.line(&format!("{u} = icmp eq i32 {rc}, 1"));
             c.line(&format!("br i1 {u}, label %unique, label %shared"));
@@ -1232,7 +1256,7 @@ impl<'m> Gen<'m> {
         }
         let _ = writeln!(
             self.out,
-            "define internal tailcc ptr {stub}(ptr %env{}) {{\nentry:\n{}}}\n",
+            "define internal tailcc ptr {stub}(ptr %env{}) #0 {{\nentry:\n{}}}\n",
             args.iter().map(|a| format!(", {a}")).collect::<String>(),
             c.body
         );
@@ -1273,7 +1297,7 @@ impl<'m> Gen<'m> {
         c.line(&format!("ret ptr {r}"));
         let _ = writeln!(
             self.out,
-            "define internal ptr {stub}(ptr %t) {{\nentry:\n{}}}\n",
+            "define internal ptr {stub}(ptr %t) #0 {{\nentry:\n{}}}\n",
             c.body
         );
     }
@@ -1290,7 +1314,7 @@ impl<'m> Gen<'m> {
         };
         let _ = writeln!(
             s,
-            "define internal tailcc ptr @cirka_apply_{n}(ptr %f, {}) {{",
+            "define internal tailcc ptr @cirka_apply_{n}(ptr %f, {}) #0 {{",
             targs(&args)
         );
         s.push_str("entry:\n");
@@ -1466,7 +1490,18 @@ impl<'m> Gen<'m> {
                 _ => self.out.push_str("  ret i64 0\n}\n"),
             }
         }
-        self.out.push_str("\n!0 = !{!\"branch_weights\", i32 2000, i32 1}\n!1 = !{!\"branch_weights\", i32 1, i32 2000}\n");
+        self.out.push_str(concat!(
+            "\n!0 = !{!\"branch_weights\", i32 2000, i32 1}\n",
+            "!1 = !{!\"branch_weights\", i32 1, i32 2000}\n",
+            // TBAA (07-backend.md §2.1): object headers and fields never
+            // overlap within a live object.
+            "!2 = !{!\"cirka\"}\n",
+            "!3 = !{!\"cirka.header\", !2, i64 0}\n",
+            "!4 = !{!\"cirka.field\", !2, i64 0}\n",
+            "!5 = !{!3, !3, i64 0}\n",
+            "!6 = !{!4, !4, i64 0}\n",
+        ));
+        self.out.push_str("attributes #0 = { nounwind }\n");
     }
 }
 
@@ -1503,5 +1538,74 @@ fn c_param(t: cirka_mir::CTy) -> String {
         I8 | I16 => format!("{} signext", c_ll(t)),
         U8 | U16 => format!("{} zeroext", c_ll(t)),
         _ => c_ll(t).to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SRC: &str = "type L { Nil = 0 {}, Cons = 1 { h: i64, t: ptr } }
+
+fn len(l: ptr @borrowed, n: i64) -> i64 {
+entry:
+  switch l { L.Nil => nil, L.Cons => cons }
+nil:
+  ret n
+cons:
+  let t = proj l L.Cons.t
+  let n1 = prim add(n, 1)
+  tailcall len(t, n1)
+}
+
+fn main() -> i64 {
+entry:
+  let e = alloc L.Nil()
+  let l = alloc L.Cons(7, e)
+  let r = call len(l, 0)
+  drop l
+  ret r
+}
+";
+
+    fn ir() -> String {
+        let m = cirka_mir::parse::parse(cirka_diagnostics::FileId(0), SRC).unwrap();
+        emit(&m, Options { debug_rt: false })
+    }
+
+    /// Optimization hints (16-performance.md §3, FEAT-0058).
+    #[test]
+    fn emits_optimization_hints() {
+        let ir = ir();
+        // Functions do not unwind while panics abort.
+        assert!(
+            ir.contains("define tailcc i64 @\"_C3len\"(ptr %v0, i64 %v1) #0 {"),
+            "{ir}"
+        );
+        assert!(ir.contains("attributes #0 = { nounwind }"), "{ir}");
+        // Fresh objects alias nothing; panics are cold.
+        assert!(
+            ir.contains("declare noalias nonnull ptr @cirka_alloc(i64) nounwind"),
+            "{ir}"
+        );
+        assert!(ir.contains("cold noreturn nounwind"), "{ir}");
+        // Headers and fields have distinct TBAA tags.
+        assert!(ir.contains("load i32, ptr %v"), "{ir}");
+        assert!(
+            ir.lines()
+                .any(|l| l.contains("load i32") && l.ends_with("!tbaa !5")),
+            "{ir}"
+        );
+        assert!(
+            ir.lines()
+                .any(|l| l.contains("load ptr") && l.ends_with("!tbaa !6")),
+            "{ir}"
+        );
+        assert!(ir.contains("!5 = !{!3, !3, i64 0}") && ir.contains("!6 = !{!4, !4, i64 0}"));
+        assert!(
+            ir.lines()
+                .any(|l| l.contains("load i16") && l.ends_with("!tbaa !5")),
+            "{ir}"
+        );
     }
 }

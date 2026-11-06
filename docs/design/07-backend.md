@@ -22,6 +22,8 @@
 | `switch` | `switch i16 tag` (ヘッダの tag を load) |
 | `force` | `kind == THUNK/IND` の判定をインライン、評価が必要な場合のみ `call @cirka_force` |
 
+- 属性・メタデータ (FEAT-0058、16-performance.md §3): 生成するすべての関数に `nounwind` (panic=abort の間)。オブジェクトのヘッダ (RC・タグ) と
+  フィールドの load/store に別々の `!tbaa` を付ける (生きているオブジェクトの中で重ならない)。`cirka_alloc` の結果は `noalias nonnull`、`cirka_panic` は `cold`。
 - 名前マングリング: `_C<モジュール長><モジュール名><名前長><名前>`(Rust v0 風。`achc` / `cirka` の両方で `--demangle` を用意)。
 - 呼び出し規約 `tailcc` はすべて x86_64 で `musttail` を保証する。aCHC / CirkaLang から生成した関数どうしの呼び出しはすべて `tailcc`。
 - アンワインド導入後 (FEAT-0040) は、drop が必要な値を持つ呼び出しを `invoke` にし、landing pad で drop して `resume`。

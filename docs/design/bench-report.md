@@ -197,3 +197,25 @@ FEAT-0056 (値渡しの引数・局所関数の unboxing)、BUG-0011、`UElem` �
 - aCHC の mandelbrot `plain.hs` は局所ループが持ち上げ・特殊化されるようになったが、`go` の引数が失敗しうる遅延束縛 (`read` した引数) に依存するので
   サンクが残る (Haskell の意味から来る制約)。
 - 次回の `scripts/bench.sh` による計測で上の表を更新する。
+
+## LLVM の属性・メタデータ (FEAT-0058)
+
+計測: 同じプログラムの LLVM IR から FEAT-0058 の属性・メタデータを取り除いた版 (前) と付けた版 (後) を clang -O2 でビルドし、
+交互に 15 回ずつ実行した最良値 (Docker 外の 4 コアのホスト、2026-11-06)。比は 後/前。
+
+| ベンチ | 前 (s) | 後 (s) | 比 |
+|--------|-------:|-------:|---:|
+| array-sort `own.chs` | 0.554 | 0.537 | 0.97 |
+| binary-trees `main.cirka` | 11.26 | 11.39 | 1.01 |
+| binary-trees `own.chs` | 10.90 | 10.43 | 0.96 |
+| fannkuch-redux `plain.hs` | 2.89 | 2.97 | 1.03 |
+| mandelbrot `main.cirka` (`!range` を除いた最終版) | 0.157 | 0.157 | 1.00 |
+| n-body `own.chs` | 2.27 | 2.27 | 1.00 |
+| n-body `plain.hs` | 12.02 | 11.50 | 0.96 |
+| spectral-norm `own.chs` | 1.44 | 1.42 | 0.99 |
+| spectral-norm `plain.hs` | 0.446 | 0.422 | 0.95 |
+
+- 効果は ±5% の範囲で、大きくはない。今の差の主因は確保の呼び出し (`cirka_alloc` は常に関数呼び出し)・箱・サンクで、
+  別名の情報で効く場所 (ループの中の load/store の並べ替え・ベクトル化) がまだ少ないためである。
+- タグの load に付けた `!range` は mandelbrot を 10% 遅くし (分岐の配置が変わる)、ほかで効かなかったので外した。
+- 引数の `nonnull`・`noalias`・`readonly` は、MIR に一意性と再利用トークンの区別がないため付けていない (FEAT-0062)。
