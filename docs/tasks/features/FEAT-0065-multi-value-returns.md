@@ -1,6 +1,6 @@
 # FEAT-0065: 複数の値の返却 (組の結果の CPR)
 
-- 状態: todo
+- 状態: in-progress
 - トラック: 共通基盤
 - マイルストーン: M2
 - 優先度: P1
@@ -22,7 +22,7 @@ worker/wrapper の CPR を、1 つの構築子だけを持つ型 (組・`Ur`・`
 
 ## 作業内容
 
-- [ ] 設計 (06-ir.md と ADR)
+- [x] 設計 (06-ir.md §1.7・§2.2、ADR-049)
 - [ ] Core・MIR・LLVM の表現と検証器
 - [ ] worker/wrapper の CPR を組に広げる
 - [ ] fannkuch-redux `own.chs`・array-sort `own.chs`・n-body `own.chs` で計測
