@@ -14,6 +14,7 @@ pub mod sexp;
 pub mod spec;
 pub mod strict;
 pub mod ty;
+pub mod uniq;
 pub mod unpack;
 pub mod ww;
 

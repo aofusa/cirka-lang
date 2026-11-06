@@ -726,3 +726,50 @@ fn opt_keeps_function_arguments_that_change_or_escape() {
     assert!(lint::lint_program(&p).is_empty(), "{all}");
     assert_eq!(st.fun_args, 0, "{all}");
 }
+
+// ---- FEAT-0063: redundant uniqueness checks ----
+
+#[test]
+fn opt_removes_checks_of_values_already_unique() {
+    // `c1` is the result of a check and is only written in place before
+    // being checked again: the second check is `c1` itself.
+    let src = format!(
+        "{PRELUDE}(extern buf () Bytes)
+         (def main Int#
+           (let! (a Bytes (extern buf))
+             (let! (c1 Bytes (prim bytes_unique a))
+               (let! (u1 Unit# (prim bytes_set c1 0 1))
+                 (let! (c2 Bytes (prim bytes_unique c1))
+                   (let! (u2 Unit# (prim bytes_set c2 1 2))
+                     (prim bytes_get c2 0)))))))"
+    );
+    let (m, st) = opt_main(&src);
+    assert_eq!(st.unique_checks, 1, "{m}");
+    assert_eq!(m.matches("bytes_unique").count(), 1, "{m}");
+}
+
+#[test]
+fn opt_keeps_checks_after_sharing() {
+    // `c1` is passed to a C function (which may keep it) before the second
+    // check, and in `g` the checked value is still used after the check,
+    // so the check must copy: both checks stay.
+    let src = format!(
+        "{PRELUDE}(extern buf () Bytes)
+         (extern keep (Bytes) Unit#)
+         (def g (-> Bytes Int#)
+           (lam ((a Bytes))
+             (let! (c1 Bytes (prim bytes_unique a))
+               (let! (c2 Bytes (prim bytes_unique c1))
+                 (let! (u Unit# (prim bytes_set c2 0 1))
+                   (prim bytes_get c1 0))))))
+         (def main Int#
+           (let! (a Bytes (extern buf))
+             (let! (c1 Bytes (prim bytes_unique a))
+               (let! (u1 Unit# (extern keep c1))
+                 (let! (c2 Bytes (prim bytes_unique c1))
+                   (let! (u2 Unit# (prim bytes_set c2 1 2))
+                     (prim add (prim bytes_get c2 0) (g (extern buf)))))))))"
+    );
+    let (m, st) = opt_main(&src);
+    assert_eq!(st.unique_checks, 0, "{m}");
+}

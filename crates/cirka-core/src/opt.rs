@@ -61,6 +61,8 @@ pub struct Stats {
     pub fun_args: usize,
     /// Thunks replaced by eager evaluation (`let!`).
     pub strictified: usize,
+    /// Uniqueness checks of values known to be unique (`uniq`).
+    pub unique_checks: usize,
     /// Lazy bindings moved into the only `case` alternative using them.
     pub floated_in: usize,
     /// Bindings restored because Lint rejected them (release builds only).
@@ -145,6 +147,10 @@ pub fn optimize_with_stats(p: &mut Program) -> Result<Stats, Diagnostic> {
     st.floated_in = crate::strict::float_in(p);
     if st.floated_in > 0 {
         lint_all(p, "float-in")?;
+    }
+    st.unique_checks = crate::uniq::redundant_unique(p);
+    if st.unique_checks > 0 {
+        lint_all(p, "uniq")?;
     }
     st.removed_globals += dce_globals(p);
     lint_all(p, "dce")?;

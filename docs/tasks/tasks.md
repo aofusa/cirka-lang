@@ -102,6 +102,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0060](features/FEAT-0060-runtime-lto.md) | ランタイムの高速経路のインライン化 (bitcode と LTO) | todo | P2 | 0014, 0051 |
 | [FEAT-0061](features/FEAT-0061-core-cse-specconstr.md) | 共通部分式除去・ループ不変式の移動・SpecConstr とゼロコストの回帰テスト | in-progress | P1 | 0041 |
 | [FEAT-0062](features/FEAT-0062-mir-uniqueness-attrs.md) | 一意性と再利用トークンを MIR の型で区別し引数に nonnull / noalias / readonly を付ける | todo | P2 | 0058 |
+| [FEAT-0063](features/FEAT-0063-numeric-loop-codegen.md) | 数値ループの生成コード (libm の組み込み関数・一意性検査のインライン化・要素の TBAA・冗長な一意性検査の除去) | done | P1 | 0058 |
 
 
 ## aCHC
