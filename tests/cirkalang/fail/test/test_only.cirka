@@ -1,0 +1,8 @@
+main : IO ()
+main = printInt helper
+
+tests where
+  helper : Int
+  helper = 1
+
+  test "uses helper" = printInt helper

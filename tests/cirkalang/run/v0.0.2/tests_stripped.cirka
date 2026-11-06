@@ -1,0 +1,10 @@
+-- Normal builds drop tests right after parsing (FEAT-0216): this ill-typed
+-- test and the `tests` block with unknown names cost nothing.
+main : IO ()
+main = putStrLn "no tests here"
+
+test "ill-typed, never checked in builds" = 1 + "one"
+
+tests where
+  unused : Int
+  unused = notDefinedAnywhere

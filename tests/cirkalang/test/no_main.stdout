@@ -1,0 +1,5 @@
+running 2 tests
+test Main "twice applies the function twice" ... ok
+test Main "test is still an ordinary name" ... ok
+
+test result: ok. 2 passed; 0 failed; 0 filtered out

@@ -209,6 +209,11 @@ pub fn frontend(
             DUMPS.join(", ")
         ))]));
     }
+    if opts.tests == cirka_driver::pipeline::SourceTests::Run {
+        return Some(Err(vec![Diagnostic::error(
+            "`test` is not supported for Haskell sources (tests in source files are a CirkaLang feature)",
+        )]));
+    }
     let mut pkg_opts = None;
     let (main_file, mut roots, name) =
         if path.is_dir() || path.file_name().is_some_and(|f| f == "achc.toml") {

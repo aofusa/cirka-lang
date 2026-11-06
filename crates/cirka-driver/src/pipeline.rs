@@ -53,8 +53,23 @@ impl Stage {
     }
 }
 
+/// What the frontend does with tests written in source files
+/// (CirkaLang: 12-cirkalang.md §11).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum SourceTests {
+    /// Remove them (`build`, `run`).
+    #[default]
+    Strip,
+    /// Keep and check them (`check`).
+    Check,
+    /// Build a test executable (`test`): its `main` lists the tests with
+    /// `--list` and runs test number N given as the argument `N`.
+    Run,
+}
+
 #[derive(Clone, Debug)]
 pub struct Options {
+    pub tests: SourceTests,
     /// 0: no Core optimizations, clang -O0; 1 / 2: optimizations.
     pub opt_level: u8,
     pub runtime: RuntimeKind,
@@ -73,6 +88,7 @@ pub struct Options {
 impl Options {
     pub fn new(name: &str) -> Options {
         Options {
+            tests: SourceTests::Strip,
             opt_level: 2,
             runtime: RuntimeKind::Release,
             dumps: Vec::new(),

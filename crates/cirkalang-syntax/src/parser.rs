@@ -380,6 +380,41 @@ impl Parser {
                 );
                 return Err(());
             }
+            Tok::LIdent(path, w)
+                if path.is_empty() && w == "test" && matches!(self.peek_at(1), Tok::Str(_)) =>
+            {
+                self.bump();
+                let name_span = self.span();
+                let Tok::Str(name) = self.bump().tok else {
+                    unreachable!()
+                };
+                self.expect(&Tok::Equals, "`=`")?;
+                let body = self.expr()?;
+                DeclKind::Test {
+                    name,
+                    name_span,
+                    body,
+                }
+            }
+            Tok::LIdent(path, w)
+                if path.is_empty()
+                    && w == "tests"
+                    && matches!(self.peek_at(1), Tok::Kw(Kw::Where)) =>
+            {
+                self.bump();
+                self.bump();
+                let ds = self.block(|p| p.decl())?;
+                for d in &ds {
+                    if let DeclKind::Tests(_) = d.kind {
+                        self.errs.push(
+                            Diagnostic::error("`tests` blocks cannot be nested")
+                                .with_code("E1003")
+                                .with_label(d.span, "move this block to the top level"),
+                        );
+                    }
+                }
+                DeclKind::Tests(ds)
+            }
             _ => {
                 if self.is_sig_start() {
                     let mut names = vec![self.def_name()?];

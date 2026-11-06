@@ -103,6 +103,14 @@ pub enum DeclKind {
         name_span: Span,
         ty: Expr,
     },
+    /// `test "name" = body` (12-cirkalang.md §11): `body : IO ()`.
+    Test {
+        name: String,
+        name_span: Span,
+        body: Expr,
+    },
+    /// `tests where { decls }`: declarations that exist only in test builds.
+    Tests(Vec<Decl>),
 }
 
 /// `(π x y : A)` in a data declaration's parameter list.

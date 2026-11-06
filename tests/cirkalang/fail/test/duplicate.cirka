@@ -1,0 +1,7 @@
+main : IO ()
+main = pure ()
+
+test "same" = pure ()
+
+tests where
+  test "same" = pure ()

@@ -10,7 +10,8 @@ pub mod package;
 
 use cirka_core::Program;
 use cirka_diagnostics::{Diagnostic, SourceMap, Style, render};
-use cirka_driver::pipeline::{Options, dump_frontend};
+use cirka_driver::pipeline::{Options, SourceTests, dump_frontend};
+use cirkalang_resolve::TestMode;
 use std::path::{Path, PathBuf};
 
 /// The version of the language implemented (`edition` in `cirka.toml`).
@@ -64,7 +65,14 @@ pub fn compile(
         sm,
         main_file,
         roots,
-        &cirkalang_resolve::Options::default(),
+        &cirkalang_resolve::Options {
+            tests: match opts.tests {
+                SourceTests::Strip => TestMode::Strip,
+                SourceTests::Check => TestMode::Check,
+                SourceTests::Run => TestMode::Run,
+            },
+            ..Default::default()
+        },
     )?;
     dump_frontend(
         opts,

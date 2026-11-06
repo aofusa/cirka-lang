@@ -1,0 +1,11 @@
+-- A module without `main` can be tested; every test passes.
+module Main
+
+twice : (Int -> Int) -> Int -> Int
+twice f x = f (f x)
+
+test "twice applies the function twice" =
+  if twice (\x => x + 3) 1 == 7 then pure () else panic "twice"
+
+test "test is still an ordinary name" =
+  let test = 5 in if test == 5 then pure () else panic "test"

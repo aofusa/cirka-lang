@@ -259,6 +259,16 @@ showFloat x = primFloatToStr x
 showChar : Char -> String
 showChar c = primCharToStr c
 
+-- Assertions for tests in source files (12-cirkalang.md §11): a failure
+-- panics, which fails the test.
+assert : Bool -> String -> IO ()
+assert b msg = if b then pure () else panic ("assertion failed: " ++ msg)
+
+assertEqInt : Int -> Int -> IO ()
+assertEqInt x y =
+  if x == y then pure ()
+  else panic ("assertion failed: " ++ showInt x ++ " /= " ++ showInt y)
+
 -- Nat
 plus : Nat -> Nat -> Nat
 plus Z m = m

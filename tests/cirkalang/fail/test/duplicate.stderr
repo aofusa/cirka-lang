@@ -1,0 +1,8 @@
+error[E1112]: duplicate test `same`
+ --> tests/cirkalang/fail/test/duplicate.cirka:7:8
+  |
+4 | test "same" = pure ()
+  |      ------ first defined here
+...
+7 |   test "same" = pure ()
+  |        ^^^^^^ a test with this name is already defined

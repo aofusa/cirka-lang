@@ -168,3 +168,97 @@ fn ambiguity_and_qualified_names() {
     let names: Vec<&str> = p.modules.iter().map(|m| m.name.as_str()).collect();
     assert_eq!(names, ["Prelude", "A", "B", "Main"]);
 }
+
+const TEST_PRELUDE: &str = "
+prim Int : Type
+prim String : Type
+prim Bool : Type
+prim IO : Type -> Type
+prim argCount : IO Int
+prim getArg : Int -> IO String
+prim strEq : String -> String -> Bool
+prim putStrLn : String -> IO ()
+prim pure : a -> IO a
+prim exit : Int -> IO a
+prim (==) : Int -> Int -> Bool
+";
+
+fn run_tests(files: &[(&str, &str)], mode: TestMode) -> Result<Program, String> {
+    let mut map: HashMap<String, String> = files
+        .iter()
+        .map(|(n, t)| (n.to_string(), t.to_string()))
+        .collect();
+    let text = map.remove("Main").unwrap();
+    let mut sm = SourceMap::new();
+    let id = sm.add("Main.cirka".to_string(), text.clone());
+    let opts = Options {
+        tests: mode,
+        ..Default::default()
+    };
+    resolve_program(&mut sm, id, &text, &mut MemLoader(map), &opts).map_err(|errs| {
+        errs.iter()
+            .map(|e| format!("{}: {}", e.code.clone().unwrap_or_default(), e.message))
+            .collect::<Vec<_>>()
+            .join("\n")
+    })
+}
+
+#[test]
+fn collects_tests_of_all_modules_and_generates_main() {
+    let files = [
+        ("Prelude", TEST_PRELUDE),
+        (
+            "Lib",
+            "module Lib\nprivate k : Int\nk = 1\ntest \"lib\" = pure ()\n",
+        ),
+        (
+            "Main",
+            "import Lib\nmain : IO ()\nmain = pure ()\ntest \"main\" = pure ()\n",
+        ),
+    ];
+    let p = run_tests(&files, TestMode::Strip).unwrap();
+    assert!(p.tests.is_empty());
+    assert_eq!(p.info(p.main.unwrap()).name, "main");
+    let p = run_tests(&files, TestMode::Check).unwrap();
+    let names: Vec<(&str, &str)> = p
+        .tests
+        .iter()
+        .map(|t| (t.module.as_str(), t.name.as_str()))
+        .collect();
+    assert_eq!(names, [("Lib", "lib"), ("Main", "main")]);
+    assert_eq!(p.info(p.main.unwrap()).name, "main");
+    let p = run_tests(&files, TestMode::Run).unwrap();
+    let m = p.info(p.main.unwrap());
+    assert_eq!((m.module.as_str(), m.name.as_str()), ("Main", "main$test"));
+    // The test main refers to the private test definitions of `Lib`.
+    let main_def = p
+        .modules
+        .iter()
+        .flat_map(|m| &m.items)
+        .find_map(|it| match it {
+            Item::Def(d) if Some(d.name) == p.main => Some(d),
+            _ => None,
+        })
+        .unwrap();
+    let mut uses = Vec::new();
+    global_uses(&main_def.clauses[0].rhs, &mut uses);
+    for t in &p.tests {
+        assert!(uses.iter().any(|(g, _)| *g == t.def), "{}", t.name);
+    }
+}
+
+#[test]
+fn test_only_names_are_rejected_outside_tests() {
+    let files = [
+        ("Prelude", TEST_PRELUDE),
+        (
+            "Main",
+            "main : IO ()\nmain = pure ()\nf : Int\nf = h\ntests where\n  h : Int\n  h = 1\n",
+        ),
+    ];
+    let e = run_tests(&files, TestMode::Check).unwrap_err();
+    assert!(e.contains("E1113"), "{e}");
+    // In normal builds the name does not exist at all.
+    let e = run_tests(&files, TestMode::Strip).unwrap_err();
+    assert!(e.contains("E1101"), "{e}");
+}

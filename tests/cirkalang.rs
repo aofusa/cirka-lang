@@ -71,7 +71,10 @@ fn cirkalang_modules() {
     for n in names {
         let main = dir.join(&n).join("Main.cirka");
         let mut sm = SourceMap::new();
-        let opts = cirkalang_resolve::Options { prelude: false };
+        let opts = cirkalang_resolve::Options {
+            prelude: false,
+            ..Default::default()
+        };
         let r = cirkalang_resolve::resolve_file(&mut sm, &main, &[], &opts);
         let root = format!("{}/", repo_root().display());
         let (path, text) = match r {
@@ -96,10 +99,18 @@ fn cirkalang_modules() {
 
 /// Compiles a CirkaLang program to Core with the frontend of `cirka`.
 fn compile_cirka(path: &std::path::Path) -> Result<(cirka_core::Program, String), String> {
+    compile_cirka_with(path, cirka_driver::pipeline::SourceTests::Strip)
+}
+
+fn compile_cirka_with(
+    path: &std::path::Path,
+    tests: cirka_driver::pipeline::SourceTests,
+) -> Result<(cirka_core::Program, String), String> {
     let mut sm = SourceMap::new();
     let mut roots = vec![path.parent().unwrap().to_path_buf()];
     roots.extend(cirka::lib_roots());
-    let opts = cirka_driver::pipeline::Options::new("test");
+    let mut opts = cirka_driver::pipeline::Options::new("test");
+    opts.tests = tests;
     let name = path.file_stem().unwrap().to_string_lossy().to_string();
     let render_diags = |sm: &SourceMap, ds: &[cirka_diagnostics::Diagnostic]| {
         let root = repo_root().display().to_string() + "/";
@@ -138,6 +149,10 @@ fn cirkalang_run() {
         };
         if !warnings.is_empty() {
             return Outcome::Fail(format!("unexpected warnings:\n{warnings}"));
+        }
+        // Normal builds contain no tests (FEAT-0216).
+        if let Some(b) = core.binds.iter().find(|b| b.name.contains("test$")) {
+            return Outcome::Fail(format!("test `{}` left in a normal build", b.name));
         }
         let stdin = std::fs::read(c.sibling("stdin")).unwrap_or_default();
         let want_code: i32 = std::fs::read_to_string(c.sibling("exitcode"))
@@ -194,12 +209,13 @@ fn cirkalang_run() {
     });
 }
 
-/// Ill-typed programs under tests/cirkalang/fail/{type,own}/ report the
-/// diagnostics in `.stderr`.
+/// Ill-typed programs under tests/cirkalang/fail/{type,own,test}/ report
+/// the diagnostics in `.stderr` (`test/` is checked with its tests kept, as
+/// by `cirka check`).
 #[test]
 fn cirkalang_type_errors() {
     let mut cases = Vec::new();
-    for d in ["type", "own"] {
+    for d in ["type", "own", "test"] {
         cases.extend(discover(
             &repo_root().join("tests/cirkalang/fail").join(d),
             &["cirka"],
@@ -207,7 +223,12 @@ fn cirkalang_type_errors() {
     }
     assert!(!cases.is_empty());
     run_suite("cirkalang-type-fail", &cases, |c| {
-        let out = match compile_cirka(&c.path) {
+        let tests = if c.path.parent().is_some_and(|d| d.ends_with("test")) {
+            cirka_driver::pipeline::SourceTests::Check
+        } else {
+            cirka_driver::pipeline::SourceTests::Strip
+        };
+        let out = match compile_cirka_with(&c.path, tests) {
             Ok(_) => return Outcome::Fail("the program was accepted".into()),
             Err(e) => e,
         };

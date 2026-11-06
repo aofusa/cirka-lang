@@ -1,0 +1,33 @@
+-- Tests in the source file (FEAT-0216): `cirka test` runs each test in its
+-- own process; panics and non-zero exits fail a test.
+module Main
+
+digits : Int -> List Int
+digits n = if n < 10 then [n] else append (digits (n / 10)) [n % 10]
+
+private square : Int -> Int
+square x = x * x
+
+main : IO ()
+main = printInt (length (digits 1203))
+
+test "digits returns each decimal digit" = do
+  assertEqInt (length (digits 1203)) 4
+  assert (sum (digits 1203) == 6) "sum"
+
+tests where
+  sample : List Int
+  sample = [1, 2, 3]
+
+  test "private functions can be tested" =
+    assert (square 7 == 49 && sum sample == 6) "square"
+
+  test "a failed assertion fails the test" = assertEqInt (square 2) 5
+
+  test "a panic fails the test" = panic "boom"
+
+  test "a non-zero exit fails the test" = do
+    putStrLn "exiting"
+    (exit 3 : IO ()) -- annotated: BUG-0013
+
+  test "output of a passing test is hidden" = putStrLn "hidden"

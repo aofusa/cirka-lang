@@ -1,0 +1,23 @@
+running 6 tests
+test Main "digits returns each decimal digit" ... ok
+test Main "private functions can be tested" ... ok
+test Main "a failed assertion fails the test" ... FAILED
+test Main "a panic fails the test" ... FAILED
+test Main "a non-zero exit fails the test" ... FAILED
+test Main "output of a passing test is hidden" ... ok
+
+failures:
+
+---- Main "a failed assertion fails the test" ----
+digits: assertion failed: 4 /= 5
+exit code 1
+
+---- Main "a panic fails the test" ----
+digits: boom
+exit code 1
+
+---- Main "a non-zero exit fails the test" ----
+exiting
+exit code 3
+
+test result: FAILED. 3 passed; 3 failed; 0 filtered out

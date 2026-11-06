@@ -53,6 +53,11 @@ fn decl(d: &Decl) -> String {
             format!("({p}def {name} ({}) {})", ps.join(" "), expr(rhs))
         }
         DeclKind::Prim { name, ty, .. } => format!("({p}prim {name} {})", expr(ty)),
+        DeclKind::Test { name, body, .. } => format!("({p}test {name:?} {})", expr(body)),
+        DeclKind::Tests(ds) => {
+            let ds: Vec<String> = ds.iter().map(decl).collect();
+            format!("({p}tests {})", ds.join(" "))
+        }
         DeclKind::Data(dd) => {
             let mut s = format!("({p}data {}", dd.name);
             for pr in &dd.params {

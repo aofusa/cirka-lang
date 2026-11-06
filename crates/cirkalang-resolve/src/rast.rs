@@ -42,8 +42,20 @@ pub struct Program {
     pub globals: Vec<GlobalInfo>,
     /// Modules in dependency order (imports first).
     pub modules: Vec<Module>,
-    /// `main` of the root module.
+    /// `main` of the root module (in test builds, the generated test main).
     pub main: Option<GName>,
+    /// The tests of all modules, in dependency order (empty unless tests
+    /// are kept: 12-cirkalang.md §11).
+    pub tests: Vec<Test>,
+}
+
+/// A `test "name" = e` declaration, defined as the private global `def`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Test {
+    pub module: String,
+    pub name: String,
+    pub def: GName,
+    pub span: Span,
 }
 
 impl Program {

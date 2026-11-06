@@ -125,3 +125,47 @@ fn check_and_dump() {
     assert_eq!(u.code, 2);
     assert!(u.stderr.contains("unknown command"));
 }
+
+/// `cirka test` on tests/cirkalang/test/*.cirka (FEAT-0216): each test runs
+/// in its own process; the report is `.stdout` and the exit code
+/// `.exitcode` (default 0). `--filter=` selects tests by name.
+#[test]
+fn cirka_source_tests() {
+    cirka_testkit::init();
+    cirka_driver::native::ensure_runtime_built().unwrap();
+    let (achc, cirka) = bins();
+    let cases = discover(&repo_root().join("tests/cirkalang/test"), &["cirka"]);
+    assert!(!cases.is_empty());
+    run_suite("cirka-test", &cases, |c| {
+        let work = cirka_testkit::work_dir("cirka-test", &c.name);
+        let bd = format!("--build-dir={}", work.display());
+        let dir = c.path.parent().unwrap();
+        let file = c.path.file_name().unwrap().to_str().unwrap();
+        let out = run(cirka, &["test", &bd, file], dir);
+        let want: i32 = std::fs::read_to_string(c.sibling("exitcode"))
+            .map(|s| s.trim().parse().unwrap())
+            .unwrap_or(0);
+        if out.code != want {
+            return Outcome::Fail(format!(
+                "exit {} (expected {want})\n{}{}",
+                out.code, out.stdout, out.stderr
+            ));
+        }
+        if let Err(e) = cirka_testkit::check_expect(&c.sibling("stdout"), &out.stdout) {
+            return Outcome::Fail(e);
+        }
+        // Filtering, and the same file still builds and runs as a program.
+        let f = run(cirka, &["test", &bd, "--filter=twice", file], dir);
+        if !f.stdout.contains("filtered out") || f.code != 0 && want == 0 {
+            return Outcome::Fail(format!("--filter: {}{}", f.stdout, f.stderr));
+        }
+        Outcome::Pass
+    });
+    // Haskell sources have no tests in source files.
+    let hs = repo_root().join("tests/achc/run/h1/fact.hs");
+    let work = cirka_testkit::work_dir("cirka-test", "achc");
+    let bd = format!("--build-dir={}", work.display());
+    let out = run(achc, &["test", &bd, hs.to_str().unwrap()], &work);
+    assert_eq!(out.code, 1, "{}", out.stderr);
+    assert!(out.stderr.contains("not supported"), "{}", out.stderr);
+}

@@ -127,7 +127,7 @@ default-extensions = []
 cirka build [--release] [-o out]            # cirka.toml に従う
 cirka run [file.cirka] [-- args...]
 cirka check                                 # 型検査・所有権・全域性・証明 (コード生成しない。ソース内のテストも検査)
-cirka test [path] [--filter s]              # ソース内のテストをテストごとに別プロセスで実行 (12-cirkalang.md §11)
+cirka test [--filter=s] [path]              # ソース内のテストをテストごとに別プロセスで実行 (12-cirkalang.md §11)
 cirka bindgen header.h -o foo.cirka         # C ヘッダから extern 宣言を生成
 cirka --version                             # 例: CirkaLang v0.0.1
 ```

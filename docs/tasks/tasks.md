@@ -207,7 +207,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0212](features/FEAT-0212-cl-raii-errors.md) | RAII (Drop/Release) とエラー処理 | todo | P0 | 0210 |
 | [FEAT-0213](features/FEAT-0213-cl-ffi-std.md) | FFI と libc ベースの std (CUI 向け) | todo | P0 | 0212 |
 | [FEAT-0214](features/FEAT-0214-cl-packages.md) | パッケージと依存 (cirka.toml) | todo | P1 | 0205 |
-| [FEAT-0216](features/FEAT-0216-cl-inline-tests.md) | ソース内のテスト (test 宣言と cirka test) | todo | P1 | 0207 |
+| [FEAT-0216](features/FEAT-0216-cl-inline-tests.md) | ソース内のテスト (test 宣言と cirka test) | done | P1 | 0207 |
 | [FEAT-0215](features/FEAT-0215-cl-release-v002.md) | CirkaLang v0.0.2 リリース | todo | P0 | 0211, 0213, 0214, 0216 |
 
 ### CirkaLang v0.0.3 借用・リージョン・性能
@@ -289,5 +289,6 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [BUG-0010](bugs/BUG-0010-test-header-after-pragma.md) | テストのヘッダが `{-# LANGUAGE #-}` の後にあると読まれない | done | major | FEAT-0125 |
 | [BUG-0011](bugs/BUG-0011-borrow-monad-overhead.md) | Borrow モナドのループが線形な受け渡しより約 130 倍遅い | done | major | FEAT-0043 |
 | [BUG-0012](bugs/BUG-0012-dead-join-undefined-param.md) | どこからも飛ばれない合流ブロックの引数が LLVM IR で未定義になる | done | major | BUG-0011 |
+| [BUG-0013](bugs/BUG-0013-cl-do-last-poly-io.md) | CirkaLang の do の最後の文に exit などの多相な IO を書くと型エラーになる | todo | minor | FEAT-0203 |
 
 新しいチケットは `features/_TEMPLATE.md` / `bugs/_TEMPLATE.md` をコピーして作成する。

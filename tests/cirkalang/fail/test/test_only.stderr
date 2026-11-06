@@ -1,0 +1,6 @@
+error[E1113]: `helper` is defined only for tests
+ --> tests/cirkalang/fail/test/test_only.cirka:2:17
+  |
+2 | main = printInt helper
+  |                 ^^^^^^ used outside the tests here
+  = help: move `helper` out of the `tests` block, or this use into a test

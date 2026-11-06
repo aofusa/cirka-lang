@@ -57,14 +57,31 @@ impl Loader for MemLoader {
     }
 }
 
+/// What to do with the tests in source files (12-cirkalang.md §11).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum TestMode {
+    /// Remove them right after parsing (`build`, `run`).
+    #[default]
+    Strip,
+    /// Keep and check them (`check`).
+    Check,
+    /// Keep them and make `main` run the test chosen by the command line
+    /// (`test`).
+    Run,
+}
+
 pub struct Options {
     /// Import `Prelude` implicitly (when it can be found).
     pub prelude: bool,
+    pub tests: TestMode,
 }
 
 impl Default for Options {
     fn default() -> Options {
-        Options { prelude: true }
+        Options {
+            prelude: true,
+            tests: TestMode::Strip,
+        }
     }
 }
 
@@ -82,6 +99,8 @@ pub fn resolve_program(
         order: Vec::new(),
         errs: Vec::new(),
         visiting: Vec::new(),
+        tests: opts.tests,
+        test_decls: HashMap::new(),
     };
     let (m, errs) = cirkalang_syntax::parse(root, root_text);
     st.errs.extend(errs);
@@ -105,6 +124,7 @@ pub fn resolve_program(
         globals: r.globals.clone(),
         modules: Vec::new(),
         main: None,
+        tests: Vec::new(),
     };
     for name in st.order.clone() {
         let m = r.module(&name);
@@ -116,6 +136,13 @@ pub fn resolve_program(
         .get("main")
         .copied()
         .filter(|g| r.globals[g.0 as usize].kind == GKind::Def);
+    if opts.tests != TestMode::Strip {
+        r.check_test_only(&prog);
+        prog.tests = r.tests(&st.order);
+    }
+    if opts.tests == TestMode::Run {
+        r.test_main(&mut prog, &root_name);
+    }
     let rerrs = std::mem::take(&mut r.errs);
     drop(r);
     let mut errs = st.errs;
@@ -168,6 +195,9 @@ struct State {
     order: Vec<String>,
     errs: Vec<Diagnostic>,
     visiting: Vec<String>,
+    tests: TestMode,
+    /// Per module: its tests and the names defined only for tests.
+    test_decls: HashMap<String, cirkalang_syntax::testing::Expanded>,
 }
 
 impl State {
@@ -178,7 +208,7 @@ impl State {
         loader: &mut dyn Loader,
         name: String,
         file: FileId,
-        m: ast::Module,
+        mut m: ast::Module,
         prelude: bool,
         expected: Option<Span>,
     ) {
@@ -195,6 +225,13 @@ impl State {
             );
         }
         let _ = expected;
+        if self.tests == TestMode::Strip {
+            cirkalang_syntax::testing::strip(&mut m);
+        } else {
+            let mut ex = cirkalang_syntax::testing::expand(&mut m);
+            self.errs.append(&mut ex.errors);
+            self.test_decls.insert(name.clone(), ex);
+        }
         let mut imports: Vec<(String, Span)> = m
             .imports
             .iter()
@@ -285,6 +322,162 @@ struct Resolver<'s> {
 }
 
 impl<'s> Resolver<'s> {
+    /// E1113: a declaration outside the tests uses a name defined only for
+    /// tests (it would not exist in normal builds).
+    fn check_test_only(&mut self, prog: &Program) {
+        for m in &prog.modules {
+            let Some(ex) = self.st.test_decls.get(&m.name) else {
+                continue;
+            };
+            for it in &m.items {
+                let Item::Def(d) = it else { continue };
+                if ex.test_only.contains(&self.globals[d.name.0 as usize].name) {
+                    continue;
+                }
+                let mut uses = Vec::new();
+                global_uses(&d.sig, &mut uses);
+                for c in &d.clauses {
+                    global_uses(&c.rhs, &mut uses);
+                }
+                for (g, sp) in uses {
+                    let gi = &self.globals[g.0 as usize];
+                    if gi.module == m.name && ex.test_only.contains(&gi.name) {
+                        let name = gi.name.clone();
+                        self.errs.push(
+                            Diagnostic::error(format!(
+                                "`{name}` is defined only for tests"
+                            ))
+                            .with_code("E1113")
+                            .with_label(sp, "used outside the tests here")
+                            .with_help(format!(
+                                "move `{name}` out of the `tests` block, or this use into a test"
+                            )),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// The tests of the modules in `order`.
+    fn tests(&self, order: &[String]) -> Vec<Test> {
+        let mut out = Vec::new();
+        for m in order {
+            let Some(ex) = self.st.test_decls.get(m) else {
+                continue;
+            };
+            for t in &ex.tests {
+                if let Some(&g) = self.tables[m].own.get(&t.def) {
+                    out.push(Test {
+                        module: m.clone(),
+                        name: t.name.clone(),
+                        def: g,
+                        span: t.span,
+                    });
+                }
+            }
+        }
+        out
+    }
+
+    /// Replaces `main` by the test main of the root module:
+    ///
+    /// ```text
+    /// main$test = do n <- argCount
+    ///                if n == 0 then exit 2 else do
+    ///                  a <- getArg 0
+    ///                  if strEq a "--list" then do { putStrLn "M\tname"; ...; pure () }
+    ///                  else if strEq a "0" then test$0 else ... else exit 2
+    /// ```
+    fn test_main(&mut self, prog: &mut Program, root: &str) {
+        let sp = Span::new(self.st.loaded[root].file, 0, 0);
+        let prelude = |n: &str| prog.find("Prelude", n);
+        let names = [
+            "argCount", "getArg", "strEq", "putStrLn", "pure", "exit", "==", "IO",
+        ];
+        let gs: Vec<Option<GName>> = names.iter().map(|n| prelude(n)).collect();
+        let Some(gs) = gs.into_iter().collect::<Option<Vec<GName>>>() else {
+            self.errs.push(
+                Diagnostic::error("running tests needs the Prelude")
+                    .with_code("E1114")
+                    .with_label(sp, "the Prelude was not found or not imported"),
+            );
+            return;
+        };
+        let [arg_count, get_arg, str_eq, put_str_ln, pure, exit, eq, io] = gs[..] else {
+            unreachable!()
+        };
+        let e = |k: ExprKind| Expr { kind: k, span: sp };
+        let g = |n: GName| e(ExprKind::Global(n));
+        let app = |f: Expr, args: Vec<Expr>| {
+            args.into_iter()
+                .fold(f, |f, a| e(ExprKind::App(Box::new(f), Box::new(a))))
+        };
+        let str_lit = |s: String| e(ExprKind::Lit(Lit::Str(s)));
+        let int = |n: u128| e(ExprKind::Lit(Lit::Int(n)));
+        let local = |s: &str| e(ExprKind::Local(s.to_string()));
+        let io_unit = || app(g(io), vec![e(ExprKind::Unit)]);
+        // `(exit 2 : IO ())`: fixes the result type of `exit`.
+        let fail = e(ExprKind::Ann(
+            Box::new(app(g(exit), vec![int(2)])),
+            Box::new(io_unit()),
+        ));
+        let mut list: Vec<Stmt> = prog
+            .tests
+            .iter()
+            .map(|t| {
+                Stmt::Expr(app(
+                    g(put_str_ln),
+                    vec![str_lit(format!("{}\t{}", t.module, t.name))],
+                ))
+            })
+            .collect();
+        list.push(Stmt::Expr(app(g(pure), vec![e(ExprKind::Unit)])));
+        let mut run = fail.clone();
+        for (i, t) in prog.tests.iter().enumerate().rev() {
+            run = e(ExprKind::If(
+                Box::new(app(g(str_eq), vec![local("a"), str_lit(i.to_string())])),
+                Box::new(g(t.def)),
+                Box::new(run),
+            ));
+        }
+        let run = e(ExprKind::If(
+            Box::new(app(
+                g(str_eq),
+                vec![local("a"), str_lit("--list".to_string())],
+            )),
+            Box::new(e(ExprKind::Do(list))),
+            Box::new(run),
+        ));
+        let body = e(ExprKind::Do(vec![
+            Stmt::Bind("n".into(), sp, g(arg_count)),
+            Stmt::Expr(e(ExprKind::If(
+                Box::new(app(g(eq), vec![local("n"), int(0)])),
+                Box::new(fail),
+                Box::new(e(ExprKind::Do(vec![
+                    Stmt::Bind("a".into(), sp, app(g(get_arg), vec![int(0)])),
+                    Stmt::Expr(run),
+                ]))),
+            ))),
+        ]));
+        let name = self.declare(root, "main$test", GKind::Def, sp, true);
+        let def = Def {
+            name,
+            sig: io_unit(),
+            clauses: vec![Clause {
+                pats: Vec::new(),
+                rhs: body,
+                span: sp,
+            }],
+            span: sp,
+        };
+        if let Some(m) = prog.modules.iter_mut().find(|m| m.name == root) {
+            m.items.push(Item::Def(def));
+        }
+        prog.globals = self.globals.clone();
+        prog.main = Some(name);
+    }
+
     fn new(st: &'s State) -> Resolver<'s> {
         Resolver {
             st,
@@ -384,7 +577,10 @@ impl<'s> Resolver<'s> {
                     } => {
                         self.declare(name, n, GKind::Prim, *name_span, d.private);
                     }
-                    ast::DeclKind::Fixity { .. } => {}
+                    // Tests are removed or expanded when the module is loaded.
+                    ast::DeclKind::Fixity { .. }
+                    | ast::DeclKind::Test { .. }
+                    | ast::DeclKind::Tests(_) => {}
                 }
             }
         }
@@ -601,7 +797,10 @@ impl<'s> Resolver<'s> {
                     let t = self.signature(ty);
                     items.push(Item::Prim(g, t));
                 }
-                ast::DeclKind::Fixity { .. } => {}
+                // Tests are removed or expanded when the module is loaded.
+                ast::DeclKind::Fixity { .. }
+                | ast::DeclKind::Test { .. }
+                | ast::DeclKind::Tests(_) => {}
             }
         }
         for d in defs {
@@ -1146,3 +1345,76 @@ pub mod print;
 
 #[cfg(test)]
 mod tests;
+
+/// The globals used in `e`, with the spans of the uses.
+fn global_uses(e: &Expr, out: &mut Vec<(GName, Span)>) {
+    let mut go = |x: &Expr| global_uses(x, out);
+    match &e.kind {
+        ExprKind::Global(g) => out.push((*g, e.span)),
+        ExprKind::Local(_)
+        | ExprKind::Lit(_)
+        | ExprKind::Hole(_)
+        | ExprKind::Wildcard
+        | ExprKind::Type
+        | ExprKind::LType
+        | ExprKind::Unit => {}
+        ExprKind::App(f, a) => {
+            go(f);
+            go(a);
+        }
+        ExprKind::Lam(bs, b) => {
+            for t in bs.iter().filter_map(|b| b.ty.as_ref()) {
+                go(t);
+            }
+            go(b);
+        }
+        ExprKind::Let(bs, b) => {
+            for lb in bs {
+                if let Some(t) = &lb.ty {
+                    go(t);
+                }
+                go(&lb.rhs);
+            }
+            go(b);
+        }
+        ExprKind::Case(s, alts) => {
+            go(s);
+            for a in alts {
+                go(&a.rhs);
+            }
+        }
+        ExprKind::If(c, t, f) => {
+            go(c);
+            go(t);
+            go(f);
+        }
+        ExprKind::Do(ss) => {
+            for s in ss {
+                match s {
+                    Stmt::Bind(_, _, x) | Stmt::Expr(x) => go(x),
+                    Stmt::Let(bs) => {
+                        for lb in bs {
+                            if let Some(t) = &lb.ty {
+                                go(t);
+                            }
+                            go(&lb.rhs);
+                        }
+                    }
+                }
+            }
+        }
+        ExprKind::Pi { dom, cod, .. } => {
+            go(dom);
+            go(cod);
+        }
+        ExprKind::Ann(x, t) => {
+            go(x);
+            go(t);
+        }
+        ExprKind::Tuple(xs) | ExprKind::List(xs) => {
+            for x in xs {
+                go(x);
+            }
+        }
+    }
+}

@@ -6,6 +6,7 @@ pub mod layout;
 pub mod lexer;
 pub mod parser;
 pub mod print;
+pub mod testing;
 
 use cirka_diagnostics::{Diagnostic, FileId};
 

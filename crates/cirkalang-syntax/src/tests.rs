@@ -239,3 +239,45 @@ fn parser_never_panics() {
         let _ = parse_expr(FileId(0), &s);
     }
 }
+
+#[test]
+fn parses_tests_in_source_files() {
+    let src = "f : Int\nf = 1\ntest \"one\" = check f\ntests where\n  h : Int\n  h = 2\n  test \"two\" = check h\n";
+    let out = parse_ok(src);
+    assert!(out.contains("(test \"one\""), "{out}");
+    assert!(out.contains("(tests (sig (h)"), "{out}");
+    assert!(out.contains("(test \"two\""), "{out}");
+    // `test` without a string literal is an ordinary name.
+    let out = parse_ok("test : Int -> Int\ntest x = x\n");
+    assert!(out.contains("(def test (x)"), "{out}");
+    // Nested `tests` blocks are rejected.
+    let (_, errs) = parse(FileId(0), "tests where\n  tests where\n    x = 1\n");
+    assert!(
+        errs.iter().any(|e| e.message.contains("nested")),
+        "{errs:?}"
+    );
+}
+
+#[test]
+fn strips_or_expands_tests() {
+    let src =
+        "f : Int\nf = 1\ntest \"one\" = f\ntests where\n  h : Int\n  h = 2\n  test \"two\" = h\n";
+    let (mut m, _) = parse(FileId(0), src);
+    testing::strip(&mut m);
+    assert_eq!(m.decls.len(), 2);
+    let (mut m, _) = parse(FileId(0), src);
+    let ex = testing::expand(&mut m);
+    assert!(ex.errors.is_empty());
+    let names: Vec<(&str, &str)> = ex
+        .tests
+        .iter()
+        .map(|t| (t.name.as_str(), t.def.as_str()))
+        .collect();
+    assert_eq!(names, [("one", "test$0"), ("two", "test$1")]);
+    for n in ["h", "test$0", "test$1"] {
+        assert!(ex.test_only.contains(n), "{n}");
+    }
+    assert!(!ex.test_only.contains("f"));
+    let out = print::print_module(&m);
+    assert!(out.contains("(private sig (test$0) (IO ()))"), "{out}");
+}
