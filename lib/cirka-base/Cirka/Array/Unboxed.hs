@@ -31,7 +31,7 @@ module Cirka.Array.Unboxed
 
 import Cirka.Base hiding (length, read, (!), toList)
 import Cirka.Ownership (Unique, unique, freeze, Ur (..))
-import Cirka.Prim (Bytes, BytesPair (..), primUArrNew, primUArrSize, primUArrSizeU, primUArrThaw, primUArrIndexInt, primUArrReadInt, primUArrWriteInt, primUArrIndexDbl, primUArrReadDbl, primUArrWriteDbl, primUArrWriteIntShared, primUArrWriteDblShared)
+import Cirka.Prim (Bytes, BytesPair (..), primDoubleBits, primUArrNew, primUArrSize, primUArrSizeU, primUArrThaw, primUArrIndexInt, primUArrReadInt, primUArrWriteInt, primUArrIndexDbl, primUArrReadDbl, primUArrWriteDbl, primUArrWriteIntShared, primUArrWriteDblShared)
 import Unsafe.Linear (toLinear)
 import Unsafe.Borrow (Ref, MutRef, Borrow, refValue, mutRefValue, borrowIO)
 
@@ -49,18 +49,23 @@ class UElem e where
   cirkaUWrite :: Bytes -> Int -> e -> Bytes
   -- | In-place store through a mutable borrow.
   cirkaUWriteShared :: Bytes -> Int -> e -> IO ()
+  -- | Whether the element is stored as zero bits, as in a fresh array.
+  cirkaUZero :: e -> Bool
 
 instance UElem Int where
   cirkaUIndex = primUArrIndexInt
   cirkaURead = primUArrReadInt
   cirkaUWrite = primUArrWriteInt
   cirkaUWriteShared = primUArrWriteIntShared
+  cirkaUZero x = x == 0
 
 instance UElem Double where
   cirkaUIndex = primUArrIndexDbl
   cirkaURead = primUArrReadDbl
   cirkaUWrite = primUArrWriteDbl
   cirkaUWriteShared = primUArrWriteDblShared
+  -- By its bits: `-0.0 == 0` holds, but it is not stored as zero bits.
+  cirkaUZero x = primDoubleBits x == 0
 
 instance UElem Char where
   cirkaUIndex b i = toEnum (primUArrIndexInt b i)
@@ -68,6 +73,7 @@ instance UElem Char where
     BytesPair b' n -> BytesPair b' (toEnum n)
   cirkaUWrite b i c = primUArrWriteInt b i (fromEnum c)
   cirkaUWriteShared b i c = primUArrWriteIntShared b i (fromEnum c)
+  cirkaUZero c = fromEnum c == 0
 
 instance UElem Bool where
   cirkaUIndex b i = primUArrIndexInt b i /= 0
@@ -75,10 +81,15 @@ instance UElem Bool where
     BytesPair b' n -> BytesPair b' (n /= 0)
   cirkaUWrite b i x = primUArrWriteInt b i (if x then 1 else 0)
   cirkaUWriteShared b i x = primUArrWriteIntShared b i (if x then 1 else 0)
+  cirkaUZero x = not x
 
--- | A fresh array of `n` elements, all `x`.
+-- | A fresh array of `n` elements, all `x`. A fresh array is zeroed, so an
+-- element of zero bits needs no writes. Without elements, `x` stays
+-- unevaluated.
 newArray :: UElem e => Int -> e -> Unique (UArray e)
-newArray n x = fill0 (unique (UArray (primUArrNew n))) 0
+newArray n x
+  | n > 0 && cirkaUZero x = unique (UArray (primUArrNew n))
+  | otherwise = fill0 (unique (UArray (primUArrNew n))) 0
   where
     fill0 u i
       | i >= n = u
