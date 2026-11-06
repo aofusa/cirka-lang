@@ -3,6 +3,7 @@
 //! DSL and the optimization passes.
 
 pub mod build;
+pub mod cpr;
 pub mod expr;
 pub mod io;
 pub mod lint;

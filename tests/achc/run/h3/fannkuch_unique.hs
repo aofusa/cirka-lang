@@ -2,12 +2,12 @@
 {-# LANGUAGE BangPatterns #-}
 -- ghc: skip
 -- opt-levels: 2
--- max-allocs: 50000
+-- max-allocs: 1000
 -- max-array-copies: 0
 -- fannkuch-redux (n = 7) over unique unboxed arrays, as bench/fannkuch-redux/own.chs
--- (FEAT-0064): the pairs returned by inlined reads and the accumulators
--- leave no allocation per array access (about 9 per permutation remain:
--- the tuples returned by copy/flips/next).
+-- (FEAT-0064, FEAT-0065): no allocation per permutation (the tuples returned
+-- by copy/flips/next are multiple results; 143 allocations in all, about
+-- 270,000 before FEAT-0064).
 module Main where
 
 import Cirka.Ownership

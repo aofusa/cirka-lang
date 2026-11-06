@@ -59,6 +59,8 @@ pub struct Stats {
     /// Copies of recursive functions specialized to known function
     /// arguments (`sat`).
     pub fun_args: usize,
+    /// Functions split to return the fields of a constructed product.
+    pub product_results: usize,
     /// Thunks replaced by eager evaluation (`let!`).
     pub strictified: usize,
     /// Uniqueness checks of values known to be unique (`uniq`).
@@ -139,15 +141,35 @@ pub fn optimize_with_stats(p: &mut Program) -> Result<Stats, Diagnostic> {
         lint_all(p, "worker-wrapper")?;
         simplify_rounds(p, &mut st, &mut next)?;
     }
+    // Functions returning a constructed product return its fields
+    // (FEAT-0065); the inlined wrappers meet the cases at the call sites.
+    st.product_results = crate::cpr::product_results(p, &mut next);
+    if st.product_results > 0 {
+        lint_all(p, "cpr")?;
+        simplify_rounds(p, &mut st, &mut next)?;
+        // The inlined wrappers pass unboxed values where boxes were: a
+        // second split unboxes the parameters that became evaluated.
+        let split = crate::ww::worker_wrapper(p, &mut next);
+        if split > 0 {
+            st.worker_wrapper += split;
+            lint_all(p, "worker-wrapper")?;
+            simplify_rounds(p, &mut st, &mut next)?;
+        }
+    }
     st.strictified = crate::strict::strictify(p, &mut next);
     if st.strictified > 0 {
         lint_all(p, "strictify")?;
         simplify_rounds(p, &mut st, &mut next)?;
     }
-    st.floated_in = crate::strict::float_in(p, &mut next);
-    if st.floated_in > 0 {
+    // Copies scrutinized in their alternative become strict; a second
+    // round then sinks what only the other alternatives still use.
+    for _ in 0..2 {
+        let n = crate::strict::float_in(p, &mut next);
+        if n == 0 {
+            break;
+        }
+        st.floated_in += n;
         lint_all(p, "float-in")?;
-        // Copies scrutinized in their alternative become strict.
         simplify_rounds(p, &mut st, &mut next)?;
     }
     st.unique_checks = crate::uniq::redundant_unique(p);
@@ -728,8 +750,15 @@ fn inline_candidates(p: &Program) -> HashMap<String, Expr> {
         let once = uses.get(b.name.as_str()) == Some(&1);
         // A wrapper of the worker/wrapper split only calls its worker: it
         // is always inlined, even though the worker may call it back.
-        let wrapper =
-            p.bind(&format!("{}$w", b.name)).is_some() || crate::io::is_wrapper(&b.name, body);
+        let wrapper = p.bind(&format!("{}$w", b.name)).is_some()
+            || p.bind(&format!("{}$c", b.name)).is_some()
+            || crate::io::is_wrapper(&b.name, body);
+        // A worker returning an unboxed tuple stays a call: its returns may
+        // only be taken apart by a `case` on the call (06-ir.md §1.7). Its
+        // wrappers (which only unbox and call) are inlined.
+        if crate::cpr::returns_utup(&b.ty) && !wrapper {
+            continue;
+        }
         if wrapper || ((small || once) && !recursive(&b.name)) {
             out.insert(b.name.clone(), b.expr.clone());
         }

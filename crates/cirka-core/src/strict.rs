@@ -628,6 +628,15 @@ fn float_expr(e: Expr, n: &mut usize, next: &mut u32) -> Expr {
             let body = float_expr(*body, n, next);
             sink(b, r, body, n, next)
         }
+        // A constructor of atoms is a value: binding it strictly or lazily
+        // is the same (FEAT-0065: the boxes rebuilt by a product wrapper).
+        Expr::LetStrict(b, r, body)
+            if b.mult == Mult::Many
+                && matches!(&*r, Expr::Con(_, _, a) if a.iter().all(Expr::is_atom)) =>
+        {
+            let body = float_expr(*body, n, next);
+            sink(b, *r, body, n, next)
+        }
         e => map_children(e, &mut |c| float_expr(c, n, next)),
     }
 }

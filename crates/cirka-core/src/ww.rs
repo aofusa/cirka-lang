@@ -484,7 +484,9 @@ pub fn worker_wrapper(p: &mut Program, next: &mut u32) -> usize {
     let evaluated = evaluated_params(p);
     let mut plans = Vec::new();
     for b in &p.binds {
-        if b.name == "main" || b.name.ends_with("$w") {
+        // Workers, and functions already split (a later round).
+        if b.name == "main" || b.name.ends_with("$w") || p.bind(&format!("{}$w", b.name)).is_some()
+        {
             continue;
         }
         let (tvs, xs, body) = split_fun(&b.expr);

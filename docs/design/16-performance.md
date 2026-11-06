@@ -39,7 +39,7 @@ Rust は安全性の一部を実行時の検査で担保し、最適化はクレ
 | 高階関数・クロージャ | インライン化・特殊化・λ 持ち上げ | 済 (FEAT-0041, 0056)。残るものは FEAT-0061 |
 | 借用 | 実行時の表現なし (ポインタだけ、RC 操作なし) | aCHC は済 (FEAT-0021)。CirkaLang は FEAT-0220 |
 | 一意性・線形性 | 破壊的更新、`noalias` | 更新は済 (FEAT-0022)。`noalias` は FEAT-0058 |
-| タプル・`Maybe`/`Option`・`Result` の返り値 | worker/wrapper (CPR)、IO の結果の unboxing、複数の値の返却 | 一部済 (FEAT-0056, 0064)。FEAT-0057, 0065 |
+| タプル・`Maybe`/`Option`・`Result` の返り値 | worker/wrapper (CPR)、IO の結果の unboxing、複数の値の返却 | 済 (FEAT-0056, 0064, 0065)。IO の結果は FEAT-0057 |
 | 多相な配列 | 要素型ごとの単相化 (箱なしの格納) | FEAT-0059 |
 | リスト・イテレータの連鎖 | 融合 | FEAT-0055 |
 | 洗練型・契約 | 証明済みの検査を除去 | FEAT-0234 |
@@ -79,7 +79,7 @@ Rust は安全性の一部を実行時の検査で担保し、最適化はクレ
 | Core | IO の状態トークン | 済 (BUG-0011、ADR-046) |
 | Core | IO の結果の unboxing | FEAT-0057 |
 | Core | インライン化した読み出しの組の除去 (`let!` の連鎖を通す case の移動)、float-in の拡張 | 済 (FEAT-0064) |
-| Core / MIR / LLVM | 複数の値の返却 (組・`Ur` の結果の CPR) | FEAT-0065 |
+| Core / MIR / LLVM | 複数の値の返却 (組・`Ur` の結果の CPR) | 済 (FEAT-0065) |
 | Core | リスト融合 | FEAT-0055 |
 | Core | 配列要素の単相化 (`UElem`) | FEAT-0059 |
 | Core | 静的な関数引数での特殊化 (関数を受け取る再帰関数の写し。高階関数の箱を消す) | 済 (FEAT-0061) |

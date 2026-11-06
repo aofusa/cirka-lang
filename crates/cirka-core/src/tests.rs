@@ -821,3 +821,55 @@ fn float_in_passes_lazy_lets_and_copies_forced_bindings() {
     assert!(m.contains("(_ (let ((b"), "{m}");
     assert_eq!(m.matches("(prim add x 1)").count(), 2, "{m}");
 }
+
+// ---- FEAT-0065: constructed product results ----
+
+#[test]
+fn opt_returns_products_as_unboxed_tuples() {
+    // `go` returns a pair of boxed Ints on every path: its worker returns
+    // the two Int#s, and `main` takes them apart without a `P` or `I#`.
+    let src = format!(
+        "{PRELUDE}(extern arg () Int#)
+         (def go (-> Int# Int# Int# (Pair Int Int))
+           (lam ((i Int#) (a Int#) (b Int#))
+             (case (prim ge i 10) (c Int#) (Pair Int Int)
+               (0 (go (prim add i 1) (prim add a i) (prim mul b 2)))
+               (_ (con P (Int Int) (con I# () a) (con I# () b))))))
+         (def main Int#
+           (case (go (extern arg) 0 1) (r (Pair Int Int)) Int#
+             ((P x y) (case x (s Int) Int# ((I# u) (case y (t Int) Int# ((I# v) (prim add u v))))))))"
+    );
+    let mut p = parse_program(FileId(0), &src).unwrap();
+    assert!(lint::lint_program(&p).is_empty());
+    let st = opt::optimize_with_stats(&mut p).unwrap();
+    let all = print_program(&p);
+    assert!(lint::lint_program(&p).is_empty(), "{all}");
+    assert!(st.product_results >= 1, "{st:?}\n{all}");
+    let w = p
+        .binds
+        .iter()
+        .find(|b| b.name.starts_with("go") && b.name.ends_with("$c"));
+    let w = w.unwrap_or_else(|| panic!("{all}"));
+    assert_eq!(
+        w.ty.to_string().matches("UTup2 Int# Int#").count(),
+        1,
+        "{all}"
+    );
+    let m = print::print_expr(&p.bind("main").unwrap().expr);
+    assert!(!m.contains("con P") && !m.contains("con I#"), "{m}");
+}
+
+#[test]
+fn lint_rejects_misplaced_unboxed_tuples() {
+    // A worker's unboxed tuple bound to a variable instead of taken apart.
+    let src = format!(
+        "{PRELUDE}(data UTup2 (a b) (UTup2 a b))
+         (def w (-> Int# (UTup2 Int# Int#)) (lam ((i Int#)) (con UTup2 (Int# Int#) i i)))
+         (def main Int#
+           (let! (r (UTup2 Int# Int#) (w 1))
+             (case r (s (UTup2 Int# Int#)) Int# ((UTup2 a b) a))))"
+    );
+    let p = parse_program(FileId(0), &src).unwrap();
+    let errs = lint::render_errors(&lint::lint_program(&p));
+    assert!(errs.contains("unboxed tuple"), "{errs}");
+}

@@ -251,6 +251,7 @@ impl<'p> Linter<'p> {
             if !t.alpha_eq(&b.ty) {
                 return Err(format!("declared type {} but the body has type {t}", b.ty));
             }
+            crate::cpr::check_placement(self.p, b)?;
             Ok(())
         })();
         if let Err(m) = r {
@@ -355,6 +356,14 @@ impl<'p> Linter<'p> {
                         return Ok(ek);
                     }
                     return Ok(k);
+                }
+                if crate::cpr::is_utup(c) {
+                    // Unboxed tuples (06-ir.md §1.7) hold values of any kind
+                    // and are never bound: kind #.
+                    for a in args {
+                        self.type_kind(a)?;
+                    }
+                    return Ok(Kind::Unboxed);
                 }
                 let Some(d) = self.p.data(c) else {
                     return Err(format!("unknown type constructor `{c}`"));
@@ -526,7 +535,8 @@ impl<'p> Linter<'p> {
                 }
                 for (a, (_, pk)) in targs.iter().zip(&d.params) {
                     let ak = self.kind(a)?;
-                    if !ak.sub(pk) {
+                    // Unboxed tuples take arguments of any kind.
+                    if !ak.sub(pk) && !crate::cpr::is_utup(c) {
                         return Err(format!(
                             "type argument `{a}` of `{c}` has kind {ak}, expected {pk}"
                         ));

@@ -14,6 +14,7 @@
 | 関数 | `define tailcc <ret> @<mangled>(...)` |
 | `tailcall` | `musttail call tailcc ...` + `ret` (末尾呼び出し保証) |
 | `call` (非末尾) | `call tailcc` |
+| 複数の結果を返す関数 (`-> (ptr, i64)`、FEAT-0065) | 構造体を返す `define tailcc { ptr, i64 }`。`ret (a, b)` は `insertvalue`、`let (a, b) = call` は `call` と `extractvalue` |
 | `extern f(...)` | `call ccc` (C ABI。構造体の値渡しは `clang` の ABI 規則に従って展開)。C シグネチャ付きなら引数を C の型へ (`trunc`/`inttoptr`/`fptrunc`)、結果を `i64`/`double` へ (`sext`/`zext`/`ptrtoint`/`fpext`) 変換する |
 | `dup x` | インライン: `rc = load i32; if rc > 0 { store rc+1 } else if rc < 0 { atomicrmw sub } ` (0 は不死で何もしない) |
 | `drop x` | インライン: `rc > 1 → store rc-1`、`rc == 1 → call @cirka_free_object`、`rc < 0 → call @cirka_dec_ref_slow` |
@@ -24,6 +25,9 @@
 
 - 属性・メタデータ (FEAT-0058、16-performance.md §3): 生成するすべての関数に `nounwind` (panic=abort の間)。オブジェクトのヘッダ (RC・タグ) と
   フィールドの load/store に別々の `!tbaa` を付ける (生きているオブジェクトの中で重ならない)。`cirka_alloc` の結果は `noalias nonnull`、`cirka_panic` は `cold`。
+- LLVM 18 の末尾再帰の除去 (TailCallElim) は、自分自身の呼び出しの結果に足す関数を累積引数のループにするとき、別の関数への `musttail` の後の `ret` も書き換えて
+  モジュールを壊す。そのような関数 (自分自身の非末尾呼び出しと、他の関数への `musttail` を両方含むもの) には `"disable-tail-calls"="true"` を付けて除外する
+  (`musttail` は保証されたまま。FEAT-0065: unboxed の結果でこの形が増えた)。
 - 名前マングリング: `_C<モジュール長><モジュール名><名前長><名前>`(Rust v0 風。`achc` / `cirka` の両方で `--demangle` を用意)。
 - 呼び出し規約 `tailcc` はすべて x86_64 で `musttail` を保証する。aCHC / CirkaLang から生成した関数どうしの呼び出しはすべて `tailcc`。
 - アンワインド導入後 (FEAT-0040) は、drop が必要な値を持つ呼び出しを `invoke` にし、landing pad で drop して `resume`。

@@ -88,6 +88,9 @@ struct Lowerer<'p> {
     box_i: CtorRef,
     box_f: CtorRef,
     wrappers: HashMap<String, String>,
+    /// Functions returning several values (an unboxed tuple in Core,
+    /// 06-ir.md §1.7) and their result types.
+    multi: HashMap<String, Vec<Ty>>,
     counter: u32,
     errors: Vec<Diagnostic>,
     /// Functions still to be lowered: (name, env, binders, body, closure convention).
@@ -217,6 +220,7 @@ impl<'p> Lowerer<'p> {
             box_i: CtorRef { ty: 0, ctor: 0 },
             box_f: CtorRef { ty: 0, ctor: 0 },
             wrappers: HashMap::new(),
+            multi: HashMap::new(),
             counter: 0,
             errors: Vec::new(),
             pending: Vec::new(),
@@ -359,7 +363,19 @@ impl<'p> Lowerer<'p> {
             let (params, _) = lam_chain(&b.expr);
             let top = if !params.is_empty() {
                 let params_ty: Vec<Ty> = params.iter().map(|x| self.rep(&x.ty)).collect();
-                let ret = self.rep(&self.result_type(&b.ty, params.len()));
+                let rt = self.result_type(&b.ty, params.len());
+                if let Type::Con(c, ts) = &rt
+                    && core::cpr::is_utup(c)
+                {
+                    let rs: Vec<Ty> = ts.iter().map(|t| self.rep(t)).collect();
+                    self.multi.insert(b.name.clone(), rs);
+                }
+                // A function with several results: its first one (as in
+                // `Function::ret`).
+                let ret = match self.multi.get(&b.name) {
+                    Some(rs) => rs[0],
+                    None => self.rep(&rt),
+                };
                 self.sigs.insert(
                     b.name.clone(),
                     Sig {
@@ -442,6 +458,10 @@ impl<'p> Lowerer<'p> {
             None => Ty::Ptr,
         };
         let mut fb = Fb::new(&job.name, ret);
+        if let Some(rs) = self.multi.get(&job.name) {
+            fb.f.ret = rs[0];
+            fb.f.rets = rs.clone();
+        }
         let mut env = job.env;
         for (id, ty) in &job.fvs {
             let r = self.rep(ty);
@@ -742,6 +762,21 @@ impl<'p> Lowerer<'p> {
             }
             Expr::Cast(x, _) | Expr::TyLam(_, _, x) => self.tail(fb, env, x, boxed),
             Expr::Panic(m, _) => fb.term(Terminator::Panic(m.clone())),
+            // The fields of an unboxed tuple are the function's results
+            // (lazy like constructor fields).
+            Expr::Con(c, _, args) if core::cpr::is_utup(c) => {
+                let mut ops = Vec::new();
+                for (a, r) in args.iter().zip(fb.f.rets.clone()) {
+                    let o = if r == Ty::Ptr {
+                        self.lazy(fb, env, a)
+                    } else {
+                        self.whnf(fb, env, a)
+                    };
+                    let Some(o) = o else { return };
+                    ops.push(o);
+                }
+                fb.term(Terminator::RetMulti(ops));
+            }
             Expr::App(..) | Expr::TyApp(..) if !boxed => {
                 if self.try_tail_call(fb, env, e) {
                     return;
@@ -778,7 +813,10 @@ impl<'p> Lowerer<'p> {
         let Some((func, fvs, arity)) = self.known(env, head) else {
             return false;
         };
-        if args.len() != arity || self.sigs.get(&func).map(|s| s.ret) != Some(fb.f.ret) {
+        if args.len() != arity
+            || self.sigs.get(&func).map(|s| s.ret) != Some(fb.f.ret)
+            || self.multi.get(&func) != self.multi.get(&fb.f.name)
+        {
             return false;
         }
         let Some(ops) = self.call_args(fb, env, &func, &fvs, &args) else {
@@ -1568,6 +1606,60 @@ impl<'p> Lowerer<'p> {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// `case f args of UTup<n> x̄ -> rhs`: a call with several results.
+    fn case_multi(
+        &mut self,
+        fb: &mut Fb,
+        env: &mut Env,
+        scrut: &Expr,
+        bs: &[core::Binder],
+        rhs: &Expr,
+        mode: Mode,
+    ) -> Option<Operand> {
+        // Bindings evaluated before the call (Core Lint allows them).
+        let mut scrut = scrut;
+        while matches!(scrut, Expr::Let(..) | Expr::LetStrict(..)) {
+            scrut = self.let_(fb, env, scrut)?;
+        }
+        let (head, args) = spine(scrut);
+        let known = self.known(env, head);
+        let Some((func, fvs, _)) =
+            known.filter(|(f, _, a)| *a == args.len() && self.multi.contains_key(f))
+        else {
+            self.error("ICE: an unboxed tuple taken apart from something else than a known call");
+            return None;
+        };
+        let ops = self.call_args(fb, env, &func, &fvs, &args)?;
+        let rs = self.multi[&func].clone();
+        let vars: Vec<Var> = bs
+            .iter()
+            .zip(&rs)
+            .map(|(b, r)| fb.f.new_var(b.id.name.clone(), *r))
+            .collect();
+        fb.emit(Instr::LetMulti {
+            vars: vars.clone(),
+            func,
+            args: ops,
+        });
+        for ((b, v), r) in bs.iter().zip(vars).zip(rs) {
+            env.insert(
+                b.id.id,
+                Bound::Val {
+                    op: Operand::Var(v),
+                    ty: b.ty.clone(),
+                    whnf: r != Ty::Ptr,
+                },
+            );
+        }
+        match mode {
+            Mode::Tail(boxed) => {
+                self.tail(fb, env, rhs, boxed);
+                None
+            }
+            Mode::Value => self.whnf(fb, env, rhs),
+        }
+    }
+
     fn case(
         &mut self,
         fb: &mut Fb,
@@ -1578,6 +1670,16 @@ impl<'p> Lowerer<'p> {
         alts: &[core::Alt],
         mode: Mode,
     ) -> Option<Operand> {
+        if let [
+            core::Alt {
+                con: AltCon::Con(c, bs),
+                rhs,
+            },
+        ] = alts
+            && core::cpr::is_utup(c)
+        {
+            return self.case_multi(fb, env, scrut, bs, rhs, mode);
+        }
         let v = self.whnf(fb, env, scrut)?;
         env.insert(
             b.id.id,
