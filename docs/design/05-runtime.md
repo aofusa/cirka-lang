@@ -83,6 +83,7 @@ int    main(int argc, char** argv);              // ランタイムが提供。c
 
 - `CIRKA_ALLOC=cirka`(既定): サイズクラス(8 バイト刻み〜256B)ごとのスレッドローカルなフリーリスト + 64KiB ページを `mmap`。
   大きなオブジェクトは `malloc`。Haskell は小さなオブジェクトを大量に確保・解放するため、フリーリストの高速経路は生成コードにインライン化する。
+  ゼロ埋めが必要な大きな BYTES は `calloc` で確保する。OS から得たばかりのメモリは書かずに済み、最初の使用時に一度だけ触れる (FEAT-0068)。
 - `CIRKA_ALLOC=system`: すべて `malloc`/`free`。valgrind / ASan と組み合わせて使う。
 - 第一段階後半で mimalloc 方式(ページ単位のフリーリスト分割)への置き換えを検討(FEAT-0051、ベンチの計測次第)。
 

@@ -90,6 +90,7 @@ Rust は安全性の一部を実行時の検査で担保し、最適化はクレ
 | LLVM | 属性・メタデータ (§3): `nounwind`・`!tbaa`・確保の `noalias`・panic の `cold` | 済 (FEAT-0058) |
 | Core / LLVM | 数値ループ: libm の組み込み関数、一意性検査の高速経路のインライン化、要素の TBAA、冗長な一意性検査の除去 | 済 (FEAT-0063) |
 | MIR | 一意な配列のループの特殊化 (検査済みの配列を渡す自己末尾呼び出しを、一意性検査を除いた関数へ向ける) | 済 (FEAT-0067) |
+| Core / ランタイム | 配列の作成: 遅い段階の worker/wrapper (`$w` の再分割)、`newArray` の初期化の省略、`calloc` | 済 (FEAT-0068) |
 | MIR / LLVM | 一意性・再利用トークンの型を MIR に持たせ、引数に `nonnull`・`noalias`・`readonly` を付ける | FEAT-0062 |
 | LLVM | ランタイムの高速経路のインライン化 (ランタイムを bitcode でも出力し LTO) | FEAT-0060 |
 | ランタイム | アロケータの改善 | FEAT-0051 |
