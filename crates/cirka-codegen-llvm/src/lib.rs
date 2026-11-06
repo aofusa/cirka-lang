@@ -560,9 +560,20 @@ impl<'m> Gen<'m> {
             .iter()
             .map(|p| format!("{} {}", llty(f.ty(p.var)), var(p.var)))
             .collect();
+        // LLVM 18's tail recursion elimination turns `ret` into `ret acc +
+        // x` in a function that adds to the result of a call of itself,
+        // also after a `musttail` call of another function, which breaks
+        // the module. Such functions opt out of it (`#1`); their `musttail`
+        // calls stay guaranteed (FEAT-0065: unboxed results made the
+        // pattern common).
+        let me = format!("{}(", mangle(&f.name));
+        let lines = || block_bodies.iter().flat_map(|b| b.lines());
+        let self_call = lines().any(|l| l.contains(&me) && !l.contains("musttail"));
+        let other_tail = lines().any(|l| l.contains("musttail call") && !l.contains(&me));
+        let attrs = if self_call && other_tail { "#1" } else { "#0" };
         let _ = writeln!(
             self.out,
-            "define tailcc {} {}({}) #0 {{",
+            "define tailcc {} {}({}) {attrs} {{",
             ret_llty(f),
             mangle(&f.name),
             params.join(", ")
@@ -1600,6 +1611,8 @@ impl<'m> Gen<'m> {
             "!8 = !{!7, !7, i64 0}\n",
         ));
         self.out.push_str("attributes #0 = { nounwind }\n");
+        self.out
+            .push_str("attributes #1 = { nounwind \"disable-tail-calls\"=\"true\" }\n");
     }
 }
 
@@ -1811,5 +1824,45 @@ entry:
         );
         assert!(ir.contains("%v1 = extractvalue { ptr, i64 } %t"), "{ir}");
         assert!(ir.contains("%v2 = extractvalue { ptr, i64 } %t"), "{ir}");
+    }
+
+    /// A function adding to its own result that also tail-calls another
+    /// one opts out of LLVM's tail recursion elimination (FEAT-0065).
+    #[test]
+    fn opts_out_of_accumulator_tail_recursion() {
+        let src = "fn g(n: i64) -> i64 {
+entry:
+  ret n
+}
+
+fn f(n: i64) -> i64 {
+entry:
+  switch n { 0 => base, default => rec }
+base:
+  tailcall g(n)
+rec:
+  let m = prim sub(n, 1)
+  let r = call f(m)
+  let s = prim add(r, 1)
+  ret s
+}
+
+fn main() -> i64 {
+entry:
+  let r = call f(3)
+  ret r
+}
+";
+        let m = cirka_mir::parse::parse(cirka_diagnostics::FileId(0), src).unwrap();
+        let ir = emit(&m, Options { debug_rt: false });
+        assert!(
+            ir.contains("define tailcc i64 @\"_C1f\"(i64 %v0) #1 {"),
+            "{ir}"
+        );
+        assert!(
+            ir.contains("define tailcc i64 @\"_C1g\"(i64 %v0) #0 {"),
+            "{ir}"
+        );
+        assert!(ir.contains("\"disable-tail-calls\"=\"true\""), "{ir}");
     }
 }
