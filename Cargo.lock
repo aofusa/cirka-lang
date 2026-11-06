@@ -81,6 +81,7 @@ dependencies = [
 name = "cirka-codegen-llvm"
 version = "0.0.1"
 dependencies = [
+ "cirka-diagnostics",
  "cirka-mir",
 ]
 
