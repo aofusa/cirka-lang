@@ -92,6 +92,11 @@ const RUNTIME_DECLS: &[(&str, &str)] = &[
         "llvm.fptosi.sat.i64.f64",
         "i64 @llvm.fptosi.sat.i64.f64(double)",
     ),
+    ("llvm.sqrt.f64", "double @llvm.sqrt.f64(double)"),
+    ("llvm.fabs.f64", "double @llvm.fabs.f64(double)"),
+    ("llvm.floor.f64", "double @llvm.floor.f64(double)"),
+    ("llvm.ceil.f64", "double @llvm.ceil.f64(double)"),
+    ("llvm.trunc.f64", "double @llvm.trunc.f64(double)"),
 ];
 
 struct Gen<'m> {
@@ -113,6 +118,8 @@ struct Gen<'m> {
 /// TBAA access tags (metadata emitted by `entry_and_cafs`).
 const TBAA_HEADER: &str = ", !tbaa !5";
 const TBAA_FIELD: &str = ", !tbaa !6";
+/// Elements of arrays and byte arrays (after the length word).
+const TBAA_ELEM: &str = ", !tbaa !8";
 
 /// Generates the LLVM IR text of a whole program.
 pub fn emit(m: &Module, opts: Options) -> String {
@@ -400,6 +407,33 @@ impl<'m> Gen<'m> {
             llty(ty)
         ));
         r
+    }
+
+    /// `dst = o` when `o` is unique (rc == 1, inline), otherwise the copy
+    /// made by the runtime function `copy` (FEAT-0063).
+    fn unique(&mut self, c: &mut FnCtx<'_>, dst: &str, o: &str, copy: &str) {
+        if self.opts.debug_rt {
+            c.line(&format!("{dst} = call ptr @{copy}(ptr {o})"));
+            return;
+        }
+        let rc = c.t();
+        let is1 = c.t();
+        let slow = self.fresh_label("uniq.copy");
+        let done = self.fresh_label("uniq.done");
+        let pred = c.cur.clone();
+        c.line(&format!("{rc} = load i32, ptr {o}, align 8{TBAA_HEADER}"));
+        c.line(&format!("{is1} = icmp eq i32 {rc}, 1"));
+        c.line(&format!(
+            "br i1 {is1}, label %{done}, label %{slow}, !prof !0"
+        ));
+        c.label(&slow);
+        let r = c.t();
+        c.line(&format!("{r} = call ptr @{copy}(ptr {o})"));
+        c.line(&format!("br label %{done}"));
+        c.label(&done);
+        c.line(&format!(
+            "{dst} = phi ptr [ {o}, %{pred} ], [ {r}, %{slow} ]"
+        ));
     }
 
     fn emit_panic(&mut self, c: &mut FnCtx<'_>, msg: &str) {
@@ -839,6 +873,11 @@ impl<'m> Gen<'m> {
                 }
                 let tys: Vec<Ty> = d.params.iter().map(|p| p.0).collect();
                 let a = self.typed_args(f, args, Some(&tys));
+                let func = if tys == [Ty::F64] && d.ret == Some(Ty::F64) {
+                    libm_intrinsic(func)
+                } else {
+                    func.to_string()
+                };
                 match d.ret {
                     Some(t) => c.line(&format!("{dst} = call {} @{func}({a})", llty(t))),
                     None => {
@@ -892,6 +931,11 @@ impl<'m> Gen<'m> {
             };
             parts.push(format!("{} {v}", c_param(*t)));
         }
+        let func = if sig.params == [CTy::F64] && sig.ret == CTy::F64 {
+            libm_intrinsic(func)
+        } else {
+            func.to_string()
+        };
         let call = format!("@{func}({})", parts.join(", "));
         match sig.ret {
             CTy::Void => {
@@ -1022,12 +1066,12 @@ impl<'m> Gen<'m> {
                 let p_ = ep;
                 if p == BytesGet {
                     let b = c.t();
-                    c.line(&format!("{b} = load i8, ptr {p_}, align 1"));
+                    c.line(&format!("{b} = load i8, ptr {p_}, align 1{TBAA_ELEM}"));
                     c.line(&format!("{dst} = zext i8 {b} to i64"));
                 } else {
                     let b = c.t();
                     c.line(&format!("{b} = trunc i64 {} to i8", a[2]));
-                    c.line(&format!("store i8 {b}, ptr {p_}, align 1"));
+                    c.line(&format!("store i8 {b}, ptr {p_}, align 1{TBAA_ELEM}"));
                     c.line(&format!("{dst} = add i64 0, 0"));
                 }
             }
@@ -1039,14 +1083,8 @@ impl<'m> Gen<'m> {
                 "{dst} = call ptr @cirka_array_new(i64 {}, ptr {})",
                 a[0], a[1]
             )),
-            ArrayUnique => c.line(&format!(
-                "{dst} = call ptr @cirka_array_unique(ptr {})",
-                a[0]
-            )),
-            BytesUnique => c.line(&format!(
-                "{dst} = call ptr @cirka_bytes_unique(ptr {})",
-                a[0]
-            )),
+            ArrayUnique => self.unique(c, dst, &a[0], "cirka_array_unique"),
+            BytesUnique => self.unique(c, dst, &a[0], "cirka_bytes_unique"),
             BytesGetI64 | BytesSetI64 | BytesGetF64 | BytesSetF64 | BytesSetI64Shared
             | BytesSetF64Shared => {
                 // 8-byte words: index < len / 8.
@@ -1066,9 +1104,12 @@ impl<'m> Gen<'m> {
                     a[1]
                 ));
                 if matches!(p, BytesGetI64 | BytesGetF64) {
-                    c.line(&format!("{dst} = load {ty}, ptr {ep}, align 8"));
+                    c.line(&format!("{dst} = load {ty}, ptr {ep}, align 8{TBAA_ELEM}"));
                 } else {
-                    c.line(&format!("store {ty} {}, ptr {ep}, align 8", a[2]));
+                    c.line(&format!(
+                        "store {ty} {}, ptr {ep}, align 8{TBAA_ELEM}",
+                        a[2]
+                    ));
                     c.line(&format!("{dst} = add i64 0, 0"));
                 }
             }
@@ -1106,11 +1147,11 @@ impl<'m> Gen<'m> {
                     a[1]
                 ));
                 if p == ArrayGet {
-                    c.line(&format!("{dst} = load ptr, ptr {ep}, align 8"));
+                    c.line(&format!("{dst} = load ptr, ptr {ep}, align 8{TBAA_ELEM}"));
                 } else {
                     let old = c.t();
-                    c.line(&format!("{old} = load ptr, ptr {ep}, align 8"));
-                    c.line(&format!("store ptr {}, ptr {ep}, align 8", a[2]));
+                    c.line(&format!("{old} = load ptr, ptr {ep}, align 8{TBAA_ELEM}"));
+                    c.line(&format!("store ptr {}, ptr {ep}, align 8{TBAA_ELEM}", a[2]));
                     self.emit_drop(c, &old);
                     c.line(&format!("{dst} = add i64 0, 0"));
                 }
@@ -1500,6 +1541,8 @@ impl<'m> Gen<'m> {
             "!4 = !{!\"cirka.field\", !2, i64 0}\n",
             "!5 = !{!3, !3, i64 0}\n",
             "!6 = !{!4, !4, i64 0}\n",
+            "!7 = !{!\"cirka.elem\", !2, i64 0}\n",
+            "!8 = !{!7, !7, i64 0}\n",
         ));
         self.out.push_str("attributes #0 = { nounwind }\n");
     }
@@ -1527,6 +1570,15 @@ fn c_ll(t: cirka_mir::CTy) -> &'static str {
         F64 => "double",
         Ptr => "ptr",
         Void => "void",
+    }
+}
+
+/// The LLVM intrinsic for a pure libm function on doubles (one instruction
+/// for `sqrt`, and no `errno`: FEAT-0063), or the function itself.
+fn libm_intrinsic(func: &str) -> String {
+    match func {
+        "sqrt" | "fabs" | "floor" | "ceil" | "trunc" => format!("llvm.{func}.f64"),
+        f => f.to_string(),
     }
 }
 
@@ -1607,5 +1659,45 @@ entry:
                 .any(|l| l.contains("load i16") && l.ends_with("!tbaa !5")),
             "{ir}"
         );
+    }
+
+    /// Numeric loops (FEAT-0063): libm calls become intrinsics, the
+    /// uniqueness check is inline with the copy on the cold side, and
+    /// element accesses have their own TBAA tag.
+    #[test]
+    fn emits_numeric_fast_paths() {
+        let src = "extern fn sqrt(f64) -> f64
+
+fn main() -> i64 {
+entry:
+  let b = prim bytes_new(16)
+  let c = prim bytes_unique(b)
+  let x = prim bytes_get_f64(c, 0)
+  let y = extern sqrt(x)
+  let _ = prim bytes_set_f64(c, 1, y)
+  drop c
+  ret 0
+}
+";
+        let m = cirka_mir::parse::parse(cirka_diagnostics::FileId(0), src).unwrap();
+        let ir = emit(&m, Options { debug_rt: false });
+        assert!(ir.contains("call double @llvm.sqrt.f64(double"), "{ir}");
+        assert!(!ir.contains("call double @sqrt("), "{ir}");
+        assert!(ir.contains("!prof !0"), "{ir}");
+        assert!(ir.contains("call ptr @cirka_bytes_unique"), "{ir}");
+        assert!(ir.contains("phi ptr"), "{ir}");
+        assert!(
+            ir.lines()
+                .any(|l| l.contains("load double") && l.ends_with("!tbaa !8")),
+            "{ir}"
+        );
+        assert!(
+            ir.lines()
+                .any(|l| l.contains("store double") && l.ends_with("!tbaa !8")),
+            "{ir}"
+        );
+        // The debug runtime keeps the plain call (it counts copies).
+        let dbg = emit(&m, Options { debug_rt: true });
+        assert!(!dbg.contains("phi ptr"), "{dbg}");
     }
 }
