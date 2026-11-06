@@ -113,6 +113,11 @@ pub fn rhs_uses(sigs: &Sigs, rhs: &Rhs) -> Vec<(Var, Mode)> {
 pub fn instr_uses(sigs: &Sigs, ins: &Instr) -> Vec<(Var, Mode)> {
     match ins {
         Instr::Let { rhs, .. } => rhs_uses(sigs, rhs),
+        Instr::LetMulti { func, args, .. } => {
+            let mut u = Vec::new();
+            push_ops(&mut u, args, |i| sigs.func_own(func, i));
+            u
+        }
         Instr::Dup(v) => vec![(*v, Mode::Borrow)],
         Instr::Drop(v) => vec![(*v, Mode::Consume)],
         Instr::Set { obj, val, .. } => {
@@ -131,6 +136,7 @@ pub fn term_uses(sigs: &Sigs, t: &Terminator) -> Vec<(Var, Mode)> {
     match t {
         Terminator::Ret(Operand::Var(v)) => u.push((*v, Mode::Consume)),
         Terminator::Ret(_) | Terminator::Panic(_) | Terminator::Unreachable => {}
+        Terminator::RetMulti(os) => push_ops(&mut u, os, |_| Mode::Consume),
         Terminator::Jump(_, args) => push_ops(&mut u, args, |_| Mode::Consume),
         Terminator::Switch { scrut, .. } => u.push((*scrut, Mode::Borrow)),
         Terminator::TailCall { func, args } => push_ops(&mut u, args, |i| sigs.func_own(func, i)),
@@ -226,6 +232,13 @@ impl VarInfo {
                     };
                     parent[v.0 as usize] = src;
                 }
+                if let Instr::LetMulti { vars, .. } = ins {
+                    for v in vars {
+                        if f.ty(*v).is_ptr() {
+                            kind[v.0 as usize] = Kind::Owned;
+                        }
+                    }
+                }
             }
         }
         VarInfo {
@@ -298,13 +311,6 @@ fn ptr_uses(f: &Function, info: &VarInfo, mut uses: Vec<(Var, Mode)>) -> Vec<(Va
     uses
 }
 
-fn instr_def(ins: &Instr) -> Option<Var> {
-    match ins {
-        Instr::Let { var, .. } => *var,
-        _ => None,
-    }
-}
-
 pub fn liveness(sigs: &Sigs, f: &Function, info: &VarInfo) -> Liveness {
     let n = f.blocks.len();
     let mut live_in = vec![Set::new(); n];
@@ -325,8 +331,8 @@ pub fn liveness(sigs: &Sigs, f: &Function, info: &VarInfo) -> Liveness {
                 live.insert(v);
             }
             for ins in b.instrs.iter().rev() {
-                if let Some(d) = instr_def(ins) {
-                    live.remove(&d);
+                for d in ins.defs() {
+                    live.remove(d);
                 }
                 for (v, _) in ptr_uses(f, info, instr_uses(sigs, ins)) {
                     live.insert(v);
@@ -415,8 +421,8 @@ pub fn insert_fn(sigs: &Sigs, f: &mut Function) {
         let mut after: Vec<Set> = vec![Set::new(); instrs.len()];
         for (i, ins) in instrs.iter().enumerate().rev() {
             after[i] = live.clone();
-            if let Some(d) = instr_def(ins) {
-                live.remove(&d);
+            for d in ins.defs() {
+                live.remove(d);
             }
             for (v, _) in ptr_uses(f, &info, instr_uses(sigs, ins)) {
                 live.insert(v);
@@ -435,23 +441,20 @@ pub fn insert_fn(sigs: &Sigs, f: &mut Function) {
         for (i, ins) in instrs.into_iter().enumerate() {
             let uses = ptr_uses(f, &info, instr_uses(sigs, &ins));
             let (dups, drops) = plan(&info, &uses, &after[i]);
-            let def = instr_def(&ins);
+            let defs = ins.defs().to_vec();
             out.extend(dups.into_iter().map(Instr::Dup));
             out.push(ins);
-            if let Some(d) = def
-                && info.eager[d.0 as usize]
-            {
-                out.push(Instr::Dup(d));
+            for &d in &defs {
+                if info.eager[d.0 as usize] {
+                    out.push(Instr::Dup(d));
+                }
             }
-            if let Some(d) = def
-                && f.ty(d).is_ptr()
-            {
-                out.extend(
-                    owned_dead(&info, &[d], &after[i])
-                        .into_iter()
-                        .map(Instr::Drop),
-                );
-            }
+            let ptr_defs: Vec<Var> = defs.into_iter().filter(|d| f.ty(*d).is_ptr()).collect();
+            out.extend(
+                owned_dead(&info, &ptr_defs, &after[i])
+                    .into_iter()
+                    .map(Instr::Drop),
+            );
             out.extend(drops.into_iter().map(Instr::Drop));
         }
         // Terminator.
@@ -517,13 +520,25 @@ pub fn insert_fn(sigs: &Sigs, f: &mut Function) {
                 } else {
                     // Borrowed arguments must outlive the call: turn the
                     // tail call into call + drops + ret.
-                    let r = f.fresh_var("r", f.ret);
-                    out.push(Instr::Let {
-                        var: Some(r),
-                        rhs: Rhs::Call { func, args },
-                    });
-                    out.extend(drops.into_iter().map(Instr::Drop));
-                    b.term = Terminator::Ret(Operand::Var(r));
+                    if f.is_multi() {
+                        let rets = f.rets.clone();
+                        let vars: Vec<Var> = rets.iter().map(|t| f.fresh_var("r", *t)).collect();
+                        out.push(Instr::LetMulti {
+                            vars: vars.clone(),
+                            func,
+                            args,
+                        });
+                        out.extend(drops.into_iter().map(Instr::Drop));
+                        b.term = Terminator::RetMulti(vars.into_iter().map(Operand::Var).collect());
+                    } else {
+                        let r = f.fresh_var("r", f.ret);
+                        out.push(Instr::Let {
+                            var: Some(r),
+                            rhs: Rhs::Call { func, args },
+                        });
+                        out.extend(drops.into_iter().map(Instr::Drop));
+                        b.term = Terminator::Ret(Operand::Var(r));
+                    }
                 }
             }
             t => {

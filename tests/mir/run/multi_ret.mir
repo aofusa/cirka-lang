@@ -1,0 +1,132 @@
+// Functions with multiple results (FEAT-0065): non-tail recursion, tail
+// calls, `let (..) = call ..; ret (..)` in tail position and loops.
+type List { Nil = 0 {}, Cons = 1 { head: i64, tail: ptr } }
+extern fn cirka_write_i64(i64) -> void
+extern fn cirka_write_f64(f64) -> void
+extern fn cirka_write_char(i64) -> void
+
+// A copy of the list and its sum (non-tail recursion).
+fn copy_sum(xs: ptr @borrowed) -> (ptr, i64) {
+entry:
+  switch xs { List.Nil => nil, List.Cons => cons }
+nil:
+  let e = alloc List.Nil()
+  ret (e, 0)
+cons:
+  let h = proj xs List.Cons.head
+  let t = proj xs List.Cons.tail
+  let (c, s) = call copy_sum(t)
+  let s1 = prim add(s, h)
+  let r = alloc List.Cons(h, c)
+  ret (r, s1)
+}
+
+// Prepends i, i-1, .., 1 to l and adds them to acc (tail recursion).
+fn build(i: i64, acc: f64, l: ptr @owned) -> (i64, f64, ptr) {
+entry:
+  let z = prim eq(i, 0)
+  switch z { 1 => done, default => more }
+done:
+  ret (i, acc, l)
+more:
+  let i1 = prim sub(i, 1)
+  let f = prim i64_to_f64(i)
+  let acc1 = prim fadd(acc, f)
+  let l1 = alloc List.Cons(i, l)
+  tailcall build(i1, acc1, l1)
+}
+
+// A call in tail position.
+fn build_from(n: i64) -> (i64, f64, ptr) {
+entry:
+  let e = alloc List.Nil()
+  let (a, b, c) = call build(n, 0.5, e)
+  ret (a, b, c)
+}
+
+// Length and sum of a list it consumes (a loop with block parameters).
+fn len_sum(xs: ptr @owned) -> (i64, i64) {
+entry:
+  jump loop(xs, 0, 0)
+loop(l: ptr, n: i64, s: i64):
+  switch l { List.Nil => nil, List.Cons => cons }
+nil:
+  drop l
+  ret (n, s)
+cons:
+  let h = proj l List.Cons.head
+  let t = proj l List.Cons.tail
+  dup t
+  drop l
+  let n1 = prim add(n, 1)
+  let s1 = prim add(s, h)
+  jump loop(t, n1, s1)
+}
+
+// Quotient and remainder by repeated subtraction.
+fn divmod(a: i64, b: i64) -> (i64, i64) {
+entry:
+  jump loop(0, a)
+loop(q: i64, r: i64):
+  let c = prim lt(r, b)
+  switch c { 1 => done, default => step }
+done:
+  ret (q, r)
+step:
+  let q1 = prim add(q, 1)
+  let r1 = prim sub(r, b)
+  jump loop(q1, r1)
+}
+
+// Four results (returned in memory by the C ABI) through a tail call:
+// the list of the first i Fibonacci numbers and the next two.
+fn fibs(i: i64, a: i64, b: i64, l: ptr @owned) -> (ptr, i64, i64, f64) {
+entry:
+  let z = prim eq(i, 0)
+  switch z { 1 => done, default => more }
+done:
+  let f = prim i64_to_f64(b)
+  ret (l, a, b, f)
+more:
+  let i1 = prim sub(i, 1)
+  let c = prim add(a, b)
+  let l1 = alloc List.Cons(a, l)
+  tailcall fibs(i1, b, c, l1)
+}
+
+fn main() -> i64 {
+entry:
+  let (n, f, l) = call build_from(10)
+  let _ = extern cirka_write_i64(n)
+  let _ = extern cirka_write_char(32)
+  let _ = extern cirka_write_f64(f)
+  let _ = extern cirka_write_char(10)
+  let (c, s) = call copy_sum(l)
+  drop l
+  let _ = extern cirka_write_i64(s)
+  let _ = extern cirka_write_char(10)
+  let (k, t) = call len_sum(c)
+  let _ = extern cirka_write_i64(k)
+  let _ = extern cirka_write_char(32)
+  let _ = extern cirka_write_i64(t)
+  let _ = extern cirka_write_char(10)
+  let e = alloc List.Nil()
+  let (fl, fa, fb, ff) = call fibs(20, 0, 1, e)
+  let (fk, fs) = call len_sum(fl)
+  let _ = extern cirka_write_i64(fa)
+  let _ = extern cirka_write_char(32)
+  let _ = extern cirka_write_i64(fb)
+  let _ = extern cirka_write_char(32)
+  let _ = extern cirka_write_f64(ff)
+  let _ = extern cirka_write_char(32)
+  let _ = extern cirka_write_i64(fk)
+  let _ = extern cirka_write_char(32)
+  let _ = extern cirka_write_i64(fs)
+  let _ = extern cirka_write_char(10)
+  let (q, r) = call divmod(47, 5)
+  let _ = extern cirka_write_i64(q)
+  let _ = extern cirka_write_char(32)
+  let _ = extern cirka_write_i64(r)
+  let _ = extern cirka_write_char(10)
+  ret 0
+}

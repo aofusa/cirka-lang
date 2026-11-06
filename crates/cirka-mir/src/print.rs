@@ -69,7 +69,12 @@ pub fn print_function(m: &Module, f: &Function) -> String {
             });
         }
     }
-    let _ = writeln!(s, ") -> {} {{", f.ret);
+    if f.is_multi() {
+        let rs: Vec<&str> = f.rets.iter().map(|t| t.name()).collect();
+        let _ = writeln!(s, ") -> ({}) {{", rs.join(", "));
+    } else {
+        let _ = writeln!(s, ") -> {} {{", f.ret);
+    }
     for b in &f.blocks {
         s.push_str(&b.label);
         if !b.params.is_empty() {
@@ -180,6 +185,10 @@ pub fn print_instr(m: &Module, f: &Function, ins: &Instr) -> String {
             };
             format!("let {name}{ann} = {}", print_rhs(m, f, rhs))
         }
+        Instr::LetMulti { vars, func, args } => {
+            let names: Vec<&str> = vars.iter().map(|v| f.var_name(*v)).collect();
+            format!("let ({}) = call {func}{}", names.join(", "), ops(f, args))
+        }
         Instr::Dup(v) => format!("dup {}", f.var_name(*v)),
         Instr::Drop(v) => format!("drop {}", f.var_name(*v)),
         Instr::Set {
@@ -200,6 +209,7 @@ pub fn print_instr(m: &Module, f: &Function, ins: &Instr) -> String {
 pub fn print_term(m: &Module, f: &Function, t: &Terminator) -> String {
     match t {
         Terminator::Ret(o) => format!("ret {}", op(f, o)),
+        Terminator::RetMulti(os) => format!("ret {}", ops(f, os)),
         Terminator::Jump(b, args) => {
             if args.is_empty() {
                 format!("jump {}", f.block(*b).label)

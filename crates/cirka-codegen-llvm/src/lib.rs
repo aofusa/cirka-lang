@@ -45,6 +45,17 @@ fn llty(t: Ty) -> &'static str {
     }
 }
 
+/// The LLVM result type of a function: its single result, or a literal
+/// struct `{ T1, .., Tn }` of multiple results (FEAT-0065).
+fn ret_llty(f: &Function) -> String {
+    if f.is_multi() {
+        let ts: Vec<&str> = f.rets.iter().map(|t| llty(*t)).collect();
+        format!("{{ {} }}", ts.join(", "))
+    } else {
+        llty(f.ret).to_string()
+    }
+}
+
 fn header_word(rc: i32, tag: u32, nptr: usize, kind: u8) -> u64 {
     (rc as u32 as u64)
         | ((tag as u64 & 0xffff) << 32)
@@ -510,6 +521,23 @@ impl<'m> Gen<'m> {
                     skip = k - 1;
                     continue;
                 }
+                // `let (r1, ..) = call g(..); ret (r1, ..)` → musttail.
+                if ii + 1 == n
+                    && let (Instr::LetMulti { vars, func, args }, Terminator::RetMulti(os)) =
+                        (ins, &b.term)
+                    && vars.len() == os.len()
+                    && vars.iter().zip(os).all(|(v, o)| o.var() == Some(*v))
+                    && self.try_tail(
+                        &mut c,
+                        &Rhs::Call {
+                            func: func.clone(),
+                            args: args.clone(),
+                        },
+                    )
+                {
+                    skip_term = true;
+                    continue;
+                }
                 // `let r = call/apply ...; ret r` → musttail.
                 if ii + 1 == n
                     && let (Instr::Let { var: Some(r), rhs }, Terminator::Ret(Operand::Var(rv))) =
@@ -535,7 +563,7 @@ impl<'m> Gen<'m> {
         let _ = writeln!(
             self.out,
             "define tailcc {} {}({}) #0 {{",
-            llty(f.ret),
+            ret_llty(f),
             mangle(&f.name),
             params.join(", ")
         );
@@ -657,18 +685,18 @@ impl<'m> Gen<'m> {
                 let Some(g) = self.funcs.get(func.as_str()).copied() else {
                     return false;
                 };
-                if g.ret != f.ret {
+                if g.results() != f.results() {
                     return false;
                 }
                 let tys = g.param_tys();
                 let a = self.typed_args(f, args, Some(&tys));
                 let r = c.t();
+                let rt = ret_llty(g);
                 c.line(&format!(
-                    "{r} = musttail call tailcc {} {}({a})",
-                    llty(g.ret),
+                    "{r} = musttail call tailcc {rt} {}({a})",
                     mangle(func)
                 ));
-                c.line(&format!("ret {} {r}", llty(g.ret)));
+                c.line(&format!("ret {rt} {r}"));
                 true
             }
             Rhs::Apply { clo, args } if f.ret == Ty::Ptr => {
@@ -706,6 +734,19 @@ impl<'m> Gen<'m> {
                 let ty = def.fields[*field as usize].ty;
                 let v = self.operand(val);
                 Self::store_field(c, &var(*obj), def.slot(*field as usize), ty, &v);
+            }
+            Instr::LetMulti { vars, func, args } => {
+                let Some(g) = self.funcs.get(func.as_str()).copied() else {
+                    panic!("ICE: call to unknown function {func}");
+                };
+                let tys = g.param_tys();
+                let a = self.typed_args(c.f, args, Some(&tys));
+                let rt = ret_llty(g);
+                let r = c.t();
+                c.line(&format!("{r} = call tailcc {rt} {}({a})", mangle(func)));
+                for (i, v) in vars.iter().enumerate() {
+                    c.line(&format!("{} = extractvalue {rt} {r}, {i}", var(*v)));
+                }
             }
             Instr::Let { var: x, rhs } => {
                 let dst = match x {
@@ -1167,6 +1208,20 @@ impl<'m> Gen<'m> {
                 let v = self.operand(o);
                 c.line(&format!("ret {} {v}", llty(f.ret)));
             }
+            Terminator::RetMulti(os) => {
+                let rt = ret_llty(f);
+                let mut agg = "poison".to_string();
+                for (i, (o, t)) in os.iter().zip(&f.rets).enumerate() {
+                    let v = self.operand(o);
+                    let n = c.t();
+                    c.line(&format!(
+                        "{n} = insertvalue {rt} {agg}, {} {v}, {i}",
+                        llty(*t)
+                    ));
+                    agg = n;
+                }
+                c.line(&format!("ret {rt} {agg}"));
+            }
             Terminator::Jump(b, args) => {
                 let vals: Vec<String> = args.iter().map(|a| self.operand(a)).collect();
                 let pred = c.cur.clone();
@@ -1216,12 +1271,12 @@ impl<'m> Gen<'m> {
                 let tys = g.param_tys();
                 let a = self.typed_args(f, args, Some(&tys));
                 let r = c.t();
+                let rt = ret_llty(g);
                 c.line(&format!(
-                    "{r} = musttail call tailcc {} {}({a})",
-                    llty(g.ret),
+                    "{r} = musttail call tailcc {rt} {}({a})",
                     mangle(func)
                 ));
-                c.line(&format!("ret {} {r}", llty(g.ret)));
+                c.line(&format!("ret {rt} {r}"));
             }
             Terminator::Panic(msg) => self.emit_panic(c, msg),
             Terminator::Unreachable => c.line("unreachable"),
@@ -1699,5 +1754,62 @@ entry:
         // The debug runtime keeps the plain call (it counts copies).
         let dbg = emit(&m, Options { debug_rt: true });
         assert!(!dbg.contains("phi ptr"), "{dbg}");
+    }
+
+    /// Multiple results (FEAT-0065) are returned as a literal struct,
+    /// built with `insertvalue` and taken apart with `extractvalue`; tail
+    /// calls between functions with the same results stay `musttail`.
+    #[test]
+    fn emits_struct_returns() {
+        let src = "fn pair(x: ptr @borrowed, n: i64) -> (ptr, i64) {
+entry:
+  let s = lit \"s\"
+  ret (s, n)
+}
+
+fn tail(x: ptr @borrowed, n: i64) -> (ptr, i64) {
+entry:
+  tailcall pair(x, n)
+}
+
+fn tail2(x: ptr @borrowed, n: i64) -> (ptr, i64) {
+entry:
+  let (a, b) = call pair(x, n)
+  ret (a, b)
+}
+
+fn main() -> i64 {
+entry:
+  let s = lit \"t\"
+  let (a, b) = call tail2(s, 5)
+  drop s
+  drop a
+  ret b
+}
+";
+        let m = cirka_mir::parse::parse(cirka_diagnostics::FileId(0), src).unwrap();
+        assert!(cirka_mir::verify::verify_module(&m).is_empty());
+        let ir = emit(&m, Options { debug_rt: false });
+        assert!(
+            ir.contains("define tailcc { ptr, i64 } @\"_C4pair\"(ptr %v0, i64 %v1) #0 {"),
+            "{ir}"
+        );
+        assert!(
+            ir.contains("= insertvalue { ptr, i64 } poison, ptr %v2, 0"),
+            "{ir}"
+        );
+        assert!(ir.contains(", i64 %v1, 1\n  ret { ptr, i64 } %t"), "{ir}");
+        assert_eq!(
+            ir.matches("= musttail call tailcc { ptr, i64 } @\"_C4pair\"(ptr %v0, i64 %v1)")
+                .count(),
+            2,
+            "{ir}"
+        );
+        assert!(
+            ir.contains("= call tailcc { ptr, i64 } @\"_C5tail2\"(ptr %v0, i64 5)"),
+            "{ir}"
+        );
+        assert!(ir.contains("%v1 = extractvalue { ptr, i64 } %t"), "{ir}");
+        assert!(ir.contains("%v2 = extractvalue { ptr, i64 } %t"), "{ir}");
     }
 }

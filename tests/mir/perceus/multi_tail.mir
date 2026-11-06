@@ -1,0 +1,38 @@
+// pipeline: rc
+// Multiple results (FEAT-0065): a tail call passing an owned value to a
+// borrowed parameter becomes `let (..) = call` + drop + `ret (..)`, and an
+// unused pointer result is dropped at once.
+type Box { B = 0 { v: i64 } }
+extern fn cirka_write_i64(i64) -> void
+extern fn cirka_write_char(i64) -> void
+
+fn peek(x: ptr @borrowed, n: i64) -> (ptr, i64) {
+entry:
+  let v = proj x Box.B.v
+  let s = prim add(v, n)
+  let b = alloc Box.B(s)
+  ret (b, v)
+}
+
+fn wrap(x: ptr @owned, n: i64) -> (ptr, i64) {
+entry:
+  tailcall peek(x, n)
+}
+
+fn main() -> i64 {
+entry:
+  let a = alloc Box.B(40)
+  let (b, v) = call wrap(a, 2)
+  let (c, w) = call peek(b, 1)
+  let u = proj c Box.B.v
+  let _ = extern cirka_write_i64(v)
+  let _ = extern cirka_write_char(32)
+  let _ = extern cirka_write_i64(w)
+  let _ = extern cirka_write_char(32)
+  let _ = extern cirka_write_i64(u)
+  let _ = extern cirka_write_char(10)
+  let (d, z) = call peek(c, 0)
+  let _ = extern cirka_write_i64(z)
+  let _ = extern cirka_write_char(10)
+  ret 0
+}

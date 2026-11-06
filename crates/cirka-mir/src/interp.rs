@@ -460,6 +460,14 @@ impl<'m> Interp<'m> {
     }
 
     fn call(&mut self, fi: usize, args: Vec<Val>) -> R<Val> {
+        match self.call_rets(fi, args)? {
+            Rets::One(v) => Ok(v),
+            Rets::Many(_) => fault("a call of a function with multiple results needs `let (..)`"),
+        }
+    }
+
+    /// Runs a function; it returns one value or several (FEAT-0065).
+    fn call_rets(&mut self, fi: usize, args: Vec<Val>) -> R<Rets> {
         let m = self.m;
         let mut cur = fi;
         let mut f = &m.funcs[fi];
@@ -477,6 +485,20 @@ impl<'m> Interp<'m> {
                     return Err(Exit::Panic("interpreter fuel exhausted".into()));
                 }
                 self.fuel -= 1;
+                // `let (r1, ..) = call g(..); ret (r1, ..)` is a tail call.
+                if ii + 1 == n
+                    && let (Instr::LetMulti { vars, func, args }, Terminator::RetMulti(os)) =
+                        (ins, &block.term)
+                    && vars.len() == os.len()
+                    && vars.iter().zip(os).all(|(v, o)| o.var() == Some(*v))
+                {
+                    let vals = self.operands(&frame, args);
+                    match self.funcs.get(func.as_str()) {
+                        Some(&gi) => tail = Some((gi, vals)),
+                        None => return fault(format!("unknown function {func}")),
+                    }
+                    break;
+                }
                 // `let r = call/apply ...; ret r` is a tail call.
                 if ii + 1 == n
                     && let (Instr::Let { var: Some(r), rhs }, Terminator::Ret(Operand::Var(rv))) =
@@ -496,12 +518,12 @@ impl<'m> Interp<'m> {
                             let c = frame[clo.0 as usize];
                             let vals = self.operands(&frame, args);
                             match self.apply_step(c, vals)? {
-                                Step::Value(v) => return Ok(v),
+                                Step::Value(v) => return Ok(Rets::One(v)),
                                 Step::Call(gi, all, None) => tail = Some((gi, all)),
                                 Step::Call(gi, all, Some(p)) => {
                                     let r = self.call(gi, all)?;
                                     self.drop_val(Val::P(p))?;
-                                    return Ok(r);
+                                    return Ok(Rets::One(r));
                                 }
                             }
                             break;
@@ -522,7 +544,8 @@ impl<'m> Interp<'m> {
                 continue;
             }
             match &block.term {
-                Terminator::Ret(o) => return Ok(self.operand(&frame, o)),
+                Terminator::Ret(o) => return Ok(Rets::One(self.operand(&frame, o))),
+                Terminator::RetMulti(os) => return Ok(Rets::Many(self.operands(&frame, os))),
                 Terminator::Jump(b, args) => {
                     let vals = self.operands(&frame, args);
                     let target = &f.blocks[b.0 as usize];
@@ -633,6 +656,21 @@ impl<'m> Interp<'m> {
                 }
                 o.fields[*field as usize] = v;
                 Ok(())
+            }
+            Instr::LetMulti { vars, func, args } => {
+                let vals = self.operands(frame, args);
+                let Some(&gi) = self.funcs.get(func.as_str()) else {
+                    return fault(format!("unknown function {func}"));
+                };
+                match self.call_rets(gi, vals)? {
+                    Rets::Many(vs) if vs.len() == vars.len() => {
+                        for (x, v) in vars.iter().zip(vs) {
+                            frame[x.0 as usize] = v;
+                        }
+                        Ok(())
+                    }
+                    _ => fault(format!("`{func}` returned the wrong number of values")),
+                }
             }
             Instr::Let { var, rhs } => {
                 let v = self.rhs(f, frame, rhs)?;
@@ -1486,6 +1524,12 @@ impl<'m> Interp<'m> {
             )),
         }
     }
+}
+
+/// The result of a function call.
+enum Rets {
+    One(Val),
+    Many(Vec<Val>),
 }
 
 enum Step {

@@ -107,6 +107,9 @@ fn fixed_functions(m: &Module) -> HashSet<String> {
                 {
                     fixed.insert(func.clone());
                 }
+                if let Instr::LetMulti { func, .. } = i {
+                    fixed.insert(func.clone());
+                }
             }
             if let Terminator::TailCall { func, .. } = &b.term {
                 fixed.insert(func.clone());

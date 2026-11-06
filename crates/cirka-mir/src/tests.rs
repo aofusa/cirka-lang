@@ -378,3 +378,162 @@ fn c_signatures_round_trip_and_run() {
     let r = crate::interp::run(&m, b"", 1_000_000).unwrap();
     assert_eq!(r.stdout, "5");
 }
+
+// ---- multiple results (FEAT-0065) ----
+
+const MULTI: &str = "type Box { B = 0 { v: i64 } }
+
+fn pair(x: ptr @borrowed, n: i64) -> (ptr, i64) {
+entry:
+  let v = proj x Box.B.v
+  let b = alloc Box.B(n)
+  ret (b, v)
+}
+
+fn again(x: ptr @borrowed, n: i64) -> (ptr, i64) {
+entry:
+  let (b, v) = call pair(x, n)
+  ret (b, v)
+}
+
+fn main() -> i64 {
+entry:
+  let a = alloc Box.B(3)
+  let (b, v) = call again(a, 4)
+  drop a
+  let w = proj b Box.B.v
+  drop b
+  let r = prim add(v, w)
+  ret r
+}
+";
+
+fn verify_errors(src: &str) -> String {
+    let m = parse(FileId(0), src).unwrap_or_else(|e| panic!("{}", e.message));
+    crate::verify::render_errors(&crate::verify::verify_module(&m))
+}
+
+#[test]
+fn multiple_results_round_trip_and_run() {
+    let m = parse(FileId(0), MULTI).unwrap();
+    let f = m.func("pair").unwrap();
+    assert_eq!(f.rets, vec![Ty::Ptr, Ty::I64]);
+    assert_eq!(f.results(), &[Ty::Ptr, Ty::I64]);
+    assert!(f.is_multi());
+    assert_eq!(m.func("main").unwrap().results(), &[Ty::I64]);
+    let printed = print_module(&m);
+    assert!(printed.contains("fn pair(x: ptr @borrowed, n: i64) -> (ptr, i64) {"));
+    assert!(
+        printed.contains("let (b, v) = call pair(x, n)"),
+        "{printed}"
+    );
+    assert!(printed.contains("ret (b, v)"), "{printed}");
+    let again = parse(FileId(0), &printed).unwrap();
+    assert_eq!(strip_spans(m.clone()), strip_spans(again));
+    let errs = crate::verify::verify_module(&m);
+    assert!(errs.is_empty(), "{}", crate::verify::render_errors(&errs));
+    let r = crate::interp::run(&m, b"", 1_000_000).unwrap();
+    assert_eq!(r.exit_code, 7);
+    assert_eq!(r.leaked, 0);
+    // Perceus from scratch gives the same result.
+    let mut m2 = m.clone();
+    crate::perceus::strip_rc(&mut m2);
+    crate::perceus::run(&mut m2);
+    let errs = crate::verify::verify_module(&m2);
+    assert!(errs.is_empty(), "{}", crate::verify::render_errors(&errs));
+    let r = crate::interp::run(&m2, b"", 1_000_000).unwrap();
+    assert_eq!((r.exit_code, r.leaked), (7, 0));
+}
+
+#[test]
+fn multiple_results_parse_errors() {
+    let e = parse(FileId(0), "fn f() -> (i64) { entry: ret 1 }").unwrap_err();
+    assert!(e.message.contains("at least two"), "{}", e.message);
+    let e = parse(
+        FileId(0),
+        "fn f() -> i64 { entry: let (a, b) = call g() ret a }",
+    )
+    .unwrap_err();
+    assert!(e.message.contains("unknown function `g`"), "{}", e.message);
+}
+
+#[test]
+fn verifier_rejects_wrong_multiple_results() {
+    let pair = "fn pair(n: i64) -> (ptr, i64) {
+entry:
+  let s = lit \"s\"
+  ret (s, n)
+}
+";
+    let main0 = "fn main() -> i64 { entry: ret 0 }";
+    // Wrong arity of the binding.
+    let e = verify_errors(&format!(
+        "{pair}fn main() -> i64 {{ entry: let (a, b, c) = call pair(1) drop a ret b }}"
+    ));
+    assert!(e.contains("returns 2 values, but 3 variables"), "{e}");
+    // A single binding of a multi-result call and vice versa.
+    let e = verify_errors(&format!(
+        "{pair}fn main() -> i64 {{ entry: let a = call pair(1) drop a ret 0 }}"
+    ));
+    assert!(
+        e.contains("returns 2 values; bind them with `let (..)"),
+        "{e}"
+    );
+    let e = verify_errors(
+        "fn one() -> i64 { entry: ret 1 }
+fn main() -> i64 { entry: let (a, b) = call one() ret a }",
+    );
+    assert!(e.contains("returns a single value"), "{e}");
+    // `ret` arity and types.
+    let e = verify_errors(&format!(
+        "fn f(n: i64) -> (ptr, i64) {{ entry: ret (n, n) }}\n{main0}"
+    ));
+    assert!(e.contains("`n` has type i64, expected ptr"), "{e}");
+    let e = verify_errors(&format!(
+        "fn f(n: i64) -> (i64, i64) {{ entry: ret (n, n, n) }}\n{main0}"
+    ));
+    assert!(
+        e.contains("`ret` of 3 values in a function returning 2"),
+        "{e}"
+    );
+    let e = verify_errors(&format!(
+        "fn f(n: i64) -> (i64, i64) {{ entry: ret n }}\n{main0}"
+    ));
+    assert!(
+        e.contains("`ret` of one value in a function returning 2 values"),
+        "{e}"
+    );
+    let e = verify_errors(&format!(
+        "fn f(n: i64) -> i64 {{ entry: ret (n, n) }}\n{main0}"
+    ));
+    assert!(
+        e.contains("`ret (..)` in a function returning a single value"),
+        "{e}"
+    );
+    // Tail calls need the same result types.
+    let e = verify_errors(&format!(
+        "{pair}fn g(n: i64) -> (i64, ptr) {{ entry: tailcall pair(n) }}\n{main0}"
+    ));
+    assert!(
+        e.contains("tail call to `pair` returning (ptr, i64) from a function returning (i64, ptr)"),
+        "{e}"
+    );
+    // Results are owned: they must be consumed exactly once.
+    let e = verify_errors(&format!(
+        "{pair}fn main() -> i64 {{ entry: let (a, b) = call pair(1) ret b }}"
+    ));
+    assert!(e.contains("owned `a` is not consumed"), "{e}");
+    let e = verify_errors(&format!(
+        "{pair}fn main() -> i64 {{ entry: let (a, b) = call pair(1) drop a drop a ret b }}"
+    ));
+    assert!(e.contains("`a` is consumed more than once"), "{e}");
+    let e = verify_errors(&format!(
+        "{pair}fn h(n: i64) -> (ptr, i64) {{ entry: let (a, b) = call pair(n) drop a ret (a, b) }}\n{main0}"
+    ));
+    assert!(e.contains("`a` is consumed more than once"), "{e}");
+    // Closures and thunks return one value.
+    let e = verify_errors(&format!(
+        "{pair}fn main() -> i64 {{ entry: let t = mkthunk pair(1) drop t ret 0 }}"
+    ));
+    assert!(e.contains("thunk function `pair` must return ptr"), "{e}");
+}

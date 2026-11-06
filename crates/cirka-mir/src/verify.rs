@@ -25,7 +25,7 @@ pub fn verify_module(m: &Module) -> Vec<Diagnostic> {
     }
     for g in &m.globals {
         match sigs.get(g.init.as_str()) {
-            Some(f) if f.params.is_empty() && f.ret == Ty::Ptr => {}
+            Some(f) if f.params.is_empty() && f.results() == [Ty::Ptr] => {}
             _ => errs.push(
                 Diagnostic::error(format!(
                     "global `{}`: initializer `{}` must be a function with no parameters returning ptr",
@@ -41,6 +41,17 @@ pub fn verify_module(m: &Module) -> Vec<Diagnostic> {
         errs.extend(v.errs);
     }
     errs
+}
+
+/// `i64` or `(ptr, i64)`.
+fn show_tys(tys: &[Ty]) -> String {
+    match tys {
+        [t] => t.to_string(),
+        _ => {
+            let v: Vec<&str> = tys.iter().map(|t| t.name()).collect();
+            format!("({})", v.join(", "))
+        }
+    }
 }
 
 /// Renders verifier errors to a single string (for tests and ICE reports).
@@ -114,6 +125,13 @@ impl<'a> FnVerifier<'a> {
                         _ => Origin::Owned,
                     };
                 }
+                if let Instr::LetMulti { vars, .. } = ins {
+                    for v in vars {
+                        if f.ty(*v).is_ptr() {
+                            origin[v.0 as usize] = Origin::Owned;
+                        }
+                    }
+                }
             }
         }
         FnVerifier {
@@ -169,7 +187,7 @@ impl<'a> FnVerifier<'a> {
                 defs[p.0 as usize] += 1;
             }
             for ins in &b.instrs {
-                if let Instr::Let { var: Some(v), .. } = ins {
+                for v in ins.defs() {
                     defs[v.0 as usize] += 1;
                 }
             }
@@ -358,12 +376,13 @@ impl<'a> FnVerifier<'a> {
         }
     }
 
-    fn call_sig(&mut self, func: &str) -> Option<(Vec<Ty>, Vec<Own>, Ty)> {
+    /// Parameter types, ownership and result types of a known function.
+    fn call_sig(&mut self, func: &str) -> Option<(Vec<Ty>, Vec<Own>, Vec<Ty>)> {
         match self.sigs.get(func) {
             Some(g) => Some((
                 g.param_tys(),
                 g.params.iter().map(|p| p.own).collect(),
-                g.ret,
+                g.results().to_vec(),
             )),
             None => {
                 self.error(format!("call to unknown function `{func}`"));
@@ -385,6 +404,44 @@ impl<'a> FnVerifier<'a> {
                 }
             }
             Instr::Drop(v) => self.consume(st, *v),
+            Instr::LetMulti { vars, func, args } => {
+                if let Some((tys, owns, rets)) = self.call_sig(func) {
+                    if args.len() != tys.len() {
+                        self.error(format!(
+                            "`{func}` expects {} arguments, got {}",
+                            tys.len(),
+                            args.len()
+                        ));
+                    }
+                    self.args(st, args, &tys, &owns);
+                    if rets.len() < 2 {
+                        self.error(format!(
+                            "`{func}` returns a single value; bind it with `let x = call`"
+                        ));
+                    } else if vars.len() != rets.len() {
+                        self.error(format!(
+                            "`{func}` returns {} values, but {} variables are bound",
+                            rets.len(),
+                            vars.len()
+                        ));
+                    }
+                    for (v, t) in vars.iter().zip(&rets) {
+                        if f.ty(*v) != *t {
+                            self.error(format!(
+                                "`{}` is declared {} but the value has type {t}",
+                                self.name(*v),
+                                f.ty(*v)
+                            ));
+                        }
+                    }
+                }
+                if vars.len() < 2 {
+                    self.error("`let (..) = call` needs at least two variables");
+                }
+                for v in vars {
+                    self.define(st, *v);
+                }
+            }
             Instr::Set {
                 obj,
                 ctor,
@@ -513,7 +570,7 @@ impl<'a> FnVerifier<'a> {
                 Some(m.ctor(*ctor).fields[*field as usize].ty)
             }
             Rhs::Call { func, args } => {
-                let (tys, owns, ret) = self.call_sig(func)?;
+                let (tys, owns, rets) = self.call_sig(func)?;
                 if args.len() != tys.len() {
                     self.error(format!(
                         "`{func}` expects {} arguments, got {}",
@@ -522,7 +579,13 @@ impl<'a> FnVerifier<'a> {
                     ));
                 }
                 self.args(st, args, &tys, &owns);
-                Some(ret)
+                if rets.len() != 1 {
+                    self.error(format!(
+                        "`{func}` returns {} values; bind them with `let (..) = call`",
+                        rets.len()
+                    ));
+                }
+                Some(rets[0])
             }
             Rhs::Apply { clo, args } => {
                 if args.is_empty() || args.len() > MAX_CLOSURE_ARITY {
@@ -556,7 +619,7 @@ impl<'a> FnVerifier<'a> {
                             self.error(format!("closure parameters of `{func}` must be owned ptr"));
                         }
                     }
-                    if ret != Ty::Ptr {
+                    if ret != [Ty::Ptr] {
                         self.error(format!("closure function `{func}` must return ptr"));
                     }
                     let owns = vec![Own::Owned; args.len()];
@@ -572,7 +635,7 @@ impl<'a> FnVerifier<'a> {
                             tys.len()
                         ));
                     }
-                    if ret != Ty::Ptr {
+                    if ret != [Ty::Ptr] {
                         self.error(format!("thunk function `{func}` must return ptr"));
                     }
                     let owns = vec![Own::Owned; args.len()];
@@ -658,7 +721,30 @@ impl<'a> FnVerifier<'a> {
         let f = self.f;
         match t {
             Terminator::Ret(o) => {
+                if f.is_multi() {
+                    self.error(format!(
+                        "`ret` of one value in a function returning {} values",
+                        f.rets.len()
+                    ));
+                }
                 self.operand(st, o, Some(f.ret), true);
+                self.check_all_consumed(st, "`ret`");
+                vec![]
+            }
+            Terminator::RetMulti(os) => {
+                if !f.is_multi() {
+                    self.error("`ret (..)` in a function returning a single value");
+                } else if os.len() != f.rets.len() {
+                    self.error(format!(
+                        "`ret` of {} values in a function returning {}",
+                        os.len(),
+                        f.rets.len()
+                    ));
+                }
+                let tys = f.results().to_vec();
+                for (i, o) in os.iter().enumerate() {
+                    self.operand(st, o, tys.get(i).copied(), true);
+                }
                 self.check_all_consumed(st, "`ret`");
                 vec![]
             }
@@ -671,10 +757,11 @@ impl<'a> FnVerifier<'a> {
                             args.len()
                         ));
                     }
-                    if ret != f.ret {
+                    if ret != f.results() {
                         self.error(format!(
-                            "tail call to `{func}` returning {ret} from a function returning {}",
-                            f.ret
+                            "tail call to `{func}` returning {} from a function returning {}",
+                            show_tys(&ret),
+                            show_tys(f.results())
                         ));
                     }
                     if owns.contains(&Own::Borrowed) {

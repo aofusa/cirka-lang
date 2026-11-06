@@ -156,6 +156,13 @@ pub enum Instr {
         var: Option<Var>,
         rhs: Rhs,
     },
+    /// `let (x1, .., xn) = call f(args)`: a direct call of a known function
+    /// with multiple results (n >= 2, FEAT-0065). Every result is owned.
+    LetMulti {
+        vars: Vec<Var>,
+        func: String,
+        args: Vec<Operand>,
+    },
     Dup(Var),
     Drop(Var),
     /// Destructive update `set obj T.C.field = val` (owned unique objects only).
@@ -167,6 +174,17 @@ pub enum Instr {
     },
 }
 
+impl Instr {
+    /// Variables defined by the instruction.
+    pub fn defs(&self) -> &[Var] {
+        match self {
+            Instr::Let { var, .. } => var.as_slice(),
+            Instr::LetMulti { vars, .. } => vars,
+            _ => &[],
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Case {
     Ctor(CtorRef),
@@ -176,6 +194,9 @@ pub enum Case {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Terminator {
     Ret(Operand),
+    /// `ret (a1, .., an)` of a function with multiple results (FEAT-0065);
+    /// consumes each pointer operand like `ret`.
+    RetMulti(Vec<Operand>),
     Jump(BlockId, Vec<Operand>),
     Switch {
         scrut: Var,
@@ -222,7 +243,11 @@ pub struct Param {
 pub struct Function {
     pub name: String,
     pub params: Vec<Param>,
+    /// The single result type (when `rets` is empty; otherwise `rets[0]`).
     pub ret: Ty,
+    /// Multiple results (FEAT-0065): empty for a function with one result
+    /// (`ret`), otherwise the n >= 2 result types (`-> (ptr, i64)`).
+    pub rets: Vec<Ty>,
     pub blocks: Vec<Block>,
     /// Names of variables (index = `Var.0`).
     pub var_names: Vec<String>,
@@ -237,10 +262,32 @@ impl Function {
             name: name.into(),
             params: Vec::new(),
             ret,
+            rets: Vec::new(),
             blocks: Vec::new(),
             var_names: Vec::new(),
             var_tys: Vec::new(),
             span: Span::DUMMY,
+        }
+    }
+
+    /// A function with multiple results `rets` (n >= 2).
+    pub fn new_multi(name: impl Into<String>, rets: Vec<Ty>) -> Function {
+        let mut f = Function::new(name, rets.first().copied().unwrap_or(Ty::Ptr));
+        f.rets = rets;
+        f
+    }
+
+    /// Whether the function returns multiple values.
+    pub fn is_multi(&self) -> bool {
+        !self.rets.is_empty()
+    }
+
+    /// The result types: `[ret]` or `rets`.
+    pub fn results(&self) -> &[Ty] {
+        if self.rets.is_empty() {
+            std::slice::from_ref(&self.ret)
+        } else {
+            &self.rets
         }
     }
 

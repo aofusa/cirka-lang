@@ -210,6 +210,8 @@ enum RRhs {
 #[derive(Clone, Debug)]
 enum RInstr {
     Let(Option<(String, Span)>, Option<Ty>, RRhs, Span),
+    /// `let (x1, .., xn) = call f(args)`.
+    LetMulti(Vec<(String, Span)>, (String, Span), Vec<ROp>),
     Dup((String, Span)),
     Drop((String, Span)),
     Set((String, Span), String, ROp),
@@ -218,6 +220,7 @@ enum RInstr {
 #[derive(Clone, Debug)]
 enum RTerm {
     Ret(ROp),
+    RetMulti(Vec<ROp>),
     Jump((String, Span), Vec<ROp>),
     Switch(
         (String, Span),
@@ -240,7 +243,8 @@ struct RFunc {
     name: String,
     span: Span,
     params: Vec<(String, Ty, Own, Span)>,
-    ret: Ty,
+    /// One result type, or n >= 2 for `-> (t1, .., tn)`.
+    ret: Vec<Ty>,
     blocks: Vec<RBlock>,
 }
 
@@ -488,7 +492,20 @@ impl Parser {
             Ok((n, t, o, sp))
         })?;
         self.expect_sym("->")?;
-        let ret = self.ty()?;
+        let ret = if self.is_sym("(") {
+            let sp = self.span();
+            let tys = self.comma_list("(", ")", |p| p.ty())?;
+            if tys.len() < 2 {
+                return Err(
+                    Diagnostic::error("multiple results need at least two types")
+                        .with_code("M0002")
+                        .with_label(sp, ""),
+                );
+            }
+            tys
+        } else {
+            vec![self.ty()?]
+        };
         self.expect_sym("{")?;
         let mut blocks = Vec::new();
         while !self.is_sym("}") {
@@ -532,6 +549,15 @@ impl Parser {
                 ));
             };
             match k.as_str() {
+                "let" if matches!(self.toks.get(self.pos + 1), Some((Tok::Sym("("), _))) => {
+                    self.bump();
+                    let names = self.comma_list("(", ")", |p| p.ident())?;
+                    self.expect_sym("=")?;
+                    self.expect_kw("call")?;
+                    let func = self.ident()?;
+                    let args = self.args()?;
+                    instrs.push(RInstr::LetMulti(names, func, args));
+                }
                 "let" => {
                     self.bump();
                     let (n, nsp) = self.ident()?;
@@ -632,6 +658,7 @@ impl Parser {
     fn term(&mut self) -> PResult<RTerm> {
         let (k, _) = self.ident()?;
         Ok(match k.as_str() {
+            "ret" if self.is_sym("(") => RTerm::RetMulti(self.args()?),
             "ret" => RTerm::Ret(self.operand()?),
             "jump" => {
                 let l = self.ident()?;
@@ -697,7 +724,7 @@ fn describe(t: &Tok) -> String {
 /// Signatures used to type operands and results while resolving.
 struct Sigs<'a> {
     m: &'a Module,
-    funcs: HashMap<String, (Vec<Ty>, Ty)>,
+    funcs: HashMap<String, (Vec<Ty>, Vec<Ty>)>,
 }
 
 impl Sigs<'_> {
@@ -769,9 +796,9 @@ impl FnResolver<'_> {
             .map(|(i, o)| self.op(o, expect.get(i).copied()))
             .collect()
     }
-    fn fn_sig(&self, name: &str) -> (Vec<Ty>, Option<Ty>) {
+    fn fn_sig(&self, name: &str) -> (Vec<Ty>, Option<Vec<Ty>>) {
         match self.sigs.funcs.get(name) {
-            Some((p, r)) => (p.clone(), Some(*r)),
+            Some((p, r)) => (p.clone(), Some(r.clone())),
             None => (Vec::new(), None),
         }
     }
@@ -801,7 +828,10 @@ pub fn parse(file: FileId, src: &str) -> Result<Module, Diagnostic> {
         }
         funcs.insert(
             rf.name.clone(),
-            (rf.params.iter().map(|p| p.1).collect::<Vec<_>>(), rf.ret),
+            (
+                rf.params.iter().map(|p| p.1).collect::<Vec<_>>(),
+                rf.ret.clone(),
+            ),
         );
     }
     let sigs = Sigs { m: &m, funcs };
@@ -815,7 +845,11 @@ pub fn parse(file: FileId, src: &str) -> Result<Module, Diagnostic> {
 
 fn resolve_fn(rf: &RFunc, sigs: &Sigs<'_>) -> PResult<Function> {
     let mut r = FnResolver {
-        f: Function::new(rf.name.clone(), rf.ret),
+        f: if rf.ret.len() == 1 {
+            Function::new(rf.name.clone(), rf.ret[0])
+        } else {
+            Function::new_multi(rf.name.clone(), rf.ret.clone())
+        },
         names: HashMap::new(),
         labels: HashMap::new(),
         sigs,
@@ -862,6 +896,23 @@ fn resolve_fn(rf: &RFunc, sigs: &Sigs<'_>) -> PResult<Function> {
                 let v = r.f.new_var(n.clone(), ty);
                 r.names.insert(n.clone(), v);
             }
+            if let RInstr::LetMulti(names, (func, fsp), _) = ins {
+                let Some((_, rets)) = sigs.funcs.get(func) else {
+                    return Err(Diagnostic::error(format!("unknown function `{func}`"))
+                        .with_code("M0003")
+                        .with_label(*fsp, ""));
+                };
+                for (i, (n, sp)) in names.iter().enumerate() {
+                    if r.names.contains_key(n) {
+                        return Err(dup_err(n, *sp));
+                    }
+                    // Extra names of an arity mismatch get `ptr`: the
+                    // verifier reports the mismatch.
+                    let ty = rets.get(i).copied().unwrap_or(Ty::Ptr);
+                    let v = r.f.new_var(n.clone(), ty);
+                    r.names.insert(n.clone(), v);
+                }
+            }
         }
     }
     let mut blocks = Vec::new();
@@ -874,6 +925,14 @@ fn resolve_fn(rf: &RFunc, sigs: &Sigs<'_>) -> PResult<Function> {
                     let var = name.as_ref().map(|n| r.names[&n.0]);
                     let rhs = resolve_rhs(&r, rhs, *ann, *sp)?;
                     Instr::Let { var, rhs }
+                }
+                RInstr::LetMulti(names, (func, _), args) => {
+                    let (ptys, _) = r.fn_sig(func);
+                    Instr::LetMulti {
+                        vars: names.iter().map(|n| r.names[&n.0]).collect(),
+                        func: func.clone(),
+                        args: r.ops(args, &ptys)?,
+                    }
                 }
                 RInstr::Dup(v) => Instr::Dup(r.var(v)?),
                 RInstr::Drop(v) => Instr::Drop(r.var(v)?),
@@ -890,7 +949,8 @@ fn resolve_fn(rf: &RFunc, sigs: &Sigs<'_>) -> PResult<Function> {
             });
         }
         let term = match &b.term {
-            RTerm::Ret(o) => Terminator::Ret(r.op(o, Some(rf.ret))?),
+            RTerm::Ret(o) => Terminator::Ret(r.op(o, Some(rf.ret[0]))?),
+            RTerm::RetMulti(os) => Terminator::RetMulti(r.ops(os, &rf.ret)?),
             RTerm::Jump(l, args) => {
                 let target = r.label(l)?;
                 let tys: Vec<Ty> = rf.blocks[target.0 as usize]
@@ -963,7 +1023,9 @@ fn rhs_ty(rhs: &RRhs, ann: Option<Ty>, sigs: &Sigs<'_>, sp: Span) -> PResult<Ty>
             sigs.m.ctor(c).fields[f as usize].ty
         }
         RRhs::Call(f, _) => match sigs.funcs.get(f) {
-            Some((_, r)) => *r,
+            // The first result for a multi-result callee: the verifier
+            // reports the arity mismatch.
+            Some((_, r)) => r[0],
             None => {
                 return Err(Diagnostic::error(format!("unknown function `{f}`"))
                     .with_code("M0003")
