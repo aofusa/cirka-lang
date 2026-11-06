@@ -537,3 +537,220 @@ fn main() -> i64 { entry: let (a, b) = call one() ret a }",
     ));
     assert!(e.contains("thunk function `pair` must return ptr"), "{e}");
 }
+
+const UNIQUE_LOOP: &str = r#"
+extern fn cirka_write_i64(i64) -> void
+
+fn fill(a: ptr @owned, i: i64, n: i64) -> ptr {
+entry:
+  let d = prim ge(i, n)
+  switch d { 0 => body, default => done }
+done:
+  ret a
+body:
+  let x = prim bytes_get_i64(a, i)
+  let c = prim bytes_unique(a)
+  let y = prim add(x, i)
+  let s = prim bytes_set_i64(c, i, y)
+  let j = prim add(i, 1)
+  tailcall fill(c, j, n)
+}
+
+fn main() -> i64 {
+entry:
+  let a = prim bytes_new(32)
+  dup a
+  let b = call fill(a, 0, 4)
+  let s1 = prim bytes_get_i64(a, 3)
+  let s2 = prim bytes_get_i64(b, 3)
+  drop a
+  drop b
+  let _ = extern cirka_write_i64(s1)
+  let _ = extern cirka_write_i64(s2)
+  ret 0
+}
+"#;
+
+#[test]
+fn unique_loops_are_specialized() {
+    let before = parse(FileId(0), UNIQUE_LOOP).unwrap();
+    let mut m = before.clone();
+    assert_eq!(crate::uniq::specialize_loops(&mut m), 1);
+    let errs = crate::verify::verify_module(&m);
+    assert!(errs.is_empty(), "{}", crate::verify::render_errors(&errs));
+    let printed = print_module(&m);
+    let f = m.func("fill").unwrap();
+    // The original checks once and continues in the specialized function.
+    assert!(printed.contains("tailcall fill$u(c, j, n)"), "{printed}");
+    let u = m.func("fill$u").unwrap();
+    assert_eq!(u.params, f.params);
+    let text = print_module(&Module {
+        funcs: vec![u.clone()],
+        ..before.clone()
+    });
+    assert!(!text.contains("bytes_unique"), "{text}");
+    assert!(text.contains("tailcall fill$u(a, j, n)"), "{text}");
+    // Same output and allocations (one copy of the shared array), and the
+    // interpreter's check that stores go to unique arrays passes.
+    let r0 = crate::interp::run(&before, b"", 1_000_000).unwrap();
+    let r1 = crate::interp::run(&m, b"", 1_000_000).unwrap();
+    assert_eq!(r0.stdout, r1.stdout);
+    assert_eq!(r0.stats.allocs, 2);
+    assert_eq!(r1.stats.allocs, 2);
+    assert_eq!(r1.leaked, 0);
+}
+
+#[test]
+fn unique_loops_keep_checks_of_shared_values() {
+    // The checked array is shared before the next iteration: not specialized.
+    let src = UNIQUE_LOOP.replace(
+        "  tailcall fill(c, j, n)",
+        "  dup c\n  drop c\n  tailcall fill(c, j, n)",
+    );
+    let mut m = parse(FileId(0), &src).unwrap();
+    assert_eq!(crate::uniq::specialize_loops(&mut m), 0);
+    // Paths that meet in a block: one of them shares the array, so nothing
+    // is known afterwards, in whichever order the analysis visits them.
+    for (zero, other) in [("clean", "dirty"), ("dirty", "clean")] {
+        let src = UNIQUE_LOOP.replace(
+            "  tailcall fill(c, j, n)",
+            &format!(
+                "  switch i {{ 0 => {zero}, default => {other} }}
+clean:
+  jump next()
+dirty:
+  dup c
+  drop c
+  jump next()
+next:
+  tailcall fill(c, j, n)"
+            ),
+        );
+        let mut m = parse(FileId(0), &src).unwrap();
+        assert_eq!(crate::uniq::specialize_loops(&mut m), 0, "{zero} first");
+    }
+    // The checked array moves to another parameter: the next iteration
+    // checks the other array, which nothing is known about.
+    let src = "fn rot(a: ptr @owned, b: ptr @owned, i: i64) -> i64 {
+entry:
+  let d = prim ge(i, 4)
+  switch d { 0 => body, default => done }
+done:
+  drop a
+  drop b
+  ret 0
+body:
+  let c = prim bytes_unique(a)
+  let s = prim bytes_set_i64(c, 0, i)
+  let j = prim add(i, 1)
+  tailcall rot(b, c, j)
+}
+fn main() -> i64 {
+entry:
+  let a = prim bytes_new(8)
+  dup a
+  let r = call rot(a, a, 0)
+  ret r
+}";
+    let mut m = parse(FileId(0), src).unwrap();
+    assert_eq!(crate::uniq::specialize_loops(&mut m), 0);
+    assert!(crate::interp::run(&m, b"", 1_000_000).is_ok());
+    // In-place reads keep it unique.
+    let src = UNIQUE_LOOP.replace(
+        "  let c = prim bytes_unique(a)\n",
+        "  let c = prim bytes_unique(a)\n  let k = prim bytes_len(c)\n",
+    );
+    let mut m = parse(FileId(0), &src).unwrap();
+    assert_eq!(crate::uniq::specialize_loops(&mut m), 1);
+    // Only unchecked parameters reach the tail call: nothing is known.
+    let src = UNIQUE_LOOP
+        .replace("  let c = prim bytes_unique(a)\n", "")
+        .replace("bytes_set_i64(c, i, y)", "bytes_get_i64(a, i)")
+        .replace("tailcall fill(c, j, n)", "tailcall fill(a, j, n)");
+    let mut m = parse(FileId(0), &src).unwrap();
+    assert_eq!(crate::uniq::specialize_loops(&mut m), 0);
+}
+
+/// A loop with all three routes: `skip` passes the array unchecked, `plain`
+/// passes it checked, and `keep` shares it. `a` starts shared with `saved`.
+const UNIQUE_ROUTES: &str = r#"
+extern fn cirka_write_i64(i64) -> void
+
+fn run(a: ptr @owned, saved: ptr @owned, i: i64, n: i64) -> i64 {
+entry:
+  let d = prim ge(i, n)
+  switch d { 0 => body, default => done }
+done:
+  let x = prim bytes_get_i64(a, 0)
+  let y = prim bytes_get_i64(saved, 0)
+  drop a
+  drop saved
+  let h = prim mul(x, 100)
+  let r = prim add(h, y)
+  ret r
+body:
+  let j = prim add(i, 1)
+  let w = prim lt(i, 1)
+  switch w { 0 => write, default => skip }
+skip:
+  tailcall run(a, saved, j, n)
+write:
+  let c = prim bytes_unique(a)
+  let s = prim bytes_set_i64(c, 0, i)
+  let e = prim eq(i, 2)
+  switch e { 0 => plain, default => keep }
+plain:
+  tailcall run(c, saved, j, n)
+keep:
+  drop saved
+  dup c
+  tailcall run(c, c, j, n)
+}
+
+fn main() -> i64 {
+entry:
+  let a = prim bytes_new(8)
+  dup a
+  let r = call run(a, a, 0, 5)
+  let _ = extern cirka_write_i64(r)
+  ret 0
+}
+"#;
+
+#[test]
+fn unique_loops_enter_and_leave_the_specialized_function() {
+    let before = parse(FileId(0), UNIQUE_ROUTES).unwrap();
+    let mut m = before.clone();
+    assert_eq!(crate::uniq::specialize_loops(&mut m), 1);
+    let errs = crate::verify::verify_module(&m);
+    assert!(errs.is_empty(), "{}", crate::verify::render_errors(&errs));
+    let text = |name: &str| {
+        print_module(&Module {
+            funcs: vec![m.func(name).unwrap().clone()],
+            ..before.clone()
+        })
+    };
+    // The original only enters `run$u` with a checked array.
+    let f = text("run");
+    assert!(f.contains("tailcall run(a, saved, j, n)"), "{f}");
+    assert!(f.contains("tailcall run$u(c, saved, j, n)"), "{f}");
+    assert!(f.contains("tailcall run(c, c, j, n)"), "{f}");
+    // `run$u` loops while the array is unique and leaves once it is shared.
+    let u = text("run$u");
+    assert!(!u.contains("bytes_unique"), "{u}");
+    assert_eq!(
+        u.matches("tailcall run$u(a, saved, j, n)").count(),
+        2,
+        "{u}"
+    );
+    assert!(u.contains("tailcall run(a, a, j, n)"), "{u}");
+    // i = 0 skips, 1 copies the shared array, 2 is saved and shared, 3 copies
+    // again, 4 writes in place: a[0] = 4 and saved[0] = 2.
+    let r0 = crate::interp::run(&before, b"", 1_000_000).unwrap();
+    let r1 = crate::interp::run(&m, b"", 1_000_000).unwrap();
+    assert_eq!(r1.stdout, "402");
+    assert_eq!(r0.stdout, r1.stdout);
+    assert_eq!(r0.stats.allocs, 3);
+    assert_eq!(r1.stats.allocs, 3);
+    assert_eq!(r1.leaked, 0);
+}

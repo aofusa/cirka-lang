@@ -167,6 +167,7 @@ pub fn run(m: &mut Module) {
     crate::borrow::infer_borrow(m);
     insert_rc(m);
     crate::reuse::optimize(m);
+    crate::uniq::specialize_loops(m);
 }
 
 /// Inserts dup/drop into every function of `m` that has none.

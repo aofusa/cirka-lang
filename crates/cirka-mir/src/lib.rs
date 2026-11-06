@@ -12,6 +12,7 @@ pub mod parse;
 pub mod perceus;
 pub mod print;
 pub mod reuse;
+pub mod uniq;
 pub mod verify;
 
 pub use cirka_core::{CSig, CTy};
