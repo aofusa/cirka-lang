@@ -144,9 +144,11 @@ pub fn optimize_with_stats(p: &mut Program) -> Result<Stats, Diagnostic> {
         lint_all(p, "strictify")?;
         simplify_rounds(p, &mut st, &mut next)?;
     }
-    st.floated_in = crate::strict::float_in(p);
+    st.floated_in = crate::strict::float_in(p, &mut next);
     if st.floated_in > 0 {
         lint_all(p, "float-in")?;
+        // Copies scrutinized in their alternative become strict.
+        simplify_rounds(p, &mut st, &mut next)?;
     }
     st.unique_checks = crate::uniq::redundant_unique(p);
     if st.unique_checks > 0 {
@@ -1243,6 +1245,23 @@ impl Simp<'_> {
         // case s of p -> let! b = e in case b of ...  (one alternative:
         // nothing is duplicated; the next iteration may find `e` to be a
         // known constructor). Both sides are simplified output here.
+        // let! b = (case s of p -> e) in let! y = (case b of ...) in k  ⇒
+        // let! y = (let! b = (case s of p -> e) in case b of ...) in k
+        // when `k` does not use `b`: the rule below then applies inside
+        // (FEAT-0064: the pair returned by an inlined `read`).
+        if let (Expr::Case(_, _, _, alts), Expr::LetStrict(_, r2, k2)) = (&r, &body)
+            && alts.len() == 1
+            && matches!(&**r2, Expr::Case(sc, _, _, _) if matches!(&**sc, Expr::Var(v) if v.id == x))
+            && !occurs(k2, x)
+        {
+            self.hit();
+            self.st.floated += 1;
+            let Expr::LetStrict(y, r2, k2) = body else {
+                unreachable!()
+            };
+            let inner = Expr::LetStrict(b, Box::new(r), r2);
+            return Expr::LetStrict(y, Box::new(inner), k2);
+        }
         if let (Expr::Case(_, _, _, alts), Expr::Case(sc, _, res, _)) = (&r, &body)
             && alts.len() == 1
             && matches!(&**sc, Expr::Var(v) if v.id == x)

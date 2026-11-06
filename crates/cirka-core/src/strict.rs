@@ -605,26 +605,44 @@ fn no_forall(t: &Type) -> bool {
 
 /// Moves lazy `let`s down past `let!`s and into the only `case`
 /// alternative that uses them, so that a loop does not allocate (box or
-/// thunk) on every iteration what only its exit uses. Returns the number of
-/// bindings moved into an alternative.
-pub fn float_in(p: &mut Program) -> usize {
+/// thunk) on every iteration what only its exit uses. A small binding used
+/// by several alternatives is copied into each (FEAT-0064): an alternative
+/// that scrutinizes it then evaluates it in place, without a thunk. Returns
+/// the number of bindings moved into an alternative.
+pub fn float_in(p: &mut Program, next: &mut u32) -> usize {
     let mut n = 0;
     for b in &mut p.binds {
         let e = std::mem::replace(&mut b.expr, Expr::Lit(Lit::Unit));
-        b.expr = float_expr(e, &mut n);
+        b.expr = float_expr(e, &mut n, next);
     }
     n
 }
 
-fn float_expr(e: Expr, n: &mut usize) -> Expr {
+/// Bindings at most this large (Core nodes) are copied into alternatives.
+const COPY_SIZE: usize = 40;
+
+fn float_expr(e: Expr, n: &mut usize, next: &mut u32) -> Expr {
     match e {
         Expr::Let(Bind::NonRec(b, r), body) if b.mult == Mult::Many => {
-            let r = float_expr(*r, n);
-            let body = float_expr(*body, n);
-            sink(b, r, body, n)
+            let r = float_expr(*r, n, next);
+            let body = float_expr(*body, n, next);
+            sink(b, r, body, n, next)
         }
-        e => map_children(e, &mut |c| float_expr(c, n)),
+        e => map_children(e, &mut |c| float_expr(c, n, next)),
     }
+}
+
+/// Whether `r` may be copied: small and without closures (copying a
+/// closure or a local function would duplicate code that may be large
+/// once lifted).
+fn copyable(r: &Expr) -> bool {
+    let mut ok = crate::opt::size(r) <= COPY_SIZE;
+    walk(r, &mut |s| {
+        if matches!(s, Expr::Lam(..) | Expr::Let(Bind::Rec(_), _)) {
+            ok = false;
+        }
+    });
+    ok
 }
 
 fn mentions(e: &Expr, x: u32) -> bool {
@@ -639,29 +657,66 @@ fn mentions(e: &Expr, x: u32) -> bool {
     found
 }
 
+/// Whether evaluating `e` certainly evaluates the variable `x` (a simple
+/// syntactic approximation: `x` scrutinized on the evaluation spine).
+fn forces(e: &Expr, x: u32) -> bool {
+    let is_x = |a: &Expr| matches!(a, Expr::Var(v) if v.id == x);
+    match e {
+        Expr::Case(s, _, _, alts) => {
+            is_x(s) || forces(s, x) || (!alts.is_empty() && alts.iter().all(|a| forces(&a.rhs, x)))
+        }
+        Expr::LetStrict(_, r, k) => is_x(r) || forces(r, x) || forces(k, x),
+        Expr::Let(_, k) | Expr::Cast(k, _) | Expr::TyApp(k, _) => forces(k, x),
+        Expr::Prim(_, _, a) | Expr::Extern(_, a) => a.iter().any(|a| is_x(a) || forces(a, x)),
+        _ => false,
+    }
+}
+
 /// `let b = r in body` with the binding moved as far down as possible.
-fn sink(b: Binder, r: Expr, body: Expr, n: &mut usize) -> Expr {
+fn sink(b: Binder, r: Expr, body: Expr, n: &mut usize, next: &mut u32) -> Expr {
     let x = b.id.id;
     let keep = |b, r, body| Expr::Let(Bind::NonRec(b, Box::new(r)), Box::new(body));
     match body {
         Expr::LetStrict(b2, r2, rest) if !mentions(&r2, x) => {
-            Expr::LetStrict(b2, r2, Box::new(sink(b, r, *rest, n)))
+            Expr::LetStrict(b2, r2, Box::new(sink(b, r, *rest, n, next)))
+        }
+        // Past other lazy bindings too (FEAT-0064: a box needed on one
+        // path only, behind the newtype wrappers of a unique array).
+        Expr::Let(Bind::NonRec(b2, r2), rest) if !mentions(&r2, x) => {
+            Expr::Let(Bind::NonRec(b2, r2), Box::new(sink(b, r, *rest, n, next)))
         }
         Expr::Case(s, cb, t, alts) if !mentions(&s, x) => {
             let users: Vec<usize> = (0..alts.len())
                 .filter(|&i| mentions(&alts[i].rhs, x))
                 .collect();
-            if users.len() != 1 {
+            if users.is_empty()
+                || (users.len() > 1
+                    && !(copyable(&r) && users.iter().any(|&i| forces(&alts[i].rhs, x))))
+            {
                 return keep(b, r, Expr::Case(s, cb, t, alts));
             }
             *n += 1;
-            let i = users[0];
+            let first = users[0];
             let alts = alts
                 .into_iter()
                 .enumerate()
                 .map(|(j, a)| {
-                    if j == i {
-                        let rhs = sink(b.clone(), r.clone(), a.rhs, n);
+                    if j == first {
+                        let rhs = sink(b.clone(), r.clone(), a.rhs, n, next);
+                        Alt { con: a.con, rhs }
+                    } else if users.contains(&j) {
+                        // A copy with its own binders (they stay unique).
+                        let copy = freshen(
+                            &Expr::Let(
+                                Bind::NonRec(b.clone(), Box::new(r.clone())),
+                                Box::new(a.rhs),
+                            ),
+                            next,
+                        );
+                        let Expr::Let(Bind::NonRec(b2, r2), rhs) = copy else {
+                            unreachable!()
+                        };
+                        let rhs = sink(b2, *r2, *rhs, n, next);
                         Alt { con: a.con, rhs }
                     } else {
                         a

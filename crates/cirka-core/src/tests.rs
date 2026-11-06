@@ -533,7 +533,8 @@ fn float_in_moves_lets_into_their_only_alternative() {
          (def main Int# 0)"
     );
     let mut p = parse_program(FileId(0), &src).unwrap();
-    assert_eq!(strict::float_in(&mut p), 1);
+    let mut next = p.max_id() + 1;
+    assert_eq!(strict::float_in(&mut p, &mut next), 1);
     assert!(lint::lint_program(&p).is_empty(), "{}", print_program(&p));
     let m = print::print_expr(&p.bind("f").unwrap().expr);
     assert!(m.contains("(0 (let ((b"), "{m}");
@@ -772,4 +773,51 @@ fn opt_keeps_checks_after_sharing() {
     );
     let (m, st) = opt_main(&src);
     assert_eq!(st.unique_checks, 0, "{m}");
+}
+
+// ---- FEAT-0064: pairs of inlined reads, float-in ----
+
+#[test]
+fn opt_floats_strict_case_into_a_later_scrutinizing_let() {
+    // `c` is a pair built under a one-alternative case and taken apart by
+    // the right-hand side of the next `let!`: the pair is never built.
+    let src = format!(
+        "{PRELUDE}(extern arg () Int#)
+         (def main Int#
+           (let! (x Int (con I# () (extern arg)))
+             (let! (c (Pair Int Int) (case x (s Int) (Pair Int Int)
+                   ((I# v) (con P (Int Int) x x))))
+               (let! (d Int# (case c (t (Pair Int Int)) Int#
+                     ((P a b) (case a (s2 Int) Int# ((I# w) w)))))
+                 (prim mul d 2)))))"
+    );
+    let (m, _) = opt_main(&src);
+    assert!(!m.contains("con P"), "{m}");
+}
+
+#[test]
+fn float_in_passes_lazy_lets_and_copies_forced_bindings() {
+    // `b` moves past the lazy `y` into its only alternative; `s` is used by
+    // both alternatives and scrutinized by one, so each gets a copy.
+    let src = format!(
+        "{PRELUDE}(extern arg () Int#)
+         (def f Int
+           (let! (x Int# (extern arg))
+             (let ((b Int (con I# () x)))
+               (let ((y Int (con I# () 2)))
+                 (let ((s Int (con I# () (prim add x 1))))
+                   (let! (c Int# (prim eq x 0))
+                     (case c (k Int#) Int
+                       (0 (case s (s3 Int) Int ((I# z) (con I# () (prim add z 1)))))
+                       (_ (case b (s4 Int) Int ((I# q) (case y (s5 Int) Int ((I# r) s))))))))))))
+         (def main Int# 0)"
+    );
+    let mut p = parse_program(FileId(0), &src).unwrap();
+    let mut next = p.max_id() + 1;
+    assert!(strict::float_in(&mut p, &mut next) >= 2);
+    assert!(lint::lint_program(&p).is_empty(), "{}", print_program(&p));
+    let m = print::print_expr(&p.bind("f").unwrap().expr);
+    assert!(m.contains("(0 (let ((s"), "{m}");
+    assert!(m.contains("(_ (let ((b"), "{m}");
+    assert_eq!(m.matches("(prim add x 1)").count(), 2, "{m}");
 }
