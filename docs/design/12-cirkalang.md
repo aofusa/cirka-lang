@@ -204,3 +204,46 @@ trait Monoid (a : Type) where
 
 - aCHC で書いた `.chs` から CirkaLang への機械的な変換ツールは、構文の差分が小さければ第二段階で検討する。
 - Haskell ライブラリとの相互運用は、aCHC でコンパイルしたコードを C ABI 経由で呼ぶ形が候補 (共通ランタイム上なので比較的容易)。
+
+## 11. ソース内のテスト (v0.0.2、ADR-048)
+
+Rust の `#[test]` と `#[cfg(test)] mod tests` のように、プログラムの本体とテストを **一つのソースファイルに同居** させる (FEAT-0216)。
+
+```
+module Text.Digits
+
+digits : Int -> List Int
+digits n = if n < 10 then [n] else append (digits (n / 10)) [n % 10]
+
+private
+square : Int -> Int
+square x = x * x
+
+test "digits は 10 進の各桁を返す" =
+  assertEqInt (length (digits 1203)) 4
+
+-- テスト用の補助定義はテストのビルドにだけ存在する
+tests where
+  sample : List Int
+  sample = [1, 2, 3]
+
+  test "非公開の関数も試せる" = do
+    assertEqInt (square 7) 49
+    assert (length sample == 3) "sample"
+```
+
+- `test "名前" = 式` はトップレベルの宣言で、式の型は `IO ()`。`test` は文字列リテラルが続くときだけキーワードになる (文脈キーワード。
+  `test` という名前の関数は引き続き書ける)。名前はモジュールの中で一意 (重複は E1112)。
+- `tests where { 宣言 }` のブロックには、型注釈・定義・データ型・`test` を書ける。ブロックの中の名前はテストのビルドにだけ存在し、
+  ブロックの外のテストでない宣言から使うと E1113。
+- テストは同じモジュールの非公開の宣言を使える (Rust と同じ)。
+- **ゼロコスト**: `cirka build` / `cirka run` は構文解析の直後に `test` と `tests` ブロックを捨てる。生成コード・コンパイル時間に影響しない。
+  `cirka check` はテストも型検査する (使われないテストが壊れたままにならないように)。
+- `cirka test [パッケージ|ファイル] [--filter 文字列]` は、パッケージ (またはファイルとその import) のすべてのモジュールのテストを集めて
+  一つの実行ファイルを作り、**テストごとに別のプロセスで** 実行する (panic=abort の間もほかのテストに影響しない)。
+  `main` は不要で、テスト用の `main` を生成する (引数でテストの番号を受け取り、そのテストを走らせる)。
+- 失敗: panic (`assert` の失敗を含む)・0 以外の終了コード・リーク (`CIRKA_LEAK_CHECK=1` で実行する)。
+  出力は `test Text.Digits "digits は 10 進の各桁を返す" ... ok` の形と、最後の集計。失敗があれば `cirka test` の終了コードは 1。
+- core の `Test` 部分 (Prelude) に `assert : Bool -> String -> IO ()` と、型ごとの `assertEqInt` などを置く。トレイト (FEAT-0210) の後に
+  `assertEq : (Eq a, Show a) => a -> a -> IO ()` を加える。
+- aCHC の `.hs` には入れない (Haskell の意味を変えない)。`.chs` への取り込みは後期に検討する。

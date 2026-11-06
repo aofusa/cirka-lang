@@ -19,6 +19,8 @@
 | aCHC 検証 (後期) | `tests/achc/verify/{pass,fail}/**/*.{hs,chs}` | aCHC (H6〜) | 洗練型・契約・全域性が通る / 反例付きで失敗する (`CIRKA_Z3` 未設定ならスキップ) |
 | CirkaLang 実行 | `tests/cirkalang/run/v0.0.N/**/*.cirka` + `.stdout` | CirkaLang | 出力一致、リーク 0。版ごとにディレクトリを分ける |
 | CirkaLang エラー | `tests/cirkalang/fail/**/*.cirka` + `.stderr` | CirkaLang | 型・所有権・全域性・証明の診断が一致 |
+| CirkaLang ソース内のテスト | `tests/cirkalang/test/**/*.cirka` + `.stdout` (`cirka test` の出力)・`.exitcode` | CirkaLang (v0.0.2〜) | `test` 宣言の成否と集計が期待どおり。本体のビルドにテストが残らない (12-cirkalang.md §11、FEAT-0216) |
+| ゼロコスト | 抽象版と手書き版の組 | 共通基盤 | 確保回数と最適化後の IR の大きさが一致 (16-performance.md §2、FEAT-0061) |
 | CirkaLang 検証 | `tests/cirkalang/verify/{pass,fail}/**/*.cirka` | CirkaLang (v0.0.4〜) | 証明が通る / 反例付きで失敗する (`CIRKA_Z3` 未設定ならスキップ) |
 | 契約の実行時検査 | `tests/cirkalang/run/contracts/` | CirkaLang | `--contracts=check` で違反時に期待どおり停止 |
 | メモリ | 実行テスト全体 | 全部 | `CIRKA_ALLOC=system` + valgrind でエラー 0 |

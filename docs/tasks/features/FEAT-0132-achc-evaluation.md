@@ -1,6 +1,6 @@
 # FEAT-0132: aCHC の評価レポート
 
-- 状態: in-progress
+- 状態: done
 - トラック: aCHC
 - マイルストーン: H4 FFI 拡張と評価
 - 優先度: P0
@@ -20,7 +20,7 @@ aCHC で検証した事項 (00-overview §7) をまとめ、CirkaLang v0.1.0 の
 
 ## 受け入れ条件
 
-- [ ] `docs/design/achc-evaluation.md` がレビュー済み (草稿を作成済み。利用者のレビュー待ち)
+- [x] `docs/design/achc-evaluation.md` がレビュー済み (2026-11-06)
 - [x] テストを追加し `scripts/ci.sh` が通る
 
 ## メモ
@@ -31,4 +31,5 @@ aCHC で検証した事項 (00-overview §7) をまとめ、CirkaLang v0.1.0 の
   レポートは他の設計書・チケットを根拠として参照するため。
 - FEAT-0130 (`extern "C"` ブロック) は FEAT-0047 待ちで未着手。FFI の評価は FEAT-0116 の範囲で行った。
 - レビューで指摘があれば反映し、レビュー済みになった時点で done にする。
-
+- レビュー (2026-11-06): 大筋を承認。追加の要望 2 点を §8 に反映した。(1) GHC -O2 と Rust を上回る性能・ゼロコスト抽象化・中間表現の最適化ヒント
+  (ADR-047、16-performance.md、FEAT-0058〜0061 を起票)。(2) ソース内のテスト (ADR-048、12-cirkalang.md §11、FEAT-0216 を起票)。

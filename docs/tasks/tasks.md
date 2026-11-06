@@ -97,6 +97,10 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0055](features/FEAT-0055-list-fusion.md) | リスト融合 (foldr/build) | todo | P2 | 0112 |
 | [FEAT-0056](features/FEAT-0056-ww-call-by-value-local.md) | worker/wrapper の拡張 (値渡しの引数・局所関数) | done | P1 | 0041 |
 | [FEAT-0057](features/FEAT-0057-io-result-unboxing.md) | IO の結果の unboxing (bind を通る値の箱を消す) | todo | P2 | BUG-0011 |
+| [FEAT-0058](features/FEAT-0058-llvm-optimization-hints.md) | 最適化のヒントを LLVM の属性・メタデータまで運ぶ | todo | P1 | 0014, 0021, 0022 |
+| [FEAT-0059](features/FEAT-0059-array-element-specialization.md) | 配列要素の単相化 (UElem の特殊化) | todo | P1 | 0041, 0056 |
+| [FEAT-0060](features/FEAT-0060-runtime-lto.md) | ランタイムの高速経路のインライン化 (bitcode と LTO) | todo | P2 | 0014, 0051 |
+| [FEAT-0061](features/FEAT-0061-core-cse-specconstr.md) | 共通部分式除去・ループ不変式の移動・SpecConstr とゼロコストの回帰テスト | todo | P1 | 0041 |
 
 
 ## aCHC
@@ -146,7 +150,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | ID | タイトル | 状態 | 優先度 | 依存 |
 |---|---|---|---|---|
 | [FEAT-0130](features/FEAT-0130-hs-extern-block.md) | extern "C" ブロック (aCHC) | todo | P1 | 0116, 0122, 0047 |
-| [FEAT-0132](features/FEAT-0132-achc-evaluation.md) | aCHC の評価レポート | in-progress | P0 | 0117, 0125, 0043 |
+| [FEAT-0132](features/FEAT-0132-achc-evaluation.md) | aCHC の評価レポート | done | P0 | 0117, 0125, 0043 |
 
 ### H5 高度な型システム (CirkaLang v0.0.4 の後)
 
@@ -203,7 +207,8 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0212](features/FEAT-0212-cl-raii-errors.md) | RAII (Drop/Release) とエラー処理 | todo | P0 | 0210 |
 | [FEAT-0213](features/FEAT-0213-cl-ffi-std.md) | FFI と libc ベースの std (CUI 向け) | todo | P0 | 0212 |
 | [FEAT-0214](features/FEAT-0214-cl-packages.md) | パッケージと依存 (cirka.toml) | todo | P1 | 0205 |
-| [FEAT-0215](features/FEAT-0215-cl-release-v002.md) | CirkaLang v0.0.2 リリース | todo | P0 | 0211, 0213, 0214 |
+| [FEAT-0216](features/FEAT-0216-cl-inline-tests.md) | ソース内のテスト (test 宣言と cirka test) | todo | P1 | 0207 |
+| [FEAT-0215](features/FEAT-0215-cl-release-v002.md) | CirkaLang v0.0.2 リリース | todo | P0 | 0211, 0213, 0214, 0216 |
 
 ### CirkaLang v0.0.3 借用・リージョン・性能
 
