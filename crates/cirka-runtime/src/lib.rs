@@ -94,13 +94,12 @@ pub extern "C" fn cirka_bytes_new(len: i64) -> object::Obj {
     let len = len.max(0) as usize;
     // SAFETY: fresh allocation large enough for header, length and data.
     unsafe {
-        let o = alloc::cirka_alloc(16 + len.div_ceil(8) * 8) as object::Obj;
+        let o = alloc::alloc_zeroed(16 + len.div_ceil(8) * 8) as object::Obj;
         (*o).rc = 1;
         (*o).tag = 0;
         (*o).nptr = 0;
         (*o).kind = object::BYTES;
         *object::word(o, 0) = len;
-        core::ptr::write_bytes(object::word(o, 1) as *mut u8, 0, len.div_ceil(8) * 8);
         o
     }
 }

@@ -128,6 +128,47 @@ pub unsafe extern "C" fn cirka_alloc(size: usize) -> *mut u8 {
     unsafe { raw_alloc(size) }
 }
 
+/// Allocates `size` zeroed bytes (the caller initializes the header). Large
+/// objects come from `calloc`, which skips writing memory fresh from the
+/// system: it is then touched once, by its first use (FEAT-0068).
+///
+/// # Safety
+/// Aborts when out of memory.
+pub unsafe fn alloc_zeroed(size: usize) -> *mut u8 {
+    stat_alloc();
+    // SAFETY: allocator internals.
+    unsafe { raw_alloc_zeroed(size) }
+}
+
+#[cfg(feature = "debug-rt")]
+unsafe fn raw_alloc_zeroed(size: usize) -> *mut u8 {
+    // SAFETY: a fresh allocation of `size` bytes.
+    unsafe {
+        let p = crate::debug::debug_alloc(size);
+        core::ptr::write_bytes(p, 0, size);
+        p
+    }
+}
+
+#[cfg(not(feature = "debug-rt"))]
+unsafe fn raw_alloc_zeroed(size: usize) -> *mut u8 {
+    // SAFETY: a fresh allocation of `size` bytes. Large objects go through
+    // `malloc` / `free` in both allocator modes, so `calloc` pairs with
+    // `dealloc` before the allocator is initialized too.
+    unsafe {
+        if size <= MAX_SMALL {
+            let p = raw_alloc(size);
+            core::ptr::write_bytes(p, 0, size);
+            return p;
+        }
+        let p = sys::calloc(1, size) as *mut u8;
+        if p.is_null() {
+            crate::io::fatal(b"out of memory", 2);
+        }
+        p
+    }
+}
+
 #[cfg(feature = "debug-rt")]
 unsafe fn raw_alloc(size: usize) -> *mut u8 {
     // SAFETY: forwarded.
@@ -218,6 +259,23 @@ pub unsafe fn dealloc(o: Obj) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zeroed_memory_is_zero_after_reuse() {
+        let _g = crate::TEST_LOCK.lock().unwrap();
+        // SAFETY: test of allocator internals on one thread.
+        unsafe {
+            // A small object, a large one, and one `malloc` serves by `mmap`.
+            for size in [24, 4096, 1 << 20] {
+                let a = cirka_alloc(size);
+                core::ptr::write_bytes(a, 0xAB, size);
+                dealloc(a as Obj);
+                let b = alloc_zeroed(size);
+                assert!((0..size).all(|i| *b.add(i) == 0), "size {size}");
+                dealloc(b as Obj);
+            }
+        }
+    }
 
     #[test]
     fn alloc_free_reuses_memory() {
