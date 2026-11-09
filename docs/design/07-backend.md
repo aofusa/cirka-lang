@@ -25,7 +25,7 @@
 | `force` | `kind == THUNK/IND` の判定をインライン、評価が必要な場合のみ `call @cirka_force` |
 
 - 属性・メタデータ (FEAT-0058、16-performance.md §3): 生成するすべての関数に `nounwind` (panic=abort の間)。オブジェクトのヘッダ (RC・タグ) と
-  フィールドの load/store に別々の `!tbaa` を付ける (生きているオブジェクトの中で重ならない)。`cirka_alloc` の結果は `noalias nonnull`、`cirka_panic` は `cold`。 MIR の `cold fn` (FEAT-0070、一意な配列のループの元の本体) は `cold noinline`。
+  フィールドの load/store に別々の `!tbaa` を付ける (生きているオブジェクトの中で重ならない)。`cirka_alloc` の結果は `noalias nonnull`、`cirka_panic` は `cold`。 MIR の `cold fn` (FEAT-0070、一意な配列のループの元の本体) は `cold noinline`。 プログラムは 1 つの LLVM モジュールで、外から呼ばれるのは `cirka_main` だけなので、それ以外の関数はすべて `internal` にする (FEAT-0072。LLVM が呼び出しの定数を伝え、1 か所からの関数を丸ごとインライン化できる)。
 - LLVM 18 の末尾再帰の除去 (TailCallElim) は、自分自身の呼び出しの結果に足す関数を累積引数のループにするとき、別の関数への `musttail` の後の `ret` も書き換えて
   モジュールを壊す。そのような関数 (自分自身の非末尾呼び出しと、他の関数への `musttail` を両方含むもの) には `"disable-tail-calls"="true"` を付けて除外する
   (`musttail` は保証されたまま。FEAT-0065: unboxed の結果でこの形が増えた)。
@@ -39,12 +39,12 @@
 |--------|---------|---------|
 | `-O0` | Core 最適化なし、Perceus の最小限のみ | `-O0` |
 | `-O1` | 簡約・インライン・借用推論 (aCHC は正格性解析も) | `-O1` |
-| `-O2` (release 既定) | 全パス (特殊化・worker/wrapper・再利用解析・エスケープ解析) | `-O2` |
+| `-O2` (release 既定) | 全パス (特殊化・worker/wrapper・再利用解析・エスケープ解析) | `-O3` (Rust の release の `opt-level=3` と同じ強さで比べる。FEAT-0072) |
 
 ## 4. リンク
 
 ```
-$CIRKA_CLANG -O2 --target=$CIRKA_TARGET -c out.ll -o out.o
+$CIRKA_CLANG -O3 --target=$CIRKA_TARGET -c out.ll -o out.o
 $CIRKA_CLANG -fuse-ld=lld out.o <prefix>/lib/libcirka_rt.a -lm -lpthread -o a.out
 ```
 
