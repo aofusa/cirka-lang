@@ -124,6 +124,15 @@ pub fn ensure_runtime_built() -> Result<(), String> {
     r
 }
 
+/// The LLVM optimization level of an optimization level of the compiler:
+/// `-O2` compares with `opt-level=3` of a Rust release build (07-backend.md).
+pub fn llvm_opt_level(opt_level: u8) -> u8 {
+    match opt_level {
+        0 | 1 => opt_level,
+        _ => 3,
+    }
+}
+
 /// Compiles LLVM IR text into an executable.
 pub fn link_ir(
     cfg: &Config,
@@ -137,7 +146,7 @@ pub fn link_ir(
     std::fs::write(&ll, ir).map_err(|e| format!("cannot write {}: {e}", ll.display()))?;
     let rt = find_runtime(cfg, opts.runtime)?;
     let out = Command::new(&cfg.clang)
-        .arg(format!("-O{}", opts.opt_level.min(3)))
+        .arg(format!("-O{}", llvm_opt_level(opts.opt_level)))
         .arg(format!("--target={}", cfg.target))
         .arg("-Wno-override-module")
         .arg(&ll)
@@ -193,5 +202,18 @@ pub fn verify_ir(cfg: &Config, ir_path: &Path) -> Result<(), String> {
         Ok(())
     } else {
         Err(String::from_utf8_lossy(&out.stderr).into_owned())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::llvm_opt_level;
+
+    #[test]
+    fn release_builds_use_llvm_o3() {
+        assert_eq!(llvm_opt_level(0), 0);
+        assert_eq!(llvm_opt_level(1), 1);
+        assert_eq!(llvm_opt_level(2), 3);
+        assert_eq!(llvm_opt_level(3), 3);
     }
 }
