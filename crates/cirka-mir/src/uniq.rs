@@ -34,11 +34,13 @@
 //! `loop$u` assumes only that its parameters are values with RC == 1, which
 //! the entry of `loop` can test without evaluating or writing anything.
 //! [`enter_specialized`] adds that test and moves the old body to a cold
-//! function `loop$slow`. It runs after the bounds checks are hoisted
-//! (`bounds.rs`), so that the test of the loop's precondition stays on the
-//! path of the arrays that are not unique, and is made only once, by
-//! `loop$u`, on the path of those that are.
+//! function `loop$slow`, which has its own copies of the specialized
+//! functions. It runs after the bounds checks are hoisted (`bounds.rs`), so
+//! that the test of the loop's precondition stays on the path of the arrays
+//! that are not unique, and is made only once, by `loop$u`, on the path of
+//! those that are.
 
+use crate::bounds::SUFFIX as BOUNDS_SUFFIX;
 use crate::ir::*;
 use crate::perceus::{Sigs, instr_uses};
 use std::collections::{HashMap, HashSet};
@@ -79,21 +81,65 @@ pub fn specialize_loops(m: &mut Module) -> Vec<Specialized> {
 
 /// Makes the functions in `done` go to their specialized copies on entry
 /// when the parameters are what the copy assumes.
+///
+/// The way through the entry stays the only way into the specialized loop
+/// `f$u` and its copy without bounds checks `f$u$b` (FEAT-0073): the old body
+/// `f$slow` gets its own copies of them. LLVM then sees the arguments of the
+/// loop at the entry, and a loop called with constants can be unrolled.
 pub fn enter_specialized(m: &mut Module, done: &[Specialized]) {
-    let by_name: HashMap<&str, &Specialized> = done.iter().map(|s| (s.func.as_str(), s)).collect();
-    let mut slow = Vec::new();
-    for f in &mut m.funcs {
-        if let Some(s) = by_name.get(f.name.as_str()) {
-            slow.push(split_entry(f, s));
+    let index: HashMap<String, usize> = m
+        .funcs
+        .iter()
+        .enumerate()
+        .map(|(i, f)| (f.name.clone(), i))
+        .collect();
+    let mut new = Vec::new();
+    for s in done {
+        let slow_name = format!("{}{SLOW_SUFFIX}", s.func);
+        let cold_name = |h: &str| format!("{slow_name}{}", &h[s.func.len()..]);
+        // The specialized functions, the first with bounds checks.
+        let hot: Vec<String> = [s.target.clone(), format!("{}{}", s.target, BOUNDS_SUFFIX)]
+            .into_iter()
+            .filter(|h| index.contains_key(h))
+            .collect();
+        let mut names: HashMap<String, String> =
+            hot.iter().map(|h| (h.clone(), cold_name(h))).collect();
+        names.insert(s.func.clone(), slow_name.clone());
+        let mut cold = vec![split_entry(&mut m.funcs[index[&s.func]], s)];
+        for h in &hot {
+            let mut copy = m.funcs[index[h]].clone();
+            copy.name = names[h].clone();
+            copy.cold = true;
+            cold.push(copy);
+        }
+        // The copy of the old body without bounds checks is reached from
+        // that body only.
+        if let Some(&b) = index.get(&format!("{}{}", s.func, BOUNDS_SUFFIX)) {
+            m.funcs[b].cold = true;
+            retarget_tail_calls(&mut m.funcs[b], &names);
+        }
+        for f in &mut cold {
+            retarget_tail_calls(f, &names);
+        }
+        new.extend(cold);
+    }
+    m.funcs.extend(new);
+}
+
+/// Replaces the callees of the tail calls of `f` according to `names`.
+fn retarget_tail_calls(f: &mut Function, names: &HashMap<String, String>) {
+    for b in &mut f.blocks {
+        if let Terminator::TailCall { func, .. } = &mut b.term
+            && let Some(to) = names.get(func)
+        {
+            *func = to.clone();
         }
     }
-    m.funcs.extend(slow);
 }
 
 /// Moves the body of `f` to a cold function and returns it. `f` itself is
 /// left with the test: it tail calls `s.target` when every assumed
-/// parameter is unique (and a value if forced), otherwise the old body,
-/// whose self tail calls come back to the test.
+/// parameter is unique (and a value if forced), otherwise the old body.
 ///
 /// A separate function, not a block of `f`: the copy of a shared array and
 /// the evaluation of a thunk are calls, and registers saved for them would

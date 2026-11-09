@@ -1732,6 +1732,22 @@ fn entered(src: &str, specialized: usize) -> Module {
     m
 }
 
+/// The functions other than `f` itself and the specialized loop that tail
+/// call the specialized loop of `f`.
+fn hot_callers(m: &Module, f: &str) -> Vec<String> {
+    let hot = [format!("{f}$u"), format!("{f}$u$b")];
+    m.funcs
+        .iter()
+        .filter(|g| g.name != f && !hot.contains(&g.name))
+        .filter(|g| {
+            g.blocks
+                .iter()
+                .any(|b| matches!(&b.term, Terminator::TailCall { func, .. } if hot.contains(func)))
+        })
+        .map(|g| g.name.clone())
+        .collect()
+}
+
 const UNIQUE_ENTRY: &str = r#"
 extern fn cirka_write_i64(i64) -> void
 
@@ -1784,6 +1800,18 @@ fn unique_entry_goes_to_the_specialized_loop() {
     assert!(slow.contains("cold fn fill$slow("), "{slow}");
     assert!(slow.contains("prim bytes_unique(a)"), "{slow}");
     assert!(!m.func("fill").unwrap().cold);
+    // After the check the cold path goes on in copies of its own.
+    assert!(slow.contains("tailcall fill$slow$u(c, j, n)"), "{slow}");
+    for copy in ["fill$slow$u", "fill$slow$u$b"] {
+        assert!(m.func(copy).unwrap().cold, "{copy}");
+    }
+    assert!(!m.func("fill$u").unwrap().cold);
+    assert!(!m.func("fill$u$b").unwrap().cold);
+    assert!(
+        hot_callers(&m, "fill").is_empty(),
+        "{:?}",
+        hot_callers(&m, "fill")
+    );
     // `fill` has no self tail call left, so only the specialized loop gets
     // a copy without the bounds checks.
     assert!(m.func("fill$b").is_none());
@@ -2000,12 +2028,77 @@ entry:
 fn unique_entry_keeps_loops_that_share_their_arrays() {
     // The programs of FEAT-0067: the array is shared before the first write
     // and in the middle of the loop.
-    entered(UNIQUE_LOOP, 1);
+    assert!(hot_callers(&entered(UNIQUE_LOOP, 1), "fill").is_empty());
     let m = entered(UNIQUE_ROUTES, 1);
     assert_eq!(
         crate::interp::run(&m, b"", 1_000_000).unwrap().stdout,
         "402"
     );
+    // A loop that leaves the specialized function comes back to the test.
+    assert!(func_text(&m, "run$u").contains("tailcall run(a, a, j, n)"));
+    // Its copy stays on the cold path.
+    let copy = func_text(&m, "run$slow$u");
+    assert!(copy.contains("tailcall run$slow(a, a, j, n)"), "{copy}");
+    assert!(
+        hot_callers(&m, "run").is_empty(),
+        "{:?}",
+        hot_callers(&m, "run")
+    );
+}
+
+#[test]
+fn unique_entry_keeps_the_body_without_checks_on_the_cold_path() {
+    // A read at `i` makes the bounds checks of `mark` worth hoisting, and
+    // the path that does not write keeps a self tail call in the old body.
+    let src = r#"
+extern fn cirka_write_i64(i64) -> void
+
+fn mark(a: ptr @owned, i: i64, n: i64) -> ptr {
+entry:
+  let d = prim ge(i, n)
+  switch d { 0 => body, default => done }
+done:
+  ret a
+body:
+  let v = prim bytes_get_i64(a, i)
+  let j = prim add(i, 1)
+  switch v { 0 => write, default => skip }
+skip:
+  tailcall mark(a, j, n)
+write:
+  let c = prim bytes_unique(a)
+  let w = prim bytes_set_i64(c, i, 7)
+  tailcall mark(c, j, n)
+}
+
+fn main() -> i64 {
+entry:
+  let a = prim bytes_new(32)
+  dup a
+  let b = call mark(a, 0, 4)
+  let x = prim bytes_get_i64(b, 3)
+  let y = prim bytes_get_i64(a, 3)
+  drop a
+  drop b
+  let _ = extern cirka_write_i64(x)
+  let _ = extern cirka_write_i64(y)
+  ret 0
+}
+"#;
+    let m = entered(src, 1);
+    assert!(m.func("mark$b").unwrap().cold);
+    let b = func_text(&m, "mark$b");
+    assert!(b.contains("tailcall mark$b(a, j, n)"), "{b}");
+    assert!(b.contains("tailcall mark$slow$u(c, j, n)"), "{b}");
+    let copy = func_text(&m, "mark$slow$u$b");
+    assert!(copy.contains("cold fn mark$slow$u$b("), "{copy}");
+    assert!(copy.contains("tailcall mark$slow$u$b(a, j, n)"), "{copy}");
+    assert!(
+        hot_callers(&m, "mark").is_empty(),
+        "{:?}",
+        hot_callers(&m, "mark")
+    );
+    assert_eq!(crate::interp::run(&m, b"", 1_000_000).unwrap().stdout, "70");
 }
 
 #[test]
