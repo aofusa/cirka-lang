@@ -3,6 +3,7 @@
 
 pub mod big;
 pub mod borrow;
+pub mod bounds;
 #[allow(unsafe_code)] // The interpreter's FFI boundary (see the module comment).
 pub mod ffi;
 pub mod interp;

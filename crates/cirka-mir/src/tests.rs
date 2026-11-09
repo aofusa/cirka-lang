@@ -754,3 +754,950 @@ fn unique_loops_enter_and_leave_the_specialized_function() {
     assert_eq!(r1.stats.allocs, 3);
     assert_eq!(r1.leaked, 0);
 }
+
+// ---- FEAT-0069: bounds checks hoisted to the loop entry ----
+
+/// Runs `hoist_checks` on `src` and checks that the result passes the
+/// verifier and runs like the original in the interpreter, which faults
+/// when an unchecked access is out of bounds (a wrong proof). Returns the
+/// versioned module.
+fn hoisted(src: &str, versioned: usize) -> Module {
+    let before = parse(FileId(0), src).unwrap();
+    let mut m = before.clone();
+    let n = crate::bounds::hoist_checks(&mut m);
+    let text = print_module(&m);
+    assert_eq!(n, versioned, "{text}");
+    let errs = crate::verify::verify_module(&m);
+    assert!(errs.is_empty(), "{}", crate::verify::render_errors(&errs));
+    let r0 = crate::interp::run(&before, b"", 1_000_000).unwrap();
+    let r1 = crate::interp::run(&m, b"", 1_000_000).unwrap_or_else(|e| panic!("{e}\n{text}"));
+    assert_eq!(r0.stdout, r1.stdout, "{text}");
+    assert_eq!(r0.stderr, r1.stderr, "{text}");
+    assert_eq!(r0.exit_code, r1.exit_code);
+    assert_eq!(r0.stats.allocs, r1.stats.allocs);
+    assert_eq!(r0.leaked, r1.leaked);
+    m
+}
+
+/// The precondition of `name` in `src`, sorted.
+fn precondition(src: &str, name: &str) -> Vec<String> {
+    let m = parse(FileId(0), src).unwrap();
+    let mut pre = crate::bounds::precondition_of(m.func(name).unwrap()).unwrap_or_default();
+    pre.sort();
+    pre
+}
+
+fn func_text(m: &Module, name: &str) -> String {
+    print_module(&Module {
+        funcs: vec![m.func(name).unwrap().clone()],
+        ..m.clone()
+    })
+}
+
+/// The accesses in `text`: (unchecked, checked).
+fn accesses(text: &str) -> (usize, usize) {
+    let mut n = (0, 0);
+    for p in Prim::ALL {
+        if crate::bounds::is_access(*p) {
+            let k = text.matches(&format!("prim {}(", p.name())).count();
+            if p.is_unchecked() {
+                n.0 += k;
+            } else {
+                n.1 += k;
+            }
+        }
+    }
+    n
+}
+
+const BOUNDS_FILL: &str = r#"
+extern fn cirka_write_i64(i64) -> void
+
+fn fin(a: ptr @owned) -> ptr {
+entry:
+  ret a
+}
+
+fn fill(n: i64, a: ptr @owned, i: i64) -> ptr {
+entry:
+  let d = prim ge(i, n)
+  switch d { 0 => body, default => done }
+done:
+  tailcall fin(a)
+body:
+  let k = prim mul(i, 3)
+  let s = prim bytes_set_i64(a, i, k)
+  let j = prim add(i, 1)
+  tailcall fill(n, a, j)
+}
+
+fn main() -> i64 {
+entry:
+  let a = prim bytes_new(32)
+  let b = call fill(N, a, I)
+  let x = prim bytes_get_i64(b, 3)
+  drop b
+  let _ = extern cirka_write_i64(x)
+  ret 0
+}
+"#;
+
+#[test]
+fn bounds_checks_move_to_the_loop_entry() {
+    let src = BOUNDS_FILL.replace("fill(N, a, I)", "fill(4, a, 0)");
+    let m = parse(FileId(0), &src).unwrap();
+    assert_eq!(
+        crate::bounds::precondition_of(m.func("fill").unwrap()),
+        Some(vec!["i >= 0".to_string(), "n <= words(a)".to_string()])
+    );
+    let m = hoisted(&src, 1);
+    // `fill` tests the precondition once and continues in `fill$b`, which
+    // stays there without checks.
+    let f = func_text(&m, "fill");
+    assert!(f.contains("tailcall fill$b(n, a, i)"), "{f}");
+    assert!(f.contains("tailcall fill(n, a, j)"), "{f}");
+    assert_eq!(accesses(&f), (0, 1), "{f}");
+    let b = func_text(&m, "fill$b");
+    assert!(b.contains("prim bytes_set_i64_unchecked(a, i, k)"), "{b}");
+    assert!(b.contains("tailcall fill$b(n, a, j)"), "{b}");
+    // Other tail calls stay.
+    assert!(b.contains("tailcall fin(a)"), "{b}");
+    assert_eq!(accesses(&b), (1, 0), "{b}");
+    assert_eq!(crate::interp::run(&m, b"", 1_000_000).unwrap().stdout, "9");
+    // The same loop with other guards: `i < n` continuing in the default
+    // arm, and stopping at `i == n` (then `i <= n` is needed too).
+    for (guard, want) in [
+        (
+            "  let d = prim lt(i, n)\n  switch d { 0 => done, default => body }",
+            vec!["i >= 0", "n <= words(a)"],
+        ),
+        (
+            "  let d = prim eq(i, n)\n  switch d { 0 => body, default => done }",
+            vec!["i <= n", "i >= 0", "n <= words(a)"],
+        ),
+        (
+            "  let d = prim ge(i, n)\n  switch d { 1 => done, default => body }",
+            vec!["i >= 0", "n <= words(a)"],
+        ),
+    ] {
+        let src = src.replace(
+            "  let d = prim ge(i, n)\n  switch d { 0 => body, default => done }",
+            guard,
+        );
+        assert_eq!(precondition(&src, "fill"), want, "{guard}");
+        let m = hoisted(&src, 1);
+        assert_eq!(accesses(&func_text(&m, "fill$b")), (1, 0), "{guard}");
+    }
+    // The precondition holds, or fails on entry (more elements than the
+    // array has, a negative start): the original checks report the same
+    // panic as before.
+    for (args, out) in [
+        ("fill(2, a, 0)", Some("0")),
+        ("fill(0, a, 7)", Some("0")),
+        ("fill(5, a, 0)", None),
+        ("fill(4, a, -1)", None),
+    ] {
+        let m = hoisted(&BOUNDS_FILL.replace("fill(N, a, I)", args), 1);
+        let r = crate::interp::run(&m, b"", 1_000_000).unwrap();
+        match out {
+            Some(o) => assert_eq!(r.stdout, o, "{args}"),
+            None => assert_eq!(r.stderr, "panic: index out of bounds\n", "{args}"),
+        }
+    }
+}
+
+/// The partition loop of quicksort: `a[i]` is in bounds because `i <= j`
+/// and `j < hi` on the path to it, and `hi < len(a)`.
+const BOUNDS_PARTITION: &str = r#"
+extern fn cirka_write_i64(i64) -> void
+
+fn part(hi: i64, x: i64, a: ptr @owned, i: i64, j: i64) -> (ptr, i64) {
+entry:
+  let d = prim ge(j, hi)
+  switch d { 0 => body, default => done }
+body:
+  let v = prim bytes_get_i64(a, j)
+  let l = prim lt(v, x)
+  switch l { 0 => skip, default => swap }
+skip:
+  let j1 = prim add(j, 1)
+  tailcall part(hi, x, a, i, j1)
+swap:
+  let ai = prim bytes_get_i64(a, i)
+  let aj = prim bytes_get_i64(a, j)
+  let s1 = prim bytes_set_i64(a, i, aj)
+  let s2 = prim bytes_set_i64(a, j, ai)
+  let i1 = prim add(i, 1)
+  let j2 = prim add(j, 1)
+  tailcall part(hi, x, a, i1, j2)
+done:
+  let bi = prim bytes_get_i64(a, i)
+  let bh = prim bytes_get_i64(a, hi)
+  let s3 = prim bytes_set_i64(a, i, bh)
+  let s4 = prim bytes_set_i64(a, hi, bi)
+  ret (a, i)
+}
+
+fn main() -> i64 {
+entry:
+  let a = prim bytes_new(64)
+  let w0 = prim bytes_set_i64(a, 0, 5)
+  let w1 = prim bytes_set_i64(a, 1, 2)
+  let w2 = prim bytes_set_i64(a, 2, 8)
+  let w3 = prim bytes_set_i64(a, 3, 1)
+  let w4 = prim bytes_set_i64(a, 4, 9)
+  let w5 = prim bytes_set_i64(a, 5, 3)
+  let w6 = prim bytes_set_i64(a, 6, 7)
+  let w7 = prim bytes_set_i64(a, 7, 4)
+  let (b, k) = call part(HI, 4, a, LO, LO)
+  let _ = extern cirka_write_i64(k)
+  let r0 = prim bytes_get_i64(b, 0)
+  let _ = extern cirka_write_i64(r0)
+  let r1 = prim bytes_get_i64(b, 1)
+  let _ = extern cirka_write_i64(r1)
+  let r2 = prim bytes_get_i64(b, 2)
+  let _ = extern cirka_write_i64(r2)
+  let r3 = prim bytes_get_i64(b, 3)
+  let _ = extern cirka_write_i64(r3)
+  let r4 = prim bytes_get_i64(b, 4)
+  let _ = extern cirka_write_i64(r4)
+  let r5 = prim bytes_get_i64(b, 5)
+  let _ = extern cirka_write_i64(r5)
+  let r6 = prim bytes_get_i64(b, 6)
+  let _ = extern cirka_write_i64(r6)
+  let r7 = prim bytes_get_i64(b, 7)
+  let _ = extern cirka_write_i64(r7)
+  drop b
+  ret 0
+}
+"#;
+
+#[test]
+fn bounds_checks_use_relations_of_the_loop_variables() {
+    let src = BOUNDS_PARTITION.replace("HI", "7").replace("LO", "0");
+    let m = parse(FileId(0), &src).unwrap();
+    let pre = crate::bounds::precondition_of(m.func("part").unwrap()).unwrap();
+    assert!(pre.contains(&"i <= j".to_string()), "{pre:?}");
+    let m = hoisted(&src, 1);
+    let b = func_text(&m, "part$b");
+    assert_eq!(accesses(&b), (9, 0), "{b}");
+    // Pivot 4 ends at index 3.
+    assert_eq!(
+        crate::interp::run(&m, b"", 1_000_000).unwrap().stdout,
+        "321349875"
+    );
+    // `hi` past the end, a negative start.
+    for (hi, lo) in [("8", "0"), ("7", "-1")] {
+        let src = BOUNDS_PARTITION.replace("HI", hi).replace("LO", lo);
+        let m = hoisted(&src, 1);
+        let r = crate::interp::run(&m, b"", 1_000_000).unwrap();
+        assert_eq!(r.stderr, "panic: index out of bounds\n", "{hi} {lo}");
+    }
+}
+
+/// The inner loop of n-body: fields at `7 * i + k` of five bodies, so the
+/// array needs at least 35 elements.
+const BOUNDS_BODIES: &str = r#"
+extern fn cirka_write_f64(f64) -> void
+
+fn mv(a: ptr @owned, i: i64) -> ptr {
+entry:
+  let d = prim ge(i, 5)
+  switch d { 0 => body, default => done }
+done:
+  ret a
+body:
+  let b = prim mul(i, 7)
+  let x = prim bytes_get_f64(a, b)
+  let k = prim add(b, 6)
+  let v = prim bytes_get_f64(a, k)
+  let y = prim fadd(x, v)
+  let s = prim bytes_set_f64(a, b, y)
+  let j = prim add(i, 1)
+  tailcall mv(a, j)
+}
+
+fn main() -> i64 {
+entry:
+  let a = prim bytes_new(BYTES)
+  let w = prim bytes_set_f64(a, 27, 1.5)
+  let b = call mv(a, 0)
+  let r = prim bytes_get_f64(b, 21)
+  drop b
+  let _ = extern cirka_write_f64(r)
+  ret 0
+}
+"#;
+
+#[test]
+fn bounds_checks_use_constant_lengths() {
+    let src = BOUNDS_BODIES.replace("BYTES", "280");
+    let m = parse(FileId(0), &src).unwrap();
+    assert_eq!(
+        crate::bounds::precondition_of(m.func("mv").unwrap()),
+        Some(vec!["i >= 0".to_string(), "words(a) >= 35".to_string()])
+    );
+    let m = hoisted(&src, 1);
+    assert_eq!(accesses(&func_text(&m, "mv$b")), (3, 0));
+    assert_eq!(
+        crate::interp::run(&m, b"", 1_000_000).unwrap().stdout,
+        "1.5"
+    );
+    // 34 elements: the last body reads past the end.
+    let m = hoisted(&BOUNDS_BODIES.replace("BYTES", "272"), 1);
+    let r = crate::interp::run(&m, b"", 1_000_000).unwrap();
+    assert_eq!(r.stderr, "panic: index out of bounds\n");
+    // Inside `i < 6`, `2 * i < 10` bounds `i` by `9 / 2`, rounded down, so
+    // `a[i + 4]` needs 9 elements.
+    let scaled = r#"
+extern fn cirka_write_i64(i64) -> void
+fn sc(a: ptr @borrowed, i: i64, acc: i64) -> i64 {
+entry:
+  let d = prim ge(i, 6)
+  switch d { 0 => body, default => done }
+done:
+  ret acc
+body:
+  let e = prim mul(i, 2)
+  let f = prim lt(e, 10)
+  switch f { 0 => skip, default => read }
+read:
+  let k = prim add(i, 4)
+  let x = prim bytes_get_i64(a, k)
+  let acc1 = prim add(acc, x)
+  let j = prim add(i, 1)
+  tailcall sc(a, j, acc1)
+skip:
+  let j2 = prim add(i, 1)
+  tailcall sc(a, j2, acc)
+}
+fn main() -> i64 {
+entry:
+  let a = prim bytes_new(BYTES)
+  let w = prim bytes_set_i64(a, 4, 3)
+  let r = call sc(a, 0, 0)
+  drop a
+  let _ = extern cirka_write_i64(r)
+  ret 0
+}
+"#;
+    let src = scaled.replace("BYTES", "72");
+    assert_eq!(precondition(&src, "sc"), vec!["i >= 0", "words(a) >= 9"]);
+    let m = hoisted(&src, 1);
+    assert_eq!(crate::interp::run(&m, b"", 1_000_000).unwrap().stdout, "3");
+    let m = hoisted(&scaled.replace("BYTES", "64"), 1);
+    let r = crate::interp::run(&m, b"", 1_000_000).unwrap();
+    assert_eq!(r.stderr, "panic: index out of bounds\n");
+    // Constant indices: the passed check of `a[5]` does not prove `a[6]`.
+    let fixed = r#"
+extern fn cirka_write_i64(i64) -> void
+fn two(a: ptr @borrowed, i: i64, acc: i64) -> i64 {
+entry:
+  let d = prim ge(i, 3)
+  switch d { 0 => body, default => done }
+done:
+  ret acc
+body:
+  let x = prim bytes_get_i64(a, 5)
+  let y = prim bytes_get_i64(a, 6)
+  let s = prim add(x, y)
+  let acc1 = prim add(acc, s)
+  let j = prim add(i, 1)
+  tailcall two(a, j, acc1)
+}
+fn main() -> i64 {
+entry:
+  let a = prim bytes_new(BYTES)
+  let w = prim bytes_set_i64(a, 5, 2)
+  let r = call two(a, 0, 0)
+  drop a
+  let _ = extern cirka_write_i64(r)
+  ret 0
+}
+"#;
+    let src = fixed.replace("BYTES", "56");
+    assert_eq!(precondition(&src, "two"), vec!["words(a) >= 7"]);
+    let m = hoisted(&src, 1);
+    assert_eq!(crate::interp::run(&m, b"", 1_000_000).unwrap().stdout, "6");
+    let m = hoisted(&fixed.replace("BYTES", "48"), 1);
+    let r = crate::interp::run(&m, b"", 1_000_000).unwrap();
+    assert_eq!(r.stderr, "panic: index out of bounds\n");
+}
+
+const BOUNDS_REVERSE: &str = r#"
+extern fn cirka_write_i64(i64) -> void
+
+fn rev(a: ptr @owned, lo: i64, hi: i64) -> ptr {
+entry:
+  let d = prim ge(lo, hi)
+  switch d { 0 => body, default => done }
+done:
+  ret a
+body:
+  let x = prim bytes_get_i64(a, lo)
+  let y = prim bytes_get_i64(a, hi)
+  let s = prim bytes_set_i64(a, lo, y)
+  let t = prim bytes_set_i64(a, hi, x)
+  let lo1 = prim add(lo, 1)
+  let hi1 = prim sub(hi, 1)
+  tailcall rev(a, lo1, hi1)
+}
+
+fn main() -> i64 {
+entry:
+  let a = prim bytes_new(32)
+  let w = prim bytes_set_i64(a, 1, 7)
+  let b = call rev(a, LO, HI)
+  let r = prim bytes_get_i64(b, 2)
+  drop b
+  let _ = extern cirka_write_i64(r)
+  ret 0
+}
+"#;
+
+#[test]
+fn bounds_checks_of_loops_from_both_ends() {
+    let src = BOUNDS_REVERSE.replace("LO", "0").replace("HI", "3");
+    let m = parse(FileId(0), &src).unwrap();
+    assert_eq!(
+        crate::bounds::precondition_of(m.func("rev").unwrap()),
+        Some(vec!["lo >= 0".to_string(), "hi < words(a)".to_string()])
+    );
+    let m = hoisted(&src, 1);
+    assert_eq!(accesses(&func_text(&m, "rev$b")), (4, 0));
+    assert_eq!(crate::interp::run(&m, b"", 1_000_000).unwrap().stdout, "7");
+    for (lo, hi) in [("0", "4"), ("-1", "3")] {
+        let m = hoisted(&BOUNDS_REVERSE.replace("LO", lo).replace("HI", hi), 1);
+        let r = crate::interp::run(&m, b"", 1_000_000).unwrap();
+        assert_eq!(r.stderr, "panic: index out of bounds\n", "{lo} {hi}");
+    }
+    // Counting down to 0: the guard `i >= 0` gives the lower bound.
+    let down = r#"
+extern fn cirka_write_i64(i64) -> void
+fn down(a: ptr @borrowed, i: i64, acc: i64) -> i64 {
+entry:
+  let d = prim ge(i, 0)
+  switch d { 0 => done, default => body }
+done:
+  ret acc
+body:
+  let x = prim bytes_get_i64(a, i)
+  let acc1 = prim add(acc, x)
+  let j = prim sub(i, 1)
+  tailcall down(a, j, acc1)
+}
+fn main() -> i64 {
+entry:
+  let a = prim bytes_new(32)
+  let w = prim bytes_set_i64(a, 0, 4)
+  let r = call down(a, START, 0)
+  drop a
+  let _ = extern cirka_write_i64(r)
+  ret 0
+}
+"#;
+    let src = down.replace("START", "3");
+    assert_eq!(precondition(&src, "down"), vec!["i < words(a)"]);
+    let m = hoisted(&src, 1);
+    assert_eq!(accesses(&func_text(&m, "down$b")), (1, 0));
+    assert_eq!(crate::interp::run(&m, b"", 1_000_000).unwrap().stdout, "4");
+    let m = hoisted(&down.replace("START", "4"), 1);
+    let r = crate::interp::run(&m, b"", 1_000_000).unwrap();
+    assert_eq!(r.stderr, "panic: index out of bounds\n");
+}
+
+#[test]
+fn bounds_checks_without_a_proof_stay() {
+    // An index read from the array: only the first access goes.
+    let gather = r#"
+extern fn cirka_write_i64(i64) -> void
+fn gather(a: ptr @borrowed, i: i64, n: i64, acc: i64) -> i64 {
+entry:
+  let d = prim ge(i, n)
+  switch d { 0 => body, default => done }
+done:
+  ret acc
+body:
+  let k = prim bytes_get_i64(a, i)
+  let x = prim bytes_get_i64(a, k)
+  let acc1 = prim add(acc, x)
+  let j = prim add(i, 1)
+  tailcall gather(a, j, n, acc1)
+}
+fn main() -> i64 {
+entry:
+  let a = prim bytes_new(32)
+  let w0 = prim bytes_set_i64(a, 0, 1)
+  let w1 = prim bytes_set_i64(a, 1, 2)
+  let w2 = prim bytes_set_i64(a, 2, K)
+  let w3 = prim bytes_set_i64(a, 3, 9)
+  let r = call gather(a, 0, 3, 0)
+  drop a
+  let _ = extern cirka_write_i64(r)
+  ret 0
+}
+"#;
+    let m = hoisted(&gather.replace("K", "3"), 1);
+    assert_eq!(accesses(&func_text(&m, "gather$b")), (1, 1));
+    assert_eq!(crate::interp::run(&m, b"", 1_000_000).unwrap().stdout, "14");
+    let m = hoisted(&gather.replace("K", "7"), 1);
+    let r = crate::interp::run(&m, b"", 1_000_000).unwrap();
+    assert_eq!(r.stderr, "panic: index out of bounds\n");
+    // The same with an unnamed store (`let _ = ...`).
+    let scatter = r#"
+extern fn cirka_write_i64(i64) -> void
+fn scatter(a: ptr @borrowed, i: i64, n: i64) -> i64 {
+entry:
+  let d = prim ge(i, n)
+  switch d { 0 => body, default => done }
+done:
+  ret 0
+body:
+  let k = prim bytes_get_i64(a, i)
+  let _ = prim bytes_set_i64(a, k, i)
+  let j = prim add(i, 1)
+  tailcall scatter(a, j, n)
+}
+fn main() -> i64 {
+entry:
+  let a = prim bytes_new(32)
+  let w = prim bytes_set_i64(a, 0, K)
+  let r = call scatter(a, 0, 2)
+  let x = prim bytes_get_i64(a, 0)
+  drop a
+  let _ = extern cirka_write_i64(x)
+  ret 0
+}
+"#;
+    let m = hoisted(&scatter.replace("K", "1"), 1);
+    assert_eq!(accesses(&func_text(&m, "scatter$b")), (1, 1));
+    assert_eq!(crate::interp::run(&m, b"", 1_000_000).unwrap().stdout, "1");
+    let m = hoisted(&scatter.replace("K", "9"), 1);
+    let r = crate::interp::run(&m, b"", 1_000_000).unwrap();
+    assert_eq!(r.stderr, "panic: index out of bounds\n");
+    // The next iteration reads the other array: nothing is known about it.
+    let swap = r#"
+extern fn cirka_write_i64(i64) -> void
+fn alt(a: ptr @borrowed, b: ptr @borrowed, i: i64, n: i64, acc: i64) -> i64 {
+entry:
+  let d = prim ge(i, n)
+  switch d { 0 => body, default => done }
+done:
+  ret acc
+body:
+  let x = prim bytes_get_i64(a, i)
+  let acc1 = prim add(acc, x)
+  let j = prim add(i, 1)
+  tailcall alt(b, a, j, n, acc1)
+}
+fn main() -> i64 {
+entry:
+  let a = prim bytes_new(32)
+  let b = prim bytes_new(16)
+  let r = call alt(a, b, 0, 4, 0)
+  drop a
+  drop b
+  let _ = extern cirka_write_i64(r)
+  ret 0
+}
+"#;
+    let m = hoisted(swap, 0);
+    let r = crate::interp::run(&m, b"", 1_000_000).unwrap();
+    assert_eq!(r.stderr, "panic: index out of bounds\n");
+    // A fresh array replaces the parameter: its length is unknown.
+    let shrink = r#"
+extern fn cirka_write_i64(i64) -> void
+fn shrink(a: ptr @owned, i: i64, n: i64, acc: i64) -> i64 {
+entry:
+  let d = prim ge(i, n)
+  switch d { 0 => body, default => done }
+done:
+  drop a
+  ret acc
+body:
+  let x = prim bytes_get_i64(a, i)
+  let acc1 = prim add(acc, x)
+  drop a
+  let c = prim bytes_new(16)
+  let j = prim add(i, 1)
+  tailcall shrink(c, j, n, acc1)
+}
+fn main() -> i64 {
+entry:
+  let a = prim bytes_new(32)
+  let r = call shrink(a, 0, N, 0)
+  let _ = extern cirka_write_i64(r)
+  ret 0
+}
+"#;
+    let m = hoisted(&shrink.replace("N", "2"), 0);
+    assert_eq!(crate::interp::run(&m, b"", 1_000_000).unwrap().stdout, "0");
+    let m = hoisted(&shrink.replace("N", "3"), 0);
+    let r = crate::interp::run(&m, b"", 1_000_000).unwrap();
+    assert_eq!(r.stderr, "panic: index out of bounds\n");
+    // A quarter of the length in bytes is not the number of words.
+    let quarter = r#"
+extern fn cirka_write_i64(i64) -> void
+fn quarter(a: ptr @borrowed, i: i64, acc: i64) -> i64 {
+entry:
+  let b = prim bytes_len(a)
+  let n = prim lshr(b, 2)
+  let d = prim ge(i, n)
+  switch d { 0 => body, default => done }
+done:
+  ret acc
+body:
+  let x = prim bytes_get_i64(a, i)
+  let acc1 = prim add(acc, x)
+  let j = prim add(i, 1)
+  tailcall quarter(a, j, acc1)
+}
+fn main() -> i64 {
+entry:
+  let a = prim bytes_new(32)
+  let r = call quarter(a, 0, 0)
+  drop a
+  let _ = extern cirka_write_i64(r)
+  ret 0
+}
+"#;
+    let m = hoisted(quarter, 0);
+    let r = crate::interp::run(&m, b"", 1_000_000).unwrap();
+    assert_eq!(r.stderr, "panic: index out of bounds\n");
+    // A negative factor (`7 - i`) is not followed.
+    let back = r#"
+extern fn cirka_write_i64(i64) -> void
+fn back(a: ptr @borrowed, i: i64, acc: i64) -> i64 {
+entry:
+  let d = prim ge(i, 8)
+  switch d { 0 => body, default => done }
+done:
+  ret acc
+body:
+  let m = prim mul(i, -1)
+  let k = prim add(m, 7)
+  let x = prim bytes_get_i64(a, k)
+  let acc1 = prim add(acc, x)
+  let j = prim add(i, 1)
+  tailcall back(a, j, acc1)
+}
+fn main() -> i64 {
+entry:
+  let a = prim bytes_new(BYTES)
+  let w = prim bytes_set_i64(a, 0, 3)
+  let r = call back(a, 0, 0)
+  drop a
+  let _ = extern cirka_write_i64(r)
+  ret 0
+}
+"#;
+    let m = hoisted(&back.replace("BYTES", "64"), 0);
+    assert_eq!(crate::interp::run(&m, b"", 1_000_000).unwrap().stdout, "3");
+    let m = hoisted(&back.replace("BYTES", "32"), 0);
+    let r = crate::interp::run(&m, b"", 1_000_000).unwrap();
+    assert_eq!(r.stderr, "panic: index out of bounds\n");
+    // `i + 1` wraps around for `i = i64::MAX` (then `k < 8` holds): the
+    // guard bounds `i` only when the addition is known not to wrap.
+    let wrap = r#"
+extern fn cirka_write_i64(i64) -> void
+fn wrap(a: ptr @borrowed, i: i64, acc: i64) -> i64 {
+entry:
+  let k = prim add(i, 1)
+  let d = prim lt(k, 8)
+  switch d { 0 => done, default => body }
+done:
+  ret acc
+body:
+  let x = prim bytes_get_i64(a, i)
+  let acc1 = prim add(acc, x)
+  tailcall wrap(a, k, acc1)
+}
+fn main() -> i64 {
+entry:
+  let a = prim bytes_new(64)
+  let w = prim bytes_set_i64(a, 6, 5)
+  let r = call wrap(a, I, 0)
+  drop a
+  let _ = extern cirka_write_i64(r)
+  ret 0
+}
+"#;
+    // So does a product: `i * 2^32` is 0 again for `i = 2^32`.
+    let wrap_mul = wrap
+        .replace("prim add(i, 1)", "prim mul(i, 4294967296)")
+        .replace(
+            "  tailcall wrap(a, k, acc1)",
+            "  let j = prim add(i, 1)\n  tailcall wrap(a, j, acc1)",
+        );
+    for (src, i, out) in [
+        (wrap, "0", "5"),
+        (wrap, "9223372036854775807", ""),
+        (&wrap_mul, "0", "0"),
+        (&wrap_mul, "4294967296", ""),
+        (&wrap_mul, "-1", ""),
+    ] {
+        let src = src.replace("I,", &format!("{i},"));
+        let before = parse(FileId(0), &src).unwrap();
+        let mut m = before.clone();
+        crate::bounds::hoist_checks(&mut m);
+        let r0 = crate::interp::run(&before, b"", 1_000_000).unwrap();
+        let r1 = crate::interp::run(&m, b"", 1_000_000).unwrap();
+        assert_eq!(r1.stdout, out);
+        assert_eq!(
+            (r0.stdout, r0.stderr, r0.exit_code),
+            (r1.stdout, r1.stderr, r1.exit_code)
+        );
+    }
+}
+
+#[test]
+fn unchecked_accesses_round_trip_and_fault_out_of_bounds() {
+    let unchecked: Vec<Prim> = Prim::ALL
+        .iter()
+        .copied()
+        .filter(|p| p.is_unchecked())
+        .collect();
+    assert_eq!(unchecked.len(), 11);
+    for p in unchecked {
+        assert_eq!(p.checked().unchecked(), Some(p));
+        assert_eq!(Prim::from_name(p.name()), Some(p));
+        assert_eq!(p.signature(), p.checked().signature());
+    }
+    let src = "extern fn cirka_write_i64(i64) -> void
+fn main() -> i64 {
+entry:
+  let a = prim bytes_new(32)
+  let s = prim bytes_set_i64_unchecked(a, 3, 6)
+  let x = prim bytes_get_i64_unchecked(a, IDX)
+  drop a
+  let _ = extern cirka_write_i64(x)
+  ret 0
+}";
+    let ok = src.replace("IDX", "3");
+    let m = parse(FileId(0), &ok).unwrap();
+    let again = parse(FileId(0), &print_module(&m)).unwrap();
+    assert_eq!(strip_spans(m.clone()), strip_spans(again));
+    assert!(crate::verify::verify_module(&m).is_empty());
+    assert_eq!(interp(&ok).unwrap().stdout, "6");
+    // Out of bounds, an unchecked access is a compiler bug, not a panic.
+    let e = interp(&src.replace("IDX", "4")).unwrap_err();
+    assert!(
+        e.contains("bytes_get_i64_unchecked: unchecked access failed: index out of bounds"),
+        "{e}"
+    );
+}
+
+#[test]
+fn bounds_checks_of_loops_over_the_whole_array() {
+    // `bytes_len / 8` and `array_len` bound the index: only `i >= 0` is
+    // needed.
+    let words = r#"
+extern fn cirka_write_i64(i64) -> void
+fn sum(a: ptr @borrowed, i: i64, acc: i64) -> i64 {
+entry:
+  let b = prim bytes_len(a)
+  let n = prim lshr(b, 3)
+  let d = prim ge(i, n)
+  switch d { 0 => body, default => done }
+done:
+  ret acc
+body:
+  let x = prim bytes_get_i64(a, i)
+  let acc1 = prim add(acc, x)
+  let j = prim add(i, 1)
+  tailcall sum(a, j, acc1)
+}
+fn main() -> i64 {
+entry:
+  let a = prim bytes_new(36)
+  let w = prim bytes_set_i64(a, 3, 8)
+  let r = call sum(a, START, 0)
+  drop a
+  let _ = extern cirka_write_i64(r)
+  ret 0
+}
+"#;
+    let elems = r#"
+type Int { I = 0 { v: i64 } }
+extern fn cirka_write_i64(i64) -> void
+fn fill(a: ptr @borrowed, i: i64) -> i64 {
+entry:
+  let n = prim array_len(a)
+  let c = prim ge(i, n)
+  switch c { 1 => done, default => more }
+done:
+  ret 0
+more:
+  let sq = prim mul(i, i)
+  let b = alloc Int.I(sq)
+  let _ = prim array_set(a, i, b)
+  let i1 = prim add(i, 1)
+  tailcall fill(a, i1)
+}
+fn main() -> i64 {
+entry:
+  let z = alloc Int.I(0)
+  let a = prim array_new(10, z)
+  let _ = call fill(a, START)
+  let e = prim array_get(a, 7)
+  let v = proj e Int.I.v
+  let _ = extern cirka_write_i64(v)
+  drop a
+  ret 0
+}
+"#;
+    for (src, name, out) in [(words, "sum", "8"), (elems, "fill", "49")] {
+        let ok = src.replace("START", "0");
+        assert_eq!(precondition(&ok, name), vec!["i >= 0"], "{name}");
+        let m = hoisted(&ok, 1);
+        assert_eq!(accesses(&func_text(&m, &format!("{name}$b"))), (1, 0));
+        assert_eq!(crate::interp::run(&m, b"", 1_000_000).unwrap().stdout, out);
+        let m = hoisted(&src.replace("START", "-1"), 1);
+        let r = crate::interp::run(&m, b"", 1_000_000).unwrap();
+        assert_eq!(r.stderr, "panic: index out of bounds\n", "{name}");
+    }
+}
+
+/// A loop over an array parameter that may be a thunk: each iteration
+/// forces it, and passes the value to the next.
+const BOUNDS_LAZY: &str = r#"
+extern fn cirka_write_i64(i64) -> void
+
+fn mk() -> ptr {
+entry:
+  let a = prim bytes_new(32)
+  let w = prim bytes_set_i64(a, 2, 7)
+  ret a
+}
+
+fn boom() -> ptr {
+entry:
+  panic "boom"
+}
+
+fn sum(a: ptr @owned, i: i64, n: i64, acc: i64) -> i64 {
+entry:
+  let d = prim ge(i, n)
+  switch d { 0 => body, default => done }
+done:
+  drop a
+  ret acc
+body:
+  let ev = force a
+  let x = prim bytes_get_i64(ev, i)
+  let acc1 = prim add(acc, x)
+  let j = prim add(i, 1)
+  tailcall sum(ev, j, n, acc1)
+}
+
+fn main() -> i64 {
+entry:
+  let t = ARRAY
+  FORCED
+  let r = call sum(t, START, N, 0)
+  let _ = extern cirka_write_i64(r)
+  ret 0
+}
+"#;
+
+#[test]
+fn bounds_checks_of_lazy_arrays() {
+    let lazy = |array: &str, start: &str, n: &str| {
+        BOUNDS_LAZY
+            .replace("ARRAY", array)
+            .replace("START", start)
+            .replace("N,", &format!("{n},"))
+            .replace("  FORCED\n", "")
+    };
+    let src = lazy("mkthunk mk()", "0", "4");
+    assert_eq!(precondition(&src, "sum"), vec!["i >= 0", "n <= words(a)"]);
+    let m = hoisted(&src, 1);
+    // The length is read only from a value: a thunk enters the checked
+    // loop, whose first iteration forces it, and the next iteration the
+    // unchecked one.
+    let f = func_text(&m, "sum");
+    assert!(f.contains("prim is_value(a)"), "{f}");
+    assert!(f.contains("tailcall sum$b(a, i, n, acc)"), "{f}");
+    assert_eq!(accesses(&func_text(&m, "sum$b")), (1, 0));
+    assert_eq!(crate::interp::run(&m, b"", 1_000_000).unwrap().stdout, "7");
+    // An array evaluated before the call; past the end; a thunk that
+    // panics, which the entry test must not force when the loop does not.
+    for (array, start, n, out) in [
+        ("prim bytes_new(32)", "0", "4", Some("0")),
+        ("mkthunk mk()", "0", "5", None),
+        ("mkthunk boom()", "3", "3", Some("0")),
+        ("mkthunk boom()", "0", "3", None),
+    ] {
+        let m = hoisted(&lazy(array, start, n), 1);
+        let r = crate::interp::run(&m, b"", 1_000_000).unwrap();
+        match out {
+            Some(o) => assert_eq!(r.stdout, o, "{array} {start} {n}"),
+            None => assert!(r.stderr.starts_with("panic: "), "{array}: {}", r.stderr),
+        }
+    }
+    // A thunk forced before the call is an indirection to the array, not
+    // the array: the first iteration runs checked.
+    let src = BOUNDS_LAZY
+        .replace("ARRAY", "mkthunk mk()")
+        .replace("START", "0")
+        .replace("N,", "4,")
+        .replace("  FORCED\n", "  dup t\n  let v = force t\n  drop v\n");
+    let m = hoisted(&src, 1);
+    assert_eq!(crate::interp::run(&m, b"", 1_000_000).unwrap().stdout, "7");
+}
+
+#[test]
+fn bounds_checks_proved_by_the_guards_go_in_place() {
+    // `0 <= i < len` is tested by the loop itself: no precondition, no
+    // copy.
+    let src = r#"
+extern fn cirka_write_i64(i64) -> void
+fn safe(a: ptr @borrowed, i: i64, acc: i64) -> i64 {
+entry:
+  let n = prim bytes_len(a)
+  let w = prim lshr(n, 3)
+  let d = prim lt(i, w)
+  switch d { 0 => done, default => pos }
+pos:
+  let e = prim ge(i, 0)
+  switch e { 0 => done, default => body }
+done:
+  ret acc
+body:
+  let x = prim bytes_get_i64(a, i)
+  let y = prim bytes_get_i64(a, x)
+  let acc1 = prim add(acc, y)
+  let j = prim add(i, 1)
+  tailcall safe(a, j, acc1)
+}
+fn main() -> i64 {
+entry:
+  let a = prim bytes_new(32)
+  let w = prim bytes_set_i64(a, 3, K)
+  let v = prim bytes_set_i64(a, 2, 1)
+  let r = call safe(a, START, 0)
+  drop a
+  let _ = extern cirka_write_i64(r)
+  ret 0
+}
+"#;
+    // `a[x]` with `x` read from the array keeps its check.
+    for (start, k, out) in [
+        ("0", "2", Some("1")),
+        ("-1", "2", Some("0")),
+        ("0", "9", None),
+    ] {
+        let src = src.replace("START", start).replace("K)", &format!("{k})"));
+        assert_eq!(precondition(&src, "safe"), Vec::<String>::new());
+        let m = hoisted(&src, 1);
+        assert!(m.func("safe$b").is_none());
+        let f = func_text(&m, "safe");
+        assert_eq!(accesses(&f), (1, 1), "{f}");
+        assert!(!f.contains("tailcall safe$b"), "{f}");
+        let r = crate::interp::run(&m, b"", 1_000_000).unwrap();
+        match out {
+            Some(o) => assert_eq!(r.stdout, o, "{start} {k}"),
+            None => assert_eq!(r.stderr, "panic: index out of bounds\n"),
+        }
+    }
+}

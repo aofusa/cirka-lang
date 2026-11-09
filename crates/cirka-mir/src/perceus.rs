@@ -162,12 +162,14 @@ pub fn has_rc(f: &Function) -> bool {
 }
 
 /// The whole Perceus pipeline on MIR without reference counting:
-/// borrow inference, dup/drop insertion, reuse analysis and fusion.
+/// borrow inference, dup/drop insertion, reuse analysis and fusion, then
+/// the loop versions (unique arrays, FEAT-0067; bounds checks, FEAT-0069).
 pub fn run(m: &mut Module) {
     crate::borrow::infer_borrow(m);
     insert_rc(m);
     crate::reuse::optimize(m);
     crate::uniq::specialize_loops(m);
+    crate::bounds::hoist_checks(m);
 }
 
 /// Inserts dup/drop into every function of `m` that has none.
