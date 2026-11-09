@@ -108,6 +108,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0066](features/FEAT-0066-array-sort-strict-loops.md) | array-sort の差の調査 (要素の箱・ループの force・自己末尾呼び出しのループ化) | done | P1 | 0056, 0063, 0065 |
 | [FEAT-0067](features/FEAT-0067-unique-loop-specialization.md) | 一意な配列のループの特殊化 (ループの入口の一意性検査の除去) | done | P1 | 0063, 0066 |
 | [FEAT-0068](features/FEAT-0068-array-creation-cost.md) | 配列の作成のコスト (遅い段階の worker/wrapper・`newArray` の初期化の省略・`calloc`) | done | P1 | 0056, 0123 |
+| [FEAT-0069](features/FEAT-0069-loop-bounds-check-versioning.md) | ループの境界検査の入口への移動 (帰納的な前提条件によるループのバージョニング) | done | P1 | 0063, 0067 |
 
 
 ## aCHC
