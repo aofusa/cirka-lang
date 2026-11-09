@@ -109,7 +109,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0067](features/FEAT-0067-unique-loop-specialization.md) | 一意な配列のループの特殊化 (ループの入口の一意性検査の除去) | done | P1 | 0063, 0066 |
 | [FEAT-0068](features/FEAT-0068-array-creation-cost.md) | 配列の作成のコスト (遅い段階の worker/wrapper・`newArray` の初期化の省略・`calloc`) | done | P1 | 0056, 0123 |
 | [FEAT-0069](features/FEAT-0069-loop-bounds-check-versioning.md) | ループの境界検査の入口への移動 (帰納的な前提条件によるループのバージョニング) | done | P1 | 0063, 0067 |
-| [FEAT-0070](features/FEAT-0070-enter-unique-loops-directly.md) | ループの入口で一意性を確かめ、特殊化した関数へ直接入る | in-progress | P1 | 0067, 0069 |
+| [FEAT-0070](features/FEAT-0070-enter-unique-loops-directly.md) | ループの入口で一意性を確かめ、特殊化した関数へ直接入る | done | P1 | 0067, 0069 |
 | [FEAT-0071](features/FEAT-0071-loop-breakers.md) | 相互再帰のループ破りを選び、残りの関数をインライン化する | done | P1 | 0067, 0069 |
 
 
