@@ -601,7 +601,7 @@ impl<'m> Gen<'m> {
         };
         let _ = writeln!(
             self.out,
-            "define tailcc {} {}({}) {attrs} {{",
+            "define internal tailcc {} {}({}) {attrs} {{",
             ret_llty(f),
             mangle(&f.name),
             params.join(", ")
@@ -1789,7 +1789,7 @@ entry:
         let ir = ir();
         // Functions do not unwind while panics abort.
         assert!(
-            ir.contains("define tailcc i64 @\"_C3len\"(ptr %v0.in, i64 %v1.in) #0 {"),
+            ir.contains("define internal tailcc i64 @\"_C3len\"(ptr %v0.in, i64 %v1.in) #0 {"),
             "{ir}"
         );
         assert!(ir.contains("attributes #0 = { nounwind }"), "{ir}");
@@ -1894,7 +1894,7 @@ entry:
         assert!(cirka_mir::verify::verify_module(&m).is_empty());
         let ir = emit(&m, Options { debug_rt: false });
         assert!(
-            ir.contains("define tailcc { ptr, i64 } @\"_C4pair\"(ptr %v0, i64 %v1) #0 {"),
+            ir.contains("define internal tailcc { ptr, i64 } @\"_C4pair\"(ptr %v0, i64 %v1) #0 {"),
             "{ir}"
         );
         assert!(
@@ -1946,14 +1946,39 @@ entry:
         let m = cirka_mir::parse::parse(cirka_diagnostics::FileId(0), src).unwrap();
         let ir = emit(&m, Options { debug_rt: false });
         assert!(
-            ir.contains("define tailcc i64 @\"_C1f\"(i64 %v0) #1 {"),
+            ir.contains("define internal tailcc i64 @\"_C1f\"(i64 %v0) #1 {"),
             "{ir}"
         );
         assert!(
-            ir.contains("define tailcc i64 @\"_C1g\"(i64 %v0) #0 {"),
+            ir.contains("define internal tailcc i64 @\"_C1g\"(i64 %v0) #0 {"),
             "{ir}"
         );
         assert!(ir.contains("\"disable-tail-calls\"=\"true\""), "{ir}");
+    }
+
+    /// A program is one LLVM module entered through `cirka_main`: everything
+    /// else is internal, so LLVM sees all the callers of a function.
+    #[test]
+    fn only_the_entry_point_is_external() {
+        let src = r"
+fn f(x: i64) -> i64 {
+entry:
+  ret x
+}
+
+fn main() -> i64 {
+entry:
+  let r = call f(3)
+  ret r
+}
+";
+        let m = cirka_mir::parse::parse(cirka_diagnostics::FileId(0), src).unwrap();
+        let ir = emit(&m, Options { debug_rt: false });
+        let external: Vec<&str> = ir
+            .lines()
+            .filter(|l| l.starts_with("define ") && !l.starts_with("define internal "))
+            .collect();
+        assert_eq!(external, vec!["define i64 @cirka_main() {"], "{ir}");
     }
 
     /// A cold function is not inlined and is laid out away from the hot
@@ -1975,7 +2000,7 @@ entry:
         let m = cirka_mir::parse::parse(cirka_diagnostics::FileId(0), src).unwrap();
         let ir = emit(&m, Options { debug_rt: false });
         assert!(
-            ir.contains("define tailcc i64 @\"_C1f\"(i64 %v0) #2 {"),
+            ir.contains("define internal tailcc i64 @\"_C1f\"(i64 %v0) #2 {"),
             "{ir}"
         );
         assert!(
@@ -2008,7 +2033,7 @@ entry:
         let m = cirka_mir::parse::parse(cirka_diagnostics::FileId(0), src).unwrap();
         let ir = emit(&m, Options { debug_rt: false });
         assert!(
-            ir.contains("define tailcc i64 @\"_C3sum\"(i64 %v0.in, i64 %v1.in) #0 {"),
+            ir.contains("define internal tailcc i64 @\"_C3sum\"(i64 %v0.in, i64 %v1.in) #0 {"),
             "{ir}"
         );
         assert!(
