@@ -975,3 +975,129 @@ fn whnf_params_need_values_at_every_call() {
     assert!(ev["go"][0]);
     assert_eq!(ev["h"], vec![false]);
 }
+
+// ---- FEAT-0071: loop breakers of mutually recursive functions ----
+
+/// `src` after the optimizer, which must keep it well typed.
+fn optimized(src: &str) -> Program {
+    let mut p = parse_program(FileId(0), src).unwrap();
+    assert!(lint::lint_program(&p).is_empty());
+    opt::optimize_with_stats(&mut p).unwrap();
+    assert!(lint::lint_program(&p).is_empty(), "{}", print_program(&p));
+    p
+}
+
+/// Two functions calling each other, `ev` called from `main`.
+const EVEN_ODD: &str = "(extern arg () Int#)
+ (def ev (-> Int# Int#)
+   (lam ((n Int#))
+     (case n (k Int#) Int#
+       (0 1)
+       (_ (od (prim sub n 1))))))
+ (def od (-> Int# Int#)
+   (lam ((n Int#))
+     (case n (k Int#) Int#
+       (0 0)
+       (_ (ev (prim sub n 1))))))
+ (def main Int# (ev (extern arg)))";
+
+#[test]
+fn opt_inlines_one_of_two_mutually_recursive_functions() {
+    let p = optimized(EVEN_ODD);
+    // Of two functions of the same size the first by name stays; the other
+    // is inlined into it, which makes it a self-recursive loop.
+    assert!(p.bind("od").is_none(), "{}", print_program(&p));
+    let ev = print::print_expr(&p.bind("ev").unwrap().expr);
+    assert!(ev.contains("(ev "), "{ev}");
+    assert!(!ev.contains("od"), "{ev}");
+}
+
+#[test]
+fn opt_keeps_the_largest_mutually_recursive_function() {
+    // `big` is the largest of the cycle big -> small -> tiny -> big, even
+    // though `main` calls `tiny`.
+    let src = "(extern arg () Int#)
+     (def tiny (-> Int# Int#) (lam ((n Int#)) (big n)))
+     (def small (-> Int# Int#) (lam ((n Int#)) (tiny (prim add n 1))))
+     (def big (-> Int# Int#)
+       (lam ((n Int#))
+         (case n (k Int#) Int#
+           (0 0)
+           (_ (prim add (prim mul n 3) (small (prim sub n 2)))))))
+     (def main Int# (tiny (extern arg)))";
+    let p = optimized(src);
+    let text = print_program(&p);
+    assert!(p.bind("small").is_none(), "{text}");
+    assert!(p.bind("tiny").is_none(), "{text}");
+    let big = print::print_expr(&p.bind("big").unwrap().expr);
+    assert!(big.contains("(big "), "{big}");
+}
+
+#[test]
+fn opt_does_not_inline_self_recursive_functions() {
+    let src = "(extern arg () Int#)
+     (def down (-> Int# Int#)
+       (lam ((n Int#))
+         (case n (k Int#) Int#
+           (0 0)
+           (_ (down (prim sub n 1))))))
+     (def main Int# (down (extern arg)))";
+    let p = optimized(src);
+    assert!(p.bind("down").is_some());
+    let main = print::print_expr(&p.bind("main").unwrap().expr);
+    assert!(main.contains("(down "), "{main}");
+    // Not one iteration of the loop is unrolled into `main`.
+    assert!(!main.contains("case"), "{main}");
+}
+
+#[test]
+fn opt_breaks_every_cycle_of_a_group() {
+    // Two cycles through `hub`: taking `hub` breaks both. Then `left` and
+    // `right` are inlined.
+    let src = "(extern arg () Int#)
+     (def left (-> Int# Int#) (lam ((n Int#)) (hub (prim sub n 1))))
+     (def right (-> Int# Int#) (lam ((n Int#)) (hub (prim sub n 2))))
+     (def hub (-> Int# Int#)
+       (lam ((n Int#))
+         (case (prim gt n 0) (k Int#) Int#
+           (0 (prim add (prim mul n n) (prim mul n 3)))
+           (_ (case (prim and n 1) (j Int#) Int#
+             (0 (left n))
+             (_ (right n)))))))
+     (def main Int# (hub (extern arg)))";
+    let p = optimized(src);
+    let text = print_program(&p);
+    assert!(p.bind("left").is_none(), "{text}");
+    assert!(p.bind("right").is_none(), "{text}");
+    assert!(p.bind("hub").is_some(), "{text}");
+}
+
+#[test]
+fn opt_breaks_cycles_left_after_the_largest_function() {
+    // big <-> x and x <-> y: taking `big` leaves the cycle x <-> y, which
+    // needs a loop breaker of its own.
+    let src = "(extern arg () Int#)
+     (def y (-> Int# Int#)
+       (lam ((n Int#))
+         (case n (k Int#) Int#
+           (0 0)
+           (_ (x (prim sub n 1))))))
+     (def x (-> Int# Int#)
+       (lam ((n Int#))
+         (case n (k Int#) Int#
+           (0 (big 3))
+           (1 (prim add n 1))
+           (_ (y (prim sub n 1))))))
+     (def big (-> Int# Int#)
+       (lam ((n Int#))
+         (case n (k Int#) Int#
+           (0 (prim add (prim mul n 3) (prim mul n 5)))
+           (1 (prim add (prim mul n 7) (prim mul n 11)))
+           (_ (x (prim sub n 2))))))
+     (def main Int# (big (extern arg)))";
+    let p = optimized(src);
+    let text = print_program(&p);
+    assert!(p.bind("big").is_some(), "{text}");
+    assert!(p.bind("x").is_some(), "{text}");
+    assert!(p.bind("y").is_none(), "{text}");
+}

@@ -719,24 +719,23 @@ fn inline_candidates(p: &Program) -> HashMap<String, Expr> {
             *uses.entry(g.as_str()).or_default() += 1;
         }
     }
-    let recursive = |name: &str| {
-        let mut seen = HashSet::new();
-        let mut stack: Vec<&str> = refs
-            .get(name)
-            .map(|v| v.iter().map(|s| s.as_str()).collect())
-            .unwrap_or_default();
-        while let Some(g) = stack.pop() {
-            if g == name {
-                return true;
-            }
-            if seen.insert(g)
-                && let Some(v) = refs.get(g)
-            {
-                stack.extend(v.iter().map(|s| s.as_str()));
-            }
+    let names: HashSet<&str> = p.binds.iter().map(|b| b.name.as_str()).collect();
+    let is_wrapper = |b: &TopBind| {
+        let mut body = &b.expr;
+        while let Expr::TyLam(_, _, x) = body {
+            body = x;
         }
-        false
+        names.contains(format!("{}$w", b.name).as_str())
+            || names.contains(format!("{}$c", b.name).as_str())
+            || crate::io::is_wrapper(&b.name, body)
     };
+    let wrappers: HashSet<&str> = p
+        .binds
+        .iter()
+        .filter(|b| is_wrapper(b))
+        .map(|b| b.name.as_str())
+        .collect();
+    let breakers = loop_breakers(p, &refs, &wrappers);
     let mut out = HashMap::new();
     for b in &p.binds {
         let mut body = &b.expr;
@@ -759,17 +758,142 @@ fn inline_candidates(p: &Program) -> HashMap<String, Expr> {
         let once = uses.get(b.name.as_str()) == Some(&1);
         // A wrapper of the worker/wrapper split only calls its worker: it
         // is always inlined, even though the worker may call it back.
-        let wrapper = p.bind(&format!("{}$w", b.name)).is_some()
-            || p.bind(&format!("{}$c", b.name)).is_some()
-            || crate::io::is_wrapper(&b.name, body);
+        let wrapper = wrappers.contains(b.name.as_str());
         // A worker returning an unboxed tuple stays a call: its returns may
         // only be taken apart by a `case` on the call (06-ir.md §1.7). Its
         // wrappers (which only unbox and call) are inlined.
         if crate::cpr::returns_utup(&b.ty) && !wrapper {
             continue;
         }
-        if wrapper || ((small || once) && !recursive(&b.name)) {
+        if wrapper || ((small || once) && !breakers.contains(&b.name)) {
             out.insert(b.name.clone(), b.expr.clone());
+        }
+    }
+    out
+}
+
+/// The top-level bindings that stay calls so that inlining terminates (as
+/// GHC's loop breakers): without them the references between the others
+/// have no cycle. A self-recursive binding is one; of a group of mutually
+/// recursive bindings the largest is taken, which leaves the smaller ones
+/// to be inlined into it, so the group becomes a loop. Wrappers are always
+/// inlined, so references are followed through them.
+fn loop_breakers(
+    p: &Program,
+    refs: &HashMap<&str, Vec<String>>,
+    wrappers: &HashSet<&str>,
+) -> HashSet<String> {
+    let nodes: Vec<&TopBind> = p
+        .binds
+        .iter()
+        .filter(|b| !wrappers.contains(b.name.as_str()))
+        .collect();
+    let index: HashMap<&str, usize> = nodes
+        .iter()
+        .enumerate()
+        .map(|(i, b)| (b.name.as_str(), i))
+        .collect();
+    let succ: Vec<Vec<usize>> = nodes
+        .iter()
+        .map(|b| {
+            let mut out = Vec::new();
+            let mut seen = HashSet::new();
+            let mut stack: Vec<&str> = refs[b.name.as_str()].iter().map(String::as_str).collect();
+            while let Some(g) = stack.pop() {
+                if !seen.insert(g) {
+                    continue;
+                }
+                if wrappers.contains(g) {
+                    if let Some(v) = refs.get(g) {
+                        stack.extend(v.iter().map(String::as_str));
+                    }
+                } else if let Some(&i) = index.get(g) {
+                    out.push(i);
+                }
+            }
+            out.sort_unstable();
+            out
+        })
+        .collect();
+    let mut breakers = HashSet::new();
+    let mut work: Vec<Vec<usize>> = vec![(0..nodes.len()).collect()];
+    while let Some(set) = work.pop() {
+        for scc in components(&succ, &set) {
+            if let [v] = scc[..] {
+                if succ[v].contains(&v) {
+                    breakers.insert(nodes[v].name.clone());
+                }
+                continue;
+            }
+            let largest = scc
+                .iter()
+                .copied()
+                .max_by_key(|&v| (size(&nodes[v].expr), std::cmp::Reverse(&nodes[v].name)))
+                .expect("a component is not empty");
+            breakers.insert(nodes[largest].name.clone());
+            work.push(scc.into_iter().filter(|&v| v != largest).collect());
+        }
+    }
+    breakers
+}
+
+/// The strongly connected components of the graph `succ` restricted to
+/// `set` (Tarjan's algorithm with an explicit stack).
+fn components(succ: &[Vec<usize>], set: &[usize]) -> Vec<Vec<usize>> {
+    const UNSEEN: usize = usize::MAX;
+    let n = succ.len();
+    let mut member = vec![false; n];
+    for &v in set {
+        member[v] = true;
+    }
+    let mut index = vec![UNSEEN; n];
+    let mut low = vec![0; n];
+    let mut on_stack = vec![false; n];
+    let mut stack = Vec::new();
+    let mut next = 0;
+    let mut out = Vec::new();
+    for &root in set {
+        if index[root] != UNSEEN {
+            continue;
+        }
+        // (node, position in its successors); a node's entry sets its index.
+        let mut calls = vec![(root, 0usize)];
+        while let Some(&(v, i)) = calls.last() {
+            if i == 0 && index[v] == UNSEEN {
+                index[v] = next;
+                low[v] = next;
+                next += 1;
+                stack.push(v);
+                on_stack[v] = true;
+            }
+            if let Some(&w) = succ[v].get(i) {
+                calls.last_mut().expect("the top of the stack").1 += 1;
+                if !member[w] {
+                    continue;
+                }
+                if index[w] == UNSEEN {
+                    calls.push((w, 0));
+                } else if on_stack[w] {
+                    low[v] = low[v].min(index[w]);
+                }
+            } else {
+                calls.pop();
+                if let Some(&(u, _)) = calls.last() {
+                    low[u] = low[u].min(low[v]);
+                }
+                if low[v] == index[v] {
+                    let mut c = Vec::new();
+                    loop {
+                        let w = stack.pop().expect("the root of the component");
+                        on_stack[w] = false;
+                        c.push(w);
+                        if w == v {
+                            break;
+                        }
+                    }
+                    out.push(c);
+                }
+            }
         }
     }
     out
