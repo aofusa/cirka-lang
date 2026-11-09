@@ -25,7 +25,7 @@
 | `force` | `kind == THUNK/IND` の判定をインライン、評価が必要な場合のみ `call @cirka_force` |
 
 - 属性・メタデータ (FEAT-0058、16-performance.md §3): 生成するすべての関数に `nounwind` (panic=abort の間)。オブジェクトのヘッダ (RC・タグ) と
-  フィールドの load/store に別々の `!tbaa` を付ける (生きているオブジェクトの中で重ならない)。`cirka_alloc` の結果は `noalias nonnull`、`cirka_panic` は `cold`。
+  フィールドの load/store に別々の `!tbaa` を付ける (生きているオブジェクトの中で重ならない)。`cirka_alloc` の結果は `noalias nonnull`、`cirka_panic` は `cold`。 MIR の `cold fn` (FEAT-0070、一意な配列のループの元の本体) は `cold noinline`。
 - LLVM 18 の末尾再帰の除去 (TailCallElim) は、自分自身の呼び出しの結果に足す関数を累積引数のループにするとき、別の関数への `musttail` の後の `ret` も書き換えて
   モジュールを壊す。そのような関数 (自分自身の非末尾呼び出しと、他の関数への `musttail` を両方含むもの) には `"disable-tail-calls"="true"` を付けて除外する
   (`musttail` は保証されたまま。FEAT-0065: unboxed の結果でこの形が増えた)。
