@@ -111,6 +111,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0069](features/FEAT-0069-loop-bounds-check-versioning.md) | ループの境界検査の入口への移動 (帰納的な前提条件によるループのバージョニング) | done | P1 | 0063, 0067 |
 | [FEAT-0070](features/FEAT-0070-enter-unique-loops-directly.md) | ループの入口で一意性を確かめ、特殊化した関数へ直接入る | done | P1 | 0067, 0069 |
 | [FEAT-0071](features/FEAT-0071-loop-breakers.md) | 相互再帰のループ破りを選び、残りの関数をインライン化する | done | P1 | 0067, 0069 |
+| [FEAT-0072](features/FEAT-0072-internal-linkage-and-o3.md) | 生成する関数を internal にし、リリースの LLVM を -O3 にする | done | P1 | 0070, 0071 |
 
 
 ## aCHC
