@@ -468,10 +468,27 @@ impl<'m> Gen<'m> {
         c.label(&ok);
     }
 
-    fn bounds(&mut self, c: &mut FnCtx<'_>, len: &str, idx: &str) {
+    /// The bounds check of an access to element `idx` of `obj`, whose
+    /// length field divided by `2^shift` is its number of elements. An
+    /// unchecked access (FEAT-0069) has none, except with the debug runtime,
+    /// where a failure is reported as a compiler bug (16-performance.md §3).
+    fn bounds(&mut self, c: &mut FnCtx<'_>, p: Prim, obj: &str, shift: u32, idx: &str) {
+        let msg = if !p.is_unchecked() {
+            "index out of bounds"
+        } else if self.opts.debug_rt {
+            "internal error: unchecked index out of bounds"
+        } else {
+            return;
+        };
+        let mut len = Self::load_field(c, obj, 0, Ty::I64);
+        if shift > 0 {
+            let words = c.t();
+            c.line(&format!("{words} = lshr i64 {len}, {shift}"));
+            len = words;
+        }
         let bad = c.t();
         c.line(&format!("{bad} = icmp uge i64 {idx}, {len}"));
-        self.check(c, &bad, "index out of bounds");
+        self.check(c, &bad, msg);
     }
 
     fn function(&mut self, f: &'m Function) {
@@ -1047,6 +1064,10 @@ impl<'m> Gen<'m> {
 
     fn prim(&mut self, c: &mut FnCtx<'_>, dst: &str, p: Prim, args: &[Operand]) {
         use Prim::*;
+        // Unchecked accesses are emitted as their checked ones, without the
+        // check (`bounds`).
+        let access = p;
+        let p = p.checked();
         let a: Vec<String> = args.iter().map(|o| self.operand(o)).collect();
         let bin = |c: &mut FnCtx<'_>, op: &str, ty: &str| {
             c.line(&format!("{dst} = {op} {ty} {}, {}", a[0], a[1]))
@@ -1133,14 +1154,25 @@ impl<'m> Gen<'m> {
                 c.line(&format!("{t} = icmp eq i32 {rc}, 1"));
                 c.line(&format!("{dst} = zext i1 {t} to i64"));
             }
+            // The test of `force`: thunk, black hole and indirection are
+            // consecutive kinds.
+            IsValue => {
+                let kp = Self::gep(c, &a[0], 7);
+                let k = c.t();
+                c.line(&format!("{k} = load i8, ptr {kp}, align 1"));
+                let rel = c.t();
+                c.line(&format!("{rel} = sub i8 {k}, {}", kind::THUNK));
+                let t = c.t();
+                c.line(&format!("{t} = icmp uge i8 {rel}, 3"));
+                c.line(&format!("{dst} = zext i1 {t} to i64"));
+            }
             BytesNew => c.line(&format!("{dst} = call ptr @cirka_bytes_new(i64 {})", a[0])),
             BytesLen => {
                 let l = Self::load_field(c, &a[0], 0, Ty::I64);
                 c.line(&format!("{dst} = add i64 {l}, 0"));
             }
             BytesGet | BytesSet => {
-                let len = Self::load_field(c, &a[0], 0, Ty::I64);
-                self.bounds(c, &len, &a[1]);
+                self.bounds(c, access, &a[0], 0, &a[1]);
                 let base = Self::gep(c, &a[0], 16);
                 let ep = c.t();
                 c.line(&format!(
@@ -1172,10 +1204,7 @@ impl<'m> Gen<'m> {
             BytesGetI64 | BytesSetI64 | BytesGetF64 | BytesSetF64 | BytesSetI64Shared
             | BytesSetF64Shared => {
                 // 8-byte words: index < len / 8.
-                let len = Self::load_field(c, &a[0], 0, Ty::I64);
-                let words = c.t();
-                c.line(&format!("{words} = lshr i64 {len}, 3"));
-                self.bounds(c, &words, &a[1]);
+                self.bounds(c, access, &a[0], 3, &a[1]);
                 let base = Self::gep(c, &a[0], 16);
                 let ty = if matches!(p, BytesGetF64 | BytesSetF64 | BytesSetF64Shared) {
                     "double"
@@ -1221,9 +1250,19 @@ impl<'m> Gen<'m> {
                 c.line(&format!("call void @cirka_cycle_candidate(ptr {})", a[0]));
                 c.line(&format!("{dst} = add i64 0, 0"));
             }
+            BytesGetUnchecked
+            | BytesSetUnchecked
+            | ArrayGetUnchecked
+            | ArraySetUnchecked
+            | BytesGetI64Unchecked
+            | BytesSetI64Unchecked
+            | BytesGetF64Unchecked
+            | BytesSetF64Unchecked
+            | ArraySetSharedUnchecked
+            | BytesSetI64SharedUnchecked
+            | BytesSetF64SharedUnchecked => unreachable!("normalized by checked()"),
             ArrayGet | ArraySet | ArraySetShared => {
-                let len = Self::load_field(c, &a[0], 0, Ty::I64);
-                self.bounds(c, &len, &a[1]);
+                self.bounds(c, access, &a[0], 0, &a[1]);
                 let base = Self::gep(c, &a[0], 16);
                 let ep = c.t();
                 c.line(&format!(
@@ -1945,6 +1984,55 @@ entry:
             ir.matches("musttail call tailcc i64 @\"_C3sum\"").count(),
             1,
             "{ir}"
+        );
+    }
+
+    /// Unchecked accesses (FEAT-0069) have no bounds check, except with the
+    /// debug runtime, where a failure is a compiler bug.
+    #[test]
+    fn unchecked_accesses_skip_the_bounds_check() {
+        let src = "fn main() -> i64 {
+entry:
+  let a = prim bytes_new(32)
+  let s = prim bytes_set_i64_unchecked(a, 3, 6)
+  let x = prim bytes_get_i64_unchecked(a, 3)
+  let y = prim bytes_get_i64(a, 2)
+  let v = prim is_value(a)
+  drop a
+  let xy = prim add(x, y)
+  let r = prim add(xy, v)
+  ret r
+}
+";
+        let m = cirka_mir::parse::parse(cirka_diagnostics::FileId(0), src).unwrap();
+        // The panics with message `msg` in `main`.
+        let checks = |ir: &str, msg: &str| {
+            let Some(g) = ir.lines().find_map(|l| {
+                l.strip_suffix(&format!("c\"{msg}\""))
+                    .and_then(|l| l.split(' ').next())
+                    .map(str::to_string)
+            }) else {
+                return 0;
+            };
+            let main = ir.split("@\"_C4main\"").nth(1).unwrap();
+            let main = &main[..main.find("\n}").unwrap()];
+            main.matches(&format!("@cirka_panic(ptr {g},")).count()
+        };
+        let release = emit(&m, Options { debug_rt: false });
+        assert_eq!(checks(&release, "index out of bounds"), 1, "{release}");
+        assert!(!release.contains("internal error"), "{release}");
+        // `is_value` tests the kind as `force` does (not thunk, black hole
+        // or indirection).
+        assert!(
+            release.contains("= sub i8 %t") && release.contains("= icmp uge i8 %t"),
+            "{release}"
+        );
+        let debug = emit(&m, Options { debug_rt: true });
+        assert_eq!(checks(&debug, "index out of bounds"), 1, "{debug}");
+        assert_eq!(
+            checks(&debug, "internal error: unchecked index out of bounds"),
+            2,
+            "{debug}"
         );
     }
 }

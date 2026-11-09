@@ -1022,6 +1022,17 @@ impl<'m> Interp<'m> {
     }
 
     fn prim(&mut self, p: Prim, a: &[Val]) -> R<Val> {
+        // An unchecked access (FEAT-0069) out of bounds is a compiler bug:
+        // the index was proved to be in bounds.
+        match self.checked_prim(p.checked(), a) {
+            Err(Exit::Panic(m)) if p.is_unchecked() => {
+                fault(format!("{}: unchecked access failed: {m}", p.name()))
+            }
+            r => r,
+        }
+    }
+
+    fn checked_prim(&mut self, p: Prim, a: &[Val]) -> R<Val> {
         use Prim::*;
         let i = |k: usize| a[k].int();
         let fl = |k: usize| a[k].float();
@@ -1078,6 +1089,14 @@ impl<'m> Interp<'m> {
             IsUnique => match a[0] {
                 Val::P(p) => b(self.obj(p)?.rc == 1),
                 _ => b(false),
+            },
+            // As `force`: anything but a heap thunk is a value.
+            IsValue => match a[0] {
+                Val::P(p) => b(!matches!(
+                    self.obj(p)?.kind,
+                    kind::THUNK | kind::BLACKHOLE | kind::IND
+                )),
+                _ => b(true),
             },
             BytesNew => {
                 let n = i(0).max(0) as usize;
@@ -1247,6 +1266,17 @@ impl<'m> Interp<'m> {
                     Val::P(self.alloc(kind::ARRAY, 0, fields, Payload::Array, 16 + 8 * n))
                 }
             }
+            BytesGetUnchecked
+            | BytesSetUnchecked
+            | ArrayGetUnchecked
+            | ArraySetUnchecked
+            | BytesGetI64Unchecked
+            | BytesSetI64Unchecked
+            | BytesGetF64Unchecked
+            | BytesSetF64Unchecked
+            | ArraySetSharedUnchecked
+            | BytesSetI64SharedUnchecked
+            | BytesSetF64SharedUnchecked => return fault("unchecked access not normalized"),
         })
     }
 

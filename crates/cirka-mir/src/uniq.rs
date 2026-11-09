@@ -72,11 +72,11 @@ fn is_check(p: Prim) -> bool {
 }
 
 /// Operations that read or write their first argument (an array) in place
-/// without keeping a reference to it.
+/// without keeping a reference to it (with or without the bounds check).
 fn in_place(p: Prim) -> bool {
     use Prim::*;
     matches!(
-        p,
+        p.checked(),
         BytesLen
             | BytesGet
             | BytesSet

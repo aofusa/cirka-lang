@@ -520,6 +520,23 @@ pub enum Prim {
     /// `cycle_candidate(x)`: records `x` as a root of the cycle collector
     /// (04-memory-model.md §5); a no-op unless the program collects cycles.
     CycleCandidate,
+    // The accesses above without the bounds check, where the index is known
+    // to be in bounds (FEAT-0069, `bounds.rs`). See [`Prim::checked`].
+    BytesGetUnchecked,
+    BytesSetUnchecked,
+    ArrayGetUnchecked,
+    ArraySetUnchecked,
+    BytesGetI64Unchecked,
+    BytesSetI64Unchecked,
+    BytesGetF64Unchecked,
+    BytesSetF64Unchecked,
+    ArraySetSharedUnchecked,
+    BytesSetI64SharedUnchecked,
+    BytesSetF64SharedUnchecked,
+    /// `is_value(x)`: 1 when `force x` would return `x` itself (not a thunk,
+    /// a thunk being evaluated or an indirection); `x` is borrowed. Tests
+    /// whether the length of a lazy array parameter can be read (FEAT-0069).
+    IsValue,
 }
 
 impl Prim {
@@ -583,6 +600,18 @@ impl Prim {
         Prim::BytesSetF64Shared,
         Prim::ThunkInit,
         Prim::CycleCandidate,
+        Prim::BytesGetUnchecked,
+        Prim::BytesSetUnchecked,
+        Prim::ArrayGetUnchecked,
+        Prim::ArraySetUnchecked,
+        Prim::BytesGetI64Unchecked,
+        Prim::BytesSetI64Unchecked,
+        Prim::BytesGetF64Unchecked,
+        Prim::BytesSetF64Unchecked,
+        Prim::ArraySetSharedUnchecked,
+        Prim::BytesSetI64SharedUnchecked,
+        Prim::BytesSetF64SharedUnchecked,
+        Prim::IsValue,
     ];
 
     pub fn name(self) -> &'static str {
@@ -647,7 +676,63 @@ impl Prim {
             BytesSetF64Shared => "bytes_set_f64_shared",
             ThunkInit => "thunk_init",
             CycleCandidate => "cycle_candidate",
+            BytesGetUnchecked => "bytes_get_unchecked",
+            BytesSetUnchecked => "bytes_set_unchecked",
+            ArrayGetUnchecked => "array_get_unchecked",
+            ArraySetUnchecked => "array_set_unchecked",
+            BytesGetI64Unchecked => "bytes_get_i64_unchecked",
+            BytesSetI64Unchecked => "bytes_set_i64_unchecked",
+            BytesGetF64Unchecked => "bytes_get_f64_unchecked",
+            BytesSetF64Unchecked => "bytes_set_f64_unchecked",
+            ArraySetSharedUnchecked => "array_set_shared_unchecked",
+            BytesSetI64SharedUnchecked => "bytes_set_i64_shared_unchecked",
+            BytesSetF64SharedUnchecked => "bytes_set_f64_shared_unchecked",
+            IsValue => "is_value",
         }
+    }
+
+    /// The bounds-checked access that `self` performs without the check
+    /// (FEAT-0069); `self` for every other primitive. Apart from the check,
+    /// an unchecked access behaves exactly like its checked one.
+    pub fn checked(self) -> Prim {
+        use Prim::*;
+        match self {
+            BytesGetUnchecked => BytesGet,
+            BytesSetUnchecked => BytesSet,
+            ArrayGetUnchecked => ArrayGet,
+            ArraySetUnchecked => ArraySet,
+            BytesGetI64Unchecked => BytesGetI64,
+            BytesSetI64Unchecked => BytesSetI64,
+            BytesGetF64Unchecked => BytesGetF64,
+            BytesSetF64Unchecked => BytesSetF64,
+            ArraySetSharedUnchecked => ArraySetShared,
+            BytesSetI64SharedUnchecked => BytesSetI64Shared,
+            BytesSetF64SharedUnchecked => BytesSetF64Shared,
+            p => p,
+        }
+    }
+
+    /// The access without the bounds check, for a bounds-checked access.
+    pub fn unchecked(self) -> Option<Prim> {
+        use Prim::*;
+        Some(match self {
+            BytesGet => BytesGetUnchecked,
+            BytesSet => BytesSetUnchecked,
+            ArrayGet => ArrayGetUnchecked,
+            ArraySet => ArraySetUnchecked,
+            BytesGetI64 => BytesGetI64Unchecked,
+            BytesSetI64 => BytesSetI64Unchecked,
+            BytesGetF64 => BytesGetF64Unchecked,
+            BytesSetF64 => BytesSetF64Unchecked,
+            ArraySetShared => ArraySetSharedUnchecked,
+            BytesSetI64Shared => BytesSetI64SharedUnchecked,
+            BytesSetF64Shared => BytesSetF64SharedUnchecked,
+            _ => return None,
+        })
+    }
+
+    pub fn is_unchecked(self) -> bool {
+        self.checked() != self
     }
 
     pub fn from_name(s: &str) -> Option<Prim> {
@@ -658,7 +743,7 @@ impl Prim {
     pub fn signature(self) -> (&'static [Ty], Ty) {
         use Prim::*;
         use Ty::*;
-        match self {
+        match self.checked() {
             Add | Sub | Mul | Div | Rem | And | Or | Xor | Shl | Shr | LShr | Eq | Ne | Lt | Le
             | Gt | Ge => (&[I64, I64], I64),
             Neg => (&[I64], I64),
@@ -709,17 +794,29 @@ impl Prim {
             BytesSetF64Shared => (&[Ptr, I64, F64], I64),
             ThunkInit => (&[Ptr, I64, Ptr], I64),
             CycleCandidate => (&[Ptr], I64),
+            IsValue => (&[Ptr], I64),
+            BytesGetUnchecked
+            | BytesSetUnchecked
+            | ArrayGetUnchecked
+            | ArraySetUnchecked
+            | BytesGetI64Unchecked
+            | BytesSetI64Unchecked
+            | BytesGetF64Unchecked
+            | BytesSetF64Unchecked
+            | ArraySetSharedUnchecked
+            | BytesSetI64SharedUnchecked
+            | BytesSetF64SharedUnchecked => unreachable!("checked() maps unchecked accesses"),
         }
     }
 
     /// Whether the result is a borrowed pointer into an argument (like `proj`).
     pub fn result_borrowed(self) -> bool {
-        matches!(self, Prim::ArrayGet)
+        matches!(self.checked(), Prim::ArrayGet)
     }
 
     /// Indices of pointer arguments that are consumed.
     pub fn consumes(self) -> &'static [usize] {
-        match self {
+        match self.checked() {
             Prim::ArrayNew => &[1],
             Prim::ArraySet | Prim::ArraySetShared | Prim::ThunkInit => &[2],
             Prim::ArrayUnique | Prim::BytesUnique => &[0],
