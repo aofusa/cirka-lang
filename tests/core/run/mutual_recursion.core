@@ -1,0 +1,31 @@
+; Mutually recursive functions (FEAT-0071): the optimizer keeps one function
+; of each group as a call and inlines the others. A function of the group
+; used as a value stays a function.
+(extern cirka_write_i64 (Int#) Unit#)
+(extern cirka_write_char (Int#) Unit#)
+
+(def ev (-> Int# Int#)
+  (lam ((n Int#))
+    (case n (k Int#) Int#
+      (0 1)
+      (_ (od (prim sub n 1))))))
+
+(def od (-> Int# Int#)
+  (lam ((n Int#))
+    (case n (k Int#) Int#
+      (0 0)
+      (_ (ev (prim sub n 1))))))
+
+(def twice (-> (-> Int# Int#) Int# Int#)
+  (lam ((f (-> Int# Int#)) (x Int#)) (f (f x))))
+
+(def main Int#
+  (let! (a Unit# (extern cirka_write_i64 (ev 10)))
+  (let! (b Unit# (extern cirka_write_char 10))
+  (let! (c Unit# (extern cirka_write_i64 (ev 11)))
+  (let! (d Unit# (extern cirka_write_char 10))
+  (let! (e Unit# (extern cirka_write_i64 (od 11)))
+  (let! (f Unit# (extern cirka_write_char 10))
+  (let! (g Unit# (extern cirka_write_i64 (twice od 3)))
+  (let! (h Unit# (extern cirka_write_char 10))
+    0)))))))))
