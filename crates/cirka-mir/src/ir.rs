@@ -253,6 +253,9 @@ pub struct Function {
     pub var_names: Vec<String>,
     /// Types of variables (index = `Var.0`).
     pub var_tys: Vec<Ty>,
+    /// Rarely entered (FEAT-0070): kept out of its callers and laid out
+    /// away from the hot code. Written `cold fn` in the text format.
+    pub cold: bool,
     pub span: Span,
 }
 
@@ -266,6 +269,7 @@ impl Function {
             blocks: Vec::new(),
             var_names: Vec::new(),
             var_tys: Vec::new(),
+            cold: false,
             span: Span::DUMMY,
         }
     }
@@ -301,6 +305,18 @@ impl Function {
     pub fn fresh_var(&mut self, hint: &str, ty: Ty) -> Var {
         let n = self.var_names.len();
         self.new_var(format!("{hint}%{n}"), ty)
+    }
+
+    /// A block label based on `base` that no block of the function has.
+    pub fn fresh_label(&self, base: &str) -> String {
+        let taken = |l: &str| self.blocks.iter().any(|b| b.label == l);
+        let mut label = base.to_string();
+        let mut i = 1;
+        while taken(&label) {
+            label = format!("{base}{i}");
+            i += 1;
+        }
+        label
     }
 
     pub fn ty(&self, v: Var) -> Ty {

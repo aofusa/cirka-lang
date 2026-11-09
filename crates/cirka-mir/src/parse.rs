@@ -240,6 +240,7 @@ struct RBlock {
 }
 
 struct RFunc {
+    cold: bool,
     name: String,
     span: Span,
     params: Vec<(String, Ty, Own, Span)>,
@@ -398,7 +399,7 @@ impl Parser {
                     let (init, _) = self.ident()?;
                     m.globals.push(GlobalDecl { name, init });
                 }
-                Tok::Ident(k) if k == "fn" => funcs.push(self.function()?),
+                Tok::Ident(k) if k == "fn" || k == "cold" => funcs.push(self.function()?),
                 t => {
                     return self.err(format!(
                         "expected `type`, `extern`, `global` or `fn`, found {}",
@@ -482,6 +483,10 @@ impl Parser {
     }
 
     fn function(&mut self) -> PResult<RFunc> {
+        let cold = self.is_kw("cold");
+        if cold {
+            self.bump();
+        }
         self.expect_kw("fn")?;
         let (name, span) = self.ident()?;
         let params = self.comma_list("(", ")", |p| {
@@ -518,6 +523,7 @@ impl Parser {
             );
         }
         Ok(RFunc {
+            cold,
             name,
             span,
             params,
@@ -855,6 +861,7 @@ fn resolve_fn(rf: &RFunc, sigs: &Sigs<'_>) -> PResult<Function> {
         sigs,
     };
     r.f.span = rf.span;
+    r.f.cold = rf.cold;
     let dup_err = |n: &str, sp: Span| {
         Diagnostic::error(format!("variable `{n}` is defined more than once"))
             .with_code("M0005")

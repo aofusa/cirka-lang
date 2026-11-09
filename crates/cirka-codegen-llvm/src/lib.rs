@@ -593,7 +593,12 @@ impl<'m> Gen<'m> {
         let lines = || block_bodies.iter().flat_map(|b| b.lines());
         let self_call = lines().any(|l| l.contains(&me) && !l.contains("musttail"));
         let other_tail = lines().any(|l| l.contains("musttail call") && !l.contains(&me));
-        let attrs = if self_call && other_tail { "#1" } else { "#0" };
+        let attrs = match (f.cold, self_call && other_tail) {
+            (false, false) => "#0",
+            (false, true) => "#1",
+            (true, false) => "#2",
+            (true, true) => "#3",
+        };
         let _ = writeln!(
             self.out,
             "define tailcc {} {}({}) {attrs} {{",
@@ -1693,6 +1698,11 @@ impl<'m> Gen<'m> {
         self.out.push_str("attributes #0 = { nounwind }\n");
         self.out
             .push_str("attributes #1 = { nounwind \"disable-tail-calls\"=\"true\" }\n");
+        self.out
+            .push_str("attributes #2 = { cold noinline nounwind }\n");
+        self.out.push_str(
+            "attributes #3 = { cold noinline nounwind \"disable-tail-calls\"=\"true\" }\n",
+        );
     }
 }
 
@@ -1944,6 +1954,34 @@ entry:
             "{ir}"
         );
         assert!(ir.contains("\"disable-tail-calls\"=\"true\""), "{ir}");
+    }
+
+    /// A cold function is not inlined and is laid out away from the hot
+    /// code (FEAT-0070).
+    #[test]
+    fn cold_functions_get_their_attributes() {
+        let src = r"
+cold fn f(x: i64) -> i64 {
+entry:
+  ret x
+}
+
+fn main() -> i64 {
+entry:
+  let r = call f(3)
+  ret r
+}
+";
+        let m = cirka_mir::parse::parse(cirka_diagnostics::FileId(0), src).unwrap();
+        let ir = emit(&m, Options { debug_rt: false });
+        assert!(
+            ir.contains("define tailcc i64 @\"_C1f\"(i64 %v0) #2 {"),
+            "{ir}"
+        );
+        assert!(
+            ir.contains("attributes #2 = { cold noinline nounwind }"),
+            "{ir}"
+        );
     }
 
     /// A self tail call jumps back to a loop header whose phis are the

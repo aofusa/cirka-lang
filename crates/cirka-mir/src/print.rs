@@ -55,7 +55,8 @@ pub fn print_module(m: &Module) -> String {
 
 pub fn print_function(m: &Module, f: &Function) -> String {
     let mut s = String::new();
-    let _ = write!(s, "fn {}(", f.name);
+    let cold = if f.cold { "cold " } else { "" };
+    let _ = write!(s, "{cold}fn {}(", f.name);
     for (i, p) in f.params.iter().enumerate() {
         if i > 0 {
             s.push_str(", ");

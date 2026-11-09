@@ -1244,17 +1244,11 @@ fn insert_entry_test(f: &mut Function, values: &[usize], tests: Vec<Test>, targe
         all = Some(conj(f, &mut instrs, all, t));
     }
     let all = all.expect("a precondition with at least one atom");
-    let labels: HashSet<String> = f.blocks.iter().map(|b| b.label.clone()).collect();
-    let fresh = |base: &str| {
-        let mut l = base.to_string();
-        let mut i = 1;
-        while labels.contains(&l) {
-            l = format!("{base}{i}");
-            i += 1;
-        }
-        l
-    };
-    let (checked, unchecked, test) = (fresh("checked"), fresh("unchecked"), fresh("test"));
+    let (checked, unchecked, test) = (
+        f.fresh_label("checked"),
+        f.fresh_label("unchecked"),
+        f.fresh_label("test"),
+    );
     // The old entry block goes to `n`, the tail call to `n + 1`, the tests
     // of the lengths (after those of the values) to `n + 2`.
     let n = f.blocks.len() as u32;
