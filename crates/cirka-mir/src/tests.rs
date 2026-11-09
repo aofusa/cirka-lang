@@ -575,7 +575,7 @@ entry:
 fn unique_loops_are_specialized() {
     let before = parse(FileId(0), UNIQUE_LOOP).unwrap();
     let mut m = before.clone();
-    assert_eq!(crate::uniq::specialize_loops(&mut m), 1);
+    assert_eq!(crate::uniq::specialize_loops(&mut m).len(), 1);
     let errs = crate::verify::verify_module(&m);
     assert!(errs.is_empty(), "{}", crate::verify::render_errors(&errs));
     let printed = print_module(&m);
@@ -608,7 +608,7 @@ fn unique_loops_keep_checks_of_shared_values() {
         "  dup c\n  drop c\n  tailcall fill(c, j, n)",
     );
     let mut m = parse(FileId(0), &src).unwrap();
-    assert_eq!(crate::uniq::specialize_loops(&mut m), 0);
+    assert_eq!(crate::uniq::specialize_loops(&mut m).len(), 0);
     // Paths that meet in a block: one of them shares the array, so nothing
     // is known afterwards, in whichever order the analysis visits them.
     for (zero, other) in [("clean", "dirty"), ("dirty", "clean")] {
@@ -627,7 +627,11 @@ next:
             ),
         );
         let mut m = parse(FileId(0), &src).unwrap();
-        assert_eq!(crate::uniq::specialize_loops(&mut m), 0, "{zero} first");
+        assert_eq!(
+            crate::uniq::specialize_loops(&mut m).len(),
+            0,
+            "{zero} first"
+        );
     }
     // The checked array moves to another parameter: the next iteration
     // checks the other array, which nothing is known about.
@@ -653,7 +657,7 @@ entry:
   ret r
 }";
     let mut m = parse(FileId(0), src).unwrap();
-    assert_eq!(crate::uniq::specialize_loops(&mut m), 0);
+    assert_eq!(crate::uniq::specialize_loops(&mut m).len(), 0);
     assert!(crate::interp::run(&m, b"", 1_000_000).is_ok());
     // In-place reads keep it unique.
     let src = UNIQUE_LOOP.replace(
@@ -661,14 +665,14 @@ entry:
         "  let c = prim bytes_unique(a)\n  let k = prim bytes_len(c)\n",
     );
     let mut m = parse(FileId(0), &src).unwrap();
-    assert_eq!(crate::uniq::specialize_loops(&mut m), 1);
+    assert_eq!(crate::uniq::specialize_loops(&mut m).len(), 1);
     // Only unchecked parameters reach the tail call: nothing is known.
     let src = UNIQUE_LOOP
         .replace("  let c = prim bytes_unique(a)\n", "")
         .replace("bytes_set_i64(c, i, y)", "bytes_get_i64(a, i)")
         .replace("tailcall fill(c, j, n)", "tailcall fill(a, j, n)");
     let mut m = parse(FileId(0), &src).unwrap();
-    assert_eq!(crate::uniq::specialize_loops(&mut m), 0);
+    assert_eq!(crate::uniq::specialize_loops(&mut m).len(), 0);
 }
 
 /// A loop with all three routes: `skip` passes the array unchecked, `plain`
@@ -721,7 +725,7 @@ entry:
 fn unique_loops_enter_and_leave_the_specialized_function() {
     let before = parse(FileId(0), UNIQUE_ROUTES).unwrap();
     let mut m = before.clone();
-    assert_eq!(crate::uniq::specialize_loops(&mut m), 1);
+    assert_eq!(crate::uniq::specialize_loops(&mut m).len(), 1);
     let errs = crate::verify::verify_module(&m);
     assert!(errs.is_empty(), "{}", crate::verify::render_errors(&errs));
     let text = |name: &str| {
@@ -1700,4 +1704,317 @@ entry:
             None => assert_eq!(r.stderr, "panic: index out of bounds\n"),
         }
     }
+}
+
+// ---- FEAT-0070: loops entered through the unique specialization ----
+
+/// The loop passes on `src` in the order of `perceus::run`. Checks that the
+/// result passes the verifier and runs like the original in the
+/// interpreter, which traps a store into a shared array and an access to a
+/// thunk (a wrong entry test). Returns the transformed module.
+fn entered(src: &str, specialized: usize) -> Module {
+    let before = parse(FileId(0), src).unwrap();
+    let mut m = before.clone();
+    let done = crate::uniq::specialize_loops(&mut m);
+    assert_eq!(done.len(), specialized);
+    crate::bounds::hoist_checks(&mut m);
+    crate::uniq::enter_specialized(&mut m, &done);
+    let text = print_module(&m);
+    let errs = crate::verify::verify_module(&m);
+    assert!(errs.is_empty(), "{}", crate::verify::render_errors(&errs));
+    let r0 = crate::interp::run(&before, b"", 1_000_000).unwrap();
+    let r1 = crate::interp::run(&m, b"", 1_000_000).unwrap_or_else(|e| panic!("{e}\n{text}"));
+    assert_eq!(r0.stdout, r1.stdout, "{text}");
+    assert_eq!(r0.stderr, r1.stderr, "{text}");
+    assert_eq!(r0.exit_code, r1.exit_code, "{text}");
+    assert_eq!(r0.stats.allocs, r1.stats.allocs, "{text}");
+    assert_eq!(r0.leaked, r1.leaked, "{text}");
+    m
+}
+
+const UNIQUE_ENTRY: &str = r#"
+extern fn cirka_write_i64(i64) -> void
+
+fn fill(a: ptr @owned, i: i64, n: i64) -> ptr {
+entry:
+  let d = prim ge(i, n)
+  switch d { 0 => body, default => done }
+done:
+  ret a
+body:
+  let c = prim bytes_unique(a)
+  let w = prim bytes_set_i64(c, i, 9)
+  let j = prim add(i, 1)
+  tailcall fill(c, j, n)
+}
+
+fn main() -> i64 {
+entry:
+  let a = prim bytes_new(32)
+  SHARE
+  let b = call fill(a, 0, 4)
+  let x = prim bytes_get_i64(b, 3)
+  USE
+  drop b
+  let _ = extern cirka_write_i64(x)
+  ret 0
+}
+"#;
+
+/// Text that reads `name[index]`, drops it and prints the element.
+fn print_and_drop(name: &str, index: i64) -> String {
+    format!(
+        "  let y = prim bytes_get_i64({name}, {index})\n  drop {name}\n  let _ = extern cirka_write_i64(y)\n"
+    )
+}
+
+#[test]
+fn unique_entry_goes_to_the_specialized_loop() {
+    let src = UNIQUE_ENTRY.replace("  SHARE\n", "").replace("  USE\n", "");
+    let m = entered(&src, 1);
+    let f = func_text(&m, "fill");
+    // The array is tested, not forced: nothing in `fill` forces it.
+    assert!(f.contains("prim is_unique(a)"), "{f}");
+    assert!(!f.contains("is_value"), "{f}");
+    assert!(f.contains("tailcall fill$u(a, i, n)"), "{f}");
+    assert!(f.contains("tailcall fill$slow(a, i, n)"), "{f}");
+    assert!(!f.contains("bytes_unique"), "{f}");
+    // The first iteration of a shared array runs in the cold body.
+    let slow = func_text(&m, "fill$slow");
+    assert!(slow.contains("cold fn fill$slow("), "{slow}");
+    assert!(slow.contains("prim bytes_unique(a)"), "{slow}");
+    assert!(!m.func("fill").unwrap().cold);
+    // `fill` has no self tail call left, so only the specialized loop gets
+    // a copy without the bounds checks.
+    assert!(m.func("fill$b").is_none());
+    assert!(m.func("fill$u$b").is_some());
+    let r = crate::interp::run(&m, b"", 1_000_000).unwrap();
+    assert_eq!(r.stdout, "9");
+    assert_eq!(r.stats.allocs, 1);
+    assert_eq!(r.leaked, 0);
+    // The specialized function is not given an entry test of its own.
+    assert!(!func_text(&m, "fill$u").contains("is_unique"));
+}
+
+#[test]
+fn unique_entry_copies_a_shared_array_as_before() {
+    let src = UNIQUE_ENTRY
+        .replace("  SHARE\n", "  dup a\n")
+        .replace("  USE\n", &print_and_drop("a", 3));
+    let m = entered(&src, 1);
+    let r = crate::interp::run(&m, b"", 1_000_000).unwrap();
+    // The caller's array keeps its zero; the loop writes into one copy.
+    assert_eq!(r.stdout, "09");
+    assert_eq!(r.stats.allocs, 2);
+    assert_eq!(r.leaked, 0);
+}
+
+const UNIQUE_ENTRY_LAZY: &str = r#"
+extern fn cirka_write_i64(i64) -> void
+
+fn mk() -> ptr {
+entry:
+  let a = prim bytes_new(32)
+  let w = prim bytes_set_i64(a, 2, 7)
+  ret a
+}
+
+fn boom() -> ptr {
+entry:
+  panic "boom"
+}
+
+fn sum(a: ptr @owned, i: i64, n: i64, acc: i64) -> i64 {
+entry:
+  let d = prim ge(i, n)
+  switch d { 0 => body, default => done }
+done:
+  drop a
+  ret acc
+body:
+  let ev = force a
+  let c = prim bytes_unique(ev)
+  let x = prim bytes_get_i64(c, i)
+  let w = prim bytes_set_i64(c, i, 0)
+  let acc1 = prim add(acc, x)
+  let j = prim add(i, 1)
+  tailcall sum(c, j, n, acc1)
+}
+
+fn main() -> i64 {
+entry:
+  let t = ARRAY
+  BEFORE
+  let r = call sum(t, START, COUNT, 0)
+  let _ = extern cirka_write_i64(r)
+  ret 0
+}
+"#;
+
+#[test]
+fn unique_entry_tests_lazy_arrays_without_forcing() {
+    let lazy = |array: &str, before: &str, start: &str, count: &str| {
+        UNIQUE_ENTRY_LAZY
+            .replace("ARRAY", array)
+            .replace("  BEFORE\n", before)
+            .replace("START", start)
+            .replace("COUNT", count)
+    };
+    let m = entered(&lazy("mkthunk mk()", "", "0", "4"), 1);
+    // A forced parameter must be a value for the specialized function, which
+    // has no `force` left.
+    let f = func_text(&m, "sum");
+    assert!(f.contains("prim is_value(a)"), "{f}");
+    assert!(f.contains("prim is_unique(a)"), "{f}");
+    assert!(f.contains("tailcall sum$u(a, i, n, acc)"), "{f}");
+    assert!(!func_text(&m, "sum$u").contains("force"));
+    let evaluated = "  dup t\n  let v = force t\n  drop v\n";
+    for (array, before, start, count, out) in [
+        // A value, a thunk, and a thunk already evaluated (an indirection).
+        ("prim bytes_new(32)", "", "0", "4", Some("0")),
+        ("mkthunk mk()", "", "0", "4", Some("7")),
+        ("mkthunk mk()", evaluated, "0", "4", Some("7")),
+        // Past the end, after the thunk is evaluated.
+        ("mkthunk mk()", "", "0", "5", None),
+        // A thunk that panics is forced only if the loop runs.
+        ("mkthunk boom()", "", "3", "3", Some("0")),
+        ("mkthunk boom()", "", "0", "3", None),
+    ] {
+        let m = entered(&lazy(array, before, start, count), 1);
+        let r = crate::interp::run(&m, b"", 1_000_000).unwrap();
+        match out {
+            Some(o) => assert_eq!(r.stdout, o, "{array} {before} {start} {count}"),
+            None => assert!(r.stderr.starts_with("panic: "), "{array}: {}", r.stderr),
+        }
+    }
+}
+
+const UNIQUE_ENTRY_TWO: &str = r#"
+extern fn cirka_write_i64(i64) -> void
+
+fn both(a: ptr @owned, b: ptr @owned, i: i64, n: i64) -> ptr {
+entry:
+  let d = prim ge(i, n)
+  switch d { 0 => body, default => done }
+done:
+  drop b
+  ret a
+body:
+  let ca = prim bytes_unique(a)
+  let cb = prim bytes_unique(b)
+  let w1 = prim bytes_set_i64(ca, i, 1)
+  let w2 = prim bytes_set_i64(cb, i, 2)
+  let j = prim add(i, 1)
+  tailcall both(ca, cb, j, n)
+}
+
+fn main() -> i64 {
+entry:
+  let a = prim bytes_new(16)
+  let b = prim bytes_new(16)
+  SHARE
+  let r = call both(a, b, 0, 2)
+  let x = prim bytes_get_i64(r, 1)
+  USE
+  drop r
+  let _ = extern cirka_write_i64(x)
+  ret 0
+}
+"#;
+
+#[test]
+fn unique_entry_tests_every_assumed_array() {
+    let m = entered(
+        &UNIQUE_ENTRY_TWO
+            .replace("  SHARE\n", "")
+            .replace("  USE\n", ""),
+        1,
+    );
+    let f = func_text(&m, "both");
+    assert!(f.contains("prim is_unique(a)"), "{f}");
+    assert!(f.contains("prim is_unique(b)"), "{f}");
+    let r = crate::interp::run(&m, b"", 1_000_000).unwrap();
+    assert_eq!(r.stdout, "1");
+    assert_eq!(r.stats.allocs, 2);
+    // Either array shared: the shared one is copied and keeps its zero.
+    for shared in ["a", "b"] {
+        let src = UNIQUE_ENTRY_TWO
+            .replace("  SHARE\n", &format!("  dup {shared}\n"))
+            .replace("  USE\n", &print_and_drop(shared, 1));
+        let m = entered(&src, 1);
+        let r = crate::interp::run(&m, b"", 1_000_000).unwrap();
+        assert_eq!(r.stdout, "01", "{shared}");
+        assert_eq!(r.stats.allocs, 3, "{shared}");
+        assert_eq!(r.leaked, 0, "{shared}");
+    }
+}
+
+#[test]
+fn unique_entry_tests_only_the_assumed_arrays() {
+    // `src` is read and never checked, so the loop is entered whatever its
+    // reference count is: it stays shared with the caller and is not copied.
+    let src = r#"
+extern fn cirka_write_i64(i64) -> void
+
+fn copy(src: ptr @owned, dst: ptr @owned, i: i64, n: i64) -> ptr {
+entry:
+  let d = prim ge(i, n)
+  switch d { 0 => body, default => done }
+done:
+  drop src
+  ret dst
+body:
+  let x = prim bytes_get_i64(src, i)
+  let c = prim bytes_unique(dst)
+  let w = prim bytes_set_i64(c, i, x)
+  let j = prim add(i, 1)
+  tailcall copy(src, c, j, n)
+}
+
+fn main() -> i64 {
+entry:
+  let a = prim bytes_new(16)
+  let w = prim bytes_set_i64(a, 1, 5)
+  let b = prim bytes_new(16)
+  dup a
+  let r = call copy(a, b, 0, 2)
+  let x = prim bytes_get_i64(r, 1)
+  let y = prim bytes_get_i64(a, 1)
+  drop r
+  drop a
+  let _ = extern cirka_write_i64(x)
+  let _ = extern cirka_write_i64(y)
+  ret 0
+}
+"#;
+    let m = entered(src, 1);
+    let f = func_text(&m, "copy");
+    assert_eq!(f.matches("prim is_unique").count(), 1, "{f}");
+    assert!(f.contains("prim is_unique(dst)"), "{f}");
+    let r = crate::interp::run(&m, b"", 1_000_000).unwrap();
+    assert_eq!(r.stdout, "55");
+    assert_eq!(r.stats.allocs, 2);
+}
+
+#[test]
+fn unique_entry_keeps_loops_that_share_their_arrays() {
+    // The programs of FEAT-0067: the array is shared before the first write
+    // and in the middle of the loop.
+    entered(UNIQUE_LOOP, 1);
+    let m = entered(UNIQUE_ROUTES, 1);
+    assert_eq!(
+        crate::interp::run(&m, b"", 1_000_000).unwrap().stdout,
+        "402"
+    );
+}
+
+#[test]
+fn cold_functions_round_trip_through_the_text_format() {
+    let src = "cold fn f(x: i64) -> i64 {\nentry:\n  ret x\n}\n\nfn main() -> i64 {\nentry:\n  let r = call f(1)\n  ret r\n}\n";
+    let m = parse(FileId(0), src).unwrap();
+    assert!(m.func("f").unwrap().cold);
+    assert!(!m.func("main").unwrap().cold);
+    let printed = print_module(&m);
+    assert!(printed.contains("cold fn f(x: i64)"), "{printed}");
+    assert!(parse(FileId(0), &printed).unwrap().func("f").unwrap().cold);
 }

@@ -29,6 +29,15 @@
 //! call of `loop$u` passes clean values, so its `force`s and checks are the
 //! identity and are removed. The interpreter traps a store into a shared
 //! array, so the run tests check the removal.
+//!
+//! The first iteration need not run in the original either (FEAT-0070):
+//! `loop$u` assumes only that its parameters are values with RC == 1, which
+//! the entry of `loop` can test without evaluating or writing anything.
+//! [`enter_specialized`] adds that test and moves the old body to a cold
+//! function `loop$slow`. It runs after the bounds checks are hoisted
+//! (`bounds.rs`), so that the test of the loop's precondition stays on the
+//! path of the arrays that are not unique, and is made only once, by
+//! `loop$u`, on the path of those that are.
 
 use crate::ir::*;
 use crate::perceus::{Sigs, instr_uses};
@@ -36,23 +45,113 @@ use std::collections::{HashMap, HashSet};
 
 /// Suffix of the specialized function.
 pub const SUFFIX: &str = "$u";
+/// Suffix of the body of a function entered through its uniqueness test.
+pub const SLOW_SUFFIX: &str = "$slow";
 
-/// Adds the specialized functions to `m`; returns how many.
-pub fn specialize_loops(m: &mut Module) -> usize {
+/// A function that got a specialized copy, and what the copy assumes.
+#[derive(Clone, Debug)]
+pub struct Specialized {
+    pub func: String,
+    pub target: String,
+    /// The position of each parameter assumed unique, and whether the
+    /// function forces it (the copy has no `force`: it must be a value).
+    pub params: Vec<(usize, bool)>,
+}
+
+/// Adds the specialized functions to `m` and returns what was specialized.
+pub fn specialize_loops(m: &mut Module) -> Vec<Specialized> {
     let sigs = Sigs::new(m);
     let names: HashSet<String> = m.funcs.iter().map(|f| f.name.clone()).collect();
     let mut new = Vec::new();
+    let mut done = Vec::new();
     for f in &mut m.funcs {
         if names.contains(&format!("{}{SUFFIX}", f.name)) {
             continue;
         }
-        if let Some(w) = specialize(&sigs, f) {
+        if let Some((w, s)) = specialize(&sigs, f) {
             new.push(w);
+            done.push(s);
         }
     }
-    let n = new.len();
     m.funcs.extend(new);
-    n
+    done
+}
+
+/// Makes the functions in `done` go to their specialized copies on entry
+/// when the parameters are what the copy assumes.
+pub fn enter_specialized(m: &mut Module, done: &[Specialized]) {
+    let by_name: HashMap<&str, &Specialized> = done.iter().map(|s| (s.func.as_str(), s)).collect();
+    let mut slow = Vec::new();
+    for f in &mut m.funcs {
+        if let Some(s) = by_name.get(f.name.as_str()) {
+            slow.push(split_entry(f, s));
+        }
+    }
+    m.funcs.extend(slow);
+}
+
+/// Moves the body of `f` to a cold function and returns it. `f` itself is
+/// left with the test: it tail calls `s.target` when every assumed
+/// parameter is unique (and a value if forced), otherwise the old body,
+/// whose self tail calls come back to the test.
+///
+/// A separate function, not a block of `f`: the copy of a shared array and
+/// the evaluation of a thunk are calls, and registers saved for them would
+/// be pushed and popped on every entry of the hot path too.
+fn split_entry(f: &mut Function, s: &Specialized) -> Function {
+    let mut slow = f.clone();
+    slow.name = format!("{}{SLOW_SUFFIX}", f.name);
+    slow.cold = true;
+    let mut instrs = Vec::new();
+    let mut all: Option<Var> = None;
+    let mut test = |f: &mut Function, prim: Prim, k: usize| {
+        let arg = Operand::Var(f.params[k].var);
+        let t = f.fresh_var("ent", Ty::I64);
+        instrs.push(Instr::Let {
+            var: Some(t),
+            rhs: Rhs::Prim(prim, vec![arg]),
+        });
+        all = Some(match all {
+            None => t,
+            Some(a) => {
+                let u = f.fresh_var("ent", Ty::I64);
+                instrs.push(Instr::Let {
+                    var: Some(u),
+                    rhs: Rhs::Prim(Prim::And, vec![Operand::Var(a), Operand::Var(t)]),
+                });
+                u
+            }
+        });
+    };
+    for &(k, forced) in &s.params {
+        if forced {
+            test(f, Prim::IsValue, k);
+        }
+        test(f, Prim::IsUnique, k);
+    }
+    let scrut = all.expect("a specialized function assumes at least one parameter");
+    let args: Vec<Operand> = f.params.iter().map(|p| Operand::Var(p.var)).collect();
+    let tail = |label: &str, func: String, args: Vec<Operand>| Block {
+        label: label.to_string(),
+        params: Vec::new(),
+        instrs: Vec::new(),
+        term: Terminator::TailCall { func, args },
+    };
+    f.blocks = vec![
+        Block {
+            label: "entry".to_string(),
+            params: Vec::new(),
+            instrs,
+            term: Terminator::Switch {
+                scrut,
+                arms: vec![(Case::Int(0), BlockId(1))],
+                default: Some(BlockId(2)),
+            },
+        },
+        tail("not_unique", slow.name.clone(), args.clone()),
+        tail("unique", s.target.clone(), args),
+    ];
+    slow
 }
 
 /// The state of one parameter at a program point.
@@ -219,7 +318,7 @@ fn analyze(sigs: &Sigs, f: &Function, param: Var) -> Facts {
 }
 
 /// The specialized function of `f`, retargeting `f`'s tail calls to it.
-fn specialize(sigs: &Sigs, f: &mut Function) -> Option<Function> {
+fn specialize(sigs: &Sigs, f: &mut Function) -> Option<(Function, Specialized)> {
     let params: Vec<Var> = f
         .params
         .iter()
@@ -257,6 +356,23 @@ fn specialize(sigs: &Sigs, f: &mut Function) -> Option<Function> {
         cands.into_iter().find(|&i| works(&[i])).map(|i| vec![i])?
     };
     let wname = format!("{}{SUFFIX}", f.name);
+    let assumed = set
+        .iter()
+        .map(|&i| {
+            let (param, fs) = &facts[i];
+            let forced = fs.removable.iter().any(|&(b, ii, _)| {
+                matches!(
+                    &f.blocks[b].instrs[ii],
+                    Instr::Let {
+                        rhs: Rhs::Force(_),
+                        ..
+                    }
+                )
+            });
+            let k = f.params.iter().position(|p| p.var == *param);
+            (k.expect("a parameter of the function"), forced)
+        })
+        .collect();
     let mut w = f.clone();
     w.name = wname.clone();
     // Remove the `force`s and checks of clean values in `f$u`.
@@ -295,7 +411,12 @@ fn specialize(sigs: &Sigs, f: &mut Function) -> Option<Function> {
             *func = to;
         }
     }
-    Some(w)
+    let info = Specialized {
+        func: f.name.clone(),
+        target: wname,
+        params: assumed,
+    };
+    Some((w, info))
 }
 
 fn has_self_tail_call(f: &Function) -> bool {
