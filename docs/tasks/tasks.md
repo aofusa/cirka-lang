@@ -115,6 +115,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0073](features/FEAT-0073-cold-copies-of-specialized-loops.md) | 冷たい経路に特殊化した関数の写しを持たせ、ループの入口に定数を伝える | done | P1 | 0070, 0072 |
 | [FEAT-0074](features/FEAT-0074-case-of-strict-let-of-comparison.md) | 比較の結果を束縛してから分岐する Core を case-of-case にかける | done | P1 | 0013 |
 | [FEAT-0075](features/FEAT-0075-value-only-loop-parameters.md) | ループが読むだけの配列の引数を、入口で値と確かめて反復ごとの force をなくす | done | P1 | 0067, 0070, 0073 |
+| [FEAT-0077](features/FEAT-0077-strictness-through-newtypes.md) | 正格性解析が newtype のコンストラクタを素通しする | done | P1 | 0112 |
 
 
 ## aCHC
