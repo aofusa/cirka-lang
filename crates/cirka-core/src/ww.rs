@@ -118,14 +118,15 @@ impl Analysis<'_> {
                 }
             }
             Expr::Con(k, _, args) => {
-                let strict = self
+                // A newtype is its field: evaluating one evaluates the other.
+                let (strict, newtype) = self
                     .p
                     .ctor(k)
-                    .map(|(d, i)| d.ctors[i].strict.clone())
+                    .map(|(d, i)| (d.ctors[i].strict.clone(), d.newtype))
                     .unwrap_or_default();
                 let mut s = Some(HashSet::new());
                 for (a, st) in args.iter().zip(strict) {
-                    if st {
+                    if st || newtype {
                         s = union(s, self.expr(a));
                     }
                 }

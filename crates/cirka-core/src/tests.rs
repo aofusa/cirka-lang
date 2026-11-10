@@ -576,6 +576,40 @@ fn strictify_turns_forced_lets_strict() {
     assert!(m.starts_with("(let! (t"), "{m}");
 }
 
+/// `main` wraps the result of a call in `ctor` and passes it to a function
+/// that evaluates it.
+fn wrapped_argument(ctor: &str) -> String {
+    format!(
+        "{PRELUDE}(data W () (W Int#))
+         (data N () :newtype (N W))
+         (data B () (B W))
+         (def eval_n (-> N Int#)
+           (lam ((v N)) (case v (s N) Int# ((N w) (case w (t W) Int# ((W b) b))))))
+         (def eval_b (-> B Int#) (lam ((v B)) (case v (s B) Int# ((B w) 0))))
+         (def f (-> Int# W) (lam ((i Int#)) (con W () i)))
+         (def main Int#
+           (let ((a W (f 1)))
+             (let ((u {ctor} (con {ctor} () a)))
+               (eval_{} u))))",
+        ctor.to_lowercase()
+    )
+}
+
+#[test]
+fn strictify_sees_through_newtype_constructors() {
+    // Evaluating `u` evaluates `a`, which it only wraps.
+    let mut p = parse_program(FileId(0), &wrapped_argument("N")).unwrap();
+    let mut next = p.max_id() + 1;
+    assert_eq!(strict::strictify(&mut p, &mut next), 1);
+    assert!(lint::lint_program(&p).is_empty(), "{}", print_program(&p));
+    let m = print::print_expr(&p.bind("main").unwrap().expr);
+    assert!(m.starts_with("(let! (a"), "{m}");
+    // A field of a real constructor stays lazy.
+    let mut p = parse_program(FileId(0), &wrapped_argument("B")).unwrap();
+    let mut next = p.max_id() + 1;
+    assert_eq!(strict::strictify(&mut p, &mut next), 0);
+}
+
 #[test]
 fn float_in_moves_lets_into_their_only_alternative() {
     let src = format!(
