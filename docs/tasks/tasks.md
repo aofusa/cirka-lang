@@ -113,6 +113,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0071](features/FEAT-0071-loop-breakers.md) | 相互再帰のループ破りを選び、残りの関数をインライン化する | done | P1 | 0067, 0069 |
 | [FEAT-0072](features/FEAT-0072-internal-linkage-and-o3.md) | 生成する関数を internal にし、リリースの LLVM を -O3 にする | done | P1 | 0070, 0071 |
 | [FEAT-0073](features/FEAT-0073-cold-copies-of-specialized-loops.md) | 冷たい経路に特殊化した関数の写しを持たせ、ループの入口に定数を伝える | done | P1 | 0070, 0072 |
+| [FEAT-0074](features/FEAT-0074-case-of-strict-let-of-comparison.md) | 比較の結果を束縛してから分岐する Core を case-of-case にかける | done | P1 | 0013 |
 
 
 ## aCHC
