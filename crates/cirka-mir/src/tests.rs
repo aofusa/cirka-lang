@@ -3092,3 +3092,31 @@ fn cold_functions_round_trip_through_the_text_format() {
     assert!(printed.contains("cold fn f(x: i64)"), "{printed}");
     assert!(parse(FileId(0), &printed).unwrap().func("f").unwrap().cold);
 }
+
+// ---- BUG-0014: lazily bound constructors ----
+
+/// Lowers a program that binds `(con B () field)` lazily and uses it in one
+/// branch only, and tells whether it builds a thunk for the constructor.
+fn lazy_con_makes_thunk(field: &str) -> bool {
+    let src = format!(
+        "(data Box () (B (! Int#)))
+         (def pick (-> Int# Int#)
+           (lam ((n Int#))
+             (let ((a Box (con B () {field})))
+               (case n (k Int#) Int#
+                 (0 3)
+                 (_ (case a (s Box) Int# ((B v) v)))))))
+         (def main Int# (pick 0))"
+    );
+    let core = cirka_core::parse_program(FileId(0), &src).unwrap();
+    let m = lower::lower_program(&core).unwrap();
+    print_module(&m).contains("mkthunk")
+}
+
+#[test]
+fn lazy_constructors_wait_only_for_unsafe_strict_fields() {
+    // Adding cannot fail, so the box is built where it is bound.
+    assert!(!lazy_con_makes_thunk("(prim add n 1)"));
+    // Dividing can: it has to wait until something demands the box.
+    assert!(lazy_con_makes_thunk("(prim quot 7 n)"));
+}

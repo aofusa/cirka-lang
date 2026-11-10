@@ -1,0 +1,20 @@
+; A constructor with a strict field, bound lazily. Building it evaluates the
+; field, which can fail: it must wait until something demands it (BUG-0014).
+; With n = 0 nothing demands `a`, and the division by zero must not run.
+(extern cirka_write_i64 (Int#) Unit#)
+(extern cirka_write_char (Int#) Unit#)
+(data Box () (B (! Int#)))
+
+(def pick (-> Int# Int#)
+  (lam ((n Int#))
+    (let ((a Box (con B () (prim quot 7 n))))
+      (case n (k Int#) Int#
+        (0 3)
+        (_ (case a (s Box) Int# ((B v) v)))))))
+
+(def main Int#
+  (let! (p1 Unit# (extern cirka_write_i64 (pick 0)))
+    (let! (p2 Unit# (extern cirka_write_char 10))
+      (let! (p3 Unit# (extern cirka_write_i64 (pick 2)))
+        (let! (p4 Unit# (extern cirka_write_char 10))
+          0)))))

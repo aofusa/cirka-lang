@@ -216,7 +216,7 @@ pub(crate) fn strictness(p: &Program) -> HashMap<String, (usize, Vec<bool>)> {
 }
 
 /// Primitive operations without effects that cannot fail.
-fn total_prim(op: PrimOp) -> bool {
+pub fn total_prim(op: PrimOp) -> bool {
     use PrimOp::*;
     matches!(
         op,

@@ -115,6 +115,8 @@ struct Fb {
     f: Function,
     cur: usize,
     nlabels: u32,
+    /// Variables bound here to thunks built by this function.
+    thunks: HashSet<Var>,
 }
 
 impl Fb {
@@ -130,6 +132,7 @@ impl Fb {
             f,
             cur: 0,
             nlabels: 0,
+            thunks: HashSet::new(),
         }
     }
 
@@ -154,6 +157,9 @@ impl Fb {
 
     fn let_(&mut self, hint: &str, ty: Ty, rhs: Rhs) -> Var {
         let v = self.f.fresh_var(hint, ty);
+        if matches!(rhs, Rhs::MkThunk { .. }) {
+            self.thunks.insert(v);
+        }
         self.emit(Instr::Let { var: Some(v), rhs });
         v
     }
@@ -907,7 +913,7 @@ impl<'p> Lowerer<'p> {
             Expr::Lit(_) | Expr::Lam(..) | Expr::Global(_) => self.whnf(fb, env, e),
             Expr::TyApp(x, _) | Expr::TyLam(_, _, x) | Expr::Cast(x, _) => self.lazy(fb, env, x),
             Expr::Con(c, _, args) if self.is_newtype_ctor(c) => self.lazy(fb, env, &args[0]),
-            Expr::Con(..) => self.whnf(fb, env, e),
+            Expr::Con(c, _, args) if self.builds_now(fb, env, c, args) => self.whnf(fb, env, e),
             _ => {
                 let mut extra = HashMap::new();
                 let t = self.type_of(env, &mut extra, e);
@@ -920,12 +926,57 @@ impl<'p> Lowerer<'p> {
     }
 
     /// Whether `lazy` lowers `e` to an evaluated value (not a thunk / CAF).
-    fn builds_value(&self, e: &Expr) -> bool {
+    fn builds_value(&self, fb: &Fb, env: &Env, e: &Expr) -> bool {
         match e {
             Expr::Lit(_) | Expr::Lam(..) => true,
-            Expr::Con(c, _, args) => !self.is_newtype_ctor(c) || self.builds_value(&args[0]),
+            Expr::Con(c, _, args) if self.is_newtype_ctor(c) => {
+                self.builds_value(fb, env, &args[0])
+            }
+            Expr::Con(c, _, args) => self.builds_now(fb, env, c, args),
             Expr::Global(g) => matches!(self.tops.get(g), Some(Top::Fun { .. })),
-            Expr::TyApp(x, _) | Expr::TyLam(_, _, x) | Expr::Cast(x, _) => self.builds_value(x),
+            Expr::TyApp(x, _) | Expr::TyLam(_, _, x) | Expr::Cast(x, _) => {
+                self.builds_value(fb, env, x)
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether a constructor in a lazy position can be built right away.
+    /// Building it evaluates its strict fields, which nothing has demanded
+    /// yet: they must be safe to compute now (BUG-0014).
+    fn builds_now(&self, fb: &Fb, env: &Env, c: &str, args: &[Expr]) -> bool {
+        let Some((_, strict)) = self.ctors.get(c) else {
+            return true;
+        };
+        args.iter()
+            .zip(strict)
+            .all(|(a, st)| !*st || self.safe_now(fb, env, a))
+    }
+
+    /// Whether computing `e` now can neither fail nor run long. A variable
+    /// counts unless it is a thunk built in this function: a parameter is
+    /// almost always a value already, and forcing one costs a test.
+    fn safe_now(&self, fb: &Fb, env: &Env, e: &Expr) -> bool {
+        match e {
+            Expr::Lit(_) | Expr::Lam(..) => true,
+            Expr::Var(i) => match env.get(&i.id) {
+                Some(Bound::Val {
+                    op: Operand::Var(v),
+                    whnf: false,
+                    ..
+                }) => !fb.thunks.contains(v),
+                Some(_) => true,
+                None => false,
+            },
+            Expr::Global(g) => matches!(self.tops.get(g), Some(Top::Fun { .. })),
+            Expr::TyApp(x, _) | Expr::TyLam(_, _, x) | Expr::Cast(x, _) => {
+                self.safe_now(fb, env, x)
+            }
+            Expr::Con(c, _, args) if self.is_newtype_ctor(c) => self.safe_now(fb, env, &args[0]),
+            Expr::Con(c, _, args) => self.builds_now(fb, env, c, args),
+            Expr::Prim(op, _, args) => {
+                core::ww::total_prim(*op) && args.iter().all(|a| self.safe_now(fb, env, a))
+            }
             _ => false,
         }
     }
@@ -1194,7 +1245,7 @@ impl<'p> Lowerer<'p> {
                     // Values are built eagerly; other boxed rhs are thunks.
                     self.op_ty(fb, &v) != Ty::Ptr
                         || matches!(&v, Operand::Const(_))
-                        || self.builds_value(rhs)
+                        || self.builds_value(fb, env, rhs)
                 };
                 env.insert(
                     b.id.id,
