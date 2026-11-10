@@ -72,6 +72,7 @@ struct ConMeta {
 struct DataMeta {
     params: Vec<String>,
     cons: Vec<String>,
+    newtype: bool,
 }
 
 /// A matched column: the variable and its Haskell type.
@@ -197,8 +198,9 @@ impl Ds {
             &list_tc(),
             vec!["a".into()],
             vec![(list_tc(), vec![]), (prim(":"), vec![a(), Ty::list(a())])],
+            false,
         );
-        d.add_data(&unit_tc(), vec![], vec![(unit_tc(), vec![])]);
+        d.add_data(&unit_tc(), vec![], vec![(unit_tc(), vec![])], false);
         for dd in &p.datas {
             d.add_data(
                 &dd.name,
@@ -207,12 +209,19 @@ impl Ds {
                     .iter()
                     .map(|k| (k.name.clone(), k.fields.clone()))
                     .collect(),
+                dd.newtype,
             );
         }
         d
     }
 
-    fn add_data(&mut self, name: &str, params: Vec<String>, cons: Vec<(String, Vec<Ty>)>) {
+    fn add_data(
+        &mut self,
+        name: &str,
+        params: Vec<String>,
+        cons: Vec<(String, Vec<Ty>)>,
+        newtype: bool,
+    ) {
         for (k, fs) in &cons {
             self.cons.insert(
                 k.clone(),
@@ -227,6 +236,7 @@ impl Ds {
             DataMeta {
                 params,
                 cons: cons.into_iter().map(|x| x.0).collect(),
+                newtype,
             },
         );
     }
@@ -238,7 +248,7 @@ impl Ds {
         {
             let ps: Vec<String> = (0..k).map(|i| format!("a{i}")).collect();
             let fs = ps.iter().map(|p| Ty::Var(p.clone())).collect();
-            self.add_data(n, ps, vec![(n.to_string(), fs)]);
+            self.add_data(n, ps, vec![(n.to_string(), fs)], false);
         }
         if let Some(k) = tuple_arity(n) {
             self.tuples.insert(k);
@@ -970,6 +980,27 @@ impl Ds {
             .map(|d| d.cons.clone())
             .unwrap_or_default();
         let sub = self.data_subst(&data, &inst);
+        // Matching a newtype constructor evaluates nothing (Haskell 2010
+        // §4.2.3): the field is the column at another type, and the
+        // patterns of the field decide what gets evaluated (BUG-0008).
+        if self.datas.get(&data).is_some_and(|d| d.newtype) {
+            let ft = self.con(&order[0]).fields[0].subst(&sub);
+            let cft = self.ty(&ft);
+            if !cft.is_unboxed() {
+                let f = self.id("f");
+                let mut ncols = vec![(f.clone(), ft)];
+                ncols.extend(cols[1..].iter().cloned());
+                let sub_rows = rows.iter().map(open_con).collect();
+                let rhs = self.matcher(&ncols, sub_rows, fail, res);
+                return c::Expr::Let(
+                    c::Bind::NonRec(
+                        c::Binder::new(f, c::Mult::Many, cft.clone()),
+                        Box::new(c::Expr::Cast(Box::new(c::Expr::Var(v)), cft)),
+                    ),
+                    Box::new(rhs),
+                );
+            }
+        }
         let mut alts = Vec::new();
         for k in &order {
             let meta = self.con(k);
@@ -981,16 +1012,7 @@ impl Ds {
             let sub_rows: Vec<Row> = rows
                 .iter()
                 .filter(|r| matches!(&r.pats[0], Pat::Con(x, _, _) if x == k))
-                .map(|r| {
-                    let mut r = r.clone();
-                    let Pat::Con(_, _, ps) = r.pats.remove(0) else {
-                        unreachable!()
-                    };
-                    let mut pats = ps;
-                    pats.extend(r.pats);
-                    r.pats = pats;
-                    r
-                })
+                .map(open_con)
                 .collect();
             let mut ncols = fcols.clone();
             ncols.extend(cols[1..].iter().cloned());
@@ -1286,6 +1308,18 @@ impl Ds {
             }
         }
     }
+}
+
+/// `r` with the field patterns of its first column in front of the rest.
+fn open_con<'a>(r: &Row<'a>) -> Row<'a> {
+    let mut r = r.clone();
+    let Pat::Con(_, _, ps) = r.pats.remove(0) else {
+        unreachable!()
+    };
+    let mut pats = ps;
+    pats.extend(r.pats);
+    r.pats = pats;
+    r
 }
 
 fn pat_vars(p: &Pat, out: &mut Vec<(String, Ty)>) {

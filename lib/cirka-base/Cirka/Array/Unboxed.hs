@@ -124,7 +124,7 @@ swap u i j = case read u i of
 -- | A unique array with the contents of `a`: `a` itself when nothing else
 -- refers to it, otherwise a copy.
 thaw :: UArray e -> Unique (UArray e)
-thaw (UArray b) = unique (UArray (primUArrThaw b))
+thaw (UArray b) = let !b' = primUArrThaw b in unique (UArray b')
 
 -- | A unique array holding the elements of a list.
 fromListU :: UElem e => [e] -> Unique (UArray e)

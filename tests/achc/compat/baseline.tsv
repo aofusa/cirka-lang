@@ -65,7 +65,7 @@ ghc/codeGen/cgrun056	pass
 ghc/codeGen/cgrun058	pass
 ghc/codeGen/cgrun059	module
 ghc/codeGen/cgrun061	pass
-ghc/codeGen/cgrun062	crash
+ghc/codeGen/cgrun062	pass
 ghc/codeGen/cgrun063	pass
 ghc/codeGen/cgrun064	extension
 ghc/codeGen/cgrun065	extension

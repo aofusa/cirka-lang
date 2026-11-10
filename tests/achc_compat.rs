@@ -400,7 +400,10 @@ fn measure_isolated(p: &Program) -> (Category, String) {
         "--test-threads=1",
     ])
     .env("CIRKA_COMPAT_CHILD", &p.main)
-    .env("CIRKA_COMPAT_CHILD_NAME", &p.name);
+    .env("CIRKA_COMPAT_CHILD_NAME", &p.name)
+    // The test thread compiles: give it the stack of the compiler's own
+    // thread, so that deeply nested programs behave as with the CLI.
+    .env("RUST_MIN_STACK", cirka_driver::cli::STACK_SIZE.to_string());
     let (out, err, code) = run_cmd_limited(cmd, &[], Duration::from_secs(900));
     for l in out.lines().chain(err.lines()) {
         // The test harness may print `test compat_child ... ` first.

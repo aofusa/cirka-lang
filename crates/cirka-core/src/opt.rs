@@ -1015,7 +1015,18 @@ impl Simp<'_> {
                 None => Expr::Var(x),
             },
             Expr::Global(_) | Expr::Lit(_) | Expr::Panic(..) => e,
-            Expr::Con(c, ts, a) => Expr::Con(c, ts, a.into_iter().map(|x| self.expr(x)).collect()),
+            Expr::Con(c, ts, mut a) => {
+                // A newtype constructor is a cast: it cancels with the casts
+                // of its patterns, and the value underneath shows through.
+                if a.len() == 1
+                    && let Some(t) = self.newtype_cast_type(&c, &ts)
+                {
+                    let x = self.expr(a.remove(0));
+                    self.hit();
+                    return self.cast_to(x, t);
+                }
+                Expr::Con(c, ts, a.into_iter().map(|x| self.expr(x)).collect())
+            }
             Expr::Extern(n, a) => Expr::Extern(n, a.into_iter().map(|x| self.expr(x)).collect()),
             Expr::Prim(op, ts, a) => {
                 let a: Vec<Expr> = a.into_iter().map(|x| self.expr(x)).collect();
@@ -1044,7 +1055,7 @@ impl Simp<'_> {
             Expr::TyLam(v, k, x) => Expr::TyLam(v, k, Box::new(self.expr(*x))),
             Expr::Cast(x, t) => {
                 let x = self.expr(*x);
-                cast(x, t)
+                self.cast_to(x, t)
             }
             Expr::Let(Bind::NonRec(b, r), body) => {
                 let o = self.occ(b.id.id);
@@ -1511,6 +1522,33 @@ impl Simp<'_> {
             .all(|a| matches!(a.rhs, Expr::Con(..) | Expr::Lit(_) | Expr::Panic(..)));
         let small = alts.iter().map(|a| size(&a.rhs)).sum::<usize>() <= INLINE_SIZE;
         known || small
+    }
+
+    /// `cast(e, t)`, without the cast of a constructor to its own type.
+    fn cast_to(&mut self, e: Expr, t: Type) -> Expr {
+        match cast(e, t) {
+            Expr::Cast(x, t) => {
+                if let Expr::Con(k, ts, _) = &*x
+                    && self
+                        .p
+                        .ctor(k)
+                        .is_some_and(|(d, _)| Type::Con(d.name.clone(), ts.clone()).alpha_eq(&t))
+                {
+                    self.hit();
+                    return *x;
+                }
+                Expr::Cast(x, t)
+            }
+            e => e,
+        }
+    }
+
+    /// The type built by newtype constructor `c`, when it can be a cast
+    /// (the field has the kind of the newtype and is not unboxed).
+    fn newtype_cast_type(&self, c: &str, ts: &[Type]) -> Option<Type> {
+        let (d, i) = self.p.ctor(c)?;
+        (d.newtype && !d.linear && !d.ctors[i].fields[0].is_unboxed())
+            .then(|| Type::Con(d.name.clone(), ts.to_vec()))
     }
 
     /// The field type of newtype `t` when `alts` is its one constructor

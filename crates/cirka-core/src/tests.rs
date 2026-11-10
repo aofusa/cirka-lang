@@ -1236,6 +1236,65 @@ fn unboxed_parameters_make_later_arguments_values() {
     assert_eq!(go.ty.to_string(), "(-> Int# (-> Double# Int#))", "{all}");
 }
 
+#[test]
+fn newtype_constructors_cancel_with_casts() {
+    // A pattern on a newtype is a cast of the value and its constructor is
+    // a cast too (BUG-0008): the two cancel, and the box underneath shows
+    // through to the `case`.
+    let src = format!(
+        "{STRICT_INT}(data N () :newtype (MkN Int))
+         (extern arg () Int#)
+         (def get (-> N Int#)
+           (lam ((v N))
+             (let ((f Int (cast v Int)))
+               (case f (s Int) Int# ((I# x) x)))))
+         (def main Int#
+           (let! (a Int# (extern arg))
+             (get (con MkN () (con I# () a)))))"
+    );
+    let mut p = parse_program(FileId(0), &src).unwrap();
+    opt::optimize(&mut p).unwrap();
+    assert!(lint::lint_program(&p).is_empty(), "{}", print_program(&p));
+    let m = print::print_expr(&p.bind("main").unwrap().expr);
+    assert!(!m.contains("MkN") && !m.contains("I#"), "{m}");
+}
+
+#[test]
+fn newtype_constructors_that_cannot_be_casts_stay() {
+    // A cast can neither change linearity nor touch an unboxed value: these
+    // two constructors stay. `mk` and `mku` loop so that they are not
+    // inlined into a `case` that would cancel the constructors.
+    let src = format!(
+        "{STRICT_INT}(data H () :linear :newtype (MkH Int))
+         (data U () :newtype (MkU Int#))
+         (extern arg () Int#)
+         (def mk (-> Int# Int H)
+           (lam ((n Int#) (v Int))
+             (case n (k Int#) H
+               (0 (con MkH () v))
+               (_ (mk (prim sub n 1) v)))))
+         (def mku (-> Int# U)
+           (lam ((n Int#))
+             (case n (k Int#) U
+               (0 (con MkU () n))
+               (_ (mku (prim sub n 1))))))
+         (def main Int#
+           (let! (a Int# (extern arg))
+             (let! (h 1 H (mk a (con I# () a)))
+               (case h (s 1 H) Int#
+                 ((MkH v)
+                  (case v (t Int) Int#
+                    ((I# x)
+                     (case (mku a) (u U) Int# ((MkU y) (prim add x y))))))))))"
+    );
+    let mut p = parse_program(FileId(0), &src).unwrap();
+    opt::optimize(&mut p).unwrap();
+    let out = print_program(&p);
+    assert!(lint::lint_program(&p).is_empty(), "{out}");
+    assert!(out.contains("con MkH"), "{out}");
+    assert!(out.contains("con MkU"), "{out}");
+}
+
 // ---- FEAT-0071: loop breakers of mutually recursive functions ----
 
 /// `src` after the optimizer, which must keep it well typed.

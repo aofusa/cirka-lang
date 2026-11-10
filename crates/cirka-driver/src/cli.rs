@@ -143,7 +143,7 @@ pub fn parse_args(args: &[String]) -> Result<Args, String> {
 
 /// Stack of the compiling thread: the compilers recurse over deeply nested
 /// terms (reserved lazily, so this costs nothing when unused).
-const STACK_SIZE: usize = 256 << 20;
+pub const STACK_SIZE: usize = 256 << 20;
 
 /// Entry point of a CLI: `tool` is the program name used in messages.
 pub fn main(tool: &'static str, usage: &str, frontend: Frontend) -> ExitCode {
