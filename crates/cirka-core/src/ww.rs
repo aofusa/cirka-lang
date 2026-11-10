@@ -279,7 +279,15 @@ fn speculatable(e: &Expr, ev: &HashSet<u32>, size: &mut usize) -> bool {
             }
             let mut ev = ev.clone();
             ev.insert(b.id.id);
-            alts.iter().all(|a| speculatable(&a.rhs, &ev, size))
+            alts.iter().all(|a| {
+                // A field of an unboxed type cannot be a thunk.
+                let mut ev = ev.clone();
+                if let AltCon::Con(_, fs) = &a.con {
+                    let values = fs.iter().filter(|f| f.ty.is_unboxed());
+                    ev.extend(values.map(|f| f.id.id));
+                }
+                speculatable(&a.rhs, &ev, size)
+            })
         }
         _ => false,
     }
@@ -320,7 +328,8 @@ fn params_at_calls(p: &Program, values: bool) -> HashMap<String, Vec<bool>> {
             let mut env = HashSet::new();
             if let Some(e) = ev.get(&b.name) {
                 for (x, ok) in xs.iter().zip(e) {
-                    if *ok {
+                    // A value of an unboxed type cannot be a thunk.
+                    if *ok || x.ty.is_unboxed() {
                         env.insert(x.id.id);
                     }
                 }
@@ -448,16 +457,15 @@ impl CallWalk<'_> {
                 let mut env = env.clone();
                 env.insert(b.id.id);
                 for a in alts {
-                    // The field of a newtype is the evaluated scrutinee.
-                    if let AltCon::Con(c, fs) = &a.con
-                        && self.p.ctor(c).is_some_and(|(d, _)| d.newtype)
-                    {
-                        let mut env = env.clone();
-                        env.extend(fs.iter().map(|f| f.id.id));
-                        self.expr(&a.rhs, &env);
-                    } else {
-                        self.expr(&a.rhs, &env);
+                    // The field of a newtype is the evaluated scrutinee, and
+                    // a value of an unboxed type cannot be a thunk.
+                    let mut env = env.clone();
+                    if let AltCon::Con(c, fs) = &a.con {
+                        let newtype = self.p.ctor(c).is_some_and(|(d, _)| d.newtype);
+                        let values = fs.iter().filter(|f| newtype || f.ty.is_unboxed());
+                        env.extend(values.map(|f| f.id.id));
                     }
+                    self.expr(&a.rhs, &env);
                 }
             }
             Expr::Var(_) | Expr::Lit(_) | Expr::Panic(..) => {}

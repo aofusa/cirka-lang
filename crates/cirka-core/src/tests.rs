@@ -1135,6 +1135,107 @@ fn whnf_params_need_values_at_every_call() {
     assert_eq!(ev["h"], vec![false]);
 }
 
+#[test]
+fn evaluated_params_count_unboxed_binders() {
+    // An argument of `go` uses an unboxed field, one of `h` an unboxed
+    // parameter that is not safe to evaluate at the call: both are values.
+    let src = format!(
+        "{STRICT_INT}(data D () (D# Double#))
+         (data P () (P D))
+         (extern arg () Int#)
+         (def go (-> D Int# D)
+           (lam ((d D) (n Int#))
+             (case n (k Int#) D
+               (0 d)
+               (_ (case d (s D) D
+                    ((D# x) (go (let! (y Double# (prim fmul x x)) (con D# () y)) (prim sub n 1))))))))
+         (def h (-> D Int# D)
+           (lam ((d D) (n Int#))
+             (case n (k Int#) D
+               (0 d)
+               (_ (h (let! (y Double# (prim int_to_double n)) (con D# () y)) (prim sub n 1))))))
+         (def boxed (-> D P Int# D)
+           (lam ((d D) (p P) (n Int#))
+             (case n (k Int#) D
+               (0 d)
+               (_ (case p (s P) D
+                    ((P x) (boxed (case x (t D) D ((D# y) (con D# () y))) p (prim sub n 1))))))))
+         (def nested (-> D D Int# D)
+           (lam ((d D) (e D) (n Int#))
+             (case n (k Int#) D
+               (0 d)
+               (_ (nested (case e (s D) D
+                            ((D# y) (let! (q Double# (prim fmul y y)) (con D# () q))))
+                          e (prim sub n 1))))))
+         (def nested_boxed (-> D P Int# D)
+           (lam ((d D) (p P) (n Int#))
+             (case n (k Int#) D
+               (0 d)
+               (_ (nested_boxed (case p (s P) D
+                                  ((P x) (case x (t D) D ((D# y) (con D# () y)))))
+                                p (prim sub n 1))))))
+         (def main Int#
+           (let! (a Int# (extern arg))
+             (case (go (con D# () 1.0) a) (r1 D) Int#
+               ((D# v1) (case (h (con D# () 2.0) (extern arg)) (r2 D) Int#
+                 ((D# v2) (case (boxed (con D# () 3.0) (con P () (con D# () 4.0)) a) (r3 D) Int#
+                   ((D# v3) (case (nested (con D# () 5.0) (con D# () 6.0) a) (r4 D) Int#
+                     ((D# v4) (case (nested_boxed (con D# () 7.0) (con P () (con D# () 8.0)) a) (r5 D) Int#
+                       ((D# v5) a))))))))))))"
+    );
+    let p = parse_program(FileId(0), &src).unwrap();
+    let ev = crate::ww::evaluated_params(&p);
+    assert_eq!(ev["go"], vec![true, true]);
+    assert_eq!(ev["h"], vec![true, false]);
+    // A field of an unboxed type read inside the argument itself.
+    assert_eq!(ev["nested"], vec![true, true, true]);
+    // A boxed field can be a thunk.
+    assert_eq!(ev["boxed"], vec![false, true, true]);
+    assert_eq!(ev["nested_boxed"], vec![false, true, true]);
+}
+
+#[test]
+fn unboxed_parameters_make_later_arguments_values() {
+    // `outer` is strict in `f`, which a caller passes unevaluated, so the
+    // first round of worker/wrapper unboxes it. The argument of `go` reads
+    // `f`: only with `f` unboxed it is safe to evaluate early, and `go`,
+    // which is not strict in `z`, can be unboxed by a later round
+    // (FEAT-0078).
+    let src = "(data D () (D# (! Double#)))
+         (extern arg () Int#)
+         (def go (-> Int# D Int#)
+           (lam ((n Int#) (z D))
+             (case n (k Int#) Int#
+               (0 0)
+               (_ (case z (s D) Int#
+                    ((D# v) (go (prim sub n 1)
+                              (let! (y Double# (prim fmul v v)) (con D# () y)))))))))
+         (def outer (-> D Int# Double#)
+           (lam ((f D) (n Int#))
+             (case n (k Int#) Double#
+               (0 (case f (s D) Double# ((D# g) g)))
+               (_ (case (go n (case f (s D) D
+                                ((D# h) (let! (y Double# (prim fadd h h)) (con D# () y)))))
+                        (r Int#) Double#
+                    (_ (let ((t D (case f (s D) D
+                                    ((D# g) (let! (y Double# (prim fmul g g)) (con D# () y))))))
+                         (case t (u D) Double#
+                           ((D# w) (case (outer t (prim sub n 1)) (b Double#) Double#
+                                     (_ (prim fadd w b)))))))))))) 
+         (def main Int#
+           (let! (x Int# (extern arg))
+             (let ((bad D (case x (k Int#) D (0 (panic \"zero\" D)) (_ (con D# () 1.0)))))
+               (case (outer bad x) (r Double#) Int# (_ x)))))";
+    let mut p = parse_program(FileId(0), src).unwrap();
+    opt::optimize(&mut p).unwrap();
+    assert!(lint::lint_program(&p).is_empty(), "{}", print_program(&p));
+    let all = print_program(&p);
+    let go = p
+        .bind("go$w")
+        .unwrap_or_else(|| panic!("no worker of go:\n{all}"));
+    assert_eq!(go.ty.to_string(), "(-> Int# (-> Double# Int#))", "{all}");
+}
+
 // ---- FEAT-0071: loop breakers of mutually recursive functions ----
 
 /// `src` after the optimizer, which must keep it well typed.
