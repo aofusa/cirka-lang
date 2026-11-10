@@ -474,5 +474,5 @@ Core の簡約 (`let!` の右辺の単一選択肢の `case` を外に出す)、
 | spectral-norm (1000) | `main.cirka` | 0.178 s | 0.177 s | 0.176 s | 1.01 倍 |
 | n-body (5,000,000) | `main.cirka` | — | 4.260 s | 0.389 s | 10.95 倍 |
 
-- `main.cirka` の mandelbrot と spectral-norm は実行ファイルが同じなので、差は計測の揺らぎ (ランごとに 0.1 倍ほど動く)。
+- `main.cirka` の mandelbrot と spectral-norm は命令数が変わっていない (33.5 M、20.0 M) ので、差は計測の揺らぎやコード配置の影響。
 - n-body `own.chs` は命令数で Rust と並んだが、時間は 1.38 倍のまま。Rust は `sqrt` と除算を 2 レーンのパック命令 (`sqrtpd`/`divpd`、1 ステップに 5 回ずつ) で実行し、aCHC はスカラ命令 (`sqrtsd`/`divsd`、10 回ずつ) で実行している。
