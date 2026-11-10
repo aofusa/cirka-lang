@@ -28,6 +28,6 @@ tests where
 
   test "a non-zero exit fails the test" = do
     putStrLn "exiting"
-    (exit 3 : IO ()) -- annotated: BUG-0013
+    exit 3
 
   test "output of a passing test is hidden" = putStrLn "hidden"

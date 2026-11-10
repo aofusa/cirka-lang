@@ -306,7 +306,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [BUG-0010](bugs/BUG-0010-test-header-after-pragma.md) | テストのヘッダが `{-# LANGUAGE #-}` の後にあると読まれない | done | major | FEAT-0125 |
 | [BUG-0011](bugs/BUG-0011-borrow-monad-overhead.md) | Borrow モナドのループが線形な受け渡しより約 130 倍遅い | done | major | FEAT-0043 |
 | [BUG-0012](bugs/BUG-0012-dead-join-undefined-param.md) | どこからも飛ばれない合流ブロックの引数が LLVM IR で未定義になる | done | major | BUG-0011 |
-| [BUG-0013](bugs/BUG-0013-cl-do-last-poly-io.md) | CirkaLang の do の最後の文に exit などの多相な IO を書くと型エラーになる | todo | minor | FEAT-0203 |
+| [BUG-0013](bugs/BUG-0013-cl-do-last-poly-io.md) | CirkaLang の do の最後の文に exit などの多相な IO を書くと型エラーになる | done | minor | FEAT-0203 |
 | [BUG-0014](bugs/BUG-0014-lazy-con-strict-fields.md) | 遅延束縛の構築子の正格フィールドが束縛の時点で評価される | done | major | BUG-0008 |
 
 新しいチケットは `features/_TEMPLATE.md` / `bugs/_TEMPLATE.md` をコピーして作成する。

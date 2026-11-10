@@ -1,0 +1,5 @@
+-- BUG-0013: the last statement of `do` may be polymorphic in its result.
+main : IO ()
+main = do
+  putStrLn "x"
+  exit 3

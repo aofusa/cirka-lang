@@ -488,6 +488,18 @@ impl<'a> Ev<'a> {
             (Neutral(Head::Meta(m1), s1), Neutral(Head::Meta(m2), s2)) if m1 == m2 => {
                 self.unify_spines(lvl, s1, s2)
             }
+            // Two different metas: the one that sees more variables takes
+            // the other as its solution (`?b =? ?c x` under a binder `x`
+            // that `?b` cannot mention).
+            (Neutral(Head::Meta(m1), s1), Neutral(Head::Meta(m2), s2)) => {
+                let (first, sf, rhs_f, second, ss, rhs_s) = if s1.len() >= s2.len() {
+                    (*m1, s1, b, *m2, s2, a)
+                } else {
+                    (*m2, s2, a, *m1, s1, b)
+                };
+                self.solve(lvl, first, sf, rhs_f)
+                    .or_else(|_| self.solve(lvl, second, ss, rhs_s))
+            }
             (Neutral(Head::Meta(m), sp), t) | (t, Neutral(Head::Meta(m), sp)) => {
                 self.solve(lvl, *m, sp, t)
             }
