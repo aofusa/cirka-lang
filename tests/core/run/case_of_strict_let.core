@@ -1,0 +1,40 @@
+; A comparison bound by a strict let and then scrutinized (FEAT-0074): the
+; branch runs without the Bool, and a Bool used by a branch stays bound.
+(extern cirka_write_i64 (Int#) Unit#)
+(extern cirka_write_char (Int#) Unit#)
+(data Bool () (False) (True))
+
+(def pick (-> Bool Int# Int#)
+  (lam ((b Bool) (n Int#))
+    (case n (m Int#) Int#
+      (0 (case b (c Bool) Int# ((False) 1) ((True) 2)))
+      (_ (pick b (prim sub n 1))))))
+
+(def plain (-> Int# Int#)
+  (lam ((k Int#))
+    (let! (s Bool (case (prim lt k 3) (c Int#) Bool
+                    (0 (con False ()))
+                    (_ (con True ()))))
+      (case s (t Bool) Int#
+        ((False) 10)
+        ((True) 20)))))
+
+(def kept (-> Int# Int#)
+  (lam ((k Int#))
+    (let! (s Bool (case (prim lt k 3) (c Int#) Bool
+                    (0 (con False ()))
+                    (_ (con True ()))))
+      (case s (t Bool) Int#
+        ((False) (pick s k))
+        ((True) (pick s 2))))))
+
+(def main Int#
+  (let! (a Unit# (extern cirka_write_i64 (plain 1)))
+  (let! (b Unit# (extern cirka_write_char 10))
+  (let! (c Unit# (extern cirka_write_i64 (plain 5)))
+  (let! (d Unit# (extern cirka_write_char 10))
+  (let! (e Unit# (extern cirka_write_i64 (kept 1)))
+  (let! (f Unit# (extern cirka_write_char 10))
+  (let! (g Unit# (extern cirka_write_i64 (kept 5)))
+  (let! (h Unit# (extern cirka_write_char 10))
+    0)))))))))
