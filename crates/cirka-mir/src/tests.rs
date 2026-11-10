@@ -1800,11 +1800,15 @@ fn unique_entry_goes_to_the_specialized_loop() {
     assert!(slow.contains("cold fn fill$slow("), "{slow}");
     assert!(slow.contains("prim bytes_unique(a)"), "{slow}");
     assert!(!m.func("fill").unwrap().cold);
-    // After the check the cold path goes on in copies of its own.
+    // After the check the cold path goes on in copies of its own, optimized
+    // like any other function: a loop that starts with a shared array spends
+    // its time there.
     assert!(slow.contains("tailcall fill$slow$u(c, j, n)"), "{slow}");
     for copy in ["fill$slow$u", "fill$slow$u$b"] {
-        assert!(m.func(copy).unwrap().cold, "{copy}");
+        assert!(!m.func(copy).unwrap().cold, "{copy}");
     }
+    // Every iteration of the old body checks: no test is repeated.
+    assert!(m.func("fill$again").is_none());
     assert!(!m.func("fill$u").unwrap().cold);
     assert!(!m.func("fill$u$b").unwrap().cold);
     assert!(
@@ -2091,7 +2095,7 @@ entry:
     assert!(b.contains("tailcall mark$b(a, j, n)"), "{b}");
     assert!(b.contains("tailcall mark$slow$u(c, j, n)"), "{b}");
     let copy = func_text(&m, "mark$slow$u$b");
-    assert!(copy.contains("cold fn mark$slow$u$b("), "{copy}");
+    assert!(!m.func("mark$slow$u$b").unwrap().cold);
     assert!(copy.contains("tailcall mark$slow$u$b(a, j, n)"), "{copy}");
     assert!(
         hot_callers(&m, "mark").is_empty(),
@@ -2317,6 +2321,765 @@ fn value_loop_with(src: &str, array: &str) -> String {
     src.replace("ARRAY", array)
         .replace("  BEFORE\n", "")
         .replace("  AFTER\n", "")
+}
+
+// ---- FEAT-0076: facts that cross calls of functions returning their array ----
+
+/// What `kept_results` finds for `f` in the module `src`.
+fn kept(src: &str, f: &str) -> Vec<Option<usize>> {
+    crate::uniq::kept_results(&parse(FileId(0), src).unwrap())[f].clone()
+}
+
+/// What is kept by `f(a, b, i) -> ptr` with the given body.
+fn kept_by(body: &str) -> Vec<Option<usize>> {
+    kept(
+        &format!(
+            "type Box {{ B = 0 {{ v: ptr }} }}\n\
+             fn f(a: ptr @owned, b: ptr @owned, i: i64) -> ptr {{\nentry:\n{body}\n}}\n"
+        ),
+        "f",
+    )
+}
+
+#[test]
+fn kept_results_are_parameters_used_only_in_place() {
+    for (body, want) in [
+        ("  drop b\n  ret a", Some(0)),
+        ("  drop a\n  ret b", Some(1)),
+        (
+            "  drop b\n  let e = force a\n  let c = prim bytes_unique(e)\n  \
+             let w = prim bytes_set_i64(c, i, 1)\n  let x = prim bytes_get_i64(c, i)\n  ret c",
+            Some(0),
+        ),
+        // A copy of it, stored somewhere, or another array is returned.
+        ("  drop b\n  dup a\n  drop a\n  ret a", None),
+        (
+            "  drop a\n  drop b\n  let c = prim bytes_new(8)\n  ret c",
+            None,
+        ),
+        ("  drop b\n  let c = alloc Box.B(a)\n  ret c", None),
+        (
+            "  drop b\n  let c = prim array_unique(a)\n  let w = prim array_set(c, i, c)\n  ret c",
+            None,
+        ),
+    ] {
+        assert_eq!(kept_by(body), [want], "{body}");
+    }
+    // Only owned pointers.
+    let borrowed = "fn f(a: ptr @borrowed) -> ptr {\nentry:\n  ret a\n}\n";
+    assert_eq!(kept(borrowed, "f"), [None]);
+    let number = "fn f(a: ptr @owned) -> i64 {\nentry:\n  drop a\n  ret 1\n}\n";
+    assert_eq!(kept(number, "f"), [None]);
+}
+
+#[test]
+fn kept_results_hold_on_every_path() {
+    let paths = |x: &str, y: &str| {
+        kept_by(&format!(
+            "  let d = prim eq(i, 0)\n  switch d {{ 0 => x, default => y }}\nx:\n{x}\ny:\n{y}"
+        ))
+    };
+    let a = "  drop b\n  ret a";
+    assert_eq!(paths(a, "  drop a\n  ret b"), [None]);
+    assert_eq!(paths(a, "  drop b\n  panic \"no\""), [Some(0)]);
+    assert_eq!(
+        paths(a, "  drop b\n  let c = prim bytes_unique(a)\n  ret c"),
+        [Some(0)]
+    );
+    // Passed through a block parameter it is lost.
+    assert_eq!(
+        kept_by("  drop b\n  jump x(a)\nx(p: ptr):\n  ret p"),
+        [None]
+    );
+}
+
+#[test]
+fn kept_results_of_several_results_name_each_parameter() {
+    let f = "fn f(a: ptr @owned, b: ptr @owned, i: i64) -> (i64, ptr, ptr) {\nentry:\n  \
+             ret (i, b, a)\n}\n";
+    assert_eq!(kept(f, "f"), [None, Some(1), Some(0)]);
+}
+
+/// A recursive `f` that returns `a` on the way out.
+fn recursive(step: &str) -> String {
+    format!(
+        "fn f(a: ptr @owned, b: ptr @owned, i: i64) -> ptr {{\nentry:\n  \
+         let d = prim eq(i, 0)\n  switch d {{ 0 => more, default => done }}\n\
+         done:\n  drop b\n  ret a\nmore:\n  let j = prim sub(i, 1)\n{step}\n}}\n"
+    )
+}
+
+#[test]
+fn kept_results_follow_recursion() {
+    // A loop, and a call that is not in tail position as in quicksort.
+    assert_eq!(kept(&recursive("  tailcall f(a, b, j)"), "f"), [Some(0)]);
+    let dupped = "  dup b\n  let l = call f(a, b, j)\n  let c = prim bytes_unique(l)\n  \
+                  let w = prim bytes_set_i64(c, 0, 1)\n  tailcall f(c, b, j)";
+    assert_eq!(kept(&recursive(dupped), "f"), [Some(0)]);
+    // The next iteration gets the other array, or a call returns it.
+    assert_eq!(kept(&recursive("  tailcall f(b, a, j)"), "f"), [None]);
+    assert_eq!(
+        kept(&recursive("  let l = call f(b, a, j)\n  ret l"), "f"),
+        [None]
+    );
+}
+
+#[test]
+fn kept_results_follow_other_functions() {
+    let src = r#"
+fn f(a: ptr @owned) -> ptr {
+entry:
+  let r = call g(a)
+  ret r
+}
+
+fn g(a: ptr @owned) -> ptr {
+entry:
+  tailcall id(a)
+}
+
+fn id(a: ptr @owned) -> ptr {
+entry:
+  ret a
+}
+
+fn pair(a: ptr @owned) -> (i64, ptr) {
+entry:
+  ret (1, a)
+}
+
+fn second(a: ptr @owned) -> ptr {
+entry:
+  let (x, r) = call pair(a)
+  ret r
+}
+
+fn lost(a: ptr @owned) -> ptr {
+entry:
+  drop a
+  let n = prim bytes_new(8)
+  ret n
+}
+
+fn h(a: ptr @owned) -> ptr {
+entry:
+  let r = call lost(a)
+  ret r
+}
+
+fn k(a: ptr @owned) -> ptr {
+entry:
+  tailcall lost(a)
+}
+
+fn p(a: ptr @owned, i: i64) -> ptr {
+entry:
+  let d = prim eq(i, 0)
+  switch d { 0 => more, default => done }
+done:
+  ret a
+more:
+  let j = prim sub(i, 1)
+  tailcall q(a, j)
+}
+
+fn q(a: ptr @owned, i: i64) -> ptr {
+entry:
+  tailcall p(a, i)
+}
+"#;
+    assert_eq!(kept(src, "f"), [Some(0)]);
+    assert_eq!(kept(src, "g"), [Some(0)]);
+    assert_eq!(kept(src, "second"), [Some(0)]);
+    assert_eq!(kept(src, "h"), [None]);
+    assert_eq!(kept(src, "k"), [None]);
+    // Cycles of different functions are not proved.
+    assert_eq!(kept(src, "p"), [None]);
+    assert_eq!(kept(src, "q"), [None]);
+}
+
+#[test]
+fn kept_results_name_the_result_and_the_argument_of_the_call() {
+    let src = r#"
+fn swap(a: ptr @owned, b: ptr @owned) -> (ptr, ptr) {
+entry:
+  ret (b, a)
+}
+
+fn f(a: ptr @owned, b: ptr @owned) -> (ptr, ptr) {
+entry:
+  tailcall swap(a, b)
+}
+
+fn g(a: ptr @owned, b: ptr @owned) -> ptr {
+entry:
+  let (x, y) = call swap(a, b)
+  drop y
+  ret x
+}
+
+fn pick(y: ptr @owned, x: ptr @borrowed) -> ptr {
+entry:
+  ret y
+}
+
+fn twice(a: ptr @owned) -> ptr {
+entry:
+  let r = call pick(a, a)
+  ret r
+}
+"#;
+    assert_eq!(kept(src, "f"), [Some(1), Some(0)]);
+    // `a` is dropped as `y` here: the result is `b`.
+    assert_eq!(kept(src, "g"), [Some(1)]);
+    // The callee may also see the array through the other argument.
+    assert_eq!(kept(src, "twice"), [None]);
+}
+
+/// The functions that call `g` directly (not in tail position).
+fn direct_callers(m: &Module, g: &str) -> Vec<String> {
+    let calls = |ins: &Instr| match ins {
+        Instr::Let {
+            rhs: Rhs::Call { func, .. },
+            ..
+        }
+        | Instr::LetMulti { func, .. } => func == g,
+        _ => false,
+    };
+    m.funcs
+        .iter()
+        .filter(|f| f.blocks.iter().any(|b| b.instrs.iter().any(calls)))
+        .map(|f| f.name.clone())
+        .collect()
+}
+
+/// A loop over a loop, as in fannkuch-redux: `flips` passes its array
+/// through `rev`, a specialized function declared later.
+const THROUGH_LOOP: &str = r#"
+extern fn cirka_write_i64(i64) -> void
+
+fn mk() -> ptr {
+entry:
+  let a = prim bytes_new(32)
+  let w = prim bytes_set_i64(a, 0, 2)
+  let v = prim bytes_set_i64(a, 1, 1)
+  let u = prim bytes_set_i64(a, 2, 3)
+  ret a
+}
+
+fn flips(p: ptr @owned, f: i64) -> (ptr, i64) {
+entry:
+  let ev = force p
+  let k = prim bytes_get_i64(ev, 0)
+  switch k { 0 => done, default => more }
+done:
+  ret (ev, f)
+more:
+  let r = call rev(ev, 0, k)
+  let g = prim add(f, 1)
+  tailcall flips(r, g)
+}
+
+fn rev(a: ptr @owned, lo: i64, hi: i64) -> ptr {
+entry:
+  let d = prim ge(lo, hi)
+  switch d { 0 => body, default => done }
+done:
+  ret a
+body:
+  let c = prim bytes_unique(a)
+  let x = prim bytes_get_i64(c, lo)
+  let y = prim bytes_get_i64(c, hi)
+  let w = prim bytes_set_i64(c, lo, y)
+  let v = prim bytes_set_i64(c, hi, x)
+  let l = prim add(lo, 1)
+  let h = prim sub(hi, 1)
+  tailcall rev(c, l, h)
+}
+
+fn main() -> i64 {
+entry:
+  let t = ARRAY
+  BEFORE
+  let (r, n) = call flips(t, 0)
+  AFTER
+  let x = prim bytes_get_i64(r, 1)
+  drop r
+  let _ = extern cirka_write_i64(n)
+  let _ = extern cirka_write_i64(x)
+  ret 0
+}
+"#;
+
+fn through_loop(array: &str, before: &str, after: &str) -> String {
+    THROUGH_LOOP
+        .replace("ARRAY", array)
+        .replace("  BEFORE\n", before)
+        .replace("  AFTER\n", after)
+}
+
+#[test]
+fn loops_are_specialized_through_loops_they_call() {
+    let m = entered(&through_loop("call mk()", "", ""), 2);
+    let u = func_text(&m, "flips$u");
+    assert!(u.contains("call rev$u(p, 0, k)"), "{u}");
+    assert!(u.contains("tailcall flips$u(r, g)"), "{u}");
+    assert!(!u.contains("force"), "{u}");
+    // The test at the entry of the outer loop replaces those of the inner.
+    let f = func_text(&m, "flips");
+    assert!(f.contains("prim is_value(p)"), "{f}");
+    assert!(f.contains("prim is_unique(p)"), "{f}");
+    // The cold code stays away from the hot functions.
+    assert_eq!(direct_callers(&m, "rev$u"), ["flips$u"]);
+    assert_eq!(direct_callers(&m, "rev$slow"), ["flips$slow"]);
+    assert_eq!(direct_callers(&m, "rev$slow$u"), ["flips$slow$u"]);
+    assert_eq!(hot_callers(&m, "flips"), Vec::<String>::new());
+    assert_eq!(hot_callers(&m, "rev"), Vec::<String>::new());
+    // Nothing checks the array in `flips`: after an iteration in the old
+    // body the test of the entry is repeated, into the copies of the cold
+    // path.
+    let slow = func_text(&m, "flips$slow");
+    assert!(slow.contains("tailcall flips$again(r, g)"), "{slow}");
+    assert!(m.func("flips$again").unwrap().cold);
+    let again = func_text(&m, "flips$again");
+    assert!(again.contains("prim is_value(p)"), "{again}");
+    assert!(again.contains("prim is_unique(p)"), "{again}");
+    assert!(again.contains("tailcall flips$slow$u(p, f)"), "{again}");
+    assert!(again.contains("tailcall flips$slow(p, f)"), "{again}");
+    let evaluated = "  dup t\n  let v = force t\n  drop v\n";
+    let read = "  let y = force t\n  let z = prim bytes_get_i64(y, 0)\n  drop y\n  \
+                let _ = extern cirka_write_i64(z)\n";
+    for (array, before, after, out) in [
+        ("call mk()", "", "", "22"),
+        ("mkthunk mk()", "", "", "22"),
+        ("mkthunk mk()", evaluated, "", "22"),
+        // The other owner must not see the writes.
+        ("call mk()", "  dup t\n", read, "222"),
+        ("mkthunk mk()", "  dup t\n", read, "222"),
+    ] {
+        let m = entered(&through_loop(array, before, after), 2);
+        let r = crate::interp::run(&m, b"", 1_000_000).unwrap();
+        assert_eq!(r.stdout, out, "{array} {before}");
+        assert_eq!(r.leaked, 0, "{array} {before}");
+    }
+}
+
+#[test]
+fn the_repeated_test_goes_to_the_copy_or_the_old_body() {
+    // Before the entries are split, it joins the specialized loop.
+    let src = through_loop("mkthunk mk()", "", "");
+    let mut m = parse(FileId(0), &src).unwrap();
+    assert_eq!(crate::uniq::specialize_loops(&mut m).len(), 2);
+    let errs = crate::verify::verify_module(&m);
+    assert!(errs.is_empty(), "{}", crate::verify::render_errors(&errs));
+    let again = func_text(&m, "flips$again");
+    assert!(again.contains("tailcall flips$u(p, f)"), "{again}");
+    assert!(again.contains("tailcall flips(p, f)"), "{again}");
+    assert!(func_text(&m, "flips").contains("tailcall flips$again(r, g)"));
+    let r = crate::interp::run(&m, b"", 1_000_000).unwrap();
+    assert_eq!((r.stdout.as_str(), r.leaked), ("22", 0));
+}
+
+/// A loop whose iterations pass the array through other functions. `BODY`
+/// is the iteration, and `NEXT` the array it passes on.
+const THROUGH_CALL: &str = r#"
+extern fn cirka_write_i64(i64) -> void
+
+fn mk() -> ptr {
+entry:
+  let a = prim bytes_new(16)
+  let w = prim bytes_set_i64(a, 1, 5)
+  ret a
+}
+
+fn id(a: ptr @owned) -> ptr {
+entry:
+  ret a
+}
+
+fn ev(a: ptr @owned) -> ptr {
+entry:
+  let e = force a
+  ret e
+}
+
+fn pair(a: ptr @owned) -> (i64, ptr) {
+entry:
+  ret (9, a)
+}
+
+fn other(a: ptr @owned) -> ptr {
+entry:
+  drop a
+  let n = prim bytes_new(16)
+  ret n
+}
+
+fn hold(s: ptr @owned) -> ptr {
+entry:
+  ret s
+}
+
+fn fill(a: ptr @owned, i: i64, n: i64) -> ptr {
+entry:
+  let d = prim ge(i, n)
+  switch d { 0 => body, default => done }
+done:
+  ret a
+body:
+  BODY
+  let j = prim add(i, 1)
+  tailcall fill(NEXT, j, n)
+}
+
+fn main() -> i64 {
+entry:
+  ENTRY
+  let r = call fill(t, 0, 2)
+  AFTER
+  let x = prim bytes_get_i64(r, 1)
+  drop r
+  let _ = extern cirka_write_i64(x)
+  ret 0
+}
+"#;
+
+fn through_call(body: &str, next: &str, entry: &str, after: &str) -> String {
+    THROUGH_CALL
+        .replace("  BODY\n", body)
+        .replace("NEXT", next)
+        .replace("  ENTRY\n", entry)
+        .replace("  AFTER\n", after)
+}
+
+const FRESH: &str = "  let t = call mk()\n";
+const LAZY: &str = "  let t = mkthunk mk()\n";
+
+#[test]
+fn checked_arrays_stay_checked_across_calls_that_keep_them() {
+    let body = "  let e = force a\n  let c = prim bytes_unique(e)\n  \
+                let w = prim bytes_set_i64(c, i, 9)\n  let r = call id(c)\n";
+    for entry in [FRESH, LAZY] {
+        let m = entered(&through_call(body, "r", entry, ""), 1);
+        let slow = func_text(&m, "fill$slow");
+        assert!(slow.contains("tailcall fill$slow$u(r, j, n)"), "{slow}");
+        let u = func_text(&m, "fill$u");
+        assert!(!u.contains("bytes_unique"), "{u}");
+        assert!(u.contains("tailcall fill$u(r, j, n)"), "{u}");
+        let r = crate::interp::run(&m, b"", 1_000_000).unwrap();
+        assert_eq!((r.stdout.as_str(), r.leaked), ("9", 0));
+    }
+}
+
+#[test]
+fn arrays_returned_by_calls_need_no_checks() {
+    // Also for several results and for chains of removed values.
+    for (body, write) in [
+        (
+            "  let e = force a\n  let r = call id(e)\n  let c = prim bytes_unique(r)\n  \
+             let w = prim bytes_set_i64(c, i, 9)\n",
+            "bytes_set_i64(r, i, 9)",
+        ),
+        (
+            "  let e = force a\n  let (q, r) = call pair(e)\n  let c = prim bytes_unique(r)\n  \
+             let w = prim bytes_set_i64(c, i, q)\n",
+            "bytes_set_i64(r, i, q)",
+        ),
+        (
+            "  let r = call id(a)\n  let e = force r\n  let c = prim bytes_unique(e)\n  \
+             let w = prim bytes_set_i64(c, i, 9)\n",
+            "bytes_set_i64(r, i, 9)",
+        ),
+    ] {
+        for entry in [FRESH, LAZY] {
+            let m = entered(&through_call(body, "c", entry, ""), 1);
+            let u = func_text(&m, "fill$u");
+            assert!(!u.contains("bytes_unique"), "{u}");
+            assert!(!u.contains("force"), "{u}");
+            assert!(u.contains(write), "{u}");
+            assert!(u.contains("tailcall fill$u(r, j, n)"), "{u}");
+            let f = func_text(&m, "fill");
+            assert!(f.contains("prim is_value(a)"), "{f}");
+            assert!(f.contains("prim is_unique(a)"), "{f}");
+            let r = crate::interp::run(&m, b"", 1_000_000).unwrap();
+            assert_eq!((r.stdout.as_str(), r.leaked), ("9", 0), "{body}");
+        }
+    }
+}
+
+#[test]
+fn a_kept_result_says_nothing_about_a_thunk() {
+    // The thunk is unique, what it evaluates to is not: `ev` returns the
+    // array the other owner holds. The entry must not take the thunk for
+    // the array.
+    let body = "  let r = call ev(a)\n  let c = prim bytes_unique(r)\n  \
+                let w = prim bytes_set_i64(c, i, 9)\n";
+    let entry = "  let s = prim bytes_new(16)\n  dup s\n  let t = mkthunk hold(s)\n";
+    let after = "  let y = prim bytes_get_i64(s, 0)\n  drop s\n  \
+                 let _ = extern cirka_write_i64(y)\n";
+    let m = entered(&through_call(body, "c", entry, after), 1);
+    let f = func_text(&m, "fill");
+    assert!(f.contains("prim is_value(a)"), "{f}");
+    let r = crate::interp::run(&m, b"", 1_000_000).unwrap();
+    assert_eq!((r.stdout.as_str(), r.leaked), ("09", 0));
+}
+
+#[test]
+fn arrays_are_lost_in_calls_that_do_not_keep_them() {
+    let body = "  let r = call other(a)\n  let c = prim bytes_unique(r)\n  \
+                let w = prim bytes_set_i64(c, i, 9)\n";
+    let m = entered(&through_call(body, "c", FRESH, ""), 0);
+    assert!(m.func("fill$u").is_none());
+}
+
+/// `g` needs `a` to be a value and unique, and `use_it` shows why.
+const CONSUMING_LOOP: &str = r#"
+extern fn cirka_write_i64(i64) -> void
+
+fn mk() -> ptr {
+entry:
+  let a = prim bytes_new(16)
+  let w = prim bytes_set_i64(a, 1, 5)
+  ret a
+}
+
+fn g(a: ptr @owned, i: i64, acc: i64) -> i64 {
+entry:
+  let d = prim ge(i, 2)
+  switch d { 0 => body, default => done }
+done:
+  drop a
+  ret acc
+body:
+  let ev = force a
+  let c = prim bytes_unique(ev)
+  let x = prim bytes_get_i64(c, i)
+  let w = prim bytes_set_i64(c, i, 1)
+  let acc1 = prim add(acc, x)
+  let j = prim add(i, 1)
+  tailcall g(c, j, acc1)
+}
+
+fn use_it(a: ptr @owned, i: i64, n: i64) -> i64 {
+entry:
+  let d = prim ge(i, n)
+  switch d { 0 => more, default => done }
+done:
+  let x = call g(a, 0, 0)
+  ret x
+more:
+  let j = prim add(i, 1)
+  tailcall use_it(a, j, n)
+}
+
+fn main() -> i64 {
+entry:
+  let t = ARRAY
+  let r = call use_it(t, 0, 2)
+  let _ = extern cirka_write_i64(r)
+  ret 0
+}
+"#;
+
+#[test]
+fn callers_test_what_the_copies_they_call_assume() {
+    let m = entered(&CONSUMING_LOOP.replace("ARRAY", "mkthunk mk()"), 2);
+    let f = func_text(&m, "use_it");
+    assert!(f.contains("prim is_value(a)"), "{f}");
+    assert!(f.contains("prim is_unique(a)"), "{f}");
+    assert!(func_text(&m, "use_it$u").contains("call g$u(a, 0, 0)"));
+    assert_eq!(crate::interp::run(&m, b"", 1_000_000).unwrap().stdout, "5");
+    let m = entered(&CONSUMING_LOOP.replace("ARRAY", "call mk()"), 2);
+    assert_eq!(crate::interp::run(&m, b"", 1_000_000).unwrap().stdout, "5");
+}
+
+#[test]
+fn copies_are_called_only_when_their_assumptions_hold() {
+    // `f` assumes only that its array is a value, `g$u` a unique one.
+    let src = r#"
+extern fn cirka_write_i64(i64) -> void
+
+fn g(a: ptr @owned, i: i64) -> ptr {
+entry:
+  let d = prim ge(i, 2)
+  switch d { 0 => body, default => done }
+done:
+  ret a
+body:
+  let c = prim bytes_unique(a)
+  let w = prim bytes_set_i64(c, i, 1)
+  let j = prim add(i, 1)
+  tailcall g(c, j)
+}
+
+fn f(a: ptr @owned, i: i64, n: i64, acc: i64) -> i64 {
+entry:
+  let d = prim ge(i, n)
+  switch d { 0 => body, default => done }
+done:
+  drop a
+  ret acc
+body:
+  let ev = force a
+  dup ev
+  let r = call g(ev, 0)
+  let x = prim bytes_get_i64(r, 0)
+  drop r
+  let acc1 = prim add(acc, x)
+  let j = prim add(i, 1)
+  tailcall f(ev, j, n, acc1)
+}
+
+fn main() -> i64 {
+entry:
+  let t = prim bytes_new(16)
+  let r = call f(t, 0, 2, 0)
+  let _ = extern cirka_write_i64(r)
+  ret 0
+}
+"#;
+    let m = entered(src, 2);
+    let u = func_text(&m, "f$u");
+    assert!(
+        u.contains("call g(ev, 0)") || u.contains("call g(a, 0)"),
+        "{u}"
+    );
+    assert_eq!(direct_callers(&m, "g$u"), Vec::<String>::new());
+    assert_eq!(crate::interp::run(&m, b"", 1_000_000).unwrap().stdout, "2");
+}
+
+/// `g$u` assumes both of its arrays; `f` can vouch only for the first.
+#[test]
+fn assumptions_that_remove_nothing_are_dropped() {
+    let src = r#"
+extern fn cirka_write_i64(i64) -> void
+
+fn g(a: ptr @owned, b: ptr @owned, i: i64) -> ptr {
+entry:
+  let d = prim ge(i, 2)
+  switch d { 0 => body, default => done }
+done:
+  drop b
+  ret a
+body:
+  let c = prim bytes_unique(a)
+  let e = prim bytes_unique(b)
+  let w = prim bytes_set_i64(c, i, 1)
+  let v = prim bytes_set_i64(e, i, 2)
+  let j = prim add(i, 1)
+  tailcall g(c, e, j)
+}
+
+fn f(x: ptr @owned, y: ptr @owned, i: i64, n: i64) -> ptr {
+entry:
+  let d = prim ge(i, n)
+  switch d { 0 => body, default => done }
+done:
+  drop y
+  ret x
+body:
+  dup y
+  let r = call g(x, y, 0)
+  let j = prim add(i, 1)
+  tailcall f(r, y, j, n)
+}
+
+fn main() -> i64 {
+entry:
+  let x = prim bytes_new(16)
+  let y = prim bytes_new(16)
+  let r = call f(x, y, 0, 2)
+  let v = prim bytes_get_i64(r, 1)
+  drop r
+  let _ = extern cirka_write_i64(v)
+  ret 0
+}
+"#;
+    let m = entered(src, 1);
+    assert!(m.func("f$u").is_none());
+}
+
+#[test]
+fn recursive_calls_of_the_copy_go_to_the_copy() {
+    // As in quicksort: one recursive call in tail position, one not.
+    let src = r#"
+extern fn cirka_write_i64(i64) -> void
+
+fn sort(a: ptr @owned, i: i64) -> ptr {
+entry:
+  let d = prim eq(i, 0)
+  switch d { 0 => body, default => done }
+done:
+  ret a
+body:
+  let c = prim bytes_unique(a)
+  let w = prim bytes_set_i64(c, 0, i)
+  let j = prim sub(i, 1)
+  let l = call sort(c, j)
+  tailcall sort(l, j)
+}
+
+fn main() -> i64 {
+entry:
+  let t = prim bytes_new(16)
+  let r = call sort(t, 3)
+  let x = prim bytes_get_i64(r, 0)
+  drop r
+  let _ = extern cirka_write_i64(x)
+  ret 0
+}
+"#;
+    let m = entered(src, 1);
+    let u = func_text(&m, "sort$u");
+    assert!(u.contains("call sort$u(a, j)"), "{u}");
+    assert!(u.contains("tailcall sort$u(l, j)"), "{u}");
+    assert!(!u.contains("bytes_unique"), "{u}");
+    assert_eq!(direct_callers(&m, "sort$u"), ["sort$u"]);
+    // The old body stays on the cold path.
+    let slow = func_text(&m, "sort$slow");
+    assert!(slow.contains("call sort$slow(c, j)"), "{slow}");
+    assert_eq!(direct_callers(&m, "sort$slow$u"), ["sort$slow$u"]);
+    assert_eq!(crate::interp::run(&m, b"", 1_000_000).unwrap().stdout, "1");
+}
+
+#[test]
+fn recursive_calls_with_other_arrays_stay_at_the_entry() {
+    // The recursive call gets a shared array: it needs the check.
+    let src = r#"
+extern fn cirka_write_i64(i64) -> void
+
+fn sort(a: ptr @owned, i: i64) -> ptr {
+entry:
+  let d = prim eq(i, 0)
+  switch d { 0 => body, default => done }
+done:
+  ret a
+body:
+  let c = prim bytes_unique(a)
+  let w = prim bytes_set_i64(c, 0, i)
+  let j = prim sub(i, 1)
+  let n = prim bytes_new(16)
+  dup n
+  let l = call sort(n, j)
+  drop l
+  let x = prim bytes_get_i64(n, 0)
+  drop n
+  let _ = extern cirka_write_i64(x)
+  tailcall sort(c, j)
+}
+
+fn main() -> i64 {
+entry:
+  let t = prim bytes_new(16)
+  let r = call sort(t, 3)
+  drop r
+  ret 0
+}
+"#;
+    let m = entered(src, 1);
+    let u = func_text(&m, "sort$u");
+    assert!(u.contains("call sort(n, j)"), "{u}");
+    assert_eq!(crate::interp::run(&m, b"", 1_000_000).unwrap().leaked, 0);
 }
 
 #[test]

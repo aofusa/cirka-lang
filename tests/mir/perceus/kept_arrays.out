@@ -1,0 +1,239 @@
+extern fn cirka_write_i64(i64) -> void
+extern fn cirka_write_char(i64) -> void
+
+fn mk() -> ptr {
+entry:
+  let a = prim bytes_new(32)
+  let c = prim bytes_unique(a)
+  let w = prim bytes_set_i64(c, 0, 2)
+  let v = prim bytes_set_i64(c, 1, 1)
+  let u = prim bytes_set_i64(c, 2, 3)
+  ret c
+}
+
+fn flips(p: ptr @owned, f: i64) -> (ptr, i64) {
+entry:
+  let ent%5 = prim is_value(p)
+  let ent%6 = prim is_unique(p)
+  let ent%7 = prim and(ent%5, ent%6)
+  switch ent%7 { 0 => not_unique, default => unique }
+not_unique:
+  tailcall flips$slow(p, f)
+unique:
+  tailcall flips$u(p, f)
+}
+
+fn rev(a: ptr @owned, lo: i64, hi: i64) -> ptr {
+entry:
+  let ent%11 = prim is_unique(a)
+  switch ent%11 { 0 => not_unique, default => unique }
+not_unique:
+  tailcall rev$slow(a, lo, hi)
+unique:
+  tailcall rev$u(a, lo, hi)
+}
+
+fn show(a: ptr @borrowed, i: i64) -> i64 {
+entry:
+  let pre%5 = prim ge(i, 0)
+  let len%6 = prim bytes_len(a)
+  let len%7 = prim lshr(len%6, 3)
+  let pre%8 = prim ge(len%7, 4)
+  let pre%9 = prim and(pre%5, pre%8)
+  switch pre%9 { 0 => checked, default => unchecked }
+done:
+  ret 0
+body:
+  let x = prim bytes_get_i64(a, i)
+  let _ = extern cirka_write_i64(x)
+  let j = prim add(i, 1)
+  tailcall show(a, j)
+checked:
+  let d = prim ge(i, 4)
+  switch d { 0 => body, default => done }
+unchecked:
+  tailcall show$b(a, i)
+}
+
+fn main() -> i64 {
+entry:
+  let t = call mk()
+  let (r, n) = call flips(t, 0)
+  let _ = call show(r, 0)
+  drop r
+  let _ = extern cirka_write_char(32)
+  let _ = extern cirka_write_i64(n)
+  let _ = extern cirka_write_char(10)
+  let s = call mk()
+  dup s
+  let (q, m) = call flips(s, 0)
+  let _ = call show(q, 0)
+  drop q
+  let o = call show(s, 0)
+  drop s
+  let _ = extern cirka_write_char(32)
+  let _ = extern cirka_write_i64(m)
+  let _ = extern cirka_write_i64(o)
+  let _ = extern cirka_write_char(10)
+  ret 0
+}
+
+fn rev$u(a: ptr @owned, lo: i64, hi: i64) -> ptr {
+entry:
+  let pre%11 = prim ge(lo, 0)
+  let len%12 = prim bytes_len(a)
+  let len%13 = prim lshr(len%12, 3)
+  let pre%14 = prim lt(hi, len%13)
+  let pre%15 = prim and(pre%11, pre%14)
+  switch pre%15 { 0 => checked, default => unchecked }
+done:
+  ret a
+body:
+  let x = prim bytes_get_i64(a, lo)
+  let y = prim bytes_get_i64(a, hi)
+  let w = prim bytes_set_i64(a, lo, y)
+  let v = prim bytes_set_i64(a, hi, x)
+  let l = prim add(lo, 1)
+  let h = prim sub(hi, 1)
+  tailcall rev$u(a, l, h)
+checked:
+  let d = prim ge(lo, hi)
+  switch d { 0 => body, default => done }
+unchecked:
+  tailcall rev$u$b(a, lo, hi)
+}
+
+fn flips$u(p: ptr @owned, f: i64) -> (ptr, i64) {
+entry:
+  let k = prim bytes_get_i64(p, 0)
+  switch k { 0 => done, default => more }
+done:
+  ret (p, f)
+more:
+  let r = call rev$u(p, 0, k)
+  let g = prim add(f, 1)
+  tailcall flips$u(r, g)
+}
+
+cold fn flips$again(p: ptr @owned, f: i64) -> (ptr, i64) {
+entry:
+  let ent%5 = prim is_value(p)
+  let ent%6 = prim is_unique(p)
+  let ent%7 = prim and(ent%5, ent%6)
+  switch ent%7 { 0 => not_unique, default => unique }
+not_unique:
+  tailcall flips$slow(p, f)
+unique:
+  tailcall flips$slow$u(p, f)
+}
+
+fn show$b(a: ptr @borrowed, i: i64) -> i64 {
+entry:
+  let d = prim ge(i, 4)
+  switch d { 0 => body, default => done }
+done:
+  ret 0
+body:
+  let x = prim bytes_get_i64_unchecked(a, i)
+  let _ = extern cirka_write_i64(x)
+  let j = prim add(i, 1)
+  tailcall show$b(a, j)
+}
+
+fn rev$u$b(a: ptr @owned, lo: i64, hi: i64) -> ptr {
+entry:
+  let d = prim ge(lo, hi)
+  switch d { 0 => body, default => done }
+done:
+  ret a
+body:
+  let x = prim bytes_get_i64_unchecked(a, lo)
+  let y = prim bytes_get_i64_unchecked(a, hi)
+  let w = prim bytes_set_i64_unchecked(a, lo, y)
+  let v = prim bytes_set_i64_unchecked(a, hi, x)
+  let l = prim add(lo, 1)
+  let h = prim sub(hi, 1)
+  tailcall rev$u$b(a, l, h)
+}
+
+cold fn rev$slow(a: ptr @owned, lo: i64, hi: i64) -> ptr {
+entry:
+  let d = prim ge(lo, hi)
+  switch d { 0 => body, default => done }
+done:
+  ret a
+body:
+  let c = prim bytes_unique(a)
+  let x = prim bytes_get_i64(c, lo)
+  let y = prim bytes_get_i64(c, hi)
+  let w = prim bytes_set_i64(c, lo, y)
+  let v = prim bytes_set_i64(c, hi, x)
+  let l = prim add(lo, 1)
+  let h = prim sub(hi, 1)
+  tailcall rev$slow$u(c, l, h)
+}
+
+fn rev$slow$u(a: ptr @owned, lo: i64, hi: i64) -> ptr {
+entry:
+  let pre%11 = prim ge(lo, 0)
+  let len%12 = prim bytes_len(a)
+  let len%13 = prim lshr(len%12, 3)
+  let pre%14 = prim lt(hi, len%13)
+  let pre%15 = prim and(pre%11, pre%14)
+  switch pre%15 { 0 => checked, default => unchecked }
+done:
+  ret a
+body:
+  let x = prim bytes_get_i64(a, lo)
+  let y = prim bytes_get_i64(a, hi)
+  let w = prim bytes_set_i64(a, lo, y)
+  let v = prim bytes_set_i64(a, hi, x)
+  let l = prim add(lo, 1)
+  let h = prim sub(hi, 1)
+  tailcall rev$slow$u(a, l, h)
+checked:
+  let d = prim ge(lo, hi)
+  switch d { 0 => body, default => done }
+unchecked:
+  tailcall rev$slow$u$b(a, lo, hi)
+}
+
+fn rev$slow$u$b(a: ptr @owned, lo: i64, hi: i64) -> ptr {
+entry:
+  let d = prim ge(lo, hi)
+  switch d { 0 => body, default => done }
+done:
+  ret a
+body:
+  let x = prim bytes_get_i64_unchecked(a, lo)
+  let y = prim bytes_get_i64_unchecked(a, hi)
+  let w = prim bytes_set_i64_unchecked(a, lo, y)
+  let v = prim bytes_set_i64_unchecked(a, hi, x)
+  let l = prim add(lo, 1)
+  let h = prim sub(hi, 1)
+  tailcall rev$slow$u$b(a, l, h)
+}
+
+cold fn flips$slow(p: ptr @owned, f: i64) -> (ptr, i64) {
+entry:
+  let k = prim bytes_get_i64(p, 0)
+  switch k { 0 => done, default => more }
+done:
+  ret (p, f)
+more:
+  let r = call rev$slow(p, 0, k)
+  let g = prim add(f, 1)
+  tailcall flips$again(r, g)
+}
+
+fn flips$slow$u(p: ptr @owned, f: i64) -> (ptr, i64) {
+entry:
+  let k = prim bytes_get_i64(p, 0)
+  switch k { 0 => done, default => more }
+done:
+  ret (p, f)
+more:
+  let r = call rev$slow$u(p, 0, k)
+  let g = prim add(f, 1)
+  tailcall flips$slow$u(r, g)
+}
