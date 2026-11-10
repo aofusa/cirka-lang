@@ -2101,6 +2101,224 @@ entry:
     assert_eq!(crate::interp::run(&m, b"", 1_000_000).unwrap().stdout, "70");
 }
 
+/// A loop that forces an array and only reads it.
+const VALUE_LOOP: &str = r#"
+extern fn cirka_write_i64(i64) -> void
+
+fn mk() -> ptr {
+entry:
+  let a = prim bytes_new(32)
+  let w = prim bytes_set_i64(a, 2, 7)
+  ret a
+}
+
+fn sum(a: ptr @owned, i: i64, n: i64, acc: i64) -> i64 {
+entry:
+  let d = prim ge(i, n)
+  switch d { 0 => body, default => done }
+done:
+  drop a
+  ret acc
+body:
+  let ev = force a
+  let x = prim bytes_get_i64(ev, i)
+  let acc1 = prim add(acc, x)
+  let j = prim add(i, 1)
+  tailcall sum(ev, j, n, acc1)
+}
+
+fn main() -> i64 {
+entry:
+  let t = ARRAY
+  BEFORE
+  let r = call sum(t, 0, 4, 0)
+  AFTER
+  let _ = extern cirka_write_i64(r)
+  ret 0
+}
+"#;
+
+fn value_loop(array: &str, before: &str, after: &str) -> String {
+    VALUE_LOOP
+        .replace("ARRAY", array)
+        .replace("  BEFORE\n", before)
+        .replace("  AFTER\n", after)
+}
+
+#[test]
+fn value_loops_test_that_their_arrays_are_values() {
+    let m = entered(&value_loop("mkthunk mk()", "", ""), 1);
+    // Only the value-ness matters: the array is read, never written.
+    let f = func_text(&m, "sum");
+    assert!(f.contains("prim is_value(a)"), "{f}");
+    assert!(!f.contains("is_unique"), "{f}");
+    assert!(f.contains("tailcall sum$u(a, i, n, acc)"), "{f}");
+    assert!(f.contains("tailcall sum$slow(a, i, n, acc)"), "{f}");
+    assert!(!func_text(&m, "sum$u").contains("force"));
+    assert!(func_text(&m, "sum$slow").contains("force a"));
+    assert!(
+        hot_callers(&m, "sum").is_empty(),
+        "{:?}",
+        hot_callers(&m, "sum")
+    );
+    let evaluated = "  dup t\n  let v = force t\n  drop v\n";
+    let shared_read = "  let y = force t\n  drop y\n";
+    for (array, before, after, out) in [
+        // A value, a thunk, and a thunk already evaluated (an indirection).
+        ("prim bytes_new(32)", "", "", "0"),
+        ("mkthunk mk()", "", "", "7"),
+        ("mkthunk mk()", evaluated, "", "7"),
+        // Shared: the loop reads it, the other owner keeps it.
+        ("mkthunk mk()", "  dup t\n", shared_read, "7"),
+    ] {
+        let m = entered(&value_loop(array, before, after), 1);
+        let r = crate::interp::run(&m, b"", 1_000_000).unwrap();
+        assert_eq!(r.stdout, out, "{array}");
+        assert_eq!(r.leaked, 0, "{array}");
+    }
+}
+
+#[test]
+fn value_loops_go_on_after_a_shared_or_lazy_entry() {
+    // The first iteration forces the array in the old body, and the next
+    // ones run in the copy without `force` of that body.
+    let m = entered(&value_loop("mkthunk mk()", "", ""), 1);
+    let slow = func_text(&m, "sum$slow");
+    assert!(
+        slow.contains("tailcall sum$slow$u(ev, j, n, acc1)"),
+        "{slow}"
+    );
+    assert!(!func_text(&m, "sum$slow$u").contains("force"));
+}
+
+#[test]
+fn value_and_unique_parameters_are_assumed_together() {
+    let src = r#"
+extern fn cirka_write_i64(i64) -> void
+
+fn mk() -> ptr {
+entry:
+  let a = prim bytes_new(16)
+  let w = prim bytes_set_i64(a, 1, 5)
+  ret a
+}
+
+fn copy(src: ptr @owned, dst: ptr @owned, i: i64, n: i64) -> ptr {
+entry:
+  let d = prim ge(i, n)
+  switch d { 0 => body, default => done }
+done:
+  drop src
+  ret dst
+body:
+  let ev = force src
+  let x = prim bytes_get_i64(ev, i)
+  let c = prim bytes_unique(dst)
+  let w = prim bytes_set_i64(c, i, x)
+  let j = prim add(i, 1)
+  tailcall copy(ev, c, j, n)
+}
+
+fn main() -> i64 {
+entry:
+  let s = mkthunk mk()
+  let d = prim bytes_new(16)
+  let r = call copy(s, d, 0, 2)
+  let y = prim bytes_get_i64(r, 1)
+  drop r
+  let _ = extern cirka_write_i64(y)
+  ret 0
+}
+"#;
+    let m = entered(src, 1);
+    let f = func_text(&m, "copy");
+    assert!(f.contains("prim is_value(src)"), "{f}");
+    assert!(f.contains("prim is_unique(dst)"), "{f}");
+    assert!(!f.contains("prim is_unique(src)"), "{f}");
+    assert!(!f.contains("prim is_value(dst)"), "{f}");
+    let u = func_text(&m, "copy$u");
+    assert!(!u.contains("force"), "{u}");
+    assert!(!u.contains("bytes_unique"), "{u}");
+    assert_eq!(crate::interp::run(&m, b"", 1_000_000).unwrap().stdout, "5");
+}
+
+/// A loop that forces the array only on some iterations. `SKIP` is the
+/// argument the iterations that do not force pass on.
+const VALUE_LOOP_PATHS: &str = r#"
+extern fn cirka_write_i64(i64) -> void
+
+fn mk() -> ptr {
+entry:
+  let a = prim bytes_new(32)
+  let w = prim bytes_set_i64(a, 2, 7)
+  ret a
+}
+
+fn sum(a: ptr @owned, i: i64, n: i64, acc: i64) -> i64 {
+entry:
+  let d = prim ge(i, n)
+  switch d { 0 => body, default => done }
+done:
+  drop a
+  ret acc
+body:
+  let j = prim add(i, 1)
+  let e = prim eq(i, 0)
+  switch e { 0 => read, default => skip }
+skip:
+  tailcall sum(SKIP, j, n, acc)
+read:
+  let ev = force a
+  let x = prim bytes_get_i64(ev, i)
+  let acc1 = prim add(acc, x)
+  tailcall sum(ev, j, n, acc1)
+}
+
+fn main() -> i64 {
+entry:
+  let t = mkthunk mk()
+  let r = call sum(t, 0, 4, 0)
+  let _ = extern cirka_write_i64(r)
+  ret 0
+}
+"#;
+
+#[test]
+fn value_loops_enter_the_copy_only_after_a_force() {
+    let m = entered(&VALUE_LOOP_PATHS.replace("SKIP", "a"), 1);
+    // In the old body the array may still be a thunk on the path that does
+    // not force it.
+    let slow = func_text(&m, "sum$slow");
+    assert!(slow.contains("tailcall sum$slow(a, j, n, acc)"), "{slow}");
+    assert!(
+        slow.contains("tailcall sum$slow$u(ev, j, n, acc1)"),
+        "{slow}"
+    );
+    // The copy assumes a value, on both paths.
+    let u = func_text(&m, "sum$u");
+    assert!(u.contains("tailcall sum$u(a, j, n, acc)"), "{u}");
+    assert!(u.contains("tailcall sum$u(a, j, n, acc1)"), "{u}");
+    assert!(!u.contains("force"), "{u}");
+}
+
+#[test]
+fn value_loops_need_the_forced_array_passed_on() {
+    // The forced array is not what the next iteration gets.
+    let src = VALUE_LOOP.replace(
+        "tailcall sum(ev, j, n, acc1)",
+        "drop ev\n  let o = prim bytes_new(32)\n  tailcall sum(o, j, n, acc1)",
+    );
+    let src = value_loop_with(&src, "prim bytes_new(32)");
+    let m = entered(&src, 0);
+    assert!(m.func("sum$u").is_none());
+}
+
+fn value_loop_with(src: &str, array: &str) -> String {
+    src.replace("ARRAY", array)
+        .replace("  BEFORE\n", "")
+        .replace("  AFTER\n", "")
+}
+
 #[test]
 fn cold_functions_round_trip_through_the_text_format() {
     let src = "cold fn f(x: i64) -> i64 {\nentry:\n  ret x\n}\n\nfn main() -> i64 {\nentry:\n  let r = call f(1)\n  ret r\n}\n";

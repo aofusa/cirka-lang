@@ -39,6 +39,12 @@
 //! that the test of the loop's precondition stays on the path of the arrays
 //! that are not unique, and is made only once, by `loop$u`, on the path of
 //! those that are.
+//!
+//! A parameter that the loop forces and passes on need not be unique
+//! (FEAT-0075): `loop$u` can assume it is a value, shared or not, and has no
+//! `force` of it. The entry tests only that it is a value. LLVM cannot remove
+//! that test across iterations by itself, because the next iteration's
+//! argument is the merge of the two results of `force`.
 
 use crate::bounds::SUFFIX as BOUNDS_SUFFIX;
 use crate::ir::*;
@@ -50,14 +56,22 @@ pub const SUFFIX: &str = "$u";
 /// Suffix of the body of a function entered through its uniqueness test.
 pub const SLOW_SUFFIX: &str = "$slow";
 
+/// What a specialized function assumes about one parameter.
+#[derive(Clone, Copy, Debug)]
+pub struct Assumed {
+    pub position: usize,
+    /// It is a value: the function forces it, and the copy has no `force`.
+    pub forced: bool,
+    /// It is unique (RC == 1): the copy has no uniqueness checks of it.
+    pub unique: bool,
+}
+
 /// A function that got a specialized copy, and what the copy assumes.
 #[derive(Clone, Debug)]
 pub struct Specialized {
     pub func: String,
     pub target: String,
-    /// The position of each parameter assumed unique, and whether the
-    /// function forces it (the copy has no `force`: it must be a value).
-    pub params: Vec<(usize, bool)>,
+    pub params: Vec<Assumed>,
 }
 
 /// Adds the specialized functions to `m` and returns what was specialized.
@@ -169,11 +183,13 @@ fn split_entry(f: &mut Function, s: &Specialized) -> Function {
             }
         });
     };
-    for &(k, forced) in &s.params {
-        if forced {
-            test(f, Prim::IsValue, k);
+    for a in &s.params {
+        if a.forced {
+            test(f, Prim::IsValue, a.position);
         }
-        test(f, Prim::IsUnique, k);
+        if a.unique {
+            test(f, Prim::IsUnique, a.position);
+        }
     }
     let scrut = all.expect("a specialized function assumes at least one parameter");
     let args: Vec<Operand> = f.params.iter().map(|p| Operand::Var(p.var)).collect();
@@ -250,12 +266,38 @@ struct Facts {
     tails: HashMap<usize, Option<bool>>,
 }
 
+/// What is tracked about a parameter.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    /// It is used only in place: the copy assumes it is unique, and
+    /// `checked` says that a uniqueness check ran.
+    Unique,
+    /// It is forced: the copy assumes it is a value, and `checked` says that
+    /// a `force` ran. Any other use is fine, a value stays a value.
+    Value,
+}
+
 /// The state after instruction `ins` of a parameter in state `st`;
 /// `removable` is set when the instruction is a removable `force` / check.
-fn step(sigs: &Sigs, st: St, ins: &Instr, removable: &mut bool) -> St {
+fn step(sigs: &Sigs, mode: Mode, st: St, ins: &Instr, removable: &mut bool) -> St {
     let St::Clean { h, checked } = st else {
         return St::Dirty;
     };
+    if mode == Mode::Value {
+        return match ins {
+            Instr::Let {
+                var: Some(r),
+                rhs: Rhs::Force(v),
+            } if *v == h => {
+                *removable = true;
+                St::Clean {
+                    h: *r,
+                    checked: true,
+                }
+            }
+            _ => st,
+        };
+    }
     match ins {
         Instr::Let {
             var: Some(r),
@@ -302,7 +344,7 @@ fn join(a: Option<St>, b: St) -> St {
     }
 }
 
-fn analyze(sigs: &Sigs, f: &Function, param: Var) -> Facts {
+fn analyze(sigs: &Sigs, f: &Function, param: Var, mode: Mode) -> Facts {
     let n = f.blocks.len();
     let mut entry: Vec<Option<St>> = vec![None; n];
     if n == 0 {
@@ -318,7 +360,7 @@ fn analyze(sigs: &Sigs, f: &Function, param: Var) -> Facts {
         let b = &f.blocks[bi];
         let mut st = entry[bi].unwrap_or(St::Dirty);
         for ins in &b.instrs {
-            st = step(sigs, st, ins, &mut false);
+            st = step(sigs, mode, st, ins, &mut false);
         }
         let out = match (&b.term, st) {
             (Terminator::Jump(_, args), St::Clean { h, .. }) if mentions(args, h) > 0 => St::Dirty,
@@ -339,7 +381,7 @@ fn analyze(sigs: &Sigs, f: &Function, param: Var) -> Facts {
         let Some(mut st) = entry[bi] else { continue };
         for (ii, ins) in b.instrs.iter().enumerate() {
             let mut rm = false;
-            let next = step(sigs, st, ins, &mut rm);
+            let next = step(sigs, mode, st, ins, &mut rm);
             if rm && let Some(&r) = ins.defs().first() {
                 facts.removable.push((bi, ii, r));
             }
@@ -374,7 +416,20 @@ fn specialize(sigs: &Sigs, f: &mut Function) -> Option<(Function, Specialized)> 
     if params.is_empty() || !has_self_tail_call(f) {
         return None;
     }
-    let facts: Vec<(Var, Facts)> = params.iter().map(|&p| (p, analyze(sigs, f, p))).collect();
+    let tail_blocks: Vec<usize> = (0..f.blocks.len())
+        .filter(|&bi| matches!(&f.blocks[bi].term, Terminator::TailCall { func, .. } if *func == f.name))
+        .collect();
+    let enters = |set: &[&Facts], need_checked: bool, bi: usize| {
+        set.iter().all(|fs| match fs.tails.get(&bi) {
+            Some(Some(c)) => *c || !need_checked,
+            _ => false,
+        })
+    };
+    let works = |set: &[&Facts]| tail_blocks.iter().any(|&bi| enters(set, true, bi));
+    let facts: Vec<(Var, Facts)> = params
+        .iter()
+        .map(|&p| (p, analyze(sigs, f, p, Mode::Unique)))
+        .collect();
     // Parameters with a check to remove.
     let cands: Vec<usize> = (0..facts.len())
         .filter(|&i| {
@@ -383,29 +438,50 @@ fn specialize(sigs: &Sigs, f: &mut Function) -> Option<(Function, Specialized)> 
             })
         })
         .collect();
-    if cands.is_empty() {
-        return None;
-    }
-    // The assumed set: all candidates if some tail call of `f` passes all of
-    // them checked, otherwise the first single one that works.
-    let enters = |set: &[usize], need_checked: bool, bi: usize| {
-        set.iter().all(|&i| match facts[i].1.tails.get(&bi) {
-            Some(Some(c)) => *c || !need_checked,
-            _ => false,
-        })
-    };
-    let tail_blocks: Vec<usize> = facts[cands[0]].1.tails.keys().copied().collect();
-    let works = |set: &[usize]| tail_blocks.iter().any(|&bi| enters(set, true, bi));
-    let set: Vec<usize> = if works(&cands) {
+    // Assumed unique: all candidates if some tail call of `f` passes all of
+    // them checked, otherwise the first single one that works, if any.
+    let all: Vec<&Facts> = cands.iter().map(|&i| &facts[i].1).collect();
+    let unique: Vec<usize> = if works(&all) {
         cands
     } else {
-        cands.into_iter().find(|&i| works(&[i])).map(|i| vec![i])?
+        cands
+            .into_iter()
+            .find(|&i| works(&[&facts[i].1]))
+            .into_iter()
+            .collect()
     };
+    let mut chosen: Vec<(Var, Facts, bool)> = Vec::new();
+    let mut facts: Vec<Option<(Var, Facts)>> = facts.into_iter().map(Some).collect();
+    for &i in &unique {
+        let (p, fs) = facts[i].take().expect("a candidate is chosen once");
+        chosen.push((p, fs, true));
+    }
+    // Assumed values: the parameters that are forced and passed on.
+    for &p in &params {
+        if chosen.iter().any(|c| c.0 == p) {
+            continue;
+        }
+        let fs = analyze(sigs, f, p, Mode::Value);
+        if fs.removable.is_empty() {
+            continue;
+        }
+        let with: Vec<&Facts> = chosen
+            .iter()
+            .map(|c| &c.1)
+            .chain(std::iter::once(&fs))
+            .collect();
+        if works(&with) {
+            chosen.push((p, fs, false));
+        }
+    }
+    if chosen.is_empty() {
+        return None;
+    }
+    let set: Vec<&Facts> = chosen.iter().map(|c| &c.1).collect();
     let wname = format!("{}{SUFFIX}", f.name);
-    let assumed = set
+    let assumed = chosen
         .iter()
-        .map(|&i| {
-            let (param, fs) = &facts[i];
+        .map(|(param, fs, unique)| {
             let forced = fs.removable.iter().any(|&(b, ii, _)| {
                 matches!(
                     &f.blocks[b].instrs[ii],
@@ -416,7 +492,11 @@ fn specialize(sigs: &Sigs, f: &mut Function) -> Option<(Function, Specialized)> 
                 )
             });
             let k = f.params.iter().position(|p| p.var == *param);
-            (k.expect("a parameter of the function"), forced)
+            Assumed {
+                position: k.expect("a parameter of the function"),
+                forced,
+                unique: *unique,
+            }
         })
         .collect();
     let mut w = f.clone();
@@ -424,8 +504,7 @@ fn specialize(sigs: &Sigs, f: &mut Function) -> Option<(Function, Specialized)> 
     // Remove the `force`s and checks of clean values in `f$u`.
     let mut subst: HashMap<Var, Var> = HashMap::new();
     let mut gone: HashSet<(usize, usize)> = HashSet::new();
-    for &i in &set {
-        let (param, fs) = &facts[i];
+    for (param, fs, _) in &chosen {
         for &(b, ii, r) in &fs.removable {
             subst.insert(r, *param);
             gone.insert((b, ii));
