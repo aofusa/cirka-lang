@@ -117,6 +117,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0075](features/FEAT-0075-value-only-loop-parameters.md) | ループが読むだけの配列の引数を、入口で値と確かめて反復ごとの force をなくす | done | P1 | 0067, 0070, 0073 |
 | [FEAT-0076](features/FEAT-0076-kept-parameters-across-calls.md) | 配列をそのまま返す関数の呼び出しをまたいで一意性の事実を運ぶ | done | P1 | 0067, 0070, 0075, 0077 |
 | [FEAT-0077](features/FEAT-0077-strictness-through-newtypes.md) | 正格性解析が newtype のコンストラクタを素通しする | done | P1 | 0112 |
+| [FEAT-0078](features/FEAT-0078-unboxed-values-in-speculation.md) | 評価済みの引数の判定で unboxed の値を値として数える | done | P1 | 0056, 0068 |
 
 
 ## aCHC
