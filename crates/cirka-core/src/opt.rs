@@ -1119,7 +1119,9 @@ impl Simp<'_> {
                 },
                 Some((f, a, strict)) => {
                     let rest = K::Fields(items, cb, rhs);
-                    if strict {
+                    // An unboxed field is evaluated, whatever the data type
+                    // says about its strictness.
+                    if strict || f.ty.is_unboxed() {
                         self.let_strict(f, a, rest)
                     } else {
                         self.let_lazy(f, a, rest)
@@ -1458,6 +1460,23 @@ impl Simp<'_> {
             let alt = alts.into_iter().next().unwrap();
             let rhs = Expr::LetStrict(b, Box::new(alt.rhs), Box::new(body));
             return Expr::Case(s, cb, res, vec![Alt { con: alt.con, rhs }]);
+        }
+        // let! b = (case s of p -> e) in case b of alts  ⇒
+        // case (case s of p -> e) of alts  when `b` has no other use and
+        // the next iteration can push `alts` into the inner case: the same
+        // evaluation order, and `if` on a comparison needs no `Bool`
+        // (FEAT-0074).
+        if let (Expr::Case(_, _, _, inner), Expr::Case(sc, cb, _, alts)) = (&r, &body)
+            && matches!(&**sc, Expr::Var(v) if v.id == x)
+            && !alts.iter().any(|a| occurs(&a.rhs, x))
+            && self.case_of_case_ok(cb, alts, inner)
+        {
+            self.hit();
+            self.st.floated += 1;
+            let Expr::Case(_, cb, res, alts) = body else {
+                unreachable!()
+            };
+            return Expr::Case(Box::new(r), cb, res, alts);
         }
         Expr::LetStrict(b, Box::new(r), Box::new(body))
     }

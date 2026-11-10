@@ -673,6 +673,131 @@ fn opt_gives_io_functions_the_state_token() {
 
 // ---- FEAT-0123: evaluated scrutinees, value fields, let! of a case ----
 
+/// A comparison bound by a strict `let` and then scrutinized (CirkaLang's
+/// `if`). `TAIL` is what the `False` branch does.
+const STRICT_BOOL: &str = "(data Bool () (False) (True))
+ (extern arg () Int#)
+ (def pick (-> Bool Int# Int#)
+   (lam ((b Bool) (n Int#))
+     (case n (m Int#) Int#
+       (0 (case b (c Bool) Int# ((False) 1) ((True) 2)))
+       (_ (pick b (prim sub n 1))))))
+ (def main Int#
+   (let! (k Int# (extern arg))
+     (let! (s Bool (case (prim lt k 3) (c Int#) Bool
+                     (0 (con False ()))
+                     (_ (con True ()))))
+       (case s (t Bool) Int#
+         ((False) TAIL)
+         ((True) 20)))))";
+
+#[test]
+fn opt_case_of_a_strict_let_of_a_comparison_builds_no_bool() {
+    let (m, st) = opt_main(&STRICT_BOOL.replace("TAIL", "10"));
+    assert!(!m.contains("con False"), "{m}");
+    assert!(!m.contains("con True"), "{m}");
+    assert!(st.known_case > 0, "{st:?}");
+}
+
+#[test]
+fn opt_case_of_case_uses_variables_bound_to_constructors() {
+    // One branch is an existing box, the other a new one (`if c then acc
+    // else acc + 1` of an unboxed accumulator): neither is built.
+    let src = "(data Int () (I# Int#))
+ (extern arg () Int#)
+ (def main Int#
+   (let! (k Int# (extern arg))
+     (let ((acc Int (con I# () k)))
+       (let! (t Int (case (prim lt k 3) (c Int#) Int
+                      (0 acc)
+                      (_ (con I# () (prim add k 1)))))
+         (case t (s Int) Int#
+           ((I# u) (prim mul u 2)))))))";
+    let (m, _) = opt_main(src);
+    assert!(!m.contains("con I#"), "{m}");
+}
+
+#[test]
+fn opt_keeps_a_strict_let_used_by_a_branch() {
+    // The value of `s` is also passed on, so the binding stays.
+    let p = optimized(&STRICT_BOOL.replace("TAIL", "(pick s k)"));
+    let text = print_program(&p);
+    assert!(text.contains("(pick s"), "{text}");
+    assert!(text.contains("(let! (s Bool"), "{text}");
+}
+
+#[test]
+fn opt_keeps_a_strict_let_of_a_case_with_large_branches() {
+    // Nothing is known about the inner results, and the outer branches are
+    // too large to copy into both alternatives.
+    let big = "(prim add k (prim add k (prim add k (prim add k (prim add k (prim add k (prim add k (prim add k (prim add k (prim add k (prim add k (prim add k (prim add k (prim add k (prim add k (prim add k (prim add k (prim add k (prim add k (prim add k k))))))))))))))))))))";
+    let src = format!(
+        "(data Bool () (False) (True))
+ (extern arg () Int#)
+ (def isz (-> Int# Bool)
+   (lam ((n Int#))
+     (case n (m Int#) Bool
+       (0 (con True ()))
+       (_ (isz (prim sub n 1))))))
+ (def main Int#
+   (let! (k Int# (extern arg))
+     (let! (s Bool (case (prim lt k 3) (c Int#) Bool
+                     (0 (isz k))
+                     (_ (isz (prim add k 1)))))
+       (case s (t Bool) Int#
+         ((False) {big})
+         ((True) {big})))))"
+    );
+    let text = print_program(&optimized(&src));
+    assert!(text.contains("(let! (s Bool"), "{text}");
+}
+
+#[test]
+fn opt_keeps_a_strict_let_before_a_case_of_another_variable() {
+    // `s` is evaluated for its effect (it may diverge), and the `case` that
+    // follows is about `o`.
+    let src = "(data Bool () (False) (True))
+ (extern arg () Int#)
+ (def isz (-> Int# Bool)
+   (lam ((n Int#))
+     (case n (m Int#) Bool
+       (0 (con True ()))
+       (_ (isz (prim sub n 1))))))
+ (def main Int#
+   (let! (k Int# (extern arg))
+     (let! (o Bool (isz k))
+       (let! (s Bool (case k (c Int#) Bool
+                       (0 (con False ()))
+                       (_ (isz k))))
+         (case o (t Bool) Int#
+           ((False) 10)
+           ((True) 20))))))";
+    let text = print_program(&optimized(src));
+    assert!(text.contains("(case o"), "{text}");
+    assert!(text.contains("(let! (s Bool"), "{text}");
+}
+
+#[test]
+fn opt_keeps_a_strict_let_of_a_call() {
+    // Nothing is known about the result of a call.
+    let src = "(data Bool () (False) (True))
+ (extern arg () Int#)
+ (def isz (-> Int# Bool)
+   (lam ((n Int#))
+     (case n (m Int#) Bool
+       (0 (con True ()))
+       (_ (isz (prim sub n 1))))))
+ (def main Int#
+   (let! (k Int# (extern arg))
+     (let! (s Bool (isz k))
+       (case s (t Bool) Int#
+         ((False) 10)
+         ((True) 20)))))";
+    let p = optimized(src);
+    let text = print_program(&p);
+    assert!(text.contains("(let! (s Bool (isz"), "{text}");
+}
+
 #[test]
 fn opt_default_case_of_evaluated_variable() {
     // let! x = mk 1 in case x of _ -> ...  ⇒  the default-only `case` (the
