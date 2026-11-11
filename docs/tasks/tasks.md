@@ -219,7 +219,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 
 | ID | タイトル | 状態 | 優先度 | 依存 |
 |---|---|---|---|---|
-| [FEAT-0210](features/FEAT-0210-cl-traits.md) | トレイト (型クラス) と特殊化 | todo | P0 | 0207 |
+| [FEAT-0210](features/FEAT-0210-cl-traits.md) | トレイト (型クラス) と特殊化 | done | P0 | 0207 |
 | [FEAT-0211](features/FEAT-0211-cl-strings-arrays.md) | 文字列と配列 | todo | P0 | 0210, 0022 |
 | [FEAT-0212](features/FEAT-0212-cl-raii-errors.md) | RAII (Drop/Release) とエラー処理 | todo | P0 | 0210 |
 | [FEAT-0213](features/FEAT-0213-cl-ffi-std.md) | FFI と libc ベースの std (CUI 向け) | todo | P0 | 0212 |
