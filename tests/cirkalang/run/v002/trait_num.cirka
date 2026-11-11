@@ -1,0 +1,29 @@
+module Main
+
+-- Numeric literals at a user's type, defaulting to `Int` and at `Float`.
+data V2 = MkV2 Int Int deriving (Show)
+
+impl Num V2 where
+  (MkV2 a b) + (MkV2 c d) = MkV2 (a + c) (b + d)
+  (MkV2 a b) - (MkV2 c d) = MkV2 (a - c) (b - d)
+  (MkV2 a b) * (MkV2 c d) = MkV2 (a * c) (b * d)
+  negate (MkV2 a b) = MkV2 (negate a) (negate b)
+  fromInt n = MkV2 n n
+
+square : Num a => a -> a
+square x = x * x
+
+sumTo : Num a => a -> List a -> a
+sumTo z xs = foldl (\a => \b => a + b) z xs
+
+main : IO ()
+main = do
+  putStrLn (show (MkV2 1 2 + 3))
+  putStrLn (show (square (MkV2 2 3)))
+  printInt (square 4)
+  printFloat (square 1.5)
+  printFloat (2 * 1.5)
+  printInt (sumTo 0 [1, 2, 3])
+  printFloat (sumTo 0.5 [1, 2])
+  putStrLn (show (negate 7))
+  printInt (abs (negate 3) + min 4 2 + max 4 2)

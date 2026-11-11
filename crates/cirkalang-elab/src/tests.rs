@@ -27,11 +27,14 @@ data List a = Nil | a :: List a
 prim primAddInt : Int -> Int -> Int
 prim primSubInt : Int -> Int -> Int
 prim primEqInt : Int -> Int -> Bool
-prim pure : a -> IO a
+prim primPure : a -> IO a
 prim primBind : IO a -> (a -> IO b) -> IO b
 prim printInt : Int -> IO ()
 prim unique : a -> Unique a
 prim freeze : (1 u : Unique a) -> a
+
+pure : a -> IO a
+pure x = primPure x
 
 negate : Int -> Int
 negate x = primSubInt 0 x

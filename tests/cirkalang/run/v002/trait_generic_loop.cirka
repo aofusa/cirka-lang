@@ -1,0 +1,11 @@
+module Main
+
+-- A generic numeric loop compiles to the same unboxed loop as a
+-- monomorphic one (see `cirkalang_traits_specialize_away`).
+loop : (Num a, Ord a) => a -> a -> a -> a
+loop n acc i = if i > n then acc else loop n (acc + i * i) (i + fromInt 1)
+
+main : IO ()
+main = do
+  printInt (loop 1000 0 0)
+  printFloat (loop 10.0 0.5 0.0)

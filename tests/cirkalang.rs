@@ -238,3 +238,49 @@ fn cirkalang_type_errors() {
         }
     });
 }
+
+/// Traits leave no dictionaries behind in optimized code (FEAT-0210): no
+/// dictionary is built and no method is selected at run time for programs
+/// that use traits at known types.
+#[test]
+fn cirkalang_traits_specialize_away() {
+    let root = repo_root().join("tests/cirkalang/run/v002");
+    for name in [
+        "trait_basic",
+        "trait_context",
+        "trait_super",
+        "trait_num",
+        "trait_generic_loop",
+        "derive",
+    ] {
+        let (mut core, _) = compile_cirka(&root.join(format!("{name}.cirka"))).unwrap();
+        cirka_core::opt::optimize(&mut core).unwrap();
+        cirka_core::opt::dce_globals(&mut core);
+        // The declarations of the dictionary types stay.
+        let text = cirka_core::print_program(&core);
+        let left: Vec<&str> = text
+            .lines()
+            .filter(|l| !l.starts_with("(data ") && l.contains("$Dict"))
+            .map(|l| l.trim())
+            .collect();
+        assert!(
+            left.is_empty(),
+            "{name}: dictionaries remain:\n{}",
+            left.join("\n")
+        );
+        // A generic loop at a known type builds no boxes.
+        if name == "trait_generic_loop" {
+            let workers: Vec<&str> = text
+                .split("\n(def ")
+                .filter(|d| d.starts_with("Main.loop"))
+                .collect();
+            assert!(!workers.is_empty(), "{text}");
+            for w in workers {
+                assert!(
+                    w.contains('#') && !w.contains("(con "),
+                    "boxes in the loop:\n{w}"
+                );
+            }
+        }
+    }
+}

@@ -1,0 +1,10 @@
+error[E1257]: trait `A` is its own supertrait
+ --> tests/cirkalang/fail/type/trait_super_cycle.cirka:3:1
+  |
+3 | trait B a => A a where
+  | ^^^^^^^^^^^^^^^^^^^^^^
+error[E1257]: trait `B` is its own supertrait
+ --> tests/cirkalang/fail/type/trait_super_cycle.cirka:6:1
+  |
+6 | trait A a => B a where
+  | ^^^^^^^^^^^^^^^^^^^^^^

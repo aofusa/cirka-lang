@@ -1,0 +1,6 @@
+error[E1255]: missing method `two`
+ --> tests/cirkalang/fail/type/trait_missing_method.cirka:7:1
+  |
+7 | impl T Bool where
+  | ^^^^^^^^^^^^^^^^^
+  = note: this method has no default definition

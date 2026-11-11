@@ -1,0 +1,7 @@
+module Main
+
+f : Int => Int -> Int
+f x = x
+
+main : IO ()
+main = pure ()

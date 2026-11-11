@@ -1,0 +1,6 @@
+module Main
+
+data Opaque = MkOpaque
+
+main : IO ()
+main = putStrLn (show MkOpaque)

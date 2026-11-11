@@ -104,6 +104,33 @@ fn int_ty() -> c::Type {
     c::Type::con("Int")
 }
 
+/// `t` with `IO a` replaced by its representation `Unit# -> a`.
+fn io_rep(t: &c::Type) -> c::Type {
+    match t {
+        c::Type::Con(n, args) if n == "IO" && args.len() == 1 => {
+            c::Type::fun(c::Mult::Many, c::Type::unit(), io_rep(&args[0]))
+        }
+        c::Type::Con(n, args) => c::Type::Con(n.clone(), args.iter().map(io_rep).collect()),
+        c::Type::App(h, args) => {
+            c::Type::App(Box::new(io_rep(h)), args.iter().map(io_rep).collect())
+        }
+        c::Type::Fun(m, a, b) => c::Type::Fun(*m, Box::new(io_rep(a)), Box::new(io_rep(b))),
+        c::Type::Forall(v, k, b) => c::Type::Forall(v.clone(), k.clone(), Box::new(io_rep(b))),
+        t => t.clone(),
+    }
+}
+
+/// `e` (of a type with the same quantifiers as `ty`) cast to `ty`.
+fn cast_poly(e: c::Expr, ty: &c::Type) -> c::Expr {
+    match ty {
+        c::Type::Forall(v, k, b) => {
+            let inner = cast_poly(c::Expr::TyApp(Box::new(e), c::Type::Var(v.clone())), b);
+            c::Expr::TyLam(v.clone(), k.clone(), Box::new(inner))
+        }
+        t => c::Expr::Cast(Box::new(e), t.clone()),
+    }
+}
+
 impl<'a> Lower<'a> {
     fn new(p: &'a Program) -> Lower<'a> {
         Lower {
@@ -250,9 +277,10 @@ impl<'a> Lower<'a> {
                     (Some(Prim::Float), []) => c::Type::con("Float"),
                     (Some(Prim::Char), []) => c::Type::con("Char"),
                     (Some(Prim::String), []) => c::Type::bytes(),
-                    (Some(Prim::IO), [a]) => {
-                        c::Type::fun(c::Mult::Many, c::Type::unit(), self.lower_ty(tvs, a))
-                    }
+                    // A newtype of `Unit# -> a` (06-ir.md §1.6), so that it
+                    // can be the argument of a higher-kinded parameter.
+                    (Some(Prim::IO), []) => c::Type::Con("IO".into(), Vec::new()),
+                    (Some(Prim::IO), [a]) => c::Type::Con("IO".into(), vec![self.lower_ty(tvs, a)]),
                     (Some(Prim::Unique), [a]) => self.lower_ty(tvs, a),
                     _ => c::Type::Any,
                 }
@@ -355,7 +383,8 @@ impl<'a> Lower<'a> {
             }
             decl.ctors.push(c::CtorDecl {
                 name: self.gname(k),
-                strict: vec![true; field_tys.len()],
+                // Dictionary fields may refer to the dictionary being built.
+                strict: vec![!self.p.traits.contains_key(&d); field_tys.len()],
                 fields: field_tys.clone(),
             });
             self.cons.borrow_mut().insert(
@@ -697,16 +726,30 @@ impl<'a> Lower<'a> {
         let s: Vec<(c::TyVar, c::Type)> = dtvs.iter().cloned().zip(targs.iter().cloned()).collect();
         let ftys: Vec<c::Type> = field_tys.iter().map(|t| t.subst_all(&s)).collect();
         let mut binds = Vec::new();
+        let mut lazy: Vec<(c::Binder, c::Expr)> = Vec::new();
         let mut fields = Vec::new();
         let mut fi = 0;
         let given = &args[nparams..];
+        // Dictionaries: a method that is not a function may be defined in
+        // terms of the dictionary being built, so it becomes a thunk.
+        let lazy_from = self.p.traits.get(&data).map(|t| t.supers.len());
         for (j, rt) in runtime.iter().enumerate() {
             if !rt {
                 continue;
             }
             if let Some(a) = given.get(j) {
                 let (e, _) = self.expr(cx, a, Some(&ftys[fi]));
-                fields.push(self.atom(e, &ftys[fi], &mut binds));
+                if lazy_from.is_some_and(|n| j >= n) && !e.is_atom() && !matches!(a, Term::Lam(..))
+                {
+                    let id = self.id("m");
+                    lazy.push((
+                        c::Binder::new(id.clone(), c::Mult::Many, ftys[fi].clone()),
+                        e,
+                    ));
+                    fields.push(c::Expr::Var(id));
+                } else {
+                    fields.push(self.atom(e, &ftys[fi], &mut binds));
+                }
             }
             fi += 1;
         }
@@ -733,6 +776,9 @@ impl<'a> Lower<'a> {
             ty = c::Type::fun(c::Mult::Many, t, ty);
         }
         let (e, ty) = self.coerce(e, &ty, want);
+        let e = lazy.into_iter().rev().fold(e, |b, (x, v)| {
+            c::Expr::Let(c::Bind::NonRec(x, Box::new(v)), Box::new(b))
+        });
         (wrap(binds, e), ty)
     }
 
@@ -1227,6 +1273,9 @@ impl<'a> Lower<'a> {
             Prim::SqrtFloat => conv(("F#", "Float", c::Type::double()), "F#", &|u| {
                 c::Expr::Extern("sqrt".into(), vec![u])
             }),
+            Prim::TruncFloat => conv(("F#", "Float", c::Type::double()), "F#", &|u| {
+                c::Expr::Extern("trunc".into(), vec![u])
+            }),
             Prim::CharToInt => conv(("C#", "Char", c::Type::int()), "I#", &|u| u),
             Prim::IntToChar => conv(int_rep(), "C#", &|u| u),
             Prim::StrLength => self.skeleton(ty, 1, |a, _| {
@@ -1380,6 +1429,22 @@ impl<'a> Lower<'a> {
                 newtype: false,
             });
         }
+        let io_tv = self.tv("a");
+        prog.datas.push(c::DataDecl {
+            name: "IO".into(),
+            params: vec![(io_tv.clone(), c::Kind::Type)],
+            linear: false,
+            ctors: vec![c::CtorDecl {
+                name: "IO#".into(),
+                fields: vec![c::Type::fun(
+                    c::Mult::Many,
+                    c::Type::unit(),
+                    c::Type::Var(io_tv),
+                )],
+                strict: vec![true],
+            }],
+            newtype: true,
+        });
         let datas: Vec<GName> = self
             .p
             .order
@@ -1415,13 +1480,32 @@ impl<'a> Lower<'a> {
                 Global::Prim { ty, prim } => {
                     let tv = self.ev().eval(&Vec::new(), ty);
                     let cty = self.lower_ty(&mut Vec::new(), &tv);
-                    if let Some(e) = self.prim_body(*prim, &cty) {
-                        prog.binds.push(c::TopBind {
-                            name: self.gname(*g),
-                            ty: cty,
-                            expr: e,
-                            span: Span::DUMMY,
-                        });
+                    // Primitives are written against the representation of `IO`.
+                    let rep = io_rep(&cty);
+                    if let Some(e) = self.prim_body(*prim, &rep) {
+                        let name = self.gname(*g);
+                        if rep.alpha_eq(&cty) {
+                            prog.binds.push(c::TopBind {
+                                name,
+                                ty: cty,
+                                expr: e,
+                                span: Span::DUMMY,
+                            });
+                        } else {
+                            let target = format!("{name}$rep");
+                            prog.binds.push(c::TopBind {
+                                name: target.clone(),
+                                ty: rep,
+                                expr: e,
+                                span: Span::DUMMY,
+                            });
+                            prog.binds.push(c::TopBind {
+                                name,
+                                expr: cast_poly(c::Expr::Global(target), &cty),
+                                ty: cty,
+                                span: Span::DUMMY,
+                            });
+                        }
                     }
                 }
                 _ => {}
@@ -1435,7 +1519,14 @@ impl<'a> Lower<'a> {
                 expr: c::Expr::LetStrict(
                     c::Binder::new(r, c::Mult::Many, c::Type::con(self.p.name(unit))),
                     Box::new(app(
-                        c::Expr::Global(self.gname(m)),
+                        c::Expr::Cast(
+                            Box::new(c::Expr::Global(self.gname(m))),
+                            c::Type::fun(
+                                c::Mult::Many,
+                                c::Type::unit(),
+                                c::Type::con(self.p.name(unit)),
+                            ),
+                        ),
                         vec![c::Expr::Lit(c::Lit::Unit)],
                     )),
                     Box::new(c::Expr::int(0)),

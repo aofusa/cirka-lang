@@ -1,0 +1,5 @@
+error[E1116]: `Hash` cannot be derived
+ --> tests/cirkalang/fail/type/derive_unknown.cirka:3:24
+  |
+3 | data T = MkT deriving (Hash)
+  |                        ^^^^ only `Eq`, `Ord` and `Show` can be derived

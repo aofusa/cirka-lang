@@ -84,6 +84,60 @@ pub enum Item {
     Def(Def),
     Data(Data),
     Prim(GName, Expr),
+    /// A trait; its dictionary type is an `Item::Data` of the same name.
+    Trait(Trait),
+    Impl(Impl),
+}
+
+/// `trait ... where ...` (spec-v0.0.2.md §3): the dictionary type and its
+/// constructor are ordinary data; this records what the elaborator must
+/// generate besides them. Dictionary fields are the supertraits, then the
+/// methods.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Trait {
+    pub name: GName,
+    pub dict_con: GName,
+    /// Source names of the parameters (in scope in default clauses).
+    pub params: Vec<String>,
+    /// Selector of each supertrait.
+    pub supers: Vec<GName>,
+    pub methods: Vec<TraitMethod>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct TraitMethod {
+    /// The selector, named like the method.
+    pub name: GName,
+    /// Default definition: its global and clauses.
+    pub default: Option<(GName, Vec<Clause>)>,
+    pub span: Span,
+}
+
+/// `impl [ctx =>] Trait args where ...`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Impl {
+    /// The dictionary.
+    pub name: GName,
+    /// Variables of the head, implicitly bound.
+    pub vars: Vec<(String, Span)>,
+    pub context: Vec<Expr>,
+    /// The trait applied to its arguments.
+    pub head: Expr,
+    pub trait_: GName,
+    /// One entry per method of the trait, in field order.
+    pub methods: Vec<ImplMethod>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ImplMethod {
+    /// The trait's selector.
+    pub method: GName,
+    /// The global holding this implementation.
+    pub def: GName,
+    /// Empty when the default is used.
+    pub clauses: Vec<Clause>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

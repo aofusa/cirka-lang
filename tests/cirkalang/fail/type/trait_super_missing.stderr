@@ -1,0 +1,6 @@
+error[E1253]: no instance for `A Int`
+  --> tests/cirkalang/fail/type/trait_super_missing.cirka:9:1
+   |
+ 9 | impl B Int where
+   | ^^^^^^^^^^^^^^^^
+   = note: it is a supertrait of the trait being implemented

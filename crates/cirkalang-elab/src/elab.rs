@@ -10,6 +10,9 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
+mod traits;
+use traits::{Goal, Pending, Search};
+
 type SLit = cirkalang_resolve::rast::Lit;
 
 #[derive(Clone, Debug, Default)]
@@ -96,6 +99,8 @@ pub struct Elab<'r> {
     pub diags: RefCell<Vec<Diagnostic>>,
     /// Name of the definition being elaborated (for messages).
     current: RefCell<String>,
+    /// Constraints to solve when more types are known.
+    pending: RefCell<Vec<Pending>>,
 }
 
 fn sp(e: &rast::Expr) -> Span {
@@ -119,6 +124,8 @@ impl<'r> Elab<'r> {
             main: rp.main,
             order: Vec::new(),
             builtins: Builtins::default(),
+            traits: HashMap::new(),
+            impls: HashMap::new(),
         };
         let f = |n: &str| rp.find("Prelude", n);
         prog.builtins = Builtins {
@@ -136,7 +143,10 @@ impl<'r> Elab<'r> {
             zero: f("Z"),
             succ: f("S"),
             bind: f(">>="),
+            prim_bind: f("primBind"),
             then: f(">>"),
+            num: f("Num"),
+            from_int: f("fromInt"),
             negate: f("negate"),
             int: f("Int"),
             uint: f("UInt"),
@@ -157,6 +167,7 @@ impl<'r> Elab<'r> {
             fuel_span: Cell::new(None),
             diags: RefCell::new(Vec::new()),
             current: RefCell::new(String::new()),
+            pending: RefCell::new(Vec::new()),
         }
     }
 
@@ -580,6 +591,12 @@ impl<'r> Elab<'r> {
                 if self.out_of_fuel.get() {
                     return false;
                 }
+                // A type may depend on a constraint that has not been solved.
+                if self.solve_pending(false) && ev.unify(cx.lvl(), expected, actual).is_ok() {
+                    return true;
+                }
+                // The types are shown with the literals at their defaults.
+                self.default_literals();
                 self.report(
                     self.error("E1200", span, "type mismatch")
                         .with_note(format!("expected `{}`", self.show(cx, expected)))
@@ -648,10 +665,14 @@ impl<'r> Elab<'r> {
                 Some(d) => self.check(cx, &d, ty, rig),
                 None => Term::Error,
             },
-            ExprKind::Do(ss) => match self.desugar_do(ss, span) {
-                Some(d) => self.check(cx, &d, ty, rig),
-                None => Term::Error,
-            },
+            ExprKind::Do(ss) => {
+                let io = matches!(&wty, Val::Neutral(Head::Global(g), _)
+                    if Some(*g) == self.prog.builtins.io);
+                match self.desugar_do(ss, span, io) {
+                    Some(d) => self.check(cx, &d, ty, rig),
+                    None => Term::Error,
+                }
+            }
             ExprKind::Lit(SLit::Int(n)) => self.check_int(cx, *n, false, &wty, span),
             ExprKind::Lit(SLit::Float(x)) if !matches!(wty, Val::Neutral(Head::Meta(_), _)) => {
                 if self.is_prim_type(&wty, self.prog.builtins.float) {
@@ -757,13 +778,25 @@ impl<'r> Elab<'r> {
             self.report(self.error("E1200", span, format!("literal out of range for `{what}`")));
             Term::Error
         };
-        if self.is_prim_type(wty, b.int) || matches!(wty, Val::Neutral(Head::Meta(_), _)) {
+        if matches!(wty, Val::Neutral(Head::Meta(_), _)) {
+            // Decided when the type is known (`1 + x`), `Int` by default.
+            let meta = self.fresh_meta(cx, span);
+            self.pending.borrow_mut().push(Pending {
+                meta: meta.clone(),
+                cx: cx.clone(),
+                goal: Goal::Int {
+                    n,
+                    neg,
+                    ty: wty.clone(),
+                },
+                span,
+            });
+            return meta;
+        }
+        if self.is_prim_type(wty, b.int) {
             let v = if neg { -(n as i128) } else { n as i128 };
             if v < i64::MIN as i128 || v > i64::MAX as i128 {
                 return too_big("Int");
-            }
-            if let (Val::Neutral(Head::Meta(_), _), Some(int)) = (wty, b.int) {
-                self.unify_or_err(cx, span, wty, &Val::Neutral(Head::Global(int), Vec::new()));
             }
             return Term::Lit(Lit::Int(v as i64));
         }
@@ -791,8 +824,42 @@ impl<'r> Elab<'r> {
             }
             return t;
         }
-        // Infer as Int and report the mismatch.
+        // Any other type: `fromInt`, if it has a `Num` instance.
         let v = if neg { -(n as i128) } else { n as i128 };
+        if let (Some(num), Some(from_int)) = (b.num, b.from_int)
+            && v >= i64::MIN as i128
+            && v <= i64::MAX as i128
+        {
+            let goal = Val::Data(num, vec![(wty.clone(), Icit::Expl)]);
+            let dict = match self.search(cx, &goal, 0) {
+                Search::Found(d) => Some(d),
+                Search::NotFound => None,
+                Search::Stuck => {
+                    let meta = self.fresh_meta(cx, span);
+                    self.pending.borrow_mut().push(Pending {
+                        meta: meta.clone(),
+                        cx: cx.clone(),
+                        goal: Goal::Instance(goal),
+                        span,
+                    });
+                    Some(meta)
+                }
+            };
+            if let Some(d) = dict {
+                let t = Term::App(
+                    Rc::new(Term::Global(from_int)),
+                    Rc::new(self.quote(cx, wty)),
+                    Icit::Impl,
+                );
+                let t = Term::App(Rc::new(t), Rc::new(d), Icit::Impl);
+                return Term::App(
+                    Rc::new(t),
+                    Rc::new(Term::Lit(Lit::Int(v as i64))),
+                    Icit::Expl,
+                );
+            }
+        }
+        // Infer as Int and report the mismatch.
         let it = match b.int {
             Some(g) => Val::Neutral(Head::Global(g), Vec::new()),
             None => Val::Error,
@@ -886,9 +953,17 @@ impl<'r> Elab<'r> {
     fn insert_implicits(&self, cx: &Cxt, mut t: Term, mut a: Val, span: Span) -> (Term, Val) {
         loop {
             match self.whnf(&a) {
-                Val::Pi(_, _, Icit::Impl, _, c) => {
+                Val::Pi(_, _, Icit::Impl, dom, c) => {
                     let m = self.fresh_meta(cx, span);
                     let mv = self.eval(cx, &m);
+                    if self.trait_of(&dom).is_some() {
+                        self.pending.borrow_mut().push(Pending {
+                            meta: m.clone(),
+                            cx: cx.clone(),
+                            goal: Goal::Instance((*dom).clone()),
+                            span,
+                        });
+                    }
                     t = Term::App(Rc::new(t), Rc::new(m), Icit::Impl);
                     a = self.ev().inst(&c, mv);
                 }
@@ -998,6 +1073,16 @@ impl<'r> Elab<'r> {
             } => {
                 let a = self.check_type(cx, dom);
                 let av = self.eval(cx, &a);
+                if *implicit
+                    && name.is_none()
+                    && self.trait_of(&av).is_none()
+                    && !matches!(self.whnf(&av), Val::Error)
+                {
+                    self.report(
+                        self.error("E1250", dom.span, "a constraint must be a trait")
+                            .with_note(format!("this is `{}`", self.show(cx, &av))),
+                    );
+                }
                 let univ = self.is_universe_valued(cx.lvl(), &av);
                 let m = match mult {
                     Some(m) => {
@@ -1319,7 +1404,15 @@ impl<'r> Elab<'r> {
         ))
     }
 
-    fn desugar_do(&self, ss: &[rast::Stmt], span: Span) -> Option<rast::Expr> {
+    /// In `IO` statements are sequenced by `primBind`, whose continuation
+    /// is linear (so `do` blocks may hold linear resources); other monads
+    /// use the method `>>=`.
+    fn desugar_do(&self, ss: &[rast::Stmt], span: Span, io: bool) -> Option<rast::Expr> {
+        let bind = if io {
+            (self.prog.builtins.prim_bind, "primBind")
+        } else {
+            (self.prog.builtins.bind, ">>=")
+        };
         let Some((s, rest)) = ss.split_first() else {
             self.report(self.error("E1002", span, "empty `do` block"));
             return None;
@@ -1355,13 +1448,7 @@ impl<'r> Elab<'r> {
                     ),
                     span,
                 );
-                app(
-                    app(
-                        self.gexpr(self.prog.builtins.bind, ">>=", e.span)?,
-                        e.clone(),
-                    ),
-                    lam,
-                )
+                app(app(self.gexpr(bind.0, bind.1, e.span)?, e.clone()), lam)
             }
             rast::Stmt::Bind(x, xs, e) => {
                 let lam = mk(
@@ -1376,13 +1463,7 @@ impl<'r> Elab<'r> {
                     ),
                     span,
                 );
-                app(
-                    app(
-                        self.gexpr(self.prog.builtins.bind, ">>=", e.span)?,
-                        e.clone(),
-                    ),
-                    lam,
-                )
+                app(app(self.gexpr(bind.0, bind.1, e.span)?, e.clone()), lam)
             }
             rast::Stmt::Let(bs) => mk(ExprKind::Let(bs.clone(), Box::new(rest_e)), span),
         })
@@ -1750,8 +1831,14 @@ impl<'r> Elab<'r> {
             cx.scope.truncate(n);
             return t;
         };
+        let mut xty = self.whnf(&self.ty_val(cx, x));
+        if matches!(xty, Val::Neutral(Head::Meta(_), _))
+            && (self.solve_pending(false) || self.default_literals())
+        {
+            self.solve_pending(false);
+            xty = self.whnf(&self.ty_val(cx, x));
+        }
         // Nat literal patterns become constructor patterns.
-        let xty = self.whnf(&self.ty_val(cx, x));
         if let Val::Data(d, _) = &xty
             && Some(*d) == self.prog.builtins.nat
         {
@@ -2424,6 +2511,32 @@ impl<'r> Elab<'r> {
                 self.prim(*g, t);
             }
         }
+        let traits: Vec<&rast::Trait> = items
+            .iter()
+            .filter_map(|it| match it {
+                rast::Item::Trait(t) => Some(t),
+                _ => None,
+            })
+            .collect();
+        let impls: Vec<&rast::Impl> = items
+            .iter()
+            .filter_map(|it| match it {
+                rast::Item::Impl(i) => Some(i),
+                _ => None,
+            })
+            .collect();
+        // (Constraints in signatures must be known to be traits.)
+        for t in &traits {
+            self.prog.traits.insert(
+                t.name,
+                TraitInfo {
+                    con: t.dict_con,
+                    supers: Vec::new(),
+                    super_traits: Vec::new(),
+                    defaults: Vec::new(),
+                },
+            );
+        }
         for it in &items {
             if let rast::Item::Data(d) = it {
                 self.data_sig(d);
@@ -2442,7 +2555,15 @@ impl<'r> Elab<'r> {
                 self.data_cons(d);
             }
         }
-        // 3. Signatures.
+        // 3. Traits, the heads of implementations, signatures.
+        for t in &traits {
+            self.trait_item(t);
+        }
+        self.check_supertrait_cycles(&traits);
+        for i in &impls {
+            self.impl_sig(i);
+        }
+        self.check_coherence(&impls);
         for it in &items {
             if let rast::Item::Def(d) = it {
                 self.def_sig(d);
@@ -2450,8 +2571,11 @@ impl<'r> Elab<'r> {
         }
         // 4. Bodies.
         for it in &items {
-            if let rast::Item::Def(d) = it {
-                self.def_body(d);
+            match it {
+                rast::Item::Def(d) => self.def_body(d),
+                rast::Item::Trait(t) => self.default_bodies(t),
+                rast::Item::Impl(i) => self.impl_body(i),
+                _ => {}
             }
         }
         // `main : IO ()`.
@@ -2471,6 +2595,17 @@ impl<'r> Elab<'r> {
                 );
             }
         }
+    }
+
+    fn error_count(&self) -> usize {
+        self.diags.borrow().iter().filter(|x| x.is_error()).count()
+    }
+
+    /// Solves what is left of the constraints of a definition and zonks
+    /// its body (in context `cx`).
+    fn finish(&self, cx: &Cxt, body: &Term) -> Term {
+        self.solve_pending(true);
+        self.zonk(cx.lvl(), body)
     }
 
     fn begin(&self, name: String) {
@@ -2530,6 +2665,7 @@ impl<'r> Elab<'r> {
                 }
             }
         }
+        self.solve_pending(true);
         let mut ty = self.zonk(cx.lvl(), &sig);
         for (x, m, a) in ps.into_iter().rev() {
             ty = Term::Pi(x, m, Icit::Expl, Rc::new(a), Rc::new(ty));
@@ -2597,6 +2733,7 @@ impl<'r> Elab<'r> {
                     t
                 }
             };
+            self.solve_pending(true);
             let sig = self.zonk(cx.lvl(), &sig);
             // Walk the fields.
             let mut v = self.eval(&cx, &sig);
@@ -2693,6 +2830,7 @@ impl<'r> Elab<'r> {
         self.begin(self.prog.name(g).to_string());
         let mut cx = Cxt::default();
         let tt = self.check_type(&mut cx, t);
+        self.solve_pending(true);
         let ty = self.zonk(0, &tt);
         let name = &self.rp.info(g).name;
         match Prim::from_name(name) {
@@ -2710,6 +2848,7 @@ impl<'r> Elab<'r> {
         self.begin(self.prog.name(d.name).to_string());
         let mut cx = Cxt::default();
         let tt = self.check_type(&mut cx, &d.sig);
+        self.solve_pending(true);
         let ty = self.zonk(0, &tt);
         self.prog.globals[d.name.0 as usize] = Global::Def { ty, body: None };
     }
@@ -2720,12 +2859,12 @@ impl<'r> Elab<'r> {
         let Global::Def { ty, .. } = self.prog.get(d.name).clone() else {
             return;
         };
-        let before = self.diags.borrow().iter().filter(|x| x.is_error()).count();
+        let before = self.error_count();
         let tv = self.ev().eval(&Vec::new(), &ty);
         let mut cx = Cxt::default();
         let body = self.elab_clauses(&mut cx, &name, &d.clauses, &tv, d.span);
-        let body = self.zonk(0, &body);
-        let after = self.diags.borrow().iter().filter(|x| x.is_error()).count();
+        let body = self.finish(&cx, &body);
+        let after = self.error_count();
         self.prog.globals[d.name.0 as usize] = Global::Def {
             ty,
             body: if after == before { Some(body) } else { None },

@@ -1,0 +1,46 @@
+module Main
+
+-- Traits over type constructors, and `do` in a user's monad.
+data State s a = MkState (s -> Pair a s)
+
+run : State s a -> s -> Pair a s
+run (MkState f) = f
+
+impl Functor (State s) where
+  fmap f m = MkState (\s => case run m s of
+    MkPair a s2 => MkPair (f a) s2)
+
+impl Monad (State s) where
+  pure a = MkState (\s => MkPair a s)
+  m >>= k = MkState (\s => case run m s of
+    MkPair a s2 => run (k a) s2)
+
+tick : State Int Int
+tick = MkState (\s => MkPair s (s + 1))
+
+threeTicks : State Int Int
+threeTicks = do
+  a <- tick
+  b <- tick
+  c <- tick
+  pure (a + b * 10 + c * 100)
+
+safeDiv : Int -> Int -> Maybe Int
+safeDiv _ 0 = Nothing
+safeDiv a b = Just (a / b)
+
+calc : Int -> Int -> Maybe Int
+calc a b = do
+  x <- safeDiv a b
+  y <- safeDiv x 2
+  pure (x + y)
+
+main : IO ()
+main = do
+  printInt (fst (run threeTicks 1))
+  putStrLn (show (calc 20 2))
+  putStrLn (show (calc 20 0))
+  putStrLn (show (fmap (\x => x + 1) (Just 1)))
+  putStrLn (show (fmap (\x => x * 2) [1, 2]))
+  x <- fmap (\n => n + 1) (pure 41)
+  printInt x

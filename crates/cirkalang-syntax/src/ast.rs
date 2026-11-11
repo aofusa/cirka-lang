@@ -111,6 +111,30 @@ pub enum DeclKind {
     },
     /// `tests where { decls }`: declarations that exist only in test builds.
     Tests(Vec<Decl>),
+    /// `trait [ctx =>] Name params where { sigs; default clauses }`.
+    Trait(TraitDecl),
+    /// `impl [ctx =>] Trait args [where { clauses }]`.
+    Impl(ImplDecl),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct TraitDecl {
+    /// Supertraits (`Eq a` in `trait Eq a => Ord a`).
+    pub context: Vec<Expr>,
+    pub name: String,
+    pub name_span: Span,
+    pub params: Vec<Param>,
+    /// `Sig` and `Clause` declarations.
+    pub items: Vec<Decl>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ImplDecl {
+    pub context: Vec<Expr>,
+    /// `Trait arg1 ... argn`.
+    pub head: Expr,
+    /// `Clause` declarations.
+    pub items: Vec<Decl>,
 }
 
 /// `(π x y : A)` in a data declaration's parameter list.
@@ -132,6 +156,8 @@ pub struct DataDecl {
     pub cons: Vec<ConDecl>,
     /// Declared with the short form `data T a = A | B x`.
     pub short: bool,
+    /// `deriving (Eq, Show)`.
+    pub deriving: Vec<(QName, Span)>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

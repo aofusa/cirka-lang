@@ -1,0 +1,29 @@
+module Main
+
+-- Instances with a context, nested and recursive.
+trait Size a where
+  size : a -> Int
+
+impl Size Int where
+  size _ = 1
+
+impl Size Bool where
+  size _ = 2
+
+impl Size a => Size (List a) where
+  size xs = sum (map size xs)
+
+impl (Size a, Size b) => Size (Pair a b) where
+  size (MkPair x y) = size x + size y
+
+deep : List (List (Pair Int Bool))
+deep = [[MkPair 1 True], [], [MkPair 2 False, MkPair 3 True]]
+
+main : IO ()
+main = do
+  printInt (size [1, 2, 3])
+  printInt (size [[1, 2], [3]])
+  printInt (size deep)
+  putStrLn (show [[1, 2], [], [3]])
+  putStrLn (show (Just [True, False]))
+  putStrLn (show (MkPair 1 "a"))

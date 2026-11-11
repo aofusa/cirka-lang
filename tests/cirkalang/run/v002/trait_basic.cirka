@@ -1,0 +1,30 @@
+module Main
+
+-- A trait with a default method, used through a constrained function.
+trait Area a where
+  area : a -> Int
+  twice : a -> Int
+  twice x = area x * 2
+
+data Shape = Circle Int | Rect Int Int
+
+impl Area Shape where
+  area (Circle r) = 3 * r * r
+  area (Rect w h) = w * h
+
+data Square = MkSquare Int
+
+impl Area Square where
+  area (MkSquare s) = s * s
+  twice (MkSquare s) = s * s * 10
+
+both : Area a => a -> a -> Int
+both x y = area x + twice y
+
+main : IO ()
+main = do
+  printInt (area (Rect 2 3))
+  printInt (twice (Circle 1))
+  printInt (twice (MkSquare 2))
+  printInt (both (Rect 1 2) (Rect 3 4))
+  printInt (both (MkSquare 1) (MkSquare 2))

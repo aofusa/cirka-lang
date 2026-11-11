@@ -1,0 +1,31 @@
+module Main
+
+-- Polymorphic recursion through an instance, and methods calling each
+-- other in a recursive instance.
+data Nest a = Flat a | Deep (Nest (List a))
+
+impl Show a => Show (Nest a) where
+  show (Flat x) = "Flat " ++ show x
+  show (Deep n) = "Deep (" ++ show n ++ ")"
+
+trait Even a where
+  isEven : a -> Bool
+  isOdd : a -> Bool
+  isOdd x = not (isEven x)
+
+impl Even Int where
+  isEven n = n % 2 == 0
+
+impl Even a => Even (List a) where
+  isEven xs = all isEven xs
+
+all : (a -> Bool) -> List a -> Bool
+all _ [] = True
+all p (x :: xs) = p x && all p xs
+
+main : IO ()
+main = do
+  putStrLn (show (Deep (Deep (Flat [[1], [2, 3]]))))
+  putStrLn (show (isEven 4))
+  putStrLn (show (isOdd [2, 4]))
+  putStrLn (show (isOdd [2, 3]))

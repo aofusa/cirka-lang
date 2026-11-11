@@ -58,18 +58,32 @@ fn decl(d: &Decl) -> String {
             let ds: Vec<String> = ds.iter().map(decl).collect();
             format!("({p}tests {})", ds.join(" "))
         }
+        DeclKind::Trait(t) => {
+            let ctx: Vec<String> = t.context.iter().map(expr).collect();
+            let ps: Vec<String> = t.params.iter().map(param).collect();
+            let items: Vec<String> = t.items.iter().map(decl).collect();
+            format!(
+                "({p}trait ({}) {} ({}) {})",
+                ctx.join(" "),
+                t.name,
+                ps.join(" "),
+                items.join(" ")
+            )
+        }
+        DeclKind::Impl(i) => {
+            let ctx: Vec<String> = i.context.iter().map(expr).collect();
+            let items: Vec<String> = i.items.iter().map(decl).collect();
+            format!(
+                "({p}impl ({}) {} {})",
+                ctx.join(" "),
+                expr(&i.head),
+                items.join(" ")
+            )
+        }
         DeclKind::Data(dd) => {
             let mut s = format!("({p}data {}", dd.name);
             for pr in &dd.params {
-                match &pr.ty {
-                    Some(t) => {
-                        let _ =
-                            write!(s, " ({}{} : {})", mult(&pr.mult), names(&pr.names), expr(t));
-                    }
-                    None => {
-                        let _ = write!(s, " {}", names(&pr.names));
-                    }
-                }
+                let _ = write!(s, " {}", param(pr));
             }
             if let Some(t) = &dd.sig {
                 let _ = write!(s, " : {}", expr(t));
@@ -85,9 +99,20 @@ fn decl(d: &Decl) -> String {
                     }
                 }
             }
+            if !dd.deriving.is_empty() {
+                let ds: Vec<String> = dd.deriving.iter().map(|d| d.0.to_string()).collect();
+                let _ = write!(s, "\n  (deriving {})", ds.join(" "));
+            }
             s.push(')');
             s
         }
+    }
+}
+
+fn param(pr: &Param) -> String {
+    match &pr.ty {
+        Some(t) => format!("({}{} : {})", mult(&pr.mult), names(&pr.names), expr(t)),
+        None => names(&pr.names),
     }
 }
 

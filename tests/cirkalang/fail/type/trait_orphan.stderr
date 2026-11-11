@@ -1,0 +1,6 @@
+error[E1251]: orphan `impl` of `Show`
+ --> tests/cirkalang/fail/type/trait_orphan.cirka:3:1
+  |
+3 | impl Show (List Bool) where
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  = note: an `impl` must be in the module of the trait or of a type in its head

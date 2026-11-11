@@ -1,0 +1,6 @@
+module Main
+
+data T = MkT deriving (Hash)
+
+main : IO ()
+main = pure ()

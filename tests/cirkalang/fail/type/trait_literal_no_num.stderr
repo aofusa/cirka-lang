@@ -1,0 +1,7 @@
+error[E1200]: type mismatch
+ --> tests/cirkalang/fail/type/trait_literal_no_num.cirka:6:5
+  |
+6 | o = 1
+  |     ^
+  = note: expected `Opaque`
+  = note:    found `Int`

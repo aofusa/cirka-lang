@@ -1,0 +1,6 @@
+error[E1253]: no instance for `Show Opaque`
+ --> tests/cirkalang/fail/type/trait_no_instance.cirka:6:18
+  |
+6 | main = putStrLn (show MkOpaque)
+  |                  ^^^^
+  = help: add an `impl`, or a constraint to the signature

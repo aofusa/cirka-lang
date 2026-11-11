@@ -1322,6 +1322,7 @@ impl<'m> Interp<'m> {
                 )))
             }
             "sqrt" => Ok(Val::F(a[0].float().sqrt())),
+            "trunc" => Ok(Val::F(a[0].float().trunc())),
             "exp" => Ok(Val::F(a[0].float().exp())),
             "log" => Ok(Val::F(a[0].float().ln())),
             "sin" => Ok(Val::F(a[0].float().sin())),

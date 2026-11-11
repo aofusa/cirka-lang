@@ -61,6 +61,14 @@ pub fn expand(m: &mut Module) -> Expanded {
                             out.test_only.insert(dd.name.clone());
                             out.test_only.extend(dd.cons.iter().map(|c| c.name.clone()));
                         }
+                        DeclKind::Trait(t) => {
+                            out.test_only.insert(t.name.clone());
+                            for it in &t.items {
+                                if let DeclKind::Sig { names, .. } = &it.kind {
+                                    out.test_only.extend(names.iter().map(|n| n.0.clone()));
+                                }
+                            }
+                        }
                         _ => {}
                     }
                     test(&mut out, &mut seen, &mut decls, d);

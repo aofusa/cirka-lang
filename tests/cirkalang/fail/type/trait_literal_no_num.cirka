@@ -1,0 +1,9 @@
+module Main
+
+data Opaque = MkOpaque
+
+o : Opaque
+o = 1
+
+main : IO ()
+main = pure ()

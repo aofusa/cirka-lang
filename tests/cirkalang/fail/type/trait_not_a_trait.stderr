@@ -1,0 +1,6 @@
+error[E1250]: a constraint must be a trait
+ --> tests/cirkalang/fail/type/trait_not_a_trait.cirka:3:5
+  |
+3 | f : Int => Int -> Int
+  |     ^^^
+  = note: this is `Int`

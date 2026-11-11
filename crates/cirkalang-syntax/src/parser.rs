@@ -37,6 +37,15 @@ pub fn parse_expr_tokens(toks: Vec<Token>) -> (Option<Expr>, Vec<Diagnostic>) {
     (e, p.errs)
 }
 
+/// The constraints written before `=>`.
+fn context_items(e: Expr) -> Vec<Expr> {
+    match e.kind {
+        ExprKind::Tuple(items) => items,
+        ExprKind::Unit => Vec::new(),
+        _ => vec![e],
+    }
+}
+
 impl Parser {
     // ---- token helpers ----
 
@@ -366,9 +375,19 @@ impl Parser {
                     ty,
                 }
             }
-            Tok::Kw(
-                k @ (Kw::Total | Kw::Partial | Kw::Covering | Kw::Trait | Kw::Impl | Kw::Mutual),
-            ) => {
+            Tok::Kw(Kw::Trait) => DeclKind::Trait(self.trait_decl()?),
+            Tok::Kw(Kw::Impl) => {
+                if private {
+                    let sp = self.span();
+                    self.errs.push(
+                        Diagnostic::error("`impl` cannot be private")
+                            .with_code("E1006")
+                            .with_label(sp, "instances are visible wherever their trait is"),
+                    );
+                }
+                DeclKind::Impl(self.impl_decl()?)
+            }
+            Tok::Kw(k @ (Kw::Total | Kw::Partial | Kw::Covering | Kw::Mutual)) => {
                 let sp = self.span();
                 self.errs.push(
                     Diagnostic::error(format!(
@@ -623,19 +642,124 @@ impl Parser {
         }
     }
 
-    fn data(&mut self) -> R<DataDecl> {
-        self.bump(); // data
-        let name_span = self.span();
-        let name = match self.peek().clone() {
+    /// `ctx =>` if the following tokens start with one.
+    fn opt_context(&mut self) -> R<Vec<Expr>> {
+        let save = (self.pos, self.errs.len());
+        if let Ok(e) = self.opseq()
+            && self.at(&Tok::FatArrow)
+        {
+            self.bump();
+            return Ok(context_items(e));
+        }
+        self.pos = save.0;
+        self.errs.truncate(save.1);
+        Ok(Vec::new())
+    }
+
+    fn type_name(&mut self) -> R<(String, Span)> {
+        let sp = self.span();
+        match self.peek().clone() {
             Tok::UIdent(p, n) if p.is_empty() => {
                 self.bump();
-                n
+                Ok((n, sp))
             }
             _ => {
                 self.error_here("a type name");
-                return Err(());
+                Err(())
+            }
+        }
+    }
+
+    fn trait_decl(&mut self) -> R<TraitDecl> {
+        self.bump(); // trait
+        let context = self.opt_context()?;
+        let (name, name_span) = self.type_name()?;
+        let params = self.type_params()?;
+        let mut items = Vec::new();
+        if self.at_kw(Kw::Where) {
+            self.bump();
+            items = self.block(|p| p.decl())?;
+        }
+        for d in &items {
+            if !matches!(d.kind, DeclKind::Sig { .. } | DeclKind::Clause { .. }) || d.private {
+                self.errs.push(
+                    Diagnostic::error(
+                        "a trait may contain only method signatures and default definitions",
+                    )
+                    .with_code("E1006")
+                    .with_label(d.span, "not allowed in a `trait` block"),
+                );
+            }
+        }
+        Ok(TraitDecl {
+            context,
+            name,
+            name_span,
+            params,
+            items,
+        })
+    }
+
+    fn impl_decl(&mut self) -> R<ImplDecl> {
+        self.bump(); // impl
+        let context = self.opt_context()?;
+        let head = self.opseq()?;
+        let mut items = Vec::new();
+        if self.at_kw(Kw::Where) {
+            self.bump();
+            items = self.block(|p| p.decl())?;
+        }
+        for d in &items {
+            if !matches!(d.kind, DeclKind::Clause { .. }) || d.private {
+                self.errs.push(
+                    Diagnostic::error("an `impl` may contain only method definitions")
+                        .with_code("E1006")
+                        .with_label(d.span, "not allowed in an `impl` block"),
+                );
+            }
+        }
+        Ok(ImplDecl {
+            context,
+            head,
+            items,
+        })
+    }
+
+    /// `deriving C`, `deriving (C, D)`.
+    fn deriving(&mut self) -> R<Vec<(QName, Span)>> {
+        self.bump(); // deriving
+        let mut out = Vec::new();
+        let one = |p: &mut Self, out: &mut Vec<(QName, Span)>| -> R<()> {
+            let sp = p.span();
+            match p.peek().clone() {
+                Tok::UIdent(m, n) => {
+                    p.bump();
+                    out.push((QName { module: m, name: n }, sp));
+                    Ok(())
+                }
+                _ => {
+                    p.error_here("a trait name");
+                    Err(())
+                }
             }
         };
+        if self.eat(&Tok::LParen) {
+            if !self.eat(&Tok::RParen) {
+                loop {
+                    one(self, &mut out)?;
+                    if !self.eat(&Tok::Comma) {
+                        break;
+                    }
+                }
+                self.expect(&Tok::RParen, "`)` or `,`")?;
+            }
+        } else {
+            one(self, &mut out)?;
+        }
+        Ok(out)
+    }
+
+    fn type_params(&mut self) -> R<Vec<Param>> {
         let mut params = Vec::new();
         loop {
             match self.peek().clone() {
@@ -663,11 +787,23 @@ impl Parser {
                 _ => break,
             }
         }
+        Ok(params)
+    }
+
+    fn data(&mut self) -> R<DataDecl> {
+        self.bump(); // data
+        let (name, name_span) = self.type_name()?;
+        let params = self.type_params()?;
         if self.eat(&Tok::Equals) {
             let mut cons = vec![self.short_con()?];
             while self.eat(&Tok::Bar) {
                 cons.push(self.short_con()?);
             }
+            let deriving = if self.at_kw(Kw::Deriving) {
+                self.deriving()?
+            } else {
+                Vec::new()
+            };
             return Ok(DataDecl {
                 name,
                 name_span,
@@ -675,6 +811,7 @@ impl Parser {
                 sig: None,
                 cons,
                 short: true,
+                deriving,
             });
         }
         let sig = if self.eat(&Tok::Colon) {
@@ -687,7 +824,12 @@ impl Parser {
             return Err(());
         }
         self.bump();
+        let mut deriving = Vec::new();
         let groups = self.block(|p| {
+            if p.at_kw(Kw::Deriving) {
+                deriving.extend(p.deriving()?);
+                return Ok(Vec::new());
+            }
             let mut names = vec![p.con_name()?];
             while p.eat(&Tok::Comma) {
                 names.push(p.con_name()?);
@@ -703,6 +845,9 @@ impl Parser {
                 })
                 .collect::<Vec<_>>())
         })?;
+        if self.at_kw(Kw::Deriving) {
+            deriving.extend(self.deriving()?);
+        }
         Ok(DataDecl {
             name,
             name_span,
@@ -710,6 +855,7 @@ impl Parser {
             sig,
             cons: groups.into_iter().flatten().collect(),
             short: false,
+            deriving,
         })
     }
 
@@ -1027,6 +1173,24 @@ impl Parser {
                 },
                 span: self.from(start),
             });
+        }
+        // `C a => T`, `(C a, D b) => T`: instance-implicit binders.
+        if self.eat(&Tok::FatArrow) {
+            let cod = self.expr()?;
+            let span = self.from(start);
+            return Ok(context_items(lhs)
+                .into_iter()
+                .rev()
+                .fold(cod, |cod, c| Expr {
+                    span,
+                    kind: ExprKind::Pi {
+                        mult: Some(Mult::Many),
+                        implicit: true,
+                        names: Vec::new(),
+                        dom: Box::new(c),
+                        cod: Box::new(cod),
+                    },
+                }));
         }
         Ok(lhs)
     }

@@ -45,6 +45,21 @@ fn mult(m: &Option<Mult>) -> &'static str {
 fn item(p: &Program, it: &Item) -> String {
     match it {
         Item::Prim(n, t) => format!("(prim {} {})", g(p, *n), expr(p, t)),
+        Item::Trait(t) => {
+            let ms: Vec<String> = t.methods.iter().map(|m| g(p, m.name)).collect();
+            format!("(trait {} ({}))", g(p, t.name), ms.join(" "))
+        }
+        Item::Impl(i) => {
+            let ctx: Vec<String> = i.context.iter().map(|c| expr(p, c)).collect();
+            let ms: Vec<String> = i.methods.iter().map(|m| g(p, m.method)).collect();
+            format!(
+                "(impl {} ({}) {} ({}))",
+                g(p, i.name),
+                ctx.join(" "),
+                expr(p, &i.head),
+                ms.join(" ")
+            )
+        }
         Item::Def(d) => {
             let mut s = format!("(def {} : {}", g(p, d.name), expr(p, &d.sig));
             for c in &d.clauses {

@@ -1,3 +1,2 @@
 total f : Int -> Int
-trait Eq a where
-  eq : a -> a -> Bool
+covering g : Int -> Int

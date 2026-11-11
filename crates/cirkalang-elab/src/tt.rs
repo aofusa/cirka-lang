@@ -3,6 +3,7 @@
 //! program.
 
 pub use cirkalang_resolve::rast::GName;
+use std::collections::HashMap;
 use std::fmt::Write;
 use std::rc::Rc;
 
@@ -259,6 +260,7 @@ pub enum Prim {
     IntToFloat,
     FloatToInt,
     SqrtFloat,
+    TruncFloat,
     // Char.
     CharToInt,
     IntToChar,
@@ -329,6 +331,7 @@ impl Prim {
         ("primIntToFloat", Prim::IntToFloat),
         ("primFloatToInt", Prim::FloatToInt),
         ("primSqrtFloat", Prim::SqrtFloat),
+        ("primTruncFloat", Prim::TruncFloat),
         ("primCharToInt", Prim::CharToInt),
         ("primIntToChar", Prim::IntToChar),
         ("primStrLength", Prim::StrLength),
@@ -338,7 +341,7 @@ impl Prim {
         ("primIntToStr", Prim::IntToStr),
         ("primFloatToStr", Prim::FloatToStr),
         ("primCharToStr", Prim::CharToStr),
-        ("pure", Prim::Pure),
+        ("primPure", Prim::Pure),
         ("primBind", Prim::Bind),
         ("putStr", Prim::PutStr),
         ("printInt", Prim::PrintInt),
@@ -390,6 +393,31 @@ pub struct Program {
     /// Definitions in elaboration order (for lowering).
     pub order: Vec<GName>,
     pub builtins: Builtins,
+    /// Traits, by the name of their dictionary type.
+    pub traits: HashMap<GName, TraitInfo>,
+    /// Implementations of each trait.
+    pub impls: HashMap<GName, Vec<ImplInfo>>,
+}
+
+/// A trait: its dictionary type is the `Global::Data` of the same name,
+/// with one constructor whose fields are the supertraits, then the methods
+/// (spec-v0.0.2.md §3).
+#[derive(Clone, Debug)]
+pub struct TraitInfo {
+    pub con: GName,
+    /// Selector of each supertrait.
+    pub supers: Vec<GName>,
+    pub super_traits: Vec<GName>,
+    /// Default definition of each method.
+    pub defaults: Vec<Option<GName>>,
+}
+
+/// An instance: `dict : {vars} -> {ω ctx} -> Trait args`.
+#[derive(Clone, Copy, Debug)]
+pub struct ImplInfo {
+    pub dict: GName,
+    pub nvars: usize,
+    pub nctx: usize,
 }
 
 /// Prelude types and constructors used by built-in sugar (literals,
@@ -410,7 +438,10 @@ pub struct Builtins {
     pub zero: Option<GName>,
     pub succ: Option<GName>,
     pub bind: Option<GName>,
+    pub prim_bind: Option<GName>,
     pub then: Option<GName>,
+    pub num: Option<GName>,
+    pub from_int: Option<GName>,
     pub negate: Option<GName>,
     pub int: Option<GName>,
     pub uint: Option<GName>,
@@ -513,7 +544,9 @@ fn pt(p: &Program, names: &mut Vec<Name>, t: &Term, prec: u8, s: &mut String) {
             let _ = write!(s, "{l}");
         }
         Term::Meta(m) | Term::InsertedMeta(m, _) => {
-            let _ = write!(s, "?{m}");
+            // Not numbered: the numbers change with the size of the Prelude.
+            let _ = m;
+            s.push('_');
         }
         Term::Error => s.push_str("<error>"),
         Term::App(..) => {

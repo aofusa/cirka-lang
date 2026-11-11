@@ -1,0 +1,6 @@
+module Main
+
+data T = MkT (Int -> Int) deriving (Eq)
+
+main : IO ()
+main = pure ()

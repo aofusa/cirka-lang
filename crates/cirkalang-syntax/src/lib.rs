@@ -2,6 +2,7 @@
 //! (docs/design/cirkalang/spec-v0.0.1.md §2–3).
 
 pub mod ast;
+pub mod derive;
 pub mod layout;
 pub mod lexer;
 pub mod parser;

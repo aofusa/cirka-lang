@@ -1,0 +1,5 @@
+error[E1115]: `u` is not a method of trait `T`
+ --> tests/cirkalang/fail/type/trait_not_method.cirka:8:3
+  |
+8 |   u _ = 2
+  |   ^ defined in this `impl`

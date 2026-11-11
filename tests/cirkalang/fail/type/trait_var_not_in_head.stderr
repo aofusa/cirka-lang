@@ -1,0 +1,6 @@
+error[E1256]: `b` does not occur in the head of the `impl`
+ --> tests/cirkalang/fail/type/trait_var_not_in_head.cirka:6:8
+  |
+6 | impl T b => T Bool where
+  |        ^
+  = note: instances are selected by matching their head

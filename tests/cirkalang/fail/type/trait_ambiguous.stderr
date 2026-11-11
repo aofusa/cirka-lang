@@ -1,0 +1,6 @@
+error[E1254]: cannot determine which instance of `T _` to use
+  --> tests/cirkalang/fail/type/trait_ambiguous.cirka:16:18
+   |
+16 | main = printInt (use (make 1))
+   |                  ^^^
+   = help: add a type annotation

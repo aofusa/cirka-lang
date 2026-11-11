@@ -1,0 +1,39 @@
+module Main
+
+-- A method of a supertrait is reachable from a subtrait's constraint.
+trait Named a where
+  name : a -> String
+
+trait Named a => Greet a where
+  greet : a -> String
+  greet x = "hello, " ++ name x
+
+data Cat = MkCat
+data Dog = MkDog
+
+impl Named Cat where
+  name _ = "cat"
+
+impl Named Dog where
+  name _ = "dog"
+
+impl Greet Cat where
+
+impl Greet Dog where
+  greet x = name x ++ "!"
+
+announce : Greet a => a -> IO ()
+announce x = do
+  putStrLn (name x)
+  putStrLn (greet x)
+
+-- `Ord` has `Eq` as a supertrait.
+count : Ord a => a -> List a -> Int
+count _ [] = 0
+count x (y :: ys) = (if x == y then 1 else 0) + count x ys
+
+main : IO ()
+main = do
+  announce MkCat
+  announce MkDog
+  printInt (count 2 [1, 2, 2, 3])

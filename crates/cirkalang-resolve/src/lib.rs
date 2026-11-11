@@ -232,6 +232,8 @@ impl State {
             self.errs.append(&mut ex.errors);
             self.test_decls.insert(name.clone(), ex);
         }
+        self.errs
+            .append(&mut cirkalang_syntax::derive::expand(&mut m));
         let mut imports: Vec<(String, Span)> = m
             .imports
             .iter()
@@ -319,6 +321,8 @@ struct Resolver<'s> {
     /// Collect unbound lower-case names instead of reporting them.
     auto_bind: Option<Vec<(String, Span)>>,
     fresh: u32,
+    /// Per trait: its methods (name, selector).
+    traits: HashMap<GName, Vec<(String, GName)>>,
 }
 
 impl<'s> Resolver<'s> {
@@ -489,6 +493,7 @@ impl<'s> Resolver<'s> {
             locals: Vec::new(),
             auto_bind: None,
             fresh: 0,
+            traits: HashMap::new(),
         }
     }
 
@@ -577,13 +582,55 @@ impl<'s> Resolver<'s> {
                     } => {
                         self.declare(name, n, GKind::Prim, *name_span, d.private);
                     }
-                    // Tests are removed or expanded when the module is loaded.
+                    ast::DeclKind::Trait(t) => self.declare_trait(name, t, d.private),
+                    // Tests are removed or expanded when the module is
+                    // loaded; instances are declared when they are resolved.
                     ast::DeclKind::Fixity { .. }
                     | ast::DeclKind::Test { .. }
-                    | ast::DeclKind::Tests(_) => {}
+                    | ast::DeclKind::Tests(_)
+                    | ast::DeclKind::Impl(_) => {}
                 }
             }
         }
+    }
+
+    fn declare_trait(&mut self, module: &str, t: &ast::TraitDecl, private: bool) {
+        let g = self.declare(module, &t.name, GKind::Data, t.name_span, private);
+        let con = format!("{}$Dict", t.name);
+        self.declare(module, &con, GKind::Con, t.name_span, true);
+        for (k, c) in t.context.iter().enumerate() {
+            let sel = format!("{}$super{k}", t.name);
+            self.declare(module, &sel, GKind::Def, c.span, true);
+        }
+        let mut methods: Vec<(String, GName)> = Vec::new();
+        for it in &t.items {
+            if let ast::DeclKind::Sig { names, .. } = &it.kind {
+                for (n, sp) in names {
+                    let m = self.declare(module, n, GKind::Def, *sp, private);
+                    methods.push((n.clone(), m));
+                }
+            }
+        }
+        let mut with_default: HashSet<&str> = HashSet::new();
+        for it in &t.items {
+            let ast::DeclKind::Clause {
+                name: n, name_span, ..
+            } = &it.kind
+            else {
+                continue;
+            };
+            if !methods.iter().any(|(m, _)| m == n) {
+                self.errs.push(
+                    Diagnostic::error(format!("`{n}` is not a method of trait `{}`", t.name))
+                        .with_code("E1115")
+                        .with_label(*name_span, "add a signature for it to the trait"),
+                );
+            } else if with_default.insert(n) {
+                let dm = format!("{}$dm${n}", t.name);
+                self.declare(module, &dm, GKind::Def, *name_span, true);
+            }
+        }
+        self.traits.insert(g, methods);
     }
 
     fn collect_fixities(&mut self) {
@@ -747,6 +794,7 @@ impl<'s> Resolver<'s> {
         // Group clauses with their signature.
         let mut defs: Vec<Def> = Vec::new();
         let mut def_index: HashMap<String, usize> = HashMap::new();
+        let mut impls = 0;
         let decls = loaded.ast.decls.clone();
         for d in &decls {
             match &d.kind {
@@ -796,6 +844,18 @@ impl<'s> Resolver<'s> {
                     let g = self.tables[name].own[n];
                     let t = self.signature(ty);
                     items.push(Item::Prim(g, t));
+                }
+                ast::DeclKind::Trait(t) => {
+                    let (data, tr) = self.trait_(t, d.span);
+                    items.push(Item::Data(data));
+                    items.push(Item::Trait(tr));
+                }
+                ast::DeclKind::Impl(i) => {
+                    let k = impls;
+                    impls += 1;
+                    if let Some(it) = self.impl_(i, k, d.span) {
+                        items.push(Item::Impl(it));
+                    }
                 }
                 // Tests are removed or expanded when the module is loaded.
                 ast::DeclKind::Fixity { .. }
@@ -884,6 +944,183 @@ impl<'s> Resolver<'s> {
             short: dd.short,
             span,
         }
+    }
+
+    /// A trait as its dictionary data type plus what elaboration generates.
+    fn trait_(&mut self, t: &ast::TraitDecl, span: Span) -> (Data, Trait) {
+        let own = |r: &Self, n: &str| r.tables[&r.cur].own[n];
+        let name = own(self, &t.name);
+        let dict_con = own(self, &format!("{}$Dict", t.name));
+        let base = self.locals.len();
+        let mut params = Vec::new();
+        let mut pnames = Vec::new();
+        for p in &t.params {
+            let ty = p.ty.as_ref().map(|x| self.expr(x));
+            for (n, sp) in &p.names {
+                params.push(Param {
+                    mult: Some(Mult::Zero),
+                    name: n.clone(),
+                    span: *sp,
+                    ty: ty.clone(),
+                });
+                pnames.push(n.clone());
+                self.locals.push(n.clone());
+            }
+        }
+        let mut fields: Vec<Expr> = Vec::new();
+        let mut supers = Vec::new();
+        for (k, c) in t.context.iter().enumerate() {
+            fields.push(self.expr(c));
+            supers.push(own(self, &format!("{}$super{k}", t.name)));
+        }
+        let mut methods: Vec<TraitMethod> = Vec::new();
+        for it in &t.items {
+            if let ast::DeclKind::Sig { names, ty } = &it.kind {
+                let sig = self.signature(ty);
+                for (n, sp) in names {
+                    fields.push(sig.clone());
+                    methods.push(TraitMethod {
+                        name: own(self, n),
+                        default: None,
+                        span: *sp,
+                    });
+                }
+            }
+        }
+        for it in &t.items {
+            let ast::DeclKind::Clause {
+                name: n, pats, rhs, ..
+            } = &it.kind
+            else {
+                continue;
+            };
+            let g = self.tables[&self.cur].own.get(n).copied();
+            let Some(m) = methods.iter_mut().find(|m| Some(m.name) == g) else {
+                continue; // reported by `declare_trait`
+            };
+            let dm = self.tables[&self.cur].own[&format!("{}$dm${n}", t.name)];
+            let c = self.clause(pats, rhs, it.span);
+            m.default.get_or_insert((dm, Vec::new())).1.push(c);
+        }
+        self.locals.truncate(base);
+        // `Name$Dict : field1 -> ... -> Name params`.
+        let e = |kind| Expr { kind, span };
+        let mut sig = pnames.iter().fold(e(ExprKind::Global(name)), |f, p| {
+            e(ExprKind::App(
+                Box::new(f),
+                Box::new(e(ExprKind::Local(p.clone()))),
+            ))
+        });
+        for f in fields.into_iter().rev() {
+            sig = Expr {
+                span: f.span,
+                kind: ExprKind::Pi {
+                    mult: Some(Mult::Many),
+                    implicit: false,
+                    name: None,
+                    name_span: f.span,
+                    dom: Box::new(f),
+                    cod: Box::new(sig),
+                },
+            };
+        }
+        let data = Data {
+            name,
+            params,
+            sig: None,
+            cons: vec![Con {
+                name: dict_con,
+                span: t.name_span,
+                body: ConBody::Sig(sig),
+            }],
+            short: false,
+            span,
+        };
+        let tr = Trait {
+            name,
+            dict_con,
+            params: pnames,
+            supers,
+            methods,
+            span,
+        };
+        (data, tr)
+    }
+
+    fn impl_(&mut self, i: &ast::ImplDecl, k: usize, span: Span) -> Option<Impl> {
+        let saved = self.auto_bind.replace(Vec::new());
+        let head = self.expr(&i.head);
+        let context: Vec<Expr> = i.context.iter().map(|c| self.expr(c)).collect();
+        let vars = std::mem::replace(&mut self.auto_bind, saved).unwrap_or_default();
+        let mut h = &head;
+        while let ExprKind::App(f, _) = &h.kind {
+            h = f;
+        }
+        let tr = match h.kind {
+            ExprKind::Global(g) if self.traits.contains_key(&g) => g,
+            _ => {
+                if !matches!(h.kind, ExprKind::Wildcard) {
+                    self.errs.push(
+                        Diagnostic::error("the head of an `impl` must be a trait")
+                            .with_code("E1115")
+                            .with_label(h.span, "not a trait"),
+                    );
+                }
+                return None;
+            }
+        };
+        let tname = self.globals[tr.0 as usize].name.clone();
+        let cur = self.cur.clone();
+        let name = self.declare(&cur, &format!("impl${tname}${k}"), GKind::Def, span, true);
+        let trait_methods = self.traits[&tr].clone();
+        let base = self.locals.len();
+        self.locals.extend(vars.iter().map(|v| v.0.clone()));
+        let mut methods: Vec<ImplMethod> = trait_methods
+            .iter()
+            .map(|(n, m)| ImplMethod {
+                method: *m,
+                def: self.declare(
+                    &cur,
+                    &format!("impl${tname}${k}${n}"),
+                    GKind::Def,
+                    span,
+                    true,
+                ),
+                clauses: Vec::new(),
+            })
+            .collect();
+        for it in &i.items {
+            let ast::DeclKind::Clause {
+                name: n,
+                name_span,
+                pats,
+                rhs,
+            } = &it.kind
+            else {
+                continue;
+            };
+            match trait_methods.iter().position(|(m, _)| m == n) {
+                Some(j) => {
+                    let c = self.clause(pats, rhs, it.span);
+                    methods[j].clauses.push(c);
+                }
+                None => self.errs.push(
+                    Diagnostic::error(format!("`{n}` is not a method of trait `{tname}`"))
+                        .with_code("E1115")
+                        .with_label(*name_span, "defined in this `impl`"),
+                ),
+            }
+        }
+        self.locals.truncate(base);
+        Some(Impl {
+            name,
+            vars,
+            context,
+            head,
+            trait_: tr,
+            methods,
+            span,
+        })
     }
 
     fn clause(&mut self, pats: &[ast::Pat], rhs: &ast::Expr, span: Span) -> Clause {

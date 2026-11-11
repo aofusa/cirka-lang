@@ -1,0 +1,7 @@
+module Main
+
+impl Show (List Bool) where
+  show _ = "bools"
+
+main : IO ()
+main = pure ()

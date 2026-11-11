@@ -1,0 +1,16 @@
+module Main
+
+trait T a where
+  make : Int -> a
+  use : a -> Int
+
+impl T Int where
+  make n = n
+  use n = n
+
+impl T Bool where
+  make _ = True
+  use _ = 0
+
+main : IO ()
+main = printInt (use (make 1))

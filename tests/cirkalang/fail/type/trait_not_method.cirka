@@ -1,0 +1,11 @@
+module Main
+
+trait T a where
+  t : a -> Int
+
+impl T Int where
+  t _ = 1
+  u _ = 2
+
+main : IO ()
+main = pure ()

@@ -12,6 +12,7 @@
 (extern cirka_arg (Int#) Bytes)
 (extern cirka_f64_to_bytes (Double#) Bytes)
 (extern sqrt (Double#) Double#)
+(extern trunc (Double#) Double#)
 
 ; Unsigned comparison through the sign bit.
 (def cirka$ult (-> Int# Int# Int#)

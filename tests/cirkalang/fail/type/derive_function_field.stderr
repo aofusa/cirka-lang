@@ -1,0 +1,6 @@
+error[E1253]: no instance for `Eq (Int -> Int)`
+ --> tests/cirkalang/fail/type/derive_function_field.cirka:3:37
+  |
+3 | data T = MkT (Int -> Int) deriving (Eq)
+  |                                     ^^
+  = help: add an `impl`, or a constraint to the signature

@@ -67,6 +67,7 @@ pub enum Kw {
     Trait,
     Impl,
     Mutual,
+    Deriving,
 }
 
 impl Kw {
@@ -96,6 +97,7 @@ impl Kw {
             "trait" => Trait,
             "impl" => Impl,
             "mutual" => Mutual,
+            "deriving" => Deriving,
             _ => return None,
         })
     }
@@ -126,6 +128,7 @@ impl Kw {
             Trait => "trait",
             Impl => "impl",
             Mutual => "mutual",
+            Deriving => "deriving",
         }
     }
 }

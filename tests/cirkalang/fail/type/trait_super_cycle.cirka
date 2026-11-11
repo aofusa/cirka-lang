@@ -1,0 +1,10 @@
+module Main
+
+trait B a => A a where
+  a : a -> Int
+
+trait A a => B a where
+  b : a -> Int
+
+main : IO ()
+main = pure ()

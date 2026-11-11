@@ -499,10 +499,11 @@ impl<'a> Ev<'a> {
                 };
                 self.solve(lvl, first, sf, rhs_f)
                     .or_else(|_| self.solve(lvl, second, ss, rhs_s))
+                    .or_else(|_| self.first_order(lvl, first, sf, rhs_f))
             }
-            (Neutral(Head::Meta(m), sp), t) | (t, Neutral(Head::Meta(m), sp)) => {
-                self.solve(lvl, *m, sp, t)
-            }
+            (Neutral(Head::Meta(m), sp), t) | (t, Neutral(Head::Meta(m), sp)) => self
+                .solve(lvl, *m, sp, t)
+                .or_else(|_| self.first_order(lvl, *m, sp, t)),
             (Neutral(h1, s1), Neutral(h2, s2)) if h1 == h2 => self.unify_spines(lvl, s1, s2),
             _ => Err(UnifyError::Mismatch),
         }
@@ -526,6 +527,33 @@ impl<'a> Ev<'a> {
             }
         }
         Ok(())
+    }
+
+    /// `?m sp a =? h args b` outside the pattern fragment: the first-order
+    /// approximation `?m sp =? h args`, `a =? b` (a type constructor
+    /// variable applied to an unknown argument, `?m ?a =? IO Unit`).
+    fn first_order(&self, lvl: u32, m: MetaId, sp: &[Elim], rhs: &Val) -> Result<(), UnifyError> {
+        let Some((Elim::App(a, _), init)) = sp.split_last() else {
+            return Err(UnifyError::Meta);
+        };
+        let (f, b) = match rhs {
+            Val::Data(d, args) if !args.is_empty() => {
+                let mut xs = args.clone();
+                let Some((b, _)) = xs.pop() else {
+                    return Err(UnifyError::Meta);
+                };
+                (Val::Data(*d, xs), b)
+            }
+            Val::Neutral(h, s) => match s.split_last() {
+                Some((Elim::App(b, _), rest)) => {
+                    (Val::Neutral(h.clone(), rest.to_vec()), b.clone())
+                }
+                _ => return Err(UnifyError::Meta),
+            },
+            _ => return Err(UnifyError::Meta),
+        };
+        self.unify(lvl, &Val::Neutral(Head::Meta(m), init.to_vec()), &f)?;
+        self.unify(lvl, a, &b)
     }
 
     /// Solves `?m sp =? rhs` by pattern unification.
