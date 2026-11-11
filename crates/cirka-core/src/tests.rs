@@ -189,7 +189,7 @@ fn opt_keeps_strictness_and_effects() {
     // stay; an unused lazy `let` goes away.
     let src = format!(
         "{PRELUDE}(extern f (Int#) Unit#)
-         (def g Int (con I# () 1))
+         (def g Int (let! (v Unit# (extern f 2)) (con I# () 1)))
          (def main Int#
            (let ((dead Int (con I# () (prim add 1 1))))
              (let! (u Unit# (extern f 1))
@@ -641,6 +641,106 @@ fn dictionary_fields_become_globals() {
     assert!(lint::lint_program(&p).is_empty(), "{}", print_program(&p));
     let d = print::print_expr(&p.bind("dInt").unwrap().expr);
     assert!(d.contains("dInt$f0"), "{d}");
+}
+
+#[test]
+fn dictionary_reached_through_lets_is_floated_whole() {
+    // A specialized instance with a context: the lets move to globals so
+    // that the dictionary is a constructor of atoms (FEAT-0210).
+    let src = format!(
+        "{PRELUDE}(data D (a) (D$Dict (-> a a) (-> a a)))
+         (def dInt (D Int)
+           (let! (f (-> Int Int) (lam ((x Int)) x))
+             (let ((g (-> Int Int) (lam ((y Int)) (f y))))
+               (con D$Dict (Int) f g))))
+         (def main Int# 0)"
+    );
+    let mut p = parse_program(FileId(0), &src).unwrap();
+    assert_eq!(strict::float_dict_fields(&mut p), 2);
+    assert!(lint::lint_program(&p).is_empty(), "{}", print_program(&p));
+    let d = print::print_expr(&p.bind("dInt").unwrap().expr);
+    assert!(d.starts_with("(con D$Dict"), "{d}");
+    assert!(d.contains("dInt$l0") && d.contains("dInt$l1"), "{d}");
+    // The right-hand sides refer to what was moved before them.
+    let g = print::print_expr(&p.bind("dInt$l1").unwrap().expr);
+    assert!(g.contains("dInt$l0"), "{g}");
+}
+
+#[test]
+fn dictionary_lets_with_work_are_not_floated() {
+    // A strict let that is not a value runs when the global is evaluated:
+    // the dictionary stays as it is.
+    let src = format!(
+        "{PRELUDE}(data D (a) (D$Dict (-> a a)))
+         (extern e (Int#) Unit#)
+         (def dInt (D Int)
+           (let! (u Unit# (extern e 1))
+             (con D$Dict (Int) (lam ((x Int)) x))))
+         (def main Int# 0)"
+    );
+    let mut p = parse_program(FileId(0), &src).unwrap();
+    assert_eq!(strict::float_dict_fields(&mut p), 0);
+    let d = print::print_expr(&p.bind("dInt").unwrap().expr);
+    assert!(d.contains("extern e"), "{d}");
+}
+
+#[test]
+fn opt_method_of_constant_dictionary_through_strict_let() {
+    // `let! d = dInt in case d of ...` with a global dictionary (the shape
+    // of a do block) reduces like the case on the global itself.
+    let src = format!(
+        "{PRELUDE}(data D (a) (D$Dict (-> a a)))
+         (def dInt (D Int) (con D$Dict (Int) (lam ((x Int)) x)))
+         (def main Int#
+           (let! (d (D Int) dInt)
+             (case d (s (D Int)) Int#
+               ((D$Dict f) (case (f (con I# () 5)) (r Int) Int# ((I# v) v))))))"
+    );
+    let (m, st) = opt_main(&src);
+    assert_eq!(m.trim(), "5");
+    assert!(st.known_case >= 1, "{st:?}");
+}
+
+#[test]
+fn opt_strict_let_of_known_constructor_is_substituted() {
+    // `let t = I# 1 in let! u = t in case u of I# v -> ...` builds no box.
+    let src = format!(
+        "{PRELUDE}(def main Int#
+           (let ((t Int (con I# () 1)))
+             (let! (u Int t)
+               (case u (s Int) Int# ((I# v) (prim add v 1))))))"
+    );
+    let (m, _) = opt_main(&src);
+    assert_eq!(m.trim(), "2");
+}
+
+#[test]
+fn opt_inlines_lambda_bound_strictly() {
+    // A strict let of a lambda is a lazy one: it moves to its only use, in
+    // a lambda too, where it is then applied.
+    let src = format!(
+        "{PRELUDE}(def main Int#
+           (let! (f (-> Int# Int#) (lam ((x Int#)) (prim add x 1)))
+             (let! (g (-> Int# Int#) (lam ((y Int#)) (f y)))
+               (g 2))))"
+    );
+    let (m, _) = opt_main(&src);
+    assert_eq!(m.trim(), "3");
+}
+
+#[test]
+fn opt_dictionary_built_at_its_use_is_known() {
+    // A dictionary with a lambda field, as left by inlining an instance
+    // function, is known to the `case` that takes it apart.
+    let src = format!(
+        "{PRELUDE}(data D (a) (D$Dict (-> a a)))
+         (def main Int#
+           (let! (d (D Int) (con D$Dict (Int) (lam ((x Int)) x)))
+             (case d (s (D Int)) Int#
+               ((D$Dict f) (case (f (con I# () 5)) (r Int) Int# ((I# v) v))))))"
+    );
+    let (m, _) = opt_main(&src);
+    assert_eq!(m.trim(), "5");
 }
 
 #[test]

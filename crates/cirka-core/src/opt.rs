@@ -29,6 +29,9 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 /// Maximum number of simplifier rounds.
 pub const MAX_ITERS: usize = 6;
+/// Maximum rounds of specialization: the depth of nested dictionaries that
+/// are built from each other at compile time.
+const MAX_SPEC_ROUNDS: usize = 8;
 /// Top-level functions at most this big (in expression nodes) are inlined
 /// at every call site; bigger ones only when called exactly once.
 pub const INLINE_SIZE: usize = 60;
@@ -110,9 +113,11 @@ pub fn optimize_with_stats(p: &mut Program) -> Result<Stats, Diagnostic> {
         lint_all(p, "lambda-lift")?;
         simplify_rounds(p, &mut st, &mut next)?;
     }
-    // Overloaded functions called with known dictionaries; a second round
-    // reaches the calls exposed by the first.
-    for _ in 0..2 {
+    // Overloaded functions called with known dictionaries; each round
+    // reaches the calls exposed by the last, among them the uses of the
+    // dictionaries that specialized instances with a context have become
+    // (the dictionary of `List (List Int)` needs that of `List Int` first).
+    for _ in 0..MAX_SPEC_ROUNDS {
         let n = crate::spec::specialize(p, &mut next);
         if n == 0 {
             break;
@@ -120,6 +125,12 @@ pub fn optimize_with_stats(p: &mut Program) -> Result<Stats, Diagnostic> {
         st.specialized += n;
         lint_all(p, "specialize")?;
         simplify_rounds(p, &mut st, &mut next)?;
+        let f = crate::strict::float_dict_fields(p);
+        if f > 0 {
+            st.dict_fields += f;
+            lint_all(p, "dict-fields")?;
+            simplify_rounds(p, &mut st, &mut next)?;
+        }
     }
     // Recursive functions called with known functions for parameters they
     // pass along unchanged (FEAT-0061); a second round reaches the calls in
@@ -1331,17 +1342,23 @@ impl Simp<'_> {
             }
             _ => {}
         }
+        // A lambda needs no evaluation, so its strict binding is a lazy one
+        // and can be inlined at a single use (the steps of a `do` block).
+        if is_lam(&r) {
+            return self.let_lazy(b, r, k);
+        }
         if let Expr::Con(c, ts, args) = &r
             && args.iter().any(|a| !a.is_atom())
             && args
                 .iter()
-                .all(|a| a.is_atom() || (matches!(a, Expr::Con(..)) && a.is_value()))
+                .all(|a| a.is_atom() || (matches!(a, Expr::Con(..)) && a.is_value()) || is_lam(a))
             && !args.iter().any(|a| self.uses_linear(a))
             && let Some(fts) = self.field_types(c, ts)
         {
-            // let! b = K (K' x)  ⇒  let u = K' x in let! b = K u: the
-            // constructor arguments are values (built eagerly, no thunk),
-            // and `b` becomes a known constructor.
+            // let! b = K (K' x) (λy. e)  ⇒
+            // let u = K' x; v = λy. e in let! b = K u v: the constructor
+            // arguments are values (built eagerly, no thunk), and `b`
+            // becomes a known constructor (a dictionary built at its use).
             self.hit();
             self.st.floated += 1;
             let Expr::Con(c, ts, args) = r else {
@@ -1399,7 +1416,13 @@ impl Simp<'_> {
         }
         self.bind(&b);
         let x = b.id.id;
-        if matches!(r, Expr::Lit(_)) || self.is_unboxed_var(&r) {
+        let evaluated_var = matches!(&r, Expr::Var(v)
+            if self.known.contains_key(&v.id) || self.evaluated.contains(&v.id));
+        if matches!(r, Expr::Lit(_))
+            || self.is_unboxed_var(&r)
+            || evaluated_var
+            || self.known_global(&r).is_some()
+        {
             // Already evaluated: plain substitution.
             self.hit();
             self.st.inlined_once += 1;

@@ -19,7 +19,7 @@
 //! reported may change.
 
 use crate::expr::*;
-use crate::opt::{free_vars, freshen, map_children, walk};
+use crate::opt::{free_vars, freshen, map_children, replace_var, walk};
 use crate::ty::*;
 use crate::ww::{Analysis, split_fun, strictness};
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -115,10 +115,13 @@ fn free_tyvars(e: &Expr, out: &mut Vec<TyVar>) {
 /// non-atomic fields to globals `name$fN`. A constructor under type
 /// abstractions (`Λr. Monad$Dict …`, an instance for a type constructor)
 /// moves each field to `name$fN = Λr. field`, referenced as `name$fN @r`
-/// (BUG-0011). Returns the number moved.
+/// (BUG-0011). A dictionary reached through `let`s first has those moved to
+/// globals `name$lN`, which is the form of a specialized instance with a
+/// context (FEAT-0210). Returns the number moved.
 pub fn float_dict_fields(p: &mut Program) -> usize {
     let mut new = Vec::new();
     for i in 0..p.binds.len() {
+        float_dict_lets(p, i, &mut new);
         let mut tvs: Vec<(TyVar, Kind)> = Vec::new();
         let mut e = &p.binds[i].expr;
         while let Expr::TyLam(v, k, x) = e {
@@ -175,6 +178,69 @@ pub fn float_dict_fields(p: &mut Program) -> usize {
     let n = new.len();
     p.binds.extend(new);
     n
+}
+
+/// Moves the `let`s around the dictionary constructor of bind `i` to globals.
+/// A strict `let` must bind a value, so that nothing runs earlier or later.
+fn float_dict_lets(p: &mut Program, i: usize, new: &mut Vec<TopBind>) {
+    let mut tvs: Vec<(TyVar, Kind)> = Vec::new();
+    let mut lets: Vec<(Binder, Expr)> = Vec::new();
+    let mut e = &p.binds[i].expr;
+    while let Expr::TyLam(v, k, x) = e {
+        tvs.push((v.clone(), k.clone()));
+        e = x;
+    }
+    loop {
+        match e {
+            Expr::Let(Bind::NonRec(b, rhs), body) => {
+                lets.push((b.clone(), (**rhs).clone()));
+                e = body;
+            }
+            Expr::LetStrict(b, rhs, body) if rhs.is_value() => {
+                lets.push((b.clone(), (**rhs).clone()));
+                e = body;
+            }
+            _ => break,
+        }
+    }
+    let Expr::Con(k, _, _) = e else { return };
+    if lets.is_empty() || !k.ends_with("$Dict") {
+        return;
+    }
+    let mut con = e.clone();
+    let name = p.binds[i].name.clone();
+    let span = p.binds[i].span;
+    let mut moved: Vec<(u32, Expr)> = Vec::new();
+    for (j, (b, mut rhs)) in lets.into_iter().enumerate() {
+        for (x, r) in &moved {
+            rhs = replace_var(rhs, *x, r);
+        }
+        let g = format!("{name}$l{j}");
+        let mut r = Expr::Global(g.clone());
+        for (v, _) in &tvs {
+            r = Expr::TyApp(Box::new(r), Type::Var(v.clone()));
+        }
+        let mut expr = rhs;
+        let mut ty = b.ty;
+        for (v, k) in tvs.iter().rev() {
+            expr = Expr::TyLam(v.clone(), k.clone(), Box::new(expr));
+            ty = Type::Forall(v.clone(), k.clone(), Box::new(ty));
+        }
+        new.push(TopBind {
+            name: g,
+            ty,
+            expr,
+            span,
+        });
+        moved.push((b.id.id, r));
+    }
+    for (x, r) in &moved {
+        con = replace_var(con, *x, r);
+    }
+    for (v, k) in tvs.into_iter().rev() {
+        con = Expr::TyLam(v, k, Box::new(con));
+    }
+    p.binds[i].expr = con;
 }
 
 // ---- lambda lifting ----
