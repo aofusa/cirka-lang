@@ -1,0 +1,4 @@
+module Helpers
+
+greeting : String
+greeting = "from the app's own Helpers"

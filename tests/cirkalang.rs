@@ -284,3 +284,81 @@ fn cirkalang_traits_specialize_away() {
         }
     }
 }
+
+/// Projects of several packages under tests/cirkalang/packages/<case>/
+/// (FEAT-0214): `<case>/app` is built with its dependencies; it prints
+/// `<case>.stdout`, or is rejected with the diagnostics in `<case>.stderr`.
+#[test]
+fn cirkalang_packages() {
+    let dir = repo_root().join("tests/cirkalang/packages");
+    let mut names: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_dir())
+        .map(|e| e.file_name().into_string().unwrap())
+        .collect();
+    names.sort();
+    assert!(!names.is_empty());
+    let root = format!("{}/", repo_root().display());
+    let mut failed = Vec::new();
+    for n in names {
+        let mut sm = SourceMap::new();
+        let opts = cirka_driver::pipeline::Options::new("test");
+        let res = match cirka::compile_package(&mut sm, &dir.join(&n).join("app"), &opts) {
+            Ok(c) => {
+                let mut o = cirka_driver::pipeline::Options::new(&n);
+                o.build_dir = cirka_testkit::work_dir("cirkalang-packages", &n);
+                match cirka_driver::pipeline::compile_core(c.core, &n, &o, false) {
+                    Ok(out) => match cirka_mir::interp::run(&out.mir, &[], u64::MAX) {
+                        Ok(r) if r.leaked == 0 => {
+                            check_expect(&dir.join(format!("{n}.stdout")), &r.stdout)
+                        }
+                        Ok(r) => Err(format!("{} objects leaked", r.leaked)),
+                        Err(e) => Err(e.to_string()),
+                    },
+                    Err(ds) => Err(ds
+                        .iter()
+                        .map(|d| d.message.clone())
+                        .collect::<Vec<_>>()
+                        .join("\n")),
+                }
+            }
+            Err(errs) => check_expect(
+                &dir.join(format!("{n}.stderr")),
+                &errs
+                    .iter()
+                    .map(|d| render(d, &sm, Style::Plain))
+                    .collect::<String>()
+                    .replace(&root, ""),
+            ),
+        };
+        if let Err(e) = res {
+            failed.push(format!("{n}: {e}"));
+        }
+    }
+    assert!(failed.is_empty(), "{}", failed.join("\n"));
+    // A library (no `src/Main.cirka`) is checked and tested with all its
+    // modules, but cannot be built as a program.
+    let lib = dir.join("diamond/util");
+    for (mode, ok) in [
+        (cirka_driver::pipeline::SourceTests::Check, true),
+        (cirka_driver::pipeline::SourceTests::Run, true),
+        (cirka_driver::pipeline::SourceTests::Strip, false),
+    ] {
+        let mut sm = SourceMap::new();
+        let mut opts = cirka_driver::pipeline::Options::new("test");
+        opts.tests = mode;
+        match cirka::compile_package(&mut sm, &lib, &opts) {
+            Ok(c) => {
+                assert!(ok, "{mode:?}: a library was built as a program");
+                if mode == cirka_driver::pipeline::SourceTests::Run {
+                    assert!(c.core.binds.iter().any(|b| b.name.contains("test$")));
+                }
+            }
+            Err(e) => {
+                assert!(!ok, "{mode:?}: {}", e[0].message);
+                assert_eq!(e[0].code.as_deref(), Some("E1107"));
+            }
+        }
+    }
+}

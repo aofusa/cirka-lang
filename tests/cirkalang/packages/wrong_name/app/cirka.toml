@@ -1,0 +1,6 @@
+[package]
+name = "app"
+edition = "0.0.1"
+
+[dependencies]
+utils = { path = "../util" }

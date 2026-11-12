@@ -1,0 +1,5 @@
+error[E1119]: module `BaseLib.Types` belongs to package `base-lib`, which `app` does not depend on
+ --> tests/cirkalang/packages/undeclared/app/src/Main.cirka:4:1
+  |
+4 | import BaseLib.Types
+  | ^^^^^^^^^^^^^^^^^^^^ add the package to `[dependencies]`

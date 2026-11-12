@@ -1,0 +1,9 @@
+module Util.Strings
+
+import Util.Helpers
+
+shout : String -> String
+shout s = s ++ bang
+
+tests where
+  test "shout adds a bang" = assertEq (shout "a") "a!"

@@ -18,6 +18,17 @@ use std::path::{Path, PathBuf};
 pub trait Loader {
     /// Loads module `path` (e.g. `["Core", "List"]`), adding it to `sm`.
     fn load(&mut self, sm: &mut SourceMap, path: &[String]) -> Option<(FileId, String)>;
+
+    /// Why module `importer` may not import `path`, if it may not (a
+    /// package that does not depend on the owner of `path`).
+    fn forbidden(&self, _path: &[String], _importer: &str) -> Option<String> {
+        None
+    }
+
+    /// Why module `path` was not found, if something is known about it.
+    fn not_found_hint(&self, _path: &[String]) -> Option<String> {
+        None
+    }
 }
 
 /// Loads `A/B.cirka` from the first root that has it.
@@ -161,13 +172,6 @@ pub fn resolve_file(
     lib_roots: &[PathBuf],
     opts: &Options,
 ) -> Result<Program, Vec<Diagnostic>> {
-    let text = std::fs::read_to_string(main_file).map_err(|e| {
-        vec![
-            Diagnostic::error(format!("cannot read {}: {e}", main_file.display()))
-                .with_code("E1104"),
-        ]
-    })?;
-    let id = sm.add(main_file.display().to_string(), text.clone());
     let mut roots = vec![
         main_file
             .parent()
@@ -175,8 +179,24 @@ pub fn resolve_file(
             .unwrap_or_default(),
     ];
     roots.extend(lib_roots.iter().cloned());
-    let mut loader = FsLoader { roots };
-    resolve_program(sm, id, &text, &mut loader, opts)
+    resolve_main(sm, main_file, &mut FsLoader { roots }, opts)
+}
+
+/// Reads `main_file` and resolves it with its imports from `loader`.
+pub fn resolve_main(
+    sm: &mut SourceMap,
+    main_file: &Path,
+    loader: &mut dyn Loader,
+    opts: &Options,
+) -> Result<Program, Vec<Diagnostic>> {
+    let text = std::fs::read_to_string(main_file).map_err(|e| {
+        vec![
+            Diagnostic::error(format!("cannot read {}: {e}", main_file.display()))
+                .with_code("E1104"),
+        ]
+    })?;
+    let id = sm.add(main_file.display().to_string(), text.clone());
+    resolve_program(sm, id, &text, loader, opts)
 }
 
 // ---------------------------------------------------------------------
@@ -254,10 +274,18 @@ impl State {
                 );
                 continue;
             }
+            let path: Vec<String> = imp.split('.').map(|s| s.to_string()).collect();
+            if let Some(why) = loader.forbidden(&path, &name) {
+                self.errs.push(
+                    Diagnostic::error(why)
+                        .with_code("E1119")
+                        .with_label(*sp, "add the package to `[dependencies]`"),
+                );
+                continue;
+            }
             if self.loaded.contains_key(imp) {
                 continue;
             }
-            let path: Vec<String> = imp.split('.').map(|s| s.to_string()).collect();
             match loader.load(sm, &path) {
                 Some((fid, text)) => {
                     let (sub, errs) = cirkalang_syntax::parse(fid, &text);
@@ -265,14 +293,16 @@ impl State {
                     self.add_module(sm, loader, imp.clone(), fid, sub, prelude, Some(*sp));
                 }
                 None => {
-                    self.errs.push(
-                        Diagnostic::error(format!("module `{imp}` not found"))
-                            .with_code("E1104")
-                            .with_label(
-                                *sp,
-                                format!("no file `{}.cirka` in the source roots", path.join("/")),
-                            ),
-                    );
+                    let mut d = Diagnostic::error(format!("module `{imp}` not found"))
+                        .with_code("E1104")
+                        .with_label(
+                            *sp,
+                            format!("no file `{}.cirka` in the source roots", path.join("/")),
+                        );
+                    if let Some(h) = loader.not_found_hint(&path) {
+                        d = d.with_help(h);
+                    }
+                    self.errs.push(d);
                 }
             }
         }

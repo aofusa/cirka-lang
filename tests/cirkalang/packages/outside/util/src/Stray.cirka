@@ -1,0 +1,4 @@
+module Stray
+
+stray : Int
+stray = 1

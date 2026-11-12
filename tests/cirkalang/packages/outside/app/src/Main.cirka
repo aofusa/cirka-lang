@@ -1,0 +1,6 @@
+module Main
+
+import Stray
+
+main : IO ()
+main = printInt stray

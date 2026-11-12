@@ -52,6 +52,17 @@ pub struct Compiled {
     pub warnings: Vec<Diagnostic>,
 }
 
+fn resolve_options(opts: &Options) -> cirkalang_resolve::Options {
+    cirkalang_resolve::Options {
+        tests: match opts.tests {
+            SourceTests::Strip => TestMode::Strip,
+            SourceTests::Check => TestMode::Check,
+            SourceTests::Run => TestMode::Run,
+        },
+        ..Default::default()
+    }
+}
+
 /// Compiles the program whose `main` module is `main_file` down to Core.
 /// Diagnostics refer to files added to `sm`.
 pub fn compile(
@@ -61,19 +72,51 @@ pub fn compile(
     opts: &Options,
     name: &str,
 ) -> Result<Compiled, Vec<Diagnostic>> {
-    let rp = cirkalang_resolve::resolve_file(
-        sm,
-        main_file,
-        roots,
-        &cirkalang_resolve::Options {
-            tests: match opts.tests {
-                SourceTests::Strip => TestMode::Strip,
-                SourceTests::Check => TestMode::Check,
-                SourceTests::Run => TestMode::Run,
-            },
-            ..Default::default()
-        },
-    )?;
+    let rp = cirkalang_resolve::resolve_file(sm, main_file, roots, &resolve_options(opts))?;
+    compile_resolved(rp, opts, name)
+}
+
+/// Compiles the package at `path` (a directory or its `cirka.toml`) and its
+/// dependencies down to Core (FEAT-0214).
+pub fn compile_package(
+    sm: &mut SourceMap,
+    path: &Path,
+    opts: &Options,
+) -> Result<Compiled, Vec<Diagnostic>> {
+    let w = package::Workspace::load(path).map_err(|e| vec![e])?;
+    let mut loader = w.loader(lib_roots());
+    let main = w.root.main_file();
+    if !main.exists() && opts.tests == SourceTests::Strip {
+        return Err(vec![
+            Diagnostic::error(format!(
+                "package `{}` is a library: it has no `src/Main.cirka` to run",
+                w.root.name
+            ))
+            .with_code("E1107")
+            .with_help("check it with `cirka check` or run its tests with `cirka test`"),
+        ]);
+    }
+    let rp = if main.exists() {
+        cirkalang_resolve::resolve_main(sm, &main, &mut loader, &resolve_options(opts))?
+    } else {
+        // A library: all its modules are checked and tested; there is
+        // nothing to run (E1107 for `build` and `run`).
+        let mods = w.root.modules();
+        let text: String = mods.iter().map(|m| format!("import {m}\n")).collect();
+        let id = sm.add(
+            format!("{} (library)", w.root.src_dir().display()),
+            text.clone(),
+        );
+        cirkalang_resolve::resolve_program(sm, id, &text, &mut loader, &resolve_options(opts))?
+    };
+    compile_resolved(rp, opts, &w.root.name)
+}
+
+fn compile_resolved(
+    rp: cirkalang_resolve::rast::Program,
+    opts: &Options,
+    name: &str,
+) -> Result<Compiled, Vec<Diagnostic>> {
     dump_frontend(
         opts,
         "rn",
@@ -96,7 +139,8 @@ pub fn compile(
         "tt",
         &cirkalang_elab::tt::print_program(&tt),
     )?;
-    if tt.main.is_none() {
+    // A library (no `main`) can be checked: its Core is still linted.
+    if tt.main.is_none() && opts.tests != SourceTests::Check {
         let root = rp
             .modules
             .last()
@@ -133,24 +177,19 @@ pub fn frontend(
             "unknown option `{f}`"
         ))]));
     }
-    let (main_file, mut roots, name) =
-        if path.is_dir() || path.file_name().is_some_and(|f| f == "cirka.toml") {
-            match package::Package::load(path) {
-                Ok(p) => (p.main_file(), vec![p.src_dir()], p.name),
-                Err(e) => return Some(Err(vec![e])),
-            }
-        } else if path.extension().is_some_and(|e| e == "cirka") {
-            let stem = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("out")
-                .to_string();
-            (path.to_path_buf(), Vec::new(), stem)
-        } else {
-            return None;
-        };
-    roots.extend(lib_roots());
-    Some(compile(sm, &main_file, &roots, opts, &name).map(|c| {
+    let compiled = if path.is_dir() || path.file_name().is_some_and(|f| f == "cirka.toml") {
+        compile_package(sm, path, opts)
+    } else if path.extension().is_some_and(|e| e == "cirka") {
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("out")
+            .to_string();
+        compile(sm, path, &lib_roots(), opts, &stem)
+    } else {
+        return None;
+    };
+    Some(compiled.map(|c| {
         for w in &c.warnings {
             eprint!("{}", render(w, sm, Style::for_stderr()));
         }

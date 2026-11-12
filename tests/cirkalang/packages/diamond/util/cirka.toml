@@ -1,0 +1,6 @@
+[package]
+name = "util"
+edition = "0.0.1"
+
+[dependencies]
+base-lib = { path = "../base-lib" }

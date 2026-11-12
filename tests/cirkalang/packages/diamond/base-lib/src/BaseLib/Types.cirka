@@ -1,0 +1,3 @@
+module BaseLib.Types
+
+data Point = MkPoint Int Int deriving (Eq, Show)

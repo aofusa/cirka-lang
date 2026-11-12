@@ -1,0 +1,4 @@
+module Util.Helpers
+
+bang : String
+bang = "!"

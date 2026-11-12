@@ -1,0 +1,9 @@
+module MathTools
+
+import BaseLib.Types
+
+sumSquares : List Int -> Int
+sumSquares xs = sum (map (\x => x * x) xs)
+
+norm1 : Point -> Int
+norm1 (MkPoint x y) = abs x + abs y

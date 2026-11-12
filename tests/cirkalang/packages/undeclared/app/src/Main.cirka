@@ -1,0 +1,7 @@
+module Main
+
+import Util
+import BaseLib.Types
+
+main : IO ()
+main = printInt Util.answer

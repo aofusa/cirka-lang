@@ -1,0 +1,15 @@
+module Main
+
+import Util
+import Util.Strings
+import MathTools
+
+-- Each package has its own `Helpers` module: no clash.
+import Helpers
+
+main : IO ()
+main = do
+  putStrLn (Util.Strings.shout "hello")
+  printInt (MathTools.sumSquares [1, 2, 3])
+  putStrLn (show (Util.origin))
+  putStrLn (Helpers.greeting)

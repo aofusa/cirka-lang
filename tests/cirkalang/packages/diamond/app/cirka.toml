@@ -1,0 +1,8 @@
+# A program with two dependencies that share a third one.
+[package]
+name = "app"
+edition = "0.0.1"
+
+[dependencies]
+util = { path = "../util" }
+math-tools = { path = "../math-tools" }
