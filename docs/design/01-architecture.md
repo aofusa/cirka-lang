@@ -139,11 +139,10 @@ cirka --version                             # 例: CirkaLang v0.0.1
 [package]
 name = "hello"
 version = "0.1.0"
-edition = "v0.0.1"         # 対象とする CirkaLang の版 (プロトタイプ間の非互換を検出するため)
+edition = "0.0.2"          # 対象とする CirkaLang の版 (プロトタイプ間の非互換を検出するため)
 
 [dependencies]
-core = { path = "../lib/cirkalang/core" }
-std  = { path = "../lib/cirkalang/std" }
+util = { path = "../util" }  # パス依存。モジュールは名前空間 `Util` の下 (spec-v0.0.2.md §4)
 
 [verify]
 smt = true                 # 部分集合型の証明義務を SMT で解く (false なら手動証明のみ)
