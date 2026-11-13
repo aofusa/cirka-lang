@@ -444,6 +444,10 @@ cont s i = primStrIndex s i - 128
 putStrLn : String -> IO ()
 putStrLn s = putStr s >> putStr "\n"
 
+-- Prints a value with `show` and a line break.
+print : Show a => a -> IO ()
+print x = putStrLn (show x)
+
 -- Functions
 id : a -> a
 id x = x
@@ -595,6 +599,13 @@ snd : (a, b) -> b
 snd (_, y) = y
 
 -- Maybe
+isJust : Maybe a -> Bool
+isJust (Just _) = True
+isJust Nothing = False
+
+isNothing : Maybe a -> Bool
+isNothing m = not (isJust m)
+
 fromMaybe : a -> Maybe a -> a
 fromMaybe d Nothing = d
 fromMaybe _ (Just x) = x

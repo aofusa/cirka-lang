@@ -2,6 +2,7 @@
 //! §4.1), its values (for normalization by evaluation) and the elaborated
 //! program.
 
+pub use cirkalang_resolve::rast::Abi;
 pub use cirkalang_resolve::rast::GName;
 use std::collections::HashMap;
 use std::fmt::Write;
@@ -216,6 +217,12 @@ pub enum Global {
     Prim {
         ty: Term,
         prim: Prim,
+    },
+    /// A function of an `extern` block (spec-v0.0.2.md §8), called by its
+    /// source name.
+    Extern {
+        ty: Term,
+        abi: Abi,
     },
 }
 
@@ -578,7 +585,8 @@ impl Program {
             Global::Def { ty, .. }
             | Global::Data { ty, .. }
             | Global::Con { ty, .. }
-            | Global::Prim { ty, .. } => Some(ty),
+            | Global::Prim { ty, .. }
+            | Global::Extern { ty, .. } => Some(ty),
             Global::Missing => None,
         }
     }
@@ -910,6 +918,13 @@ pub fn print_program(p: &Program) -> String {
             }
             Global::Prim { ty, .. } => {
                 let _ = writeln!(s, "prim {name} : {}", print_term(p, &mut Vec::new(), ty));
+            }
+            Global::Extern { ty, abi } => {
+                let _ = writeln!(
+                    s,
+                    "extern {abi:?} {name} : {}",
+                    print_term(p, &mut Vec::new(), ty)
+                );
             }
             Global::Missing => {}
         }

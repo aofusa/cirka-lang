@@ -1,0 +1,53 @@
+-- Files (spec-v0.0.2.md §8.3): whole-file functions, errors as values,
+-- and an open `File` that is closed when it is dropped.
+import Std.Fs as Fs
+import Std.IO as IO
+import Std.Process as P
+
+-- Reads the first `n` bytes and leaves the file to `Release`.
+firstBytes : String -> Int -> IO ()
+firstBytes path n = do
+  r <- Fs.openRead path
+  case r of
+    Err e => print e
+    Ok f => do
+      p <- Fs.read f n
+      case p of
+        (f, Ok s) => putStrLn ("first: " ++ show s)
+        (f, Err e) => print e
+
+-- Writes through a `File` and closes it explicitly.
+writeLines : String -> IO ()
+writeLines path = do
+  r <- Fs.create path
+  case r of
+    Err e => print e
+    Ok f => do
+      p <- Fs.write f "one\ntwo\n"
+      case p of
+        (f, w) => do
+          c <- Fs.close f
+          print (isOk w && isOk c)
+
+main : IO ()
+main = do
+  pid <- P.processId
+  let path = "/tmp/cirka-std-fs-" ++ show pid ++ ".txt"
+  writeLines path
+  a <- Fs.appendFile path "three\n"
+  print (isOk a)
+  r <- Fs.readFile path
+  case r of
+    Ok s => putStr s
+    Err e => print e
+  firstBytes path 5
+  d <- Fs.removeFile path
+  print (isOk d)
+  m <- Fs.readFile path
+  case m of
+    Ok s => putStr s
+    Err e => do
+      print (IO.errorCode e)
+      putStrLn (IO.message e)
+  w <- Fs.writeFile "/nonexistent-dir/x" "x"
+  print w

@@ -1,0 +1,5 @@
+extern "Rust" where
+  f : Int -> Int
+
+extern "C" link "ssl" where
+  g : Int -> Int

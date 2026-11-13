@@ -1,0 +1,7 @@
+-- Every declaration of a C function passes the same values (spec-v0.0.2.md
+-- §8.2): the compiler calls `sqrt` with a double.
+extern "C" where
+  sqrt : Int -> Int
+
+main : IO ()
+main = printInt (sqrt 4)

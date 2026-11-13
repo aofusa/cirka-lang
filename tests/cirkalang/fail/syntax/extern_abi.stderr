@@ -1,0 +1,10 @@
+error[E1007]: unknown calling convention `Rust`
+ --> extern_abi.cirka:1:8
+  |
+1 | extern "Rust" where
+  |        ^^^^^^ expected "C" or "cirka"
+error[E1007]: cannot link library `ssl`
+ --> extern_abi.cirka:4:17
+  |
+4 | extern "C" link "ssl" where
+  |                 ^^^^^ only "c", "m" and "pthread" in v0.0.2

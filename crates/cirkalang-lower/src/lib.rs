@@ -19,6 +19,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
+mod externs;
 #[cfg(test)]
 mod tests;
 
@@ -82,6 +83,9 @@ struct Lower<'a> {
     datas: RefCell<HashMap<GName, DataInfo>>,
     cons: RefCell<HashMap<GName, ConInfo>>,
     errs: RefCell<Vec<String>>,
+    /// Errors of the program found while lowering (extern functions
+    /// declared twice with different signatures).
+    user_errs: RefCell<Vec<Diagnostic>>,
 }
 
 type Binds = Vec<(c::Binder, c::Expr)>;
@@ -155,6 +159,7 @@ impl<'a> Lower<'a> {
             datas: RefCell::new(HashMap::new()),
             cons: RefCell::new(HashMap::new()),
             errs: RefCell::new(Vec::new()),
+            user_errs: RefCell::new(Vec::new()),
         }
     }
 
@@ -1843,12 +1848,40 @@ impl<'a> Lower<'a> {
                         span: Span::DUMMY,
                     });
                 }
-                Global::Prim { ty, prim } => {
-                    let tv = self.ev().eval(&Vec::new(), ty);
+                Global::Prim { .. } | Global::Extern { .. } => {
+                    let tv = self.ev().eval(&Vec::new(), self.p.type_of(*g).unwrap());
                     let cty = self.lower_ty(&mut Vec::new(), &tv);
                     // Primitives are written against the representation of `IO`.
                     let rep = io_rep(&cty);
-                    if let Some(e) = self.prim_body(*prim, &rep) {
+                    let body = match self.p.get(*g) {
+                        Global::Prim { prim, .. } => self.prim_body(*prim, &rep),
+                        Global::Extern { ty, abi } => match self.extern_fn(*g, ty, *abi) {
+                            Some((e, _, d)) => {
+                                match prog.externs.iter().find(|x| x.name == d.name) {
+                                    Some(x) if !externs::same_call(x, &d) => {
+                                        self.user_errs.borrow_mut().push(
+                                            Diagnostic::error(format!(
+                                                "`{}` is declared with two different signatures",
+                                                d.name
+                                            ))
+                                            .with_code("E1271")
+                                            .with_note(
+                                                "every `extern` declaration of a function \
+                                                 (and the compiler's own use of it) must \
+                                                 pass the same values",
+                                            ),
+                                        )
+                                    }
+                                    Some(_) => {}
+                                    None => prog.externs.push(d),
+                                }
+                                Some(e)
+                            }
+                            None => None,
+                        },
+                        _ => None,
+                    };
+                    if let Some(e) = body {
                         let name = self.gname(*g);
                         if rep.alpha_eq(&cty) {
                             prog.binds.push(c::TopBind {
@@ -1899,6 +1932,10 @@ impl<'a> Lower<'a> {
                 ),
                 span: Span::DUMMY,
             });
+        }
+        let user = self.user_errs.take();
+        if !user.is_empty() {
+            return Err(user);
         }
         let errs = self.errs.take();
         if !errs.is_empty() {

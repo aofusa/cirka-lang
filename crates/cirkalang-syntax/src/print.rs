@@ -66,6 +66,22 @@ fn decl(d: &Decl) -> String {
             let ds: Vec<String> = ds.iter().map(decl).collect();
             format!("({p}tests {})", ds.join(" "))
         }
+        DeclKind::Extern(b) => {
+            let abi = match b.abi {
+                crate::ast::Abi::C => "C",
+                crate::ast::Abi::Cirka => "cirka",
+            };
+            let link = match &b.link {
+                Some((l, _)) => format!(" (link {l:?})"),
+                None => String::new(),
+            };
+            let sigs: Vec<String> = b
+                .sigs
+                .iter()
+                .map(|s| format!("({} {})", s.name, expr(&s.ty)))
+                .collect();
+            format!("({p}extern {abi:?}{link} {})", sigs.join(" "))
+        }
         DeclKind::Trait(t) => {
             let ctx: Vec<String> = t.context.iter().map(expr).collect();
             let ps: Vec<String> = t.params.iter().map(param).collect();

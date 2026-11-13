@@ -291,6 +291,13 @@ impl<'r> Elab<'r> {
         self.ev().eval(&env, &cx.tys[l as usize])
     }
 
+    /// `v` under `l` binders without names (extern signatures).
+    fn show_val(&self, l: u32, v: &Val) -> String {
+        let t = self.ev().quote(l, v);
+        let mut names = (0..l).map(|i| Rc::from(format!("a{i}").as_str())).collect();
+        print_term(&self.prog, &mut names, &t)
+    }
+
     fn show(&self, cx: &Cxt, v: &Val) -> String {
         let t = self.quote(cx, v);
         print_term(&self.prog, &mut cx.names.clone(), &t)
@@ -3441,10 +3448,16 @@ impl<'r> Elab<'r> {
             }
         }
         for it in &items {
+            if let rast::Item::Extern(g, t, abi) = it {
+                self.extern_fn(*g, t, *abi);
+            }
+        }
+        for it in &items {
             if let rast::Item::Data(d) = it {
                 self.data_cons(d);
             }
         }
+        self.check_externs();
         // 3. Traits, the heads of implementations, signatures.
         for t in &traits {
             self.trait_item(t);
@@ -3871,6 +3884,132 @@ impl<'r> Elab<'r> {
             )),
         }
         self.prog.order.push(g);
+    }
+
+    /// A function of an `extern` block (spec-v0.0.2.md §8.2): its
+    /// parameters and result cross the boundary.
+    fn extern_fn(&mut self, g: GName, t: &rast::Expr, abi: Abi) {
+        self.begin(self.prog.name(g).to_string());
+        let mut cx = Cxt::default();
+        let tt = self.check_type(&mut cx, t);
+        self.solve_pending(true);
+        let ty = self.zonk(0, &tt);
+        // Checked after the data types have their constructors.
+        self.prog.globals[g.0 as usize] = Global::Extern { ty, abi };
+        self.prog.order.push(g);
+    }
+
+    /// Reports the parameter and result types of extern functions that
+    /// cannot cross the boundary (after `data_cons`).
+    fn check_externs(&mut self) {
+        let gs: Vec<GName> = (0..self.prog.globals.len() as u32)
+            .map(GName)
+            .filter(|g| matches!(self.prog.get(*g), Global::Extern { .. }))
+            .collect();
+        for g in gs {
+            let Global::Extern { ty, abi } = self.prog.get(g).clone() else {
+                continue;
+            };
+            let span = self.rp.info(g).span;
+            let mut v = self.ev().eval(&Vec::new(), &ty);
+            let mut l = 0;
+            let mut bad: Option<String> = None;
+            loop {
+                match self.whnf(&v) {
+                    Val::Pi(_, _, Icit::Impl, _, clo) => {
+                        v = self.ev().inst(&clo, Val::var(l));
+                        l += 1;
+                    }
+                    Val::Pi(_, _, Icit::Expl, a, clo) => {
+                        if !self.extern_scalar(&a, abi, 0) {
+                            bad = Some(self.show_val(l, &a));
+                            break;
+                        }
+                        v = self.ev().inst(&clo, Val::var(l));
+                        l += 1;
+                    }
+                    r => {
+                        let r = match &r {
+                            Val::Neutral(Head::Global(h), sp)
+                                if sp.len() == 1
+                                    && (Some(*h) == self.prog.builtins.io
+                                        || Some(*h) == self.prog.builtins.io1) =>
+                            {
+                                match &sp[0] {
+                                    Elim::App(a, _) => a.clone(),
+                                    _ => r.clone(),
+                                }
+                            }
+                            _ => r.clone(),
+                        };
+                        let unit = matches!(self.whnf(&r), Val::Data(d, _) if Some(d) == self.prog.builtins.unit);
+                        if !unit && !self.extern_scalar(&r, abi, 0) {
+                            bad = Some(self.show_val(l, &r));
+                        }
+                        break;
+                    }
+                }
+            }
+            if let Some(t) = bad {
+                let what = if abi == Abi::C { "C" } else { "the runtime" };
+                self.report(
+                    self.error(
+                        "E1270",
+                        span,
+                        format!("`{t}` cannot be passed to or from {what}"),
+                    )
+                    .with_note(
+                        "extern functions take and return `Int`, `UInt`, `Float`, `Char`, `Bool`, \
+                         the C types of `Foreign` and types wrapping one of them (and `()` as a result)",
+                    ),
+                );
+            }
+        }
+    }
+
+    /// Whether a value of type `ty` is passed as one scalar: a number, a
+    /// character, `Bool`, a `String` (runtime convention only), or a data
+    /// type with one constructor and one run-time field of such a type.
+    fn extern_scalar(&self, ty: &Val, abi: Abi, depth: u32) -> bool {
+        match self.whnf(ty) {
+            Val::Neutral(Head::Global(g), sp) if sp.is_empty() => match self.prog.prim_of(g) {
+                Some(Prim::Int | Prim::UInt | Prim::Float | Prim::Char) => true,
+                Some(Prim::String) => abi == Abi::Cirka,
+                _ => false,
+            },
+            Val::Data(d, args) => {
+                if Some(d) == self.prog.builtins.bool_ {
+                    return true;
+                }
+                let Global::Data { cons, nparams, .. } = self.prog.get(d).clone() else {
+                    return false;
+                };
+                if cons.len() != 1 || depth > 8 {
+                    return false;
+                }
+                let Some(cty) = self.prog.type_of(cons[0]) else {
+                    return false;
+                };
+                let mut v = self.ev().eval(&Vec::new(), cty);
+                for (a, _) in args.iter().take(nparams) {
+                    match self.whnf(&v) {
+                        Val::Pi(_, _, _, _, clo) => v = self.ev().inst(&clo, a.clone()),
+                        _ => return false,
+                    }
+                }
+                let mut fields = Vec::new();
+                let mut l = 0;
+                while let Val::Pi(_, m, _, a, clo) = self.whnf(&v) {
+                    if m != Mult::Zero {
+                        fields.push(a);
+                    }
+                    v = self.ev().inst(&clo, Val::var(l));
+                    l += 1;
+                }
+                fields.len() == 1 && self.extern_scalar(&fields[0], abi, depth + 1)
+            }
+            _ => false,
+        }
     }
 
     fn def_sig(&mut self, d: &rast::Def) {

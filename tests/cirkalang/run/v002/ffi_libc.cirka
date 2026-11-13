@@ -1,0 +1,38 @@
+-- Calling C (spec-v0.0.2.md §8): scalars, the C types of `Foreign`,
+-- wrappers of them, `Bool`, and C strings.
+import Foreign
+
+extern "C" where
+  labs : Int -> Int
+  abs : CInt -> CInt
+  toupper : CInt -> CInt
+  sqrt : Float -> Float
+  strlen : Ptr CChar -> IO CSize
+  getpid : IO Pid
+
+-- A wrapper of a C type crosses as the C type.
+data Pid = MkPid CInt
+
+positive : Pid -> Bool
+positive (MkPid p) = fromCInt p > 0
+
+main : IO ()
+main = do
+  printInt (labs (0 - 42))
+  -- Passed as a 32-bit `int`: the low bits of 2^32 - 5 are -5.
+  print (fromCInt (abs (MkCInt (4294967296 - 5))))
+  print (primIntToChar (fromCInt (toupper (MkCInt 97))))
+  printFloat (sqrt 2.0)
+  p <- getpid
+  print (positive p)
+  n <- withCString "hello, C" (\s => strlen s)
+  print (fromCSize n)
+  s <- withCString "round trip" (\s => peekCString s)
+  putStrLn s
+  buf <- (mallocBytes 16 : IO (Ptr CInt))
+  pokeInt32 buf 0 (0 - 7)
+  pokeInt32 buf 1 9
+  a <- peekInt32 buf 0
+  b <- peekInt32 buf 1
+  print (a, b)
+  freeBytes buf

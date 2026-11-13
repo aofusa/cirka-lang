@@ -42,7 +42,7 @@ pub fn lib_dir() -> PathBuf {
 
 /// Source roots of the libraries.
 pub fn lib_roots() -> Vec<PathBuf> {
-    vec![lib_dir().join("core")]
+    vec![lib_dir().join("core"), lib_dir().join("std")]
 }
 
 /// The result of compiling a CirkaLang program.

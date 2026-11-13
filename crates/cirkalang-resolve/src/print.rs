@@ -45,6 +45,7 @@ fn mult(m: &Option<Mult>) -> &'static str {
 fn item(p: &Program, it: &Item) -> String {
     match it {
         Item::Prim(n, t) => format!("(prim {} {})", g(p, *n), expr(p, t)),
+        Item::Extern(n, t, abi) => format!("(extern {abi:?} {} {})", g(p, *n), expr(p, t)),
         Item::Trait(t) => {
             let ms: Vec<String> = t.methods.iter().map(|m| g(p, m.name)).collect();
             format!("(trait {} ({}))", g(p, t.name), ms.join(" "))

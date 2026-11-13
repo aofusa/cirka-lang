@@ -1,0 +1,11 @@
+-- Extern functions take and return scalars (spec-v0.0.2.md §8.2).
+data Two = MkTwo Int Int
+
+extern "C" where
+  bad1 : List Int -> Int
+  bad2 : Int -> Two
+  bad3 : String -> IO Int
+  ok : Int -> IO ()
+
+main : IO ()
+main = pure ()

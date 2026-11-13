@@ -1,0 +1,18 @@
+error[E1270]: `List Int` cannot be passed to or from C
+ --> tests/cirkalang/fail/type/extern_type.cirka:5:3
+  |
+5 |   bad1 : List Int -> Int
+  |   ^^^^
+  = note: extern functions take and return `Int`, `UInt`, `Float`, `Char`, `Bool`, the C types of `Foreign` and types wrapping one of them (and `()` as a result)
+error[E1270]: `Two` cannot be passed to or from C
+ --> tests/cirkalang/fail/type/extern_type.cirka:6:3
+  |
+6 |   bad2 : Int -> Two
+  |   ^^^^
+  = note: extern functions take and return `Int`, `UInt`, `Float`, `Char`, `Bool`, the C types of `Foreign` and types wrapping one of them (and `()` as a result)
+error[E1270]: `String` cannot be passed to or from C
+ --> tests/cirkalang/fail/type/extern_type.cirka:7:3
+  |
+7 |   bad3 : String -> IO Int
+  |   ^^^^
+  = note: extern functions take and return `Int`, `UInt`, `Float`, `Char`, `Bool`, the C types of `Foreign` and types wrapping one of them (and `()` as a result)

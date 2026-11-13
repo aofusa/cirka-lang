@@ -1,0 +1,2 @@
+(extern "C" (labs (-> Int Int)) (getpid (IO CInt)))
+(private extern "cirka" (link "c") (cirka_errno (IO Int)))

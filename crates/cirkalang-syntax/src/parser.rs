@@ -477,6 +477,11 @@ impl Parser {
                 }
             }
             Tok::LIdent(path, w)
+                if path.is_empty() && w == "extern" && matches!(self.peek_at(1), Tok::Str(_)) =>
+            {
+                DeclKind::Extern(self.extern_block()?)
+            }
+            Tok::LIdent(path, w)
                 if path.is_empty()
                     && w == "tests"
                     && matches!(self.peek_at(1), Tok::Kw(Kw::Where)) =>
@@ -513,6 +518,76 @@ impl Parser {
             private,
             kind,
             span: self.from(start),
+        })
+    }
+
+    /// `extern "C" [link "lib"] where { name : type; .. }` (after `extern`).
+    fn extern_block(&mut self) -> R<ExternBlock> {
+        self.bump();
+        let abi_span = self.span();
+        let Tok::Str(abi) = self.bump().tok else {
+            unreachable!()
+        };
+        let abi = match abi.as_str() {
+            "C" => Abi::C,
+            "cirka" => Abi::Cirka,
+            _ => {
+                self.errs.push(
+                    Diagnostic::error(format!("unknown calling convention `{abi}`"))
+                        .with_code("E1007")
+                        .with_label(abi_span, "expected \"C\" or \"cirka\""),
+                );
+                Abi::C
+            }
+        };
+        let link = match self.peek().clone() {
+            Tok::LIdent(p, w) if p.is_empty() && w == "link" => {
+                self.bump();
+                let sp = self.span();
+                match self.peek().clone() {
+                    Tok::Str(l) => {
+                        self.bump();
+                        // Programs are linked with these; other libraries
+                        // need the linker options of FEAT-0047.
+                        if !matches!(l.as_str(), "c" | "m" | "pthread") {
+                            self.errs.push(
+                                Diagnostic::error(format!("cannot link library `{l}`"))
+                                    .with_code("E1007")
+                                    .with_label(sp, "only \"c\", \"m\" and \"pthread\" in v0.0.2"),
+                            );
+                        }
+                        Some((l, sp))
+                    }
+                    _ => {
+                        self.error_here("a library name");
+                        return Err(());
+                    }
+                }
+            }
+            _ => None,
+        };
+        self.expect(&Tok::Kw(Kw::Where), "`where`")?;
+        let sigs = self.block(|p| {
+            let (name, name_span) = match p.peek().clone() {
+                Tok::LIdent(path, n) if path.is_empty() => (n, p.bump().span),
+                _ => {
+                    p.error_here("the name of a function");
+                    return Err(());
+                }
+            };
+            p.expect(&Tok::Colon, "`:`")?;
+            let ty = p.expr()?;
+            Ok(ExternSig {
+                name,
+                name_span,
+                ty,
+            })
+        })?;
+        Ok(ExternBlock {
+            abi,
+            abi_span,
+            link,
+            sigs,
         })
     }
 

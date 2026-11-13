@@ -673,6 +673,11 @@ impl<'s> Resolver<'s> {
                     } => {
                         self.declare(name, n, GKind::Prim, *name_span, d.private);
                     }
+                    ast::DeclKind::Extern(b) => {
+                        for sig in &b.sigs {
+                            self.declare(name, &sig.name, GKind::Prim, sig.name_span, d.private);
+                        }
+                    }
                     ast::DeclKind::Trait(t) => self.declare_trait(name, t, d.private),
                     // Tests are removed or expanded when the module is
                     // loaded; instances are declared when they are resolved.
@@ -969,6 +974,13 @@ impl<'s> Resolver<'s> {
                     let g = self.tables[name].own[n];
                     let t = self.signature(ty);
                     items.push(Item::Prim(g, t));
+                }
+                ast::DeclKind::Extern(b) => {
+                    for sig in &b.sigs {
+                        let g = self.tables[name].own[&sig.name];
+                        let t = self.signature(&sig.ty);
+                        items.push(Item::Extern(g, t, b.abi));
+                    }
                 }
                 ast::DeclKind::Trait(t) => {
                     let (data, tr) = self.trait_(t, d.span);

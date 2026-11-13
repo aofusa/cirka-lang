@@ -1,0 +1,113 @@
+-- The C foreign function interface (spec-v0.0.2.md §8).
+--
+-- The C types are wrappers of `Int` / `Float`: a value is converted to
+-- the C type (its low bits) when it is passed to C, and a result from C
+-- is extended to 64 bits. `Ptr a` is an address; reading and writing
+-- through it is not checked (as in C).
+module Foreign
+
+data CChar = MkCChar Int deriving (Eq, Ord, Show)
+data CUChar = MkCUChar Int deriving (Eq, Ord, Show)
+data CShort = MkCShort Int deriving (Eq, Ord, Show)
+data CUShort = MkCUShort Int deriving (Eq, Ord, Show)
+data CInt = MkCInt Int deriving (Eq, Ord, Show)
+data CUInt = MkCUInt Int deriving (Eq, Ord, Show)
+data CLong = MkCLong Int deriving (Eq, Ord, Show)
+data CULong = MkCULong Int deriving (Eq, Ord, Show)
+data CSize = MkCSize Int deriving (Eq, Ord, Show)
+data CSSize = MkCSSize Int deriving (Eq, Ord, Show)
+data CFloat = MkCFloat Float deriving (Eq, Ord, Show)
+data CDouble = MkCDouble Float deriving (Eq, Ord, Show)
+
+-- Conversions (the low bits are kept when a value is passed to C).
+fromCInt : CInt -> Int
+fromCInt (MkCInt n) = n
+
+fromCLong : CLong -> Int
+fromCLong (MkCLong n) = n
+
+fromCSize : CSize -> Int
+fromCSize (MkCSize n) = n
+
+fromCDouble : CDouble -> Float
+fromCDouble (MkCDouble x) = x
+
+-- An address of C memory holding `a`s.
+data Ptr (a : Type) = MkPtr Int deriving (Eq, Ord, Show)
+
+-- An address that must be given back to C exactly once (a linear value;
+-- wrap it in a type with `Release` that frees it).
+data OwnedPtr (a : Type) : LType where
+  MkOwnedPtr : Int -> OwnedPtr a
+
+nullPtr : Ptr a
+nullPtr = MkPtr 0
+
+isNull : Ptr a -> Bool
+isNull (MkPtr p) = p == 0
+
+plusPtr : Ptr a -> Int -> Ptr b
+plusPtr (MkPtr p) n = MkPtr (p + n)
+
+castPtr : Ptr a -> Ptr b
+castPtr (MkPtr p) = MkPtr p
+
+ptrAddress : Ptr a -> Int
+ptrAddress (MkPtr p) = p
+
+private extern "C" where
+  malloc : CSize -> IO (Ptr CChar)
+  free : Ptr CChar -> IO ()
+  strlen : Ptr CChar -> IO CSize
+
+private extern "cirka" where
+  cirka_mem_read : Int -> Int -> IO Int
+  cirka_mem_write : Int -> Int -> Int -> IO ()
+  cirka_cstring_new : String -> IO Int
+  cirka_cstring_peek : Int -> Int -> IO String
+
+-- `n` bytes of C memory (not initialized), freed with `freeBytes`.
+mallocBytes : Int -> IO (Ptr a)
+mallocBytes n = do
+  p <- malloc (MkCSize n)
+  pure (castPtr p)
+
+freeBytes : Ptr a -> IO ()
+freeBytes p = free (castPtr p)
+
+-- Calls `f` with a NUL-terminated copy of `s` (freed after `f`).
+withCString : String -> (Ptr CChar -> IO b) -> IO b
+withCString s f = do
+  p <- cirka_cstring_new s
+  r <- f (MkPtr p)
+  free (MkPtr p)
+  pure r
+
+-- The bytes of a NUL-terminated C string.
+peekCString : Ptr CChar -> IO String
+peekCString (MkPtr p) = do
+  n <- strlen (MkPtr p)
+  peekCStringLen (MkPtr p) (fromCSize n)
+
+-- `n` bytes at the address.
+peekCStringLen : Ptr CChar -> Int -> IO String
+peekCStringLen (MkPtr p) n = cirka_cstring_peek p n
+
+-- Integers in memory: `peekInt8` ... (kinds as in `cirka_mem_read`).
+peekByte : Ptr a -> Int -> IO Int
+peekByte (MkPtr p) i = cirka_mem_read (p + i) 1
+
+pokeByte : Ptr a -> Int -> Int -> IO ()
+pokeByte (MkPtr p) i v = cirka_mem_write (p + i) 1 v
+
+peekInt32 : Ptr a -> Int -> IO Int
+peekInt32 (MkPtr p) i = cirka_mem_read (p + i * 4) 4
+
+pokeInt32 : Ptr a -> Int -> Int -> IO ()
+pokeInt32 (MkPtr p) i v = cirka_mem_write (p + i * 4) 4 v
+
+peekInt64 : Ptr a -> Int -> IO Int
+peekInt64 (MkPtr p) i = cirka_mem_read (p + i * 8) 6
+
+pokeInt64 : Ptr a -> Int -> Int -> IO ()
+pokeInt64 (MkPtr p) i v = cirka_mem_write (p + i * 8) 6 v

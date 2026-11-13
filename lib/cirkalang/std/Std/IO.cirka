@@ -1,0 +1,67 @@
+-- Standard streams and operating system errors (spec-v0.0.2.md §8.3).
+--
+-- Errors are values: a failing operation returns `Err` with the error
+-- number of the operating system (`errno`), never ends the program.
+module Std.IO
+
+private extern "cirka" where
+  cirka_errno : IO Int
+  cirka_strerror : Int -> String
+  cirka_fd_read : Int -> Int -> IO String
+  cirka_fd_write : Int -> String -> IO Int
+  cirka_stdin_eof : IO Int
+  cirka_read_line : IO String
+  cirka_flush : IO ()
+
+-- An error of the operating system: its error number (`errno`).
+data IOError = MkIOError Int
+
+-- The error number.
+errorCode : IOError -> Int
+errorCode (MkIOError e) = e
+
+-- A description of the error (`No such file or directory`).
+message : IOError -> String
+message (MkIOError e) = cirka_strerror e
+
+impl Eq IOError where
+  (MkIOError a) == (MkIOError b) = a == b
+
+impl Show IOError where
+  show (MkIOError e) = cirka_strerror e ++ " (os error " ++ show e ++ ")"
+
+-- `Ok ()` for a result `r >= 0`, else the error `-r`.
+checked : Int -> Result IOError ()
+checked r = if r < 0 then Err (MkIOError (0 - r)) else Ok ()
+
+-- The next line of standard input without its line break, or `Nothing`
+-- at the end of the input.
+getLine : IO (Maybe String)
+getLine = do
+  e <- cirka_stdin_eof
+  if e /= 0 then pure Nothing else readLineJust
+
+private readLineJust : IO (Maybe String)
+readLineJust = do
+  l <- cirka_read_line
+  pure (Just l)
+
+-- All of standard input that is left.
+getContents : IO (Result IOError String)
+getContents = do
+  s <- cirka_fd_read 0 (0 - 1)
+  e <- cirka_errno
+  pure (if e /= 0 then Err (MkIOError e) else Ok s)
+
+-- Writes to standard error (standard output is flushed first).
+ePutStr : String -> IO ()
+ePutStr s = do
+  done <- cirka_fd_write 2 s
+  pure ()
+
+ePutStrLn : String -> IO ()
+ePutStrLn s = ePutStr (s ++ "\n")
+
+-- Writes the buffered standard output.
+flush : IO ()
+flush = cirka_flush

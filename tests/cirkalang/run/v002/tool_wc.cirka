@@ -1,0 +1,32 @@
+-- A small CUI tool (FEAT-0213): counts the lines, words and bytes of
+-- standard input, writes the report to a file and prints the file.
+import Data.String as S
+import Std.Fs as Fs
+import Std.IO as IO
+import Std.Process as P
+
+data Counts = MkCounts Int Int Int
+
+count : String -> Counts
+count s =
+  let v = S.toStr s in
+  MkCounts (S.foldLines (\n, l => n + 1) 0 v) (S.foldWords (\n, w => n + 1) 0 v) (S.length v)
+
+report : Counts -> String
+report (MkCounts l w b) = S.intercalate " " [show l, show w, show b] ++ "\n"
+
+main : IO ()
+main = do
+  input <- IO.getContents
+  case input of
+    Err e => IO.ePutStrLn (show e)
+    Ok s => do
+      pid <- P.processId
+      let path = "/tmp/cirka-tool-wc-" ++ show pid ++ ".txt"
+      w <- Fs.writeFile path (report (count s))
+      r <- Fs.readFile path
+      case r of
+        Ok t => putStr t
+        Err e => print e
+      d <- Fs.removeFile path
+      print (isOk w && isOk d)

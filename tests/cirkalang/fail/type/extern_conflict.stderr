@@ -1,0 +1,2 @@
+error[E1271]: `sqrt` is declared with two different signatures
+  = note: every `extern` declaration of a function (and the compiler's own use of it) must pass the same values

@@ -1,0 +1,23 @@
+-- The running process (spec-v0.0.2.md §8.3).
+module Std.Process
+
+import Foreign (CInt, fromCInt)
+
+private extern "C" where
+  getpid : IO CInt
+
+-- Ends the program with an exit code (objects alive are not released).
+exitWith : Int -> IO a
+exitWith code = exit code
+
+exitSuccess : IO a
+exitSuccess = exit 0
+
+exitFailure : IO a
+exitFailure = exit 1
+
+-- The process id.
+processId : IO Int
+processId = do
+  p <- getpid
+  pure (fromCInt p)

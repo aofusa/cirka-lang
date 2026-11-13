@@ -1,0 +1,18 @@
+-- Arguments, environment variables and clocks (spec-v0.0.2.md §8.3).
+import Std.Env as Env
+import Std.Time as T
+
+main : IO ()
+main = do
+  as <- Env.args
+  print (Prelude.length as)
+  v <- Env.getEnv "CIRKA_TEST_SURELY_UNSET_VARIABLE"
+  print v
+  p <- Env.getEnv "PATH"
+  print (isJust p)
+  t0 <- T.monotonic
+  t1 <- T.monotonic
+  print (t1 >= t0)
+  now <- T.now
+  -- After 2020-01-01.
+  print (now > 1577836800000000000)

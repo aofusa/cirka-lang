@@ -53,7 +53,10 @@ pub fn lint_program(p: &Program) -> Result<(), Vec<String>> {
                     l.check(&mut cx, b, &tv, Mult::One);
                 }
             }
-            Global::Data { ty, .. } | Global::Con { ty, .. } | Global::Prim { ty, .. } => {
+            Global::Data { ty, .. }
+            | Global::Con { ty, .. }
+            | Global::Prim { ty, .. }
+            | Global::Extern { ty, .. } => {
                 l.check_type(&mut Cx::default(), ty);
             }
             Global::Missing => {}

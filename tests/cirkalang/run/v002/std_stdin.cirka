@@ -1,0 +1,22 @@
+-- Standard input (spec-v0.0.2.md §8.3): lines until the end, then the
+-- rest at once (empty).
+import Std.IO as IO
+
+countLines : Int -> Int -> IO (Pair Int Int)
+countLines n bytes = do
+  l <- IO.getLine
+  case l of
+    Nothing => pure (n, bytes)
+    Just s => do
+      putStrLn (show n ++ ": " ++ s)
+      countLines (n + 1) (bytes + strLength s)
+
+main : IO ()
+main = do
+  first <- IO.getLine
+  print first
+  r <- countLines 1 0
+  print r
+  rest <- IO.getContents
+  print rest
+  IO.ePutStrLn "done"

@@ -1,0 +1,6 @@
+extern "C" where
+  labs : Int -> Int
+  getpid : IO CInt
+
+private extern "cirka" link "c" where
+  cirka_errno : IO Int

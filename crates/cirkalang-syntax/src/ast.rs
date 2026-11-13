@@ -117,10 +117,40 @@ pub enum DeclKind {
     },
     /// `tests where { decls }`: declarations that exist only in test builds.
     Tests(Vec<Decl>),
+    /// `extern "C" [link "lib"] where { name : type; .. }` (spec-v0.0.2.md
+    /// §8): functions of another language, called by their names.
+    Extern(ExternBlock),
     /// `trait [ctx =>] Name params where { sigs; default clauses }`.
     Trait(TraitDecl),
     /// `impl [ctx =>] Trait args [where { clauses }]`.
     Impl(ImplDecl),
+}
+
+/// The calling convention of an `extern` block.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Abi {
+    /// `"C"`: the C ABI of the platform (scalar C types).
+    C,
+    /// `"cirka"`: the runtime's convention (`String` is passed as the
+    /// runtime's string object). Used by the standard library.
+    Cirka,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExternBlock {
+    pub abi: Abi,
+    pub abi_span: Span,
+    /// `link "m"`: the library that defines the functions.
+    pub link: Option<(String, Span)>,
+    /// `name : type`.
+    pub sigs: Vec<ExternSig>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExternSig {
+    pub name: String,
+    pub name_span: Span,
+    pub ty: Expr,
 }
 
 #[derive(Clone, Debug, PartialEq)]

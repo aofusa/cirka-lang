@@ -1,0 +1,106 @@
+-- Files (spec-v0.0.2.md §8.3).
+--
+-- `readFile` / `writeFile` / `appendFile` work on whole files. A `File`
+-- is an open file: a linear value that is closed when it is dropped
+-- (`Release`), or explicitly by `close`, which reports the error.
+module Std.Fs
+
+import Std.IO (IOError, MkIOError, checked)
+
+private extern "cirka" where
+  cirka_errno : IO Int
+  cirka_fs_open : String -> Int -> IO Int
+  cirka_fd_read : Int -> Int -> IO String
+  cirka_fd_write : Int -> String -> IO Int
+  cirka_fd_close : Int -> IO Int
+  cirka_fs_remove : String -> IO Int
+
+-- An open file.
+data File : LType where
+  MkFile : Int -> File
+
+impl Release File where
+  release (MkFile fd) = do
+    done <- cirka_fd_close fd
+    pure ()
+
+-- Opens a file for reading.
+openRead : String -> IO1 (Result IOError File)
+openRead path = openMode path 0
+
+-- Creates (or truncates) a file for writing.
+create : String -> IO1 (Result IOError File)
+create path = openMode path 1
+
+-- Opens a file for appending (creating it).
+openAppend : String -> IO1 (Result IOError File)
+openAppend path = openMode path 2
+
+private openMode : String -> Int -> IO1 (Result IOError File)
+openMode path mode = do
+  fd <- cirka_fs_open path mode
+  pure1 (if fd < 0 then Err (MkIOError (0 - fd)) else Ok (MkFile fd))
+
+-- Reads up to `n` bytes (an empty string at the end of the file).
+read : (1 f : File) -> Int -> IO1 (File, Result IOError String)
+read (MkFile fd) n = readFd (MkFile fd) fd n
+
+-- Reads the rest of the file.
+readAll : (1 f : File) -> IO1 (File, Result IOError String)
+readAll (MkFile fd) = readFd (MkFile fd) fd (0 - 1)
+
+private readFd : (1 f : File) -> Int -> Int -> IO1 (File, Result IOError String)
+readFd f fd n = do
+  s <- cirka_fd_read fd n
+  e <- cirka_errno
+  pure1 (f, if e /= 0 then Err (MkIOError e) else Ok s)
+
+-- Writes all of `s`.
+write : (1 f : File) -> String -> IO1 (File, Result IOError ())
+write (MkFile fd) s = do
+  r <- cirka_fd_write fd s
+  pure1 (MkFile fd, checked r)
+
+-- Closes the file.
+close : (1 f : File) -> IO (Result IOError ())
+close (MkFile fd) = do
+  r <- cirka_fd_close fd
+  pure (checked r)
+
+-- The contents of the file at `path`.
+readFile : String -> IO (Result IOError String)
+readFile path = do
+  fd <- cirka_fs_open path 0
+  if fd < 0 then pure (Err (MkIOError (0 - fd))) else readClose fd
+
+private readClose : Int -> IO (Result IOError String)
+readClose fd = do
+  s <- cirka_fd_read fd (0 - 1)
+  e <- cirka_errno
+  done <- cirka_fd_close fd
+  pure (if e /= 0 then Err (MkIOError e) else Ok s)
+
+-- Writes `s` to the file at `path` (creating or truncating it).
+writeFile : String -> String -> IO (Result IOError ())
+writeFile path s = writeMode path 1 s
+
+-- Appends `s` to the file at `path` (creating it).
+appendFile : String -> String -> IO (Result IOError ())
+appendFile path s = writeMode path 2 s
+
+private writeMode : String -> Int -> String -> IO (Result IOError ())
+writeMode path mode s = do
+  fd <- cirka_fs_open path mode
+  if fd < 0 then pure (Err (MkIOError (0 - fd))) else writeClose fd s
+
+private writeClose : Int -> String -> IO (Result IOError ())
+writeClose fd s = do
+  r <- cirka_fd_write fd s
+  c <- cirka_fd_close fd
+  pure (if r < 0 then checked r else checked c)
+
+-- Removes the file at `path`.
+removeFile : String -> IO (Result IOError ())
+removeFile path = do
+  r <- cirka_fs_remove path
+  pure (checked r)

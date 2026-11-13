@@ -3,6 +3,7 @@
 //! `let f x = e` are desugared.
 
 use cirka_diagnostics::{FileId, Span};
+pub use cirkalang_syntax::ast::Abi;
 pub use cirkalang_syntax::ast::{Lit, Mult};
 
 /// A global: index into [`Program::globals`].
@@ -84,6 +85,8 @@ pub enum Item {
     Def(Def),
     Data(Data),
     Prim(GName, Expr),
+    /// A function of an `extern` block (spec-v0.0.2.md §8).
+    Extern(GName, Expr, Abi),
     /// A trait; its dictionary type is an `Item::Data` of the same name.
     Trait(Trait),
     Impl(Impl),
