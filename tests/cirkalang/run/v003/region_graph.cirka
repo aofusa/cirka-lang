@@ -1,0 +1,76 @@
+-- A cyclic graph in a region (spec-v0.0.3.md §3): nodes refer to each
+-- other through handles, which are not reference counted, and the whole
+-- graph is freed when `withRegion` ends (no leak, no cycle collector).
+import Data.Borrow (Region)
+import Data.Region
+
+-- A node: its label and its successors.
+data Node (r : Region) = MkNode Int (List (RefIn r (Node r)))
+
+label : Node r -> Int
+label (MkNode n _) = n
+
+succs : Node r -> List (RefIn r (Node r))
+succs (MkNode _ s) = s
+
+-- The labels of `k` steps along the first successors.
+walk : RefIn r (Node r) -> Int -> RIO r (List Int)
+walk h k = if k <= 0 then pure [] else do
+  n <- readRefIn h
+  rest <- next n (k - 1)
+  pure (label n :: rest)
+
+next : Node r -> Int -> RIO r (List Int)
+next n k = case succs n of
+  [] => pure []
+  (s :: _) => walk s k
+
+-- A ring of `n` nodes: node i points to node i + 1, the last to the first.
+ring : Arena r -> Int -> RIO r (RefIn r (Node r))
+ring reg n = do
+  first <- newRefIn reg (MkNode 0 [])
+  last <- chain reg first 1 n
+  writeRefIn last (MkNode (n - 1) [first])
+  pure first
+
+-- Nodes i .. n - 1 after `prev`; the last one.
+chain : Arena r -> RefIn r (Node r) -> Int -> Int -> RIO r (RefIn r (Node r))
+chain reg prev i n = if i >= n then pure prev else do
+  h <- newRefIn reg (MkNode i [])
+  p <- readRefIn prev
+  writeRefIn prev (MkNode (label p) [h])
+  chain reg h (i + 1) n
+
+-- The sum of the labels met in `k` steps.
+sumWalk : RefIn r (Node r) -> Int -> Int -> RIO r Int
+sumWalk h k acc = if k <= 0 then pure acc else do
+  n <- readRefIn h
+  case succs n of
+    [] => pure (acc + label n)
+    (s :: _) => sumWalk s (k - 1) (acc + label n)
+
+-- Immutable values and a counter in the region.
+counter : Arena r -> RIO r Int
+counter reg = do
+  greeting <- allocIn reg "hello"
+  c <- newRefIn reg (0 : Int)
+  modifyRefIn c (\x => x + 40)
+  modifyRefIn c (\x => x + 2)
+  g <- readIn greeting
+  liftRIO (putStrLn g)
+  readRefIn c
+
+main : IO ()
+main = do
+  pair <- withRegion (\r, reg => do
+    a <- newRefIn reg (MkNode 1 [])
+    b <- newRefIn reg (MkNode 2 [a])
+    writeRefIn a (MkNode 1 [b])
+    walk a 5)
+  print pair
+  ringSum <- withRegion (\r, reg => do
+    h <- ring reg 1000
+    sumWalk h 3000 0)
+  print ringSum
+  c <- withRegion (\r, reg => counter reg)
+  print c

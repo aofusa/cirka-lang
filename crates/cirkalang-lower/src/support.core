@@ -13,6 +13,12 @@
 (extern cirka_f64_to_bytes (Double#) Bytes)
 (extern sqrt (Double#) Double#)
 (extern trunc (Double#) Double#)
+; Regions (spec-v0.0.3.md §3).
+(extern cirka_region_new () Any)
+(extern cirka_region_free (Any) Int#)
+(extern cirka_region_cell (Any Any) Int#)
+(extern cirka_region_get (Int#) Any)
+(extern cirka_region_set (Int# Any) Int#)
 
 ; Unsigned comparison through the sign bit.
 (def cirka$ult (-> Int# Int# Int#)

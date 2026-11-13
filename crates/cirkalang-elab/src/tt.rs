@@ -346,6 +346,22 @@ pub enum Prim {
     BorrowRun,
     BorrowIOWrap,
     BorrowIORun,
+    // Regions (spec-v0.0.3.md §3): an arena of cells addressed by `Int`.
+    Arena,
+    RIO,
+    In,
+    RefIn,
+    RegionNew,
+    RegionFree,
+    RegionCell,
+    RegionGet,
+    RegionSet,
+    RIOWrap,
+    RIORun,
+    InWrap,
+    InCell,
+    RefInWrap,
+    RefInCell,
 }
 
 impl Prim {
@@ -458,6 +474,21 @@ impl Prim {
         ("primBorrowRun", Prim::BorrowRun),
         ("primBorrowIOWrap", Prim::BorrowIOWrap),
         ("primBorrowIORun", Prim::BorrowIORun),
+        ("Arena", Prim::Arena),
+        ("RIO", Prim::RIO),
+        ("In", Prim::In),
+        ("RefIn", Prim::RefIn),
+        ("primRegionNew", Prim::RegionNew),
+        ("primRegionFree", Prim::RegionFree),
+        ("primRegionCell", Prim::RegionCell),
+        ("primRegionGet", Prim::RegionGet),
+        ("primRegionSet", Prim::RegionSet),
+        ("primRIO", Prim::RIOWrap),
+        ("primRunRIO", Prim::RIORun),
+        ("primIn", Prim::InWrap),
+        ("primInCell", Prim::InCell),
+        ("primRefIn", Prim::RefInWrap),
+        ("primRefCell", Prim::RefInCell),
     ];
 
     pub fn from_name(s: &str) -> Option<Prim> {
@@ -490,6 +521,10 @@ impl Prim {
                 | Prim::Ref
                 | Prim::Borrow
                 | Prim::BorrowIO
+                | Prim::Arena
+                | Prim::RIO
+                | Prim::In
+                | Prim::RefIn
         )
     }
 }

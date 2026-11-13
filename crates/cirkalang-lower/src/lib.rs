@@ -313,6 +313,15 @@ impl<'a> Lower<'a> {
                     // are erased tokens; a borrow is a newtype of a state
                     // function over the owner.
                     (Some(Prim::Region | Prim::Ref), _) => self.unit_ty(),
+                    // Regions (spec-v0.0.3.md §3): the arena is the runtime's
+                    // region object, a handle the address of a cell, and
+                    // `RIO r` is `IO`.
+                    (Some(Prim::Arena), _) => c::Type::Any,
+                    (Some(Prim::In | Prim::RefIn), _) => int_ty(),
+                    (Some(Prim::RIO), [_]) => c::Type::Con("IO".into(), Vec::new()),
+                    (Some(Prim::RIO), [_, a]) => {
+                        c::Type::Con("IO".into(), vec![self.lower_ty(tvs, a)])
+                    }
                     (Some(Prim::Borrow), [a, _, rest @ ..]) => c::Type::Con(
                         "Borrow".into(),
                         std::iter::once(*a)
@@ -1272,6 +1281,15 @@ impl<'a> Lower<'a> {
         go(self, es.into_iter(), Vec::new(), res, Box::new(k))
     }
 
+    /// `let! _ = e in rest` for `e : Int#`.
+    fn seq_int(&self, e: c::Expr, rest: c::Expr) -> c::Expr {
+        c::Expr::LetStrict(
+            c::Binder::new(self.id("w"), c::Mult::Many, c::Type::int()),
+            Box::new(e),
+            Box::new(rest),
+        )
+    }
+
     fn seq_unit(&self, e: c::Expr, rest: c::Expr) -> c::Expr {
         c::Expr::LetStrict(
             c::Binder::new(self.id("w"), c::Mult::Many, c::Type::unit()),
@@ -1384,7 +1402,56 @@ impl<'a> Lower<'a> {
             | Prim::Region
             | Prim::Ref
             | Prim::Borrow
-            | Prim::BorrowIO => return None,
+            | Prim::BorrowIO
+            | Prim::Arena
+            | Prim::RIO
+            | Prim::In
+            | Prim::RefIn => return None,
+            Prim::RegionNew => self.skeleton(ty, 1, |_, _| {
+                c::Expr::Extern("cirka_region_new".into(), Vec::new())
+            }),
+            Prim::RegionFree => self.skeleton(ty, 2, |a, _| {
+                self.seq_int(
+                    c::Expr::Extern("cirka_region_free".into(), vec![a[0].clone()]),
+                    self.unit_val(),
+                )
+            }),
+            Prim::RegionCell => self.skeleton(ty, 3, |a, _| {
+                let x = c::Expr::Cast(Box::new(a[1].clone()), c::Type::Any);
+                c::Expr::Con(
+                    "I#".into(),
+                    Vec::new(),
+                    vec![c::Expr::Extern(
+                        "cirka_region_cell".into(),
+                        vec![a[0].clone(), x],
+                    )],
+                )
+            }),
+            Prim::RegionGet => self.skeleton(ty, 2, |a, r| {
+                self.unbox(a[0].clone(), "I#", "Int", c::Type::int(), r.clone(), |u| {
+                    c::Expr::Cast(
+                        Box::new(c::Expr::Extern("cirka_region_get".into(), vec![u])),
+                        r,
+                    )
+                })
+            }),
+            Prim::RegionSet => self.skeleton(ty, 3, |a, r| {
+                let x = c::Expr::Cast(Box::new(a[1].clone()), c::Type::Any);
+                self.unbox(a[0].clone(), "I#", "Int", c::Type::int(), r, |u| {
+                    self.seq_int(
+                        c::Expr::Extern("cirka_region_set".into(), vec![u, x]),
+                        self.unit_val(),
+                    )
+                })
+            }),
+            // `RIO r a` and `IO a` have the same representation.
+            // So do handles and `Int`.
+            Prim::RIOWrap
+            | Prim::RIORun
+            | Prim::InWrap
+            | Prim::InCell
+            | Prim::RefInWrap
+            | Prim::RefInCell => self.skeleton(ty, 1, |a, _| a[0].clone()),
             Prim::RegionVal | Prim::RefVal => self.skeleton(ty, 0, |_, _| self.unit_val()),
             Prim::BorrowWrap => self.newtype_wrap(ty, "Borrow#"),
             Prim::BorrowIOWrap => self.newtype_wrap(ty, "BorrowIO#"),

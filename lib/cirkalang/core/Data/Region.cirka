@@ -1,0 +1,77 @@
+-- Regions (spec-v0.0.3.md §3): an arena whose contents are freed all at
+-- once when `withRegion` ends.
+--
+-- `allocIn` / `newRefIn` store a value in a cell of the arena and return a
+-- handle (`In r a` / `RefIn r a`). Handles are not reference counted, so
+-- values may refer to each other through handles in any shape, cycles
+-- included (graphs), and are still freed with the region. Handles are
+-- only used in `RIO r`, which only `withRegion` runs; `r` is bound by
+-- `withRegion`, so neither a handle nor an action using it can leave it.
+module Data.Region
+
+import Data.Borrow (Region)
+
+-- The arena of region `r`.
+prim Arena : Region -> Type
+-- Actions inside region `r` (an `IO` action that may use its handles).
+prim RIO : Region -> Type -> Type
+-- An immutable value stored in region `r`.
+prim In : Region -> Type -> Type
+-- A mutable reference stored in region `r`.
+prim RefIn : Region -> Type -> Type
+
+private prim primRegion : Region
+private prim primRegionNew : {r : Region} -> IO (Arena r)
+private prim primRegionFree : {r : Region} -> Arena r -> IO ()
+private prim primRegionCell : {r : Region} -> {a : Type} -> Arena r -> a -> IO Int
+private prim primRegionGet : {a : Type} -> Int -> IO a
+private prim primRegionSet : {a : Type} -> Int -> a -> IO ()
+private prim primRIO : {r : Region} -> {a : Type} -> IO a -> RIO r a
+private prim primRunRIO : {r : Region} -> {a : Type} -> RIO r a -> IO a
+private prim primIn : {r : Region} -> {a : Type} -> Int -> In r a
+private prim primInCell : {r : Region} -> {a : Type} -> In r a -> Int
+private prim primRefIn : {r : Region} -> {a : Type} -> Int -> RefIn r a
+private prim primRefCell : {r : Region} -> {a : Type} -> RefIn r a -> Int
+
+-- Runs `f` in a fresh region, then frees the region and everything it
+-- holds (its values are dropped; values still used elsewhere stay alive).
+withRegion : ((0 r : Region) -> Arena r -> RIO r a) -> IO a
+withRegion f = do
+  reg <- primRegionNew
+  x <- primRunRIO (f primRegion reg)
+  done <- primRegionFree reg
+  pure x
+
+-- Stores `x` in the region.
+allocIn : Arena r -> a -> RIO r (In r a)
+allocIn reg x = primRIO (fmap primIn (primRegionCell reg x))
+
+-- The value stored by `allocIn`.
+readIn : In r a -> RIO r a
+readIn h = primRIO (primRegionGet (primInCell h))
+
+-- A mutable reference in the region, holding `x`.
+newRefIn : Arena r -> a -> RIO r (RefIn r a)
+newRefIn reg x = primRIO (fmap primRefIn (primRegionCell reg x))
+
+readRefIn : RefIn r a -> RIO r a
+readRefIn h = primRIO (primRegionGet (primRefCell h))
+
+writeRefIn : RefIn r a -> a -> RIO r ()
+writeRefIn h x = primRIO (primRegionSet (primRefCell h) x)
+
+modifyRefIn : RefIn r a -> (a -> a) -> RIO r ()
+modifyRefIn h f = do
+  x <- readRefIn h
+  writeRefIn h (f x)
+
+-- Runs an `IO` action inside a region.
+liftRIO : IO a -> RIO r a
+liftRIO m = primRIO m
+
+impl Functor (RIO r) where
+  fmap f m = primRIO (fmap f (primRunRIO m))
+
+impl Monad (RIO r) where
+  pure x = primRIO (pure x)
+  m >>= k = primRIO (primRunRIO m >>= \x => primRunRIO (k x))

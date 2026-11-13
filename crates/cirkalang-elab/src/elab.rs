@@ -1122,12 +1122,13 @@ impl<'r> Elab<'r> {
                 if let Some(r) = self.escaping_region(cx, expected, actual) {
                     d = d
                         .with_note(format!(
-                            "the region `{r}` of a borrow exists only inside the borrow, \
-                             so neither its reference nor a computation in it can be the result"
+                            "the region `{r}` exists only inside the borrow or `withRegion` \
+                             that binds it, so neither a reference into it nor a computation \
+                             in it can be the result"
                         ))
                         .with_help(
                             "return a value read through the reference instead \
-                             (spec-v0.0.3.md §2.1)",
+                             (spec-v0.0.3.md §2.1, §3.1)",
                         );
                     // The result type is not reported again as unknown.
                     self.fail_metas(&self.quote(cx, expected));

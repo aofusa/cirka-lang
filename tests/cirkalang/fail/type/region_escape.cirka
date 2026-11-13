@@ -1,0 +1,7 @@
+-- A handle cannot leave its region (spec-v0.0.3.md §3.1).
+import Data.Region
+
+main : IO ()
+main = do
+  h <- withRegion (\r, reg => newRefIn reg (1 : Int))
+  print 0

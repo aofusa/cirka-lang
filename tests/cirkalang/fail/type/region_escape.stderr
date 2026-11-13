@@ -1,0 +1,9 @@
+error[E1200]: type mismatch
+ --> tests/cirkalang/fail/type/region_escape.cirka:6:31
+  |
+6 |   h <- withRegion (\r, reg => newRefIn reg (1 : Int))
+  |                               ^^^^^^^^^^^^^^^^^^^^^^
+  = note: expected `RIO r _`
+  = note:    found `RIO r (RefIn r Int)`
+  = note: the region `r` exists only inside the borrow or `withRegion` that binds it, so neither a reference into it nor a computation in it can be the result
+  = help: return a value read through the reference instead (spec-v0.0.3.md §2.1, §3.1)
