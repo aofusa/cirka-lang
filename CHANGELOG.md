@@ -3,6 +3,43 @@
 CirkaLang の版ごとの変更を記録する。プロトタイプ (v0.0.x) の間は版間の互換性を保証しない
 (`cirka.toml` の `edition` で対象版を明示する)。aCHC は版を持たないので記録しない。
 
+## CirkaLang v0.0.3
+
+借用・リージョン・性能: 線形な値を手で受け渡さずに貸して使える。循環を含むグラフをリージョンで表せる。遅延の明示と `do` の構文の整理。
+仕様は [docs/design/cirkalang/spec-v0.0.3.md](docs/design/cirkalang/spec-v0.0.3.md) (v0.0.2 からの差分)。`cirka.toml` の `edition` は `"0.0.3"`。
+
+### 追加
+
+- 借用 `Data.Borrow`: `borrow` / `borrowIO` と糖衣 `borrow x as a in e`、リージョンで添字付けた `Ref a r` と `Borrow a r` / `BorrowIO a r` のモナド
+  (`using` `update` `usingIO` `liftIO`)。持ち出しは型エラー (E1200 とリージョンの注記)。配列 (`lengthB` `readB` `writeB` `modifyB` `swapB`) と
+  ファイル (`Std.Fs` の `readB` `readAllB` `writeB`) の借用版の操作 (FEAT-0220)。
+- `impl {a : LType} -> C (T a)`: `impl` の型変数の種の宣言 (FEAT-0220)。
+- リージョン `Data.Region`: `withRegion`、`RIO r`、不変のハンドル `In r a` と可変の参照 `RefIn r a`。循環するグラフをリーク 0 で解放する (FEAT-0221)。
+- 遅延 `Data.Lazy`: `Lazy a`、`delay` `force` `now` `mapLazy` (一度だけ計算する)。`Lazy` を持つトップレベルの値の警告 W0310 (FEAT-0222)。
+- `do` のパターンの束縛 `p <- e | q => h` (`_ <-`、組の分解、反駁可能なパターン) (FEAT-0224)。
+- 共通基盤の最適化: 状態トークンの worker を newtype が包む任意の状態の関数へ一般化し、借用のモナドのクロージャをなくした。
+  構成した積の結果の解析が `cast` 越しの末尾呼び出しを見る (FEAT-0220)。β 簡約の後の既知の構築子の不整合を修正 (BUG-0016)。
+- ベンチ: `bench/n-body/main.cirka` を一意な `UArray Float` と借用で書き直した。
+
+### 変更 (互換性のない変更)
+
+- `edition = "0.0.2"` のパッケージは受け付けない (`"0.0.3"` に変える)。
+- `&&` / `||` は 2 つの引数に適用したとき短絡する (右辺を必要なときだけ評価する)。
+- `Lazy` `Region` `Ref` `Borrow` `BorrowIO` `Arena` `RIO` `In` `RefIn` はプリミティブ型の名前になった (それぞれのモジュールで定義)。
+
+### 性能 ([bench-report.md](docs/design/bench-report.md) の「CirkaLang v0.0.3」)
+
+- G3 (Rust の 1.5 倍以内) は 7 題材中 5 つで達成: array-sort 1.04、mandelbrot 1.06、n-body 1.46 (v0.0.2 は 10.3)、spectral-norm 0.93、binary-trees 0.51。
+- 未達: cli-grep 1.91、string-split 1.60 (文字列処理の 1 行あたりの確保。FEAT-0080, FEAT-0082)。
+- 借用越しのループは、所有者を手で受け渡すループと確保・参照数の操作の回数が同じ。
+
+### 既知の制限
+
+- 結果が `()` の借用の計算を末尾でない位置で呼ぶと、呼び出しごとに組を確保する (FEAT-0081)。
+- `&x` / `&mut x` の構文、関数をまたぐリージョンの推論、入れ子のリージョンはない。リージョンに線形な値は置けない。
+- `panic` / `exit` はアンワインドせず、終了処理を実行しない (FEAT-0040)。FFI の構造体・コールバックはない (FEAT-0047)。
+- モジュールは名前を再公開しないので、リージョンを使うには `import Data.Borrow (Region)` も要る。
+
 ## CirkaLang v0.0.2
 
 実用 CUI: トレイト、文字列と配列、RAII と `Result`、C FFI と標準ライブラリ、パッケージ、ソース内のテスト。
