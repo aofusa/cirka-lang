@@ -83,14 +83,29 @@ fn cirkalang_spec_for_current_version() {
     let p = root().join(format!("docs/design/cirkalang/spec-v{v}.md"));
     let text = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
     assert!(text.contains(&format!("CirkaLang v{v}")));
+    // A later version may be written as the differences from an earlier
+    // specification, which it links (spec-v0.0.2.md); that one is then
+    // checked for the full sections.
+    let full = match text.find("からの差分") {
+        Some(_) => {
+            let base = text
+                .split("](spec-v")
+                .nth(1)
+                .and_then(|r| r.split(".md)").next())
+                .unwrap_or_else(|| panic!("{}: no link to the base spec", p.display()));
+            let bp = root().join(format!("docs/design/cirkalang/spec-v{base}.md"));
+            std::fs::read_to_string(&bp).unwrap_or_else(|e| panic!("{}: {e}", bp.display()))
+        }
+        None => text.clone(),
+    };
     for section in [
         "## 3. 構文 (EBNF)",
         "## 4. 型システム",
         "## 6. 共通 Core への変換",
-        "対象外",
     ] {
-        assert!(text.contains(section), "spec lacks `{section}`");
+        assert!(full.contains(section), "spec lacks `{section}`");
     }
+    assert!(text.contains("対象外"), "spec lacks the out-of-scope list");
 }
 
 /// Relative links in the documents under docs/ (design, tasks) and the top

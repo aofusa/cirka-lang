@@ -1,0 +1,54 @@
+module Main
+
+-- A small CUI tool (FEAT-0215): writes a text file of `n` lines, then
+-- reads it back like `wc` and `grep -c tag7` together: lines, words and
+-- bytes, the matching lines and the first three of them. The same work as
+-- rust/main.rs (file I/O through Std.Fs, text through Data.String views).
+
+import Data.String as S
+import Data.String (Str, Builder, toStr)
+import Std.Fs as Fs
+import Std.IO as IO
+import Std.Env as Env
+import Std.Process as P
+
+-- "item<i> <i*7%1000>  tag<i%13> \n"
+text : (1 b : Builder) -> Int -> Int -> Builder
+text b i n =
+  if i >= n then b
+  else
+    let b2 = S.appendInt (S.append (S.appendInt (S.append b "item") i) " ") (i * 7 % 1000) in
+    text (S.append (S.appendInt (S.append b2 "  tag") (i % 13)) " \n") (i + 1) n
+
+-- lines, words, matching lines, the first matches (newest first)
+data Count = MkCount Int Int Int (List Str)
+
+step : Count -> Str -> Count
+step (MkCount l w m firsts) line =
+  let k = S.foldWords (\c, x => c + 1) 0 line in
+  if S.contains line "tag7"
+  then MkCount (l + 1) (w + k) (m + 1) (if m < 3 then line :: firsts else firsts)
+  else MkCount (l + 1) (w + k) m firsts
+
+report : Str -> IO ()
+report contents = case S.foldLines step (MkCount 0 0 0 Nil) contents of
+  MkCount l w m firsts => do
+    mapM_ S.putStrLn (reverse firsts)
+    putStrLn ("(" ++ show l ++ "," ++ show w ++ "," ++ show (S.length contents) ++ "," ++ show m ++ ")")
+
+firstArg : List String -> Int
+firstArg (a :: _) = parseInt a
+firstArg Nil = 1000
+
+main : IO ()
+main = do
+  argv <- Env.args
+  let n = firstArg argv
+  pid <- P.processId
+  let path = "/tmp/cirka-bench-cli-grep-" ++ show pid ++ ".txt"
+  w <- Fs.writeFile path (S.build (text (S.builder 0) 0 n))
+  r <- Fs.readFile path
+  d <- Fs.removeFile path
+  case r of
+    Ok s => report (toStr s)
+    Err e => IO.ePutStrLn (show e)
