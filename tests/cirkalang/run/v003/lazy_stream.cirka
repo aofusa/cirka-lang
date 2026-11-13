@@ -1,0 +1,51 @@
+-- Infinite streams with `Lazy` (spec-v0.0.3.md §4): the tail is computed
+-- when it is first forced, and once.
+import Data.Lazy
+
+data Stream (a : Type) = Cons a (Lazy (Stream a))
+
+headS : Stream a -> a
+headS (Cons x _) = x
+
+tailS : Stream a -> Stream a
+tailS (Cons _ t) = force t
+
+-- The numbers from `n`.
+from : Int -> Stream Int
+from n = Cons n (delay (\_ => from (n + 1)))
+
+takeS : Int -> Stream a -> List a
+takeS k s = if k <= 0 then [] else case s of
+  Cons x t => x :: takeS (k - 1) (force t)
+
+mapS : (a -> b) -> Stream a -> Stream b
+mapS f (Cons x t) = Cons (f x) (mapLazy (mapS f) t)
+
+filterS : (a -> Bool) -> Stream a -> Stream a
+filterS p (Cons x t) = if p x then Cons x (delay (\_ => filterS p (force t))) else filterS p (force t)
+
+-- The primes, by trial division by the primes found so far.
+sieve : Stream Int -> Stream Int
+sieve (Cons p t) = Cons p (delay (\_ => sieve (filterS (\n => n % p /= 0) (force t))))
+
+-- The Fibonacci numbers: each tail is forced once, so this is linear.
+fibs : Int -> Int -> Stream Int
+fibs a b = Cons a (delay (\_ => fibs b (a + b)))
+
+-- The element at `k`.
+nth : Int -> Stream a -> a
+nth k s = if k <= 0 then headS s else nth (k - 1) (tailS s)
+
+-- A value forced twice is computed once (a shared tail).
+twice : Stream Int -> Int
+twice s = let t = tailS s in headS t + headS (tailS s)
+
+main : IO ()
+main = do
+  print (takeS 5 (from 10))
+  print (takeS 5 (mapS (\x => x * x) (from 1)))
+  print (takeS 10 (sieve (from 2)))
+  print (nth 90 (fibs 0 1))
+  print (nth 100000 (from 0))
+  print (twice (from 20))
+  print (force (now (7 : Int)) + force (mapLazy (\x => x + 1) (delay (\_ => 1))))

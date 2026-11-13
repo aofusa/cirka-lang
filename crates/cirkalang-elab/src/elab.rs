@@ -201,6 +201,8 @@ impl<'r> Elab<'r> {
             pair: f("Pair"),
             mk_pair: f("MkPair"),
             mk_ur: f("MkUr"),
+            and: f("&&"),
+            or: f("||"),
             list: f("List"),
             nil: f("Nil"),
             cons: f("::"),
@@ -1193,6 +1195,11 @@ impl<'r> Elab<'r> {
     }
 
     fn check(&self, cx: &mut Cxt, e: &rast::Expr, ty: &Val, rig: Mult) -> Term {
+        if self.prog.builtins.bool_.is_some() && self.short_circuit(e).is_some() {
+            let (t, bt) = self.infer(cx, e, rig);
+            self.unify_or_err(cx, sp(e), ty, &bt);
+            return t;
+        }
         let span = sp(e);
         let wty = self.whnf(ty);
         if let Val::Pi(x, m, Icit::Impl, a, c) = &wty {
@@ -1545,7 +1552,37 @@ impl<'r> Elab<'r> {
         self.prog.type_of(g).map(|t| self.ev().eval(&Vec::new(), t))
     }
 
+    /// `a && b` is `if a then b else False` and `a || b` is
+    /// `if a then True else b` (spec-v0.0.3.md §4.3): the right operand is
+    /// evaluated only when needed.
+    fn short_circuit(&self, e: &rast::Expr) -> Option<rast::Expr> {
+        let ExprKind::App(f, b) = &e.kind else {
+            return None;
+        };
+        let ExprKind::App(op, a) = &f.kind else {
+            return None;
+        };
+        let ExprKind::Global(g) = op.kind else {
+            return None;
+        };
+        let b_ = &self.prog.builtins;
+        let con = |c: Option<GName>| c.map(|c| mk(ExprKind::Global(c), e.span));
+        if Some(g) == b_.and {
+            self.desugar_if(a, b, &con(b_.false_)?, e.span)
+        } else if Some(g) == b_.or {
+            self.desugar_if(a, &con(b_.true_)?, b, e.span)
+        } else {
+            None
+        }
+    }
+
     fn infer(&self, cx: &mut Cxt, e: &rast::Expr, rig: Mult) -> (Term, Val) {
+        if let Some(d) = self.short_circuit(e)
+            && let Some(b) = self.prog.builtins.bool_
+        {
+            let ty = Val::Data(b, Vec::new());
+            return (self.check(cx, &d, &ty, rig), ty);
+        }
         let span = sp(e);
         match &e.kind {
             ExprKind::Local(x) => match cx.lookup(x) {
@@ -3528,6 +3565,11 @@ impl<'r> Elab<'r> {
                 _ => {}
             }
         }
+        for it in &items {
+            if let rast::Item::Def(d) = it {
+                self.check_lazy_value(d.name);
+            }
+        }
         // `main : IO ()`.
         if let Some(m) = rp.main
             && let (Some(io), Some(unit)) = (self.prog.builtins.io, self.prog.builtins.unit)
@@ -3944,6 +3986,69 @@ impl<'r> Elab<'r> {
         // Checked after the data types have their constructors.
         self.prog.globals[g.0 as usize] = Global::Extern { ty, abi };
         self.prog.order.push(g);
+    }
+
+    /// A top-level value (no run-time parameter) whose type holds `Lazy`
+    /// keeps everything forced from it until the program ends (W0310,
+    /// spec-v0.0.3.md §4.2): it is the only way a `Lazy` value can refer
+    /// to itself, since local `let`s are not recursive.
+    fn check_lazy_value(&self, g: GName) {
+        let Some(ty) = self.prog.type_of(g).cloned() else {
+            return;
+        };
+        let mut t = &ty;
+        while let Term::Pi(_, m, _, _, b) = t {
+            if *m != Mult::Zero {
+                return;
+            }
+            t = b;
+        }
+        let mut seen = HashSet::new();
+        if !self.mentions_lazy(t, &mut seen) {
+            return;
+        }
+        let name = self.prog.short_name(g).to_string();
+        self.report(
+            Diagnostic::warning(format!(
+                "the top-level value `{name}` holds a `Lazy` value"
+            ))
+            .with_code("W0310")
+            .with_label(self.rp.info(g).span, "evaluated once and kept until the program ends")
+            .with_note(
+                "everything forced from it stays in memory, and a `Lazy` value that refers \
+                 to it builds a cycle that is only freed at exit",
+            )
+            .with_help(format!(
+                "make `{name}` a function (`{name} : () -> ...`), or use a region for cyclic data"
+            )),
+        );
+    }
+
+    /// Whether `t` mentions `Lazy`, directly or in a field of a data type.
+    fn mentions_lazy(&self, t: &Term, seen: &mut HashSet<GName>) -> bool {
+        match t {
+            Term::Global(g) => {
+                if self.prog.prim_of(*g) == Some(Prim::Lazy) {
+                    return true;
+                }
+                if !seen.insert(*g) {
+                    return false;
+                }
+                match self.prog.get(*g) {
+                    Global::Data { cons, .. } => cons.clone().iter().any(|c| {
+                        self.prog
+                            .type_of(*c)
+                            .cloned()
+                            .is_some_and(|ct| self.mentions_lazy(&ct, seen))
+                    }),
+                    _ => false,
+                }
+            }
+            Term::Pi(_, _, _, a, b) | Term::App(a, b, _) => {
+                self.mentions_lazy(a, seen) || self.mentions_lazy(b, seen)
+            }
+            _ => false,
+        }
     }
 
     /// Reports the parameter and result types of extern functions that

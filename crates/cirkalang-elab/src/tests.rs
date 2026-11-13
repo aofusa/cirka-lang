@@ -509,3 +509,23 @@ fn resource_freedom_decided_after_literals() {
         "{LIST_FNS}main : IO ()\nmain = let u = unique (1 :: Nil) in printInt (len (freeze u))\n"
     ));
 }
+
+/// A top-level value holding `Lazy` keeps what is forced from it until the
+/// program ends (spec-v0.0.3.md §4.2): W0310. A function does not.
+#[test]
+fn top_level_lazy_values_warn() {
+    const LAZY: &str = "prim Lazy : Type -> Type\nprim primDelay : {a : Type} -> (() -> a) -> Lazy a\ndata Stream (a : Type) = Cons a (Lazy (Stream a))\nfrom : Int -> Stream Int\nfrom n = Cons n (primDelay (\\_ => from (n + 1)))\n";
+    let (e, _) = elab(&format!(
+        "{LAZY}nats : Stream Int\nnats = from 0\nmain : IO ()\nmain = pure ()\n"
+    ));
+    assert!(e.program.is_some(), "{:?}", codes(&e));
+    assert!(
+        codes(&e).iter().any(|c| c.starts_with("W0310")),
+        "{:?}",
+        codes(&e)
+    );
+    let (e, _) = elab(&format!(
+        "{LAZY}nats : () -> Stream Int\nnats _ = from 0\nmain : IO ()\nmain = pure ()\n"
+    ));
+    assert!(e.diags.is_empty(), "{:?}", codes(&e));
+}

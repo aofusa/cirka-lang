@@ -1,0 +1,29 @@
+-- Explicit laziness (spec-v0.0.3.md §4).
+--
+-- CirkaLang evaluates eagerly. `delay f` makes a `Lazy a` that computes
+-- `f ()` the first time it is forced and keeps the result: forcing it
+-- again does not compute it again. It is the common runtime's thunk, so
+-- it is freed by reference counting like any other value.
+module Data.Lazy
+
+-- A value computed when it is first needed.
+prim Lazy : Type -> Type
+
+private prim primDelay : {a : Type} -> (() -> a) -> Lazy a
+private prim primForce : {a : Type} -> Lazy a -> a
+
+-- A value computed by `f ()` when it is first forced.
+delay : (() -> a) -> Lazy a
+delay f = primDelay f
+
+-- The value, computed now if it has not been yet.
+force : Lazy a -> a
+force l = primForce l
+
+-- An already computed value.
+now : a -> Lazy a
+now x = primDelay (\_ => x)
+
+-- `f` of the value, computed when it is forced.
+mapLazy : (a -> b) -> Lazy a -> Lazy b
+mapLazy f l = primDelay (\_ => f (primForce l))

@@ -362,6 +362,10 @@ pub enum Prim {
     InCell,
     RefInWrap,
     RefInCell,
+    // Explicit laziness (spec-v0.0.3.md §4).
+    Lazy,
+    Delay,
+    Force,
 }
 
 impl Prim {
@@ -489,6 +493,9 @@ impl Prim {
         ("primInCell", Prim::InCell),
         ("primRefIn", Prim::RefInWrap),
         ("primRefCell", Prim::RefInCell),
+        ("Lazy", Prim::Lazy),
+        ("primDelay", Prim::Delay),
+        ("primForce", Prim::Force),
     ];
 
     pub fn from_name(s: &str) -> Option<Prim> {
@@ -525,6 +532,7 @@ impl Prim {
                 | Prim::RIO
                 | Prim::In
                 | Prim::RefIn
+                | Prim::Lazy
         )
     }
 }
@@ -621,6 +629,9 @@ pub struct Builtins {
     pub err: Option<GName>,
     // Unrestricted values (§5.6).
     pub mk_ur: Option<GName>,
+    // Short-circuit operators (spec-v0.0.3.md §4.3).
+    pub and: Option<GName>,
+    pub or: Option<GName>,
 }
 
 impl Program {

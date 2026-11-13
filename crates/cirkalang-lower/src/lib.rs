@@ -316,6 +316,10 @@ impl<'a> Lower<'a> {
                     // Regions (spec-v0.0.3.md §3): the arena is the runtime's
                     // region object, a handle the address of a cell, and
                     // `RIO r` is `IO`.
+                    // A box with one lazy field (spec-v0.0.3.md §4).
+                    (Some(Prim::Lazy), [a]) => {
+                        c::Type::Con("Lazy".into(), vec![self.lower_ty(tvs, a)])
+                    }
                     (Some(Prim::Arena), _) => c::Type::Any,
                     (Some(Prim::In | Prim::RefIn), _) => int_ty(),
                     (Some(Prim::RIO), [_]) => c::Type::Con("IO".into(), Vec::new()),
@@ -1406,7 +1410,54 @@ impl<'a> Lower<'a> {
             | Prim::Arena
             | Prim::RIO
             | Prim::In
-            | Prim::RefIn => return None,
+            | Prim::RefIn
+            | Prim::Lazy => return None,
+            // `delay f` = `let t = f () in Lazy# t`: the lazy `let` is a
+            // thunk, evaluated once by `force`.
+            Prim::Delay => self.skeleton(ty, 1, |a, r| {
+                let ta = match &r {
+                    c::Type::Con(_, ts) if ts.len() == 1 => ts[0].clone(),
+                    _ => c::Type::Any,
+                };
+                let t = self.id("t");
+                c::Expr::Let(
+                    c::Bind::NonRec(
+                        c::Binder::new(t.clone(), c::Mult::Many, ta.clone()),
+                        Box::new(c::Expr::App(
+                            Box::new(a[0].clone()),
+                            Box::new(self.unit_val()),
+                        )),
+                    ),
+                    Box::new(c::Expr::Con(
+                        "Lazy#".into(),
+                        vec![ta],
+                        vec![c::Expr::Var(t)],
+                    )),
+                )
+            }),
+            Prim::Force => self.skeleton(ty, 1, |a, r| {
+                let (x, y) = (self.id("x"), self.id("y"));
+                c::Expr::Case(
+                    Box::new(a[0].clone()),
+                    c::Binder::new(
+                        self.id("s"),
+                        c::Mult::Many,
+                        c::Type::Con("Lazy".into(), vec![r.clone()]),
+                    ),
+                    r.clone(),
+                    vec![c::Alt {
+                        con: c::AltCon::Con(
+                            "Lazy#".into(),
+                            vec![c::Binder::new(x.clone(), c::Mult::Many, r.clone())],
+                        ),
+                        rhs: c::Expr::LetStrict(
+                            c::Binder::new(y.clone(), c::Mult::Many, r),
+                            Box::new(c::Expr::Var(x)),
+                            Box::new(c::Expr::Var(y)),
+                        ),
+                    }],
+                )
+            }),
             Prim::RegionNew => self.skeleton(ty, 1, |_, _| {
                 c::Expr::Extern("cirka_region_new".into(), Vec::new())
             }),
@@ -1996,6 +2047,21 @@ impl<'a> Lower<'a> {
             }],
             newtype: true,
         });
+        // Lazy a = Lazy# a with a lazy field (spec-v0.0.3.md §4).
+        {
+            let av = self.tv("a");
+            prog.datas.push(c::DataDecl {
+                name: "Lazy".into(),
+                params: vec![(av.clone(), c::Kind::Type)],
+                linear: false,
+                ctors: vec![c::CtorDecl {
+                    name: "Lazy#".into(),
+                    fields: vec![c::Type::Var(av)],
+                    strict: vec![false],
+                }],
+                newtype: false,
+            });
+        }
         // Borrow s b = Borrow# (s -> Pair s (Ur b)) and BorrowIO s b =
         // BorrowIO# (s -> IO (Pair s (Ur b))) (spec-v0.0.3.md §2).
         for (name, con, io) in [

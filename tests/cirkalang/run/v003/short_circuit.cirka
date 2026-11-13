@@ -1,0 +1,24 @@
+-- `&&` and `||` evaluate the right operand only when needed
+-- (spec-v0.0.3.md §4.3): bounds checks can guard an index.
+import Data.Array as A
+import Data.Array ((!))
+
+-- Whether `i` is a valid index holding `x` (the index is only used when
+-- it is in bounds).
+holds : A.Array Int -> Int -> Int -> Bool
+holds a i x = i >= 0 && i < A.size a && a ! i == x
+
+-- A partial function behind `||`.
+safeDiv : Int -> Int -> Bool
+safeDiv n d = d == 0 || n / d > 1
+
+main : IO ()
+main = do
+  let a = A.fromList [1, 2, 3]
+  print (holds a 1 2)
+  print (holds a 5 2)
+  print (holds a (0 - 1) 2)
+  print (safeDiv 10 0)
+  print (safeDiv 10 3)
+  print (False && panic "not evaluated")
+  print (True || panic "not evaluated")
