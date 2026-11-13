@@ -24,7 +24,12 @@ v0.0.2 の目的は、**CLI ツールがこの言語だけで書ける** よう�
 | §5.3 | トップレベルの値は線形な値を持てない (アクションは実行ごとに作る) | BUG-0015 |
 | §5.4 | `IO1`: 結果が線形なアクション | FEAT-0212 |
 | §5.5 | `Drop` / `Release` と終了処理の自動挿入、リークの警告 | FEAT-0212 |
-| §6 | `Result` と `?`、パニックの補助関数 | FEAT-0212 |
+| §5.6 | `ω` と宣言したフィールドと `Ur` (線形な値から取り出しても何度でも使える値) | FEAT-0211 |
+| §6 | `Result` と `?`、パニックの補助関数。`panic` の結果は線形な型でもよい | FEAT-0212, FEAT-0211 |
+| §7.1 | `import` の別名 (`import A.B as X`) と名前の一覧 (`import M (a, b)`) | FEAT-0211 |
+| §7.2 | `Data.Array` (箱入り配列、`Unique` で一意な更新) と `Data.Vec` (伸長する配列) | FEAT-0211 |
+| §7.3 | `Data.Array.Unboxed` (箱なし配列) とトレイト `Unbox` | FEAT-0211 |
+| §7.4 | `Data.String` (バイト列のビュー `Str`、分割・検索、`Builder`) | FEAT-0211 |
 
 ## 2. 字句
 
@@ -301,7 +306,25 @@ maybeUse c = do
 保持者を引数として渡した先で捨てられる場合は検出できない (リークは安全性の違反ではない。AGENTS.md の原則 3)。
 `panic` で終わるときも終了処理は実行されない (§6.3)。
 
-### 5.6 診断
+### 5.6 `ω` のフィールドと `Ur`
+
+構成子のシグネチャで `(ω x : A)` と宣言したフィールドは **無制限** である。
+線形な値を `case` で分解しても、そのフィールドに束縛した変数は何回使ってもよい。
+
+```
+data Ur (a : Type) : Type where          -- Prelude
+  MkUr : (ω x : a) -> Ur a
+
+case A.read u i of
+  (u, MkUr x) => A.write (A.write u i x) (i + 1) x    -- x は 2 回使える
+```
+
+- `ω` のフィールドに置く値は ω の位置に置かれる (spec-v0.0.1.md §4.3 の U-App)。線形な変数を捕捉したクロージャを置くと E0305。
+- `Ur` は「線形な値と一緒に返すが、それ自体は共有してよい値」を表す。配列の要素の読み出し (§7.2) が `(Unique (Array a), Ur a)` を返すのはこのためである。
+  `(u, x)` だけでは、組が線形 (§5.1) なので `x` も 1 回しか使えない。
+- `ω` は明示的なフィールドにだけ書ける。暗黙のフィールドは従来どおり多重度 0 である。
+
+### 5.7 診断
 
 | コード | 内容 |
 |--------|------|
@@ -344,7 +367,8 @@ addAll a b = do
 
 ### 6.3 パニック
 
-`panic : String -> a` は v0.0.1 と同じく abort する (終了コード 1)。終了処理は実行されない。
+`panic : {a : LType} -> String -> a` は v0.0.1 と同じく abort する (終了コード 1)。終了処理は実行されない。
+戻らないので、結果の型は線形な型でもよい (線形な値を返す関数の失敗の枝に書ける)。
 アンワインドして `Drop` / `Release` を実行するのは共通基盤の FEAT-0040 以降である。
 
 ### 6.4 診断
@@ -352,3 +376,72 @@ addAll a b = do
 | コード | 内容 |
 |--------|------|
 | E1260 | `?` の誤り (`Result` でない値・ブロックが `Result` を返さない・`IO` / `IO1` 以外の `do`) |
+
+## 7. モジュールと標準ライブラリ
+
+### 7.1 `import` の別名と名前の一覧
+
+```
+import Data.Array as A               -- A.read, A.write, ... (修飾なしでは見えない)
+import Data.String as S (Str, toStr) -- S.lines に加え、Str と toStr は修飾なしで使える
+import Lib (x, (<+>))                -- x と <+> だけを修飾なしで使う。Lib.y は修飾すれば使える
+```
+
+- `import M as X` は `M` の公開名を `X.n` としてだけ見せる。`M.n` とも、修飾なしの `n` とも書けない。
+  標準ライブラリの同名の関数 (`length` `map` `read` …) を並べて使うための形である。
+- 別名は 1 つのモジュールにだけ付けられる。別の `import` で修飾なしに取り込んだモジュールの名前や、自身のモジュールの名前を別名にはできない (E1120)。
+- `import M (a, b, (op))` は、一覧の名前だけを修飾なしで見せる。`M.n` の修飾は従来どおりすべての公開名に使える。
+  一覧に存在しない名前を書くと E1101、`private` の名前を書くと E1106。
+- 別名と一覧を両方書くと、一覧の名前は修飾なしで、すべての公開名は別名で使える。
+- `import Prelude (…)` と明示すると、暗黙の Prelude もその一覧に限られる (別名を付けると Prelude は修飾が必要になる)。
+
+### 7.2 箱入り配列 `Data.Array` と `Data.Vec`
+
+```
+prim Array : Type -> Type           -- 共有可能で読み出し専用
+Unique (Array a)                    -- 一意な参照。更新はその場で行う
+```
+
+- 要素の型は共有可能な型 (`Type`) に限る。`Array a` は `a` が資源を持たなければ資源を持たない (§5.1)。
+- `Unique (Array a)` の操作は、配列を受け取って返す: `new` `empty` `read : (1 u : Unique (Array a)) -> Int -> (Unique (Array a), Ur a)` `write` `length` `modify` `swap` `fromListU`。
+  `freeze` で共有可能な `Array a` に、`thaw` で一意な配列に戻す (共有されていれば複製する)。
+- `Array a` の操作: `size` `(!)` `get` (範囲外は `Nothing`) `fromList` `toList` `generate` `map` `foldl` `foldr`、`Eq` と `Show`。
+  `Array` は Core では常に完全に適用されるので `Functor Array` はない (`map` を使う)。
+- 範囲外の添字はパニックする (メッセージに関数名を含む。終了コード 1)。
+- **`Unique` は速さの約束であって安全性の根拠ではない。** 更新は実行時に参照数が 1 であることを確かめ、共有されていれば先に複製する
+  (共通基盤の `array_unique` / `array_set`)。そのため `Unique` の値を保持する部分適用・アクションは保持者 (§5.2) として扱わない。
+  一意な配列への書き込みの連鎖が複製しないことは実行テスト (`array_unique`、配列の複製 0 回) で確かめる。
+
+`Data.Vec` の `Vec a` は線形な伸長配列 (`MkVec (Unique (Array a)) Int`) である。
+`empty` `replicate` `length` `push` (満杯なら容量を 2 倍 + 4 にする。償却定数時間) `pop : (1 v : Vec a) -> (Vec a, Ur (Maybe a))` `read` `write` `modify` `swap` `fromList` `toArray` `toList`。
+`pop` で空いた枠の要素は、上書きされるか `Vec` が捨てられるまで生きている。
+
+### 7.3 箱なし配列 `Data.Array.Unboxed`
+
+`UArray a` は要素を箱なしの 8 バイトの語として持つ。要素の型はトレイト `Unbox` の実装を持つ `Int` `UInt` `Float` `Char` `Bool` である。
+
+- 関数は `Data.Array` と同じ名前と形を持ち、`Unbox a =>` の制約が付く。`zeros n` は 0 の語で埋めた配列 (`0` `0.0` `'\0'` `False`)。
+- `UArray a` は常に資源を持たない。
+- `Unbox` の辞書は全体特殊化 (§3.9) で消え、ループは語を直接読み書きする。整数の配列のクイックソートは Rust と同等の速さで、ループの中では確保しない (`bench/array-sort`、実行テスト `uarray_noalloc`)。
+
+### 7.4 文字列 `Data.String`
+
+`String` は不変の UTF-8 テキストのままとし、部分文字列を複製せずに扱う **ビュー** と、その場で書き込む **ビルダ** を加える。添字と長さはバイト単位である。
+
+```
+data Str = MkStr String Int Int      -- s のバイト [i, j)
+data Builder : LType where
+  MkBuilder : (1 buf : Unique String) -> Int -> Int -> Builder
+```
+
+- 変換: `toStr` (全体のビュー)、`fromStr` (ビューの範囲を複製した文字列。全体ならそのまま)。
+- ビューの操作 (複製しない): `length` `isEmpty` `byteAt` `slice` `take` `drop` `trim` `trimStart` `trimEnd` `splitOn` `lines` (`\r\n` の `\r` も除く) `words`、
+  リストを作らない `foldLines` `foldWords`。
+- 検索: `indexOf` `indexOfChar` `contains` `startsWith` `endsWith`。比較はバイト単位 (`Eq` / `Ord Str`。`Show Str` は文字列として表示)。
+- 変換: `toInt : Str -> Maybe Int` (`-` / `+` の付いてよい 10 進)、`chars` (UTF-8 の復号) `fromChars` `toUpper` `toLower` (ASCII のみ)。
+- 連結: `concat` `concatStr` `intercalate` `unlines` `unwords` `replicate` は結果の長さを先に数え、確保 1 回で書く。
+- `Builder` は線形な値で、`builder cap` `append` `appendStr` `appendByte` `appendChar` `appendInt` で一意なバッファにその場で書き、満杯なら容量を 2 倍にする。`build` で `String` にする。
+- 出力: `putStr` `putStrLn` (ビューの範囲を `fromStr` で文字列にして書く)。
+- 低水準の操作 (`String` の範囲の複製・バイトの検索・範囲の比較・一意な文字列への書き込み) はモジュール内の `private prim` であり、利用者には見せない。
+
+`bench/string-split` (100 万行を行・単語に分けて数え、`Builder` で出力する) は Rust の約 1.6 倍の時間である (確保は 1 行あたり 2 回)。残りの差は結合点 (join point) がないことによる箱の再構築で、共通基盤の FEAT-0080 で扱う。
