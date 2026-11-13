@@ -237,7 +237,8 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0220](features/FEAT-0220-cl-borrowing.md) | 借用 | done | P0 | 0215 |
 | [FEAT-0221](features/FEAT-0221-cl-regions.md) | リージョン | done | P1 | 0220, 0049 |
 | [FEAT-0222](features/FEAT-0222-cl-lazy-cycles.md) | 明示的な遅延 (Lazy a) と循環の扱い | done | P1 | 0215 |
-| [FEAT-0223](features/FEAT-0223-cl-release-v003.md) | CirkaLang v0.0.3 リリース | in-progress | P0 | 0220, 0222, 0041 |
+| [FEAT-0223](features/FEAT-0223-cl-release-v003.md) | CirkaLang v0.0.3 リリース | in-progress | P0 | 0220, 0221, 0222, 0224, 0041 |
+| [FEAT-0224](features/FEAT-0224-cl-do-patterns.md) | do の構文の整理 (パターンの束縛) | done | P1 | 0215 |
 
 ### CirkaLang v0.0.4 証明と検証
 

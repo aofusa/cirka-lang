@@ -4,7 +4,7 @@
 - トラック: CirkaLang
 - マイルストーン: CirkaLang v0.0.3 借用・リージョン・性能
 - 優先度: P0
-- 依存: FEAT-0220, FEAT-0222, FEAT-0041
+- 依存: FEAT-0220, FEAT-0221, FEAT-0222, FEAT-0224, FEAT-0041
 - 設計: [11-roadmap.md](../../design/11-roadmap.md)
 
 ## 概要
