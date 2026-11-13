@@ -227,7 +227,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0213](features/FEAT-0213-cl-ffi-std.md) | FFI と libc ベースの std (CUI 向け) | done | P0 | 0212 |
 | [FEAT-0214](features/FEAT-0214-cl-packages.md) | パッケージと依存 (cirka.toml) | done | P1 | 0205 |
 | [FEAT-0216](features/FEAT-0216-cl-inline-tests.md) | ソース内のテスト (test 宣言と cirka test) | done | P1 | 0207 |
-| [FEAT-0215](features/FEAT-0215-cl-release-v002.md) | CirkaLang v0.0.2 リリース | todo | P0 | 0211, 0213, 0214, 0216 |
+| [FEAT-0215](features/FEAT-0215-cl-release-v002.md) | CirkaLang v0.0.2 リリース | done | P0 | 0211, 0213, 0214, 0216 |
 
 ### CirkaLang v0.0.3 借用・リージョン・性能
 
