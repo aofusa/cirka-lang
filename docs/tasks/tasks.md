@@ -118,6 +118,8 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0076](features/FEAT-0076-kept-parameters-across-calls.md) | 配列をそのまま返す関数の呼び出しをまたいで一意性の事実を運ぶ | done | P1 | 0067, 0070, 0075, 0077 |
 | [FEAT-0077](features/FEAT-0077-strictness-through-newtypes.md) | 正格性解析が newtype のコンストラクタを素通しする | done | P1 | 0112 |
 | [FEAT-0078](features/FEAT-0078-unboxed-values-in-speculation.md) | 評価済みの引数の判定で unboxed の値を値として数える | done | P1 | 0056, 0068 |
+| [FEAT-0079](features/FEAT-0079-boxes-in-string-loops.md) | 文字列処理のループの箱の除去 (多相の静的引数・積型の worker/wrapper・腕をまたぐ再利用) | done | P1 | 0022, 0056, 0061, 0066 |
+| [FEAT-0080](features/FEAT-0080-join-points.md) | Core の結合点 (join point) | todo | P2 | 0079 |
 
 
 ## aCHC
@@ -220,7 +222,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | ID | タイトル | 状態 | 優先度 | 依存 |
 |---|---|---|---|---|
 | [FEAT-0210](features/FEAT-0210-cl-traits.md) | トレイト (型クラス) と特殊化 | done | P0 | 0207 |
-| [FEAT-0211](features/FEAT-0211-cl-strings-arrays.md) | 文字列と配列 | todo | P0 | 0210, 0022 |
+| [FEAT-0211](features/FEAT-0211-cl-strings-arrays.md) | 文字列と配列 | done | P0 | 0210, 0022 |
 | [FEAT-0212](features/FEAT-0212-cl-raii-errors.md) | RAII (Drop/Release) とエラー処理 | done | P0 | 0210 |
 | [FEAT-0213](features/FEAT-0213-cl-ffi-std.md) | FFI と libc ベースの std (CUI 向け) | todo | P0 | 0212 |
 | [FEAT-0214](features/FEAT-0214-cl-packages.md) | パッケージと依存 (cirka.toml) | done | P1 | 0205 |
