@@ -184,6 +184,19 @@ trait Monoid (a : Type) where
 - 正格評価と `do`: `e; rest` を `e >> rest` にすると後続が先に評価されるため `e >>= \_ => rest` に変更した。
   v0.0.2 でモナド一般の `do` にするときも同じ脱糖を使う。
 
+### v0.0.2 の評価 (FEAT-0215)
+
+- 性能 ([bench-report.md](bench-report.md) の「CirkaLang v0.0.2」): 配列のソート・mandelbrot・spectral-norm は Rust と同等、binary-trees は Rust の 0.49 倍、
+  文字列処理は 1.6〜2.0 倍、n-body は 10.3 倍。トレイトは全体特殊化で辞書が残らず、`UArray` の `Unbox` も消えた。
+  残る差は (1) case の後の計算が結果を箱で受け取ること (結合点、FEAT-0080)、(2) レコードの `Float` フィールドの箱 (v0.0.3、FEAT-0041)。
+- 書き味: トレイト・`Result` と `?`・`Std.*` で、ファイルと標準入出力を扱う CUI ツール (`bench/cli-grep`、`run/v002/tool_wc`) が CirkaLang だけで書けた。
+  `import M as X` で標準ライブラリの同名の関数 (`length` `read` …) を並べて使える。
+  `do` の中の `let` に複数行の `case` を書けない、`_ <-` で結果を捨てられない、組のパターン束縛 `(a, b) <-` がないことは不便で、v0.0.3 の構文の整理に回す。
+- 所有権: 線形な `File` / `Builder` / `Vec` と `Ur` の組み合わせは素直に書けた。`(File, Result IOError String)` を返す API は
+  `case` が一段増えるので、借用 (v0.0.3、FEAT-0220) で `&File` を渡せる形にする。
+  `Unique` を速さの約束に留めた (ADR-065) ことで、配列を受け取る高階関数・部分適用に制限がかからなかった。
+- FFI: 包む型 (`CInt` など) とスカラーだけの規則で、libc の関数と `withCString` が型安全に呼べた。構造体・コールバックは FEAT-0047 (v0.0.6)。
+
 - 版の順序は優先順位 (性能・メモリ安全 → 証明 → 実用性の拡大) に従う。評価の結果で内容を入れ替えてよいが、版番号はリリース順に付ける。
 - 各版のリリースチケットで、ベンチ結果・評価メモ・既知の制限を記録し、`CHANGELOG.md` を更新してタグ `cirkalang-v0.0.N` を打つ。
 - v0.0.6 では Docker 内で Vulkan のコンピュートシェーダだけを扱う。ウィンドウを使う GUI は遠隔の macOS / Windows で任意に検証する (CX、FEAT-0290、[15-gpu-and-remote.md](15-gpu-and-remote.md))。

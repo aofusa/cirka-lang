@@ -511,3 +511,24 @@ BUG-0014 のコストは spectral-norm `plain.hs` に出た。リストの要素
 
 時間はバイナリを交互に 10〜15 回ずつ実行した最良値で、`wait4` で得たユーザーとシステムの CPU 時間の和 (2026-11-10、負荷 1.3 以下のホスト)。
 **G3 の「`plain.hs` は GHC -O2 と同等」を満たしているのは mandelbrot だけで、残りの 4 つは 1.2〜4.4 倍。** 差の内訳はこの修正の範囲外で、まだ調べていない。
+
+## CirkaLang v0.0.2 (FEAT-0215)
+
+計測: `cirka build -O2` と `rustc -C opt-level=3`、5 回の最良値 (2026-11-13)。引数は各 `bench/<name>/args`。最大 RSS は GNU time。
+
+| ベンチ | CirkaLang v0.0.2 | Rust | 比 (Rust=1) | 最大 RSS (Cirka / Rust) |
+|--------|-----------------:|-----:|------------:|------------------------:|
+| array-sort (UArray のクイックソート、100 万要素) | 0.09 s | 0.08 s | 1.1 | 9.5 / 9.5 MB |
+| binary-trees (深さ 21) | 11.03 s | 22.51 s | **0.49** | 194 / 258 MB |
+| cli-grep (100 万行のファイルの書き込みと wc + grep) | 0.34 s | 0.17 s | 2.0 | 55 / 44 MB |
+| mandelbrot | 0.09 s | 0.09 s | 1.0 | 1.9 / 1.9 MB |
+| n-body (500 万ステップ) | 3.93 s | 0.38 s | 10.3 | 2.0 / 1.9 MB |
+| spectral-norm | 0.17 s | 0.17 s | 1.0 | 2.0 / 2.0 MB |
+| string-split (100 万行の分割・数値の解析・`Builder`) | 0.28 s | 0.17 s | 1.6 | 44 / 23 MB |
+
+- 新しい題材: `bench/array-sort` の CirkaLang 版 (FEAT-0211)、`bench/string-split` (FEAT-0211)、`bench/cli-grep` (FEAT-0215。`Std.Fs` でファイルを書いて読み戻し、行・単語・バイトと `tag7` を含む行を数える)。
+- 文字列処理の差は 1 行あたり 2 回の確保 (case の後の計算が結果を箱で受け取る。FEAT-0080 の結合点で扱う) と、
+  `Std.Fs.writeFile` / `readFile` が文字列全体を一度に持つこと (Rust 版も同じ) による。
+- n-body は v0.0.1 の 52.9 倍から 10.3 倍になった。残りは 5 体を `List` のレコードで持つことと `Float` のフィールドの箱で、
+  CirkaLang の構造体の unboxing (FEAT-0041 の CirkaLang 側、v0.0.3) で扱う。
+
