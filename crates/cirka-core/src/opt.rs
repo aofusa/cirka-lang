@@ -1217,6 +1217,7 @@ impl Simp<'_> {
             e
         };
         if a.is_atom() {
+            self.known_replace(x, &a);
             return done(self, replace_var(body, x, &a));
         }
         if b.ty.is_unboxed() {
@@ -1233,12 +1234,27 @@ impl Simp<'_> {
         // substitute it at its single occurrence.
         let o = occ_of(&body, x);
         if o.count == 1 && !o.in_lam {
+            // Known constructors never hold a non-atomic field.
+            self.known
+                .retain(|_, (_, _, fs)| fs.iter().all(|f| !matches!(f, Expr::Var(v) if v.id == x)));
             return done(self, replace_var(body, x, &a));
         }
         if o.count == 0 && b.mult == Mult::Zero {
             return done(self, body);
         }
         Expr::App(Box::new(Expr::Lam(b, Box::new(body))), Box::new(a))
+    }
+
+    /// `x` is replaced by the atom `a` in an expression already simplified:
+    /// the known constructors recorded there name `a` too (BUG-0016).
+    fn known_replace(&mut self, x: u32, a: &Expr) {
+        for (_, _, fs) in self.known.values_mut() {
+            for f in fs.iter_mut() {
+                if matches!(f, Expr::Var(v) if v.id == x) {
+                    *f = a.clone();
+                }
+            }
+        }
     }
 
     fn ty_apply(&mut self, f: Expr, t: Type) -> Expr {
