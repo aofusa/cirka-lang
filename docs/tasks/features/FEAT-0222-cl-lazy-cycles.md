@@ -1,6 +1,6 @@
 # FEAT-0222: 明示的な遅延 (Lazy a) と循環の扱い
 
-- 状態: todo
+- 状態: in-progress
 - トラック: CirkaLang
 - マイルストーン: CirkaLang v0.0.3 借用・リージョン・性能
 - 優先度: P1
