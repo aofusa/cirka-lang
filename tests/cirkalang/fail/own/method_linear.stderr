@@ -1,0 +1,6 @@
+error[E0301]: method `make` has the linear type `a`, but the value of a method is shared by all the uses of an implementation
+ --> tests/cirkalang/fail/own/method_linear.cirka:5:3
+  |
+5 |   make : a
+  |   ^^^^
+  = help: make it a function, e.g. `make : () -> a`

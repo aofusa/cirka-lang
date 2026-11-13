@@ -1,0 +1,14 @@
+-- An action keeps the linear value it was built from (BUG-0015).
+
+data Tok : LType where
+  MkTok : Int -> Tok
+
+useIO : (1 t : Tok) -> IO ()
+useIO (MkTok n) = printInt n
+
+main : IO ()
+main =
+  let act = useIO (MkTok 3) in
+  do
+    act
+    act

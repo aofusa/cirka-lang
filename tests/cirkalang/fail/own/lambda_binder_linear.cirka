@@ -1,0 +1,16 @@
+-- An unannotated lambda binder (multiplicity ω) whose type is solved to a
+-- linear type (BUG-0015).
+
+data Tok : LType where
+  MkTok : Int -> Tok
+
+mk : Int -> Tok
+mk n = MkTok n
+
+use : (1 t : Tok) -> Int
+use t = case t of
+  MkTok n => n
+
+main : IO ()
+main = case (\x => MkPair x x) (mk 3) of
+  MkPair a b => printInt (use a + use b)

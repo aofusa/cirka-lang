@@ -1393,6 +1393,13 @@ impl<'s> Resolver<'s> {
                             out.push(Stmt::Let(bs));
                         }
                         ast::Stmt::Expr(e) => out.push(Stmt::Expr(self.expr(e))),
+                        ast::Stmt::Try(x, e, q) => {
+                            let e = self.expr(e);
+                            if let Some((x, _)) = x {
+                                self.locals.push(x.clone());
+                            }
+                            out.push(Stmt::Try(x.clone(), e, *q));
+                        }
                     }
                 }
                 self.locals.truncate(base);
@@ -1658,7 +1665,7 @@ fn global_uses(e: &Expr, out: &mut Vec<(GName, Span)>) {
         ExprKind::Do(ss) => {
             for s in ss {
                 match s {
-                    Stmt::Bind(_, _, x) | Stmt::Expr(x) => go(x),
+                    Stmt::Bind(_, _, x) | Stmt::Expr(x) | Stmt::Try(_, x, _) => go(x),
                     Stmt::Let(bs) => {
                         for lb in bs {
                             if let Some(t) = &lb.ty {

@@ -1571,6 +1571,10 @@ impl Parser {
             let sp = self.bump().span;
             self.bump();
             let e = self.expr()?;
+            if self.at(&Tok::Question) {
+                let q = self.bump().span;
+                return Ok(Stmt::Try(Some((n, sp)), e, q));
+            }
             return Ok(Stmt::Bind(n, sp, e));
         }
         if self.at_kw(Kw::Let) {
@@ -1587,7 +1591,12 @@ impl Parser {
             }
             return Ok(Stmt::Let(bs));
         }
-        Ok(Stmt::Expr(self.expr()?))
+        let e = self.expr()?;
+        if self.at(&Tok::Question) {
+            let q = self.bump().span;
+            return Ok(Stmt::Try(None, e, q));
+        }
+        Ok(Stmt::Expr(e))
     }
 
     // ---- patterns ----

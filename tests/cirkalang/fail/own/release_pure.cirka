@@ -1,0 +1,15 @@
+-- A value with only a `Release` finalizer cannot be given up outside an
+-- action (spec-v0.0.2.md §5.3).
+
+data Res : LType where
+  MkRes : String -> Res
+
+impl Release Res where
+  release (MkRes n) = putStrLn ("release " ++ n)
+
+-- Only `Release`: it cannot be given up outside an action.
+count : (1 r : Res) -> Int
+count r = 0
+
+main : IO ()
+main = printInt (count (MkRes "x"))

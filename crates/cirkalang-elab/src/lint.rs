@@ -102,12 +102,7 @@ impl<'a> Lint<'a> {
 
     fn conv(&self, cx: &Cx, expected: &Val, actual: &Val, what: &str) {
         let ev = self.ev();
-        if matches!(ev.whnf(expected.clone()), Val::LType)
-            && matches!(ev.whnf(actual.clone()), Val::Type)
-        {
-            return;
-        }
-        if ev.unify(cx.lvl(), expected, actual).is_err() {
+        if ev.sub(cx.lvl(), expected, actual, true).is_err() {
             self.err(
                 cx,
                 format!(

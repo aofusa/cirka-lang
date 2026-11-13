@@ -1,0 +1,40 @@
+-- `Result` and `?` (spec-v0.0.2.md §6): `?` returns the error early
+-- from an action or a `Result` block.
+
+data ParseError = BadDigit Int | Empty deriving (Show)
+
+digit : Int -> Result ParseError Int
+digit c = if c >= 48 && c <= 57 then Ok (c - 48) else Err (BadDigit c)
+
+parse : String -> Int -> Int -> Result ParseError Int
+parse s i acc =
+  if i >= strLength s then Ok acc
+  else do
+    d <- digit (primStrIndex s i)
+    parse s (i + 1) (acc * 10 + d)
+
+parseNum : String -> Result ParseError Int
+parseNum s = if strLength s == 0 then Err Empty else parse s 0 0
+
+addAll : String -> String -> IO (Result ParseError Int)
+addAll a b = do
+  x <- parseNum a?
+  y <- parseNum b?
+  putStrLn ("both parsed: " ++ show x ++ " " ++ show y)
+  pure (Ok (x + y))
+
+report : Result ParseError Int -> IO ()
+report r = case r of
+  Ok n => putStrLn ("ok " ++ show n)
+  Err e => putStrLn ("error " ++ show e)
+
+main : IO ()
+main = do
+  r1 <- addAll "12" "30"
+  report r1
+  r2 <- addAll "12" "3x"
+  report r2
+  r3 <- addAll "" "1"
+  report r3
+  printInt (unwrapOr 0 (parseNum "77"))
+  printInt (expect "bad number" (parseNum "41"))

@@ -20,6 +20,8 @@ prim Char : Type
 prim String : Type
 prim IO : Type -> Type
 prim Unique : Type -> LType
+-- An action whose result is linear (spec-v0.0.2.md §5.2).
+prim IO1 : LType -> Type
 
 -- Basic data types
 data Bool = False | True deriving (Eq, Ord, Show)
@@ -30,6 +32,8 @@ data Pair a b = MkPair a b deriving (Eq, Ord)
 data List a = Nil | a :: List a deriving (Eq, Ord)
 data Maybe a = Nothing | Just a deriving (Eq, Ord, Show)
 data Either a b = Left a | Right b deriving (Eq, Ord, Show)
+-- The result of an operation that can fail (spec-v0.0.2.md §6).
+data Result e a = Err e | Ok a deriving (Eq, Ord, Show)
 
 -- Primitive operations (§5.6)
 prim primAddInt : Int -> Int -> Int
@@ -78,8 +82,14 @@ prim primCharToStr : Char -> String
 
 -- IO (§5.2)
 prim primPure : a -> IO a
--- The continuation runs once, so it may capture linear values.
-prim primBind : IO a -> (1 k : a -> IO b) -> IO b
+-- The action and the continuation run once, so they may capture linear
+-- values.
+prim primBind : (1 m : IO a) -> (1 k : a -> IO b) -> IO b
+-- `IO1 a` binds its result with multiplicity 1 (spec-v0.0.2.md §5.2).
+prim primPure1 : {a : LType} -> (1 x : a) -> IO1 a
+prim primBind1 : {a : LType} -> {b : Type} -> (1 m : IO1 a) -> (1 k : (1 x : a) -> IO b) -> IO b
+prim primBindTo1 : {a : Type} -> {b : LType} -> (1 m : IO a) -> (1 k : a -> IO1 b) -> IO1 b
+prim primBind11 : {a : LType} -> {b : LType} -> (1 m : IO1 a) -> (1 k : (1 x : a) -> IO1 b) -> IO1 b
 prim putStr : String -> IO ()
 prim printInt : Int -> IO ()
 prim printFloat : Float -> IO ()
@@ -179,6 +189,102 @@ impl Monad (Either e) where
   pure x = Right x
   (Left e) >>= _ = Left e
   (Right x) >>= f = f x
+
+impl Functor (Result e) where
+  fmap f (Err e) = Err e
+  fmap f (Ok x) = Ok (f x)
+
+impl Monad (Result e) where
+  pure x = Ok x
+  (Err e) >>= _ = Err e
+  (Ok x) >>= f = f x
+
+-- Resources (spec-v0.0.2.md §5.3). A linear value that is not used is
+-- given up by the compiler: with `drop` as early as possible, or in an
+-- action with `drop` / `release` at the end of the action, latest bound
+-- first. Values that hold only memory need neither (Perceus frees them).
+trait Drop (a : LType) where
+  drop : (1 x : a) -> ()
+
+trait Release (a : LType) where
+  release : (1 x : a) -> IO ()
+
+-- The finalizers of values that hold only memory (they do nothing).
+prim dropFree : {a : LType} -> (1 x : a) -> ()
+prim releaseFree : {a : LType} -> (1 x : a) -> IO ()
+
+-- A value that can be dropped can be released.
+releaseByDrop : {a : LType} -> Drop a => (1 x : a) -> IO ()
+releaseByDrop x = case drop x of
+  MkUnit => primPure MkUnit
+
+-- `act`, then the finalizer of `x` (inserted at the end of actions).
+dropAfter : {a : LType} -> {r : Type} -> Drop a => (1 x : a) -> (1 act : IO r) -> IO r
+dropAfter x act = primBind act (dropThen x)
+
+private dropThen : {a : LType} -> {r : Type} -> Drop a => (1 x : a) -> r -> IO r
+dropThen x r = case drop x of
+  MkUnit => primPure r
+
+releaseAfter : {a : LType} -> {r : Type} -> Release a => (1 x : a) -> (1 act : IO r) -> IO r
+releaseAfter x act = primBind act (releaseThen x)
+
+private releaseThen : {a : LType} -> {r : Type} -> Release a => (1 x : a) -> r -> IO r
+releaseThen x r = primBind (release x) (\_ => primPure r)
+
+dropAfter1 : {a : LType} -> {r : LType} -> Drop a => (1 x : a) -> (1 act : IO1 r) -> IO1 r
+dropAfter1 x act = primBind11 act (dropThen1 x)
+
+private dropThen1 : {a : LType} -> {r : LType} -> Drop a => (1 x : a) -> (1 v : r) -> IO1 r
+dropThen1 x v = case drop x of
+  MkUnit => primPure1 v
+
+releaseAfter1 : {a : LType} -> {r : LType} -> Release a => (1 x : a) -> (1 act : IO1 r) -> IO1 r
+releaseAfter1 x act = primBind11 act (releaseThen1 x)
+
+private releaseThen1 : {a : LType} -> {r : LType} -> Release a => (1 x : a) -> (1 v : r) -> IO1 r
+releaseThen1 x v = primBindTo1 (release x) (\_ => primPure1 v)
+
+-- The finalizers of containers finalize their elements.
+impl Drop a => Drop (List a) where
+  drop Nil = MkUnit
+  drop (x :: xs) = case drop x of
+    MkUnit => drop xs
+
+impl Release a => Release (List a) where
+  release Nil = primPure MkUnit
+  release (x :: xs) = primBind (release x) (\_ => release xs)
+
+impl Drop a => Drop (Maybe a) where
+  drop Nothing = MkUnit
+  drop (Just x) = drop x
+
+impl Release a => Release (Maybe a) where
+  release Nothing = primPure MkUnit
+  release (Just x) = release x
+
+impl (Drop a, Drop b) => Drop (Pair a b) where
+  drop (MkPair x y) = case drop x of
+    MkUnit => drop y
+
+impl (Release a, Release b) => Release (Pair a b) where
+  release (MkPair x y) = primBind (release x) (\_ => release y)
+
+impl (Drop a, Drop b) => Drop (Either a b) where
+  drop (Left x) = drop x
+  drop (Right y) = drop y
+
+impl (Release a, Release b) => Release (Either a b) where
+  release (Left x) = release x
+  release (Right y) = release y
+
+impl (Drop e, Drop a) => Drop (Result e a) where
+  drop (Err x) = drop x
+  drop (Ok y) = drop y
+
+impl (Release e, Release a) => Release (Result e a) where
+  release (Err x) = release x
+  release (Ok y) = release y
 
 impl Eq Int where
   x == y = primEqInt x y
@@ -485,6 +591,49 @@ snd (_, y) = y
 fromMaybe : a -> Maybe a -> a
 fromMaybe d Nothing = d
 fromMaybe _ (Just x) = x
+
+-- The value of `Just`; panics with `msg` on `Nothing`.
+expectJust : String -> Maybe a -> a
+expectJust _ (Just x) = x
+expectJust msg Nothing = panic msg
+
+-- Result (spec-v0.0.2.md §6)
+isOk : Result e a -> Bool
+isOk (Ok _) = True
+isOk (Err _) = False
+
+isErr : Result e a -> Bool
+isErr r = not (isOk r)
+
+mapErr : (e -> f) -> Result e a -> Result f a
+mapErr f (Err e) = Err (f e)
+mapErr _ (Ok x) = Ok x
+
+okOr : e -> Maybe a -> Result e a
+okOr e Nothing = Err e
+okOr _ (Just x) = Ok x
+
+unwrapOr : a -> Result e a -> a
+unwrapOr d (Err _) = d
+unwrapOr _ (Ok x) = x
+
+-- The value of `Ok`; panics with the error on `Err`.
+unwrap : Show e => Result e a -> a
+unwrap (Ok x) = x
+unwrap (Err e) = panic ("called `unwrap` on an error: " ++ show e)
+
+-- The value of `Ok`; panics with `msg` and the error on `Err`.
+expect : Show e => String -> Result e a -> a
+expect _ (Ok x) = x
+expect msg (Err e) = panic (msg ++ ": " ++ show e)
+
+-- IO with linear results
+pure1 : {a : LType} -> (1 x : a) -> IO1 a
+pure1 x = primPure1 x
+
+-- An `IO` action as an `IO1` action.
+lift1 : IO a -> IO1 a
+lift1 m = primBindTo1 m (\x => primPure1 x)
 
 -- Lists
 map : (a -> b) -> List a -> List b

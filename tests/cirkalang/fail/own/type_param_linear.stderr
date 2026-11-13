@@ -1,0 +1,7 @@
+error[E0301]: a shareable type is expected here, but `Tok` is linear
+  --> tests/cirkalang/fail/own/type_param_linear.cirka:18:13
+   |
+18 | main = case dup (mk 3) of
+   |             ^^^
+   = note: this type parameter is declared in `Type`
+   = help: declare the parameter in `LType`, e.g. `{a : LType}`

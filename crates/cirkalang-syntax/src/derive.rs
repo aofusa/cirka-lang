@@ -1,7 +1,7 @@
-//! `deriving`: expands `data ... deriving (Eq, Ord, Show)` into `impl`
-//! declarations on the AST (spec-v0.0.2.md §3). Names of the Prelude are
-//! written qualified, so the expansion does not depend on what the module
-//! has in scope.
+//! `deriving`: expands `data ... deriving (Eq, Ord, Show, Drop, Release)`
+//! into `impl` declarations on the AST (spec-v0.0.2.md §3.5, §5.3). Names
+//! of the Prelude are written qualified, so the expansion does not depend
+//! on what the module has in scope.
 
 use crate::ast::*;
 use cirka_diagnostics::{Diagnostic, Span};
@@ -43,26 +43,35 @@ fn derive_all(dd: &DataDecl, errs: &mut Vec<Diagnostic>) -> Vec<Decl> {
     };
     let mut out = Vec::new();
     for (q, sp) in &dd.deriving {
-        if !matches!(q.name.as_str(), "Eq" | "Ord" | "Show") {
+        if !matches!(q.name.as_str(), "Eq" | "Ord" | "Show" | "Drop" | "Release") {
             errs.push(
                 Diagnostic::error(format!("`{q}` cannot be derived"))
                     .with_code("E1116")
-                    .with_label(*sp, "only `Eq`, `Ord` and `Show` can be derived"),
+                    .with_label(
+                        *sp,
+                        "only `Eq`, `Ord`, `Show`, `Drop` and `Release` can be derived",
+                    ),
             );
             continue;
         }
-        if !dd.sig.as_ref().is_none_or(|t| t.kind == ExprKind::Type) {
+        // The finalizers of linear types finalize their fields.
+        let fin = matches!(q.name.as_str(), "Drop" | "Release");
+        let kind_ok = |t: &Expr| t.kind == ExprKind::Type || (fin && t.kind == ExprKind::LType);
+        if fin && !dd.sig.as_ref().is_none_or(kind_ok) {
+            errs.push(cannot(
+                *sp,
+                "the type has indices (write the `impl` by hand)".into(),
+            ));
+            continue;
+        }
+        if !fin && !dd.sig.as_ref().is_none_or(|t| t.kind == ExprKind::Type) {
             errs.push(cannot(
                 *sp,
                 "the type has indices or is linear (write the `impl` by hand)".into(),
             ));
             continue;
         }
-        if !dd
-            .params
-            .iter()
-            .all(|p| p.ty.as_ref().is_none_or(|t| t.kind == ExprKind::Type))
-        {
+        if !dd.params.iter().all(|p| p.ty.as_ref().is_none_or(kind_ok)) {
             errs.push(cannot(*sp, "a parameter is not of kind `Type`".into()));
             continue;
         }
@@ -70,6 +79,8 @@ fn derive_all(dd: &DataDecl, errs: &mut Vec<Diagnostic>) -> Vec<Decl> {
         let items = match q.name.as_str() {
             "Eq" => eq(&ctors, *sp),
             "Ord" => ord(&ctors, *sp),
+            "Drop" => drop_(&ctors, *sp),
+            "Release" => release(&ctors, *sp),
             _ => show(&ctors, *sp),
         };
         let trait_ = Expr {
@@ -271,6 +282,74 @@ fn eq(ctors: &[Ctor], sp: Span) -> Vec<Decl> {
             prelude("False", sp),
             sp,
         ));
+    }
+    out
+}
+
+/// `drop (C a0 a1) = case drop a0 of MkUnit => drop a1`: the fields are
+/// dropped in order.
+fn drop_(ctors: &[Ctor], sp: Span) -> Vec<Decl> {
+    let mut out = Vec::new();
+    for c in ctors {
+        let fs = runtime(c);
+        let call = |i: usize| app(prelude("drop", sp), local(&format!("a{i}"), sp), sp);
+        let mut rhs = match fs.last() {
+            Some(i) => call(*i),
+            None => prelude("MkUnit", sp),
+        };
+        for i in fs.iter().rev().skip(1) {
+            rhs = Expr {
+                span: sp,
+                kind: ExprKind::Case(
+                    Box::new(call(*i)),
+                    vec![Alt {
+                        pat: Pat {
+                            span: sp,
+                            kind: PatKind::Con(
+                                QName {
+                                    module: vec!["Prelude".to_string()],
+                                    name: "MkUnit".to_string(),
+                                },
+                                Vec::new(),
+                            ),
+                        },
+                        rhs,
+                    }],
+                ),
+            };
+        }
+        out.push(clause("drop", vec![con_pat(c, "a", sp)], rhs, sp));
+    }
+    out
+}
+
+/// `release (C a0 a1) = primBind (release a0) (\_ => release a1)`: the
+/// fields are released in order.
+fn release(ctors: &[Ctor], sp: Span) -> Vec<Decl> {
+    let mut out = Vec::new();
+    for c in ctors {
+        let fs = runtime(c);
+        let call = |i: usize| app(prelude("release", sp), local(&format!("a{i}"), sp), sp);
+        let mut rhs = match fs.last() {
+            Some(i) => call(*i),
+            None => app(prelude("primPure", sp), prelude("MkUnit", sp), sp),
+        };
+        for i in fs.iter().rev().skip(1) {
+            let k = Expr {
+                span: sp,
+                kind: ExprKind::Lam(
+                    vec![LamBinder {
+                        name: None,
+                        span: sp,
+                        mult: None,
+                        ty: None,
+                    }],
+                    Box::new(rhs),
+                ),
+            };
+            rhs = app2("primBind", call(*i), k, sp);
+        }
+        out.push(clause("release", vec![con_pat(c, "a", sp)], rhs, sp));
     }
     out
 }

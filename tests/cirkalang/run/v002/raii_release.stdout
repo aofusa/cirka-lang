@@ -1,0 +1,27 @@
+open a
+open b
+body
+release b
+release a
+open r
+use r
+after
+open r
+not used
+release r
+after
+open x
+open y
+use y
+release x
+open a
+open b
+open c
+body
+release c
+release a
+release b
+open z
+7
+release z
+end

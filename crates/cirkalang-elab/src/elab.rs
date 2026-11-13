@@ -7,9 +7,10 @@ use crate::tt::*;
 use cirka_diagnostics::{Diagnostic, Span};
 use cirkalang_resolve::rast::{self, ExprKind, PatKind};
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
+mod raii;
 mod traits;
 use traits::{Goal, Pending, Search};
 
@@ -41,8 +42,20 @@ struct Cxt {
     /// Source names in scope.
     scope: Vec<(String, u32)>,
     uses: Vec<Usage>,
+    /// Expressions of the current scope whose value may hold a linear value
+    /// that its type does not show (spec-v0.0.2.md §5.1).
+    holders: Vec<Span>,
+    /// Binders that are linear because their value holds the linear value
+    /// created at the span (for messages).
+    holds: HashMap<u32, Span>,
     /// Shapes learnt by splitting (for "missing case" examples).
     shapes: HashMap<u32, Shape>,
+}
+
+/// What `enter_scope` saves.
+struct Scope {
+    uses: Vec<Usage>,
+    holders: Vec<Span>,
 }
 
 #[derive(Clone)]
@@ -87,6 +100,25 @@ enum Unif {
     Stuck(String),
 }
 
+/// How a linear value can be given up (spec-v0.0.2.md §5.3), ordered
+/// from the least to the most demanding.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum DropStatus {
+    /// Only memory: Perceus frees it.
+    Free,
+    /// It holds a value with a `Drop` or `Release` implementation.
+    Fin,
+    /// It must be consumed explicitly (E0302).
+    Stuck,
+}
+
+/// The finalizer of a value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Fin {
+    Drop,
+    Release,
+}
+
 pub struct Elab<'r> {
     rp: &'r rast::Program,
     pub prog: Program,
@@ -101,6 +133,22 @@ pub struct Elab<'r> {
     current: RefCell<String>,
     /// Constraints to solve when more types are known.
     pending: RefCell<Vec<Pending>>,
+    /// Sort metas checked against `LType` become `LType` (the variables of
+    /// an `impl` of a trait over `LType`) instead of `Type`.
+    ltype_vars: Cell<bool>,
+    /// Checks that wait until the metas of the definition are solved
+    /// (spec-v0.0.2.md §5.1): `(cx, type, sort, span, what)` must be
+    /// shareable.
+    shareable: RefCell<Vec<(Cxt, Val, Val, Span, &'static str)>>,
+    /// Linear binders of the definition that are left unused on some path
+    /// and may need a finalizer (name, span), for the RAII pass.
+    fin_spans: RefCell<Vec<(Name, Span)>>,
+    /// The span of the definition, for finalizer errors on binders that
+    /// `fin_spans` does not locate.
+    fin_span_default: Cell<Span>,
+    /// The spans of held linear values that have a finalizer: a holder of
+    /// one that is left unused leaks it (W0308).
+    fin_held: RefCell<HashSet<Span>>,
 }
 
 fn sp(e: &rast::Expr) -> Span {
@@ -155,6 +203,26 @@ impl<'r> Elab<'r> {
             string: f("String"),
             io: f("IO"),
             unique: f("Unique"),
+            io1: f("IO1"),
+            prim_pure: f("primPure"),
+            prim_pure1: f("primPure1"),
+            prim_bind1: f("primBind1"),
+            prim_bind_to1: f("primBindTo1"),
+            prim_bind11: f("primBind11"),
+            drop_trait: f("Drop"),
+            release_trait: f("Release"),
+            drop_method: f("drop"),
+            release_method: f("release"),
+            drop_free: f("dropFree"),
+            release_free: f("releaseFree"),
+            release_by_drop: f("releaseByDrop"),
+            drop_after: f("dropAfter"),
+            release_after: f("releaseAfter"),
+            drop_after1: f("dropAfter1"),
+            release_after1: f("releaseAfter1"),
+            result: f("Result"),
+            ok: f("Ok"),
+            err: f("Err"),
         };
         Elab {
             rp,
@@ -168,6 +236,11 @@ impl<'r> Elab<'r> {
             diags: RefCell::new(Vec::new()),
             current: RefCell::new(String::new()),
             pending: RefCell::new(Vec::new()),
+            ltype_vars: Cell::new(false),
+            shareable: RefCell::new(Vec::new()),
+            fin_spans: RefCell::new(Vec::new()),
+            fin_span_default: Cell::new(Span::DUMMY),
+            fin_held: RefCell::new(HashSet::new()),
         }
     }
 
@@ -263,14 +336,189 @@ impl<'r> Elab<'r> {
         l
     }
 
-    /// U-Bind: an ω binder must have a type in `Type`.
-    fn check_ubind(&self, cx: &Cxt, mult: Mult, ty: &Val, span: Span, what: &str) {
-        if mult == Mult::Many && self.univ_of(cx, ty) == Univ::LType {
+    /// U-Bind: an ω binder must have a type in `Type`. A type that is not
+    /// known yet is checked when the definition is finished.
+    fn check_ubind(&self, cx: &Cxt, mult: Mult, ty: &Val, span: Span, what: &'static str) {
+        if mult != Mult::Many {
+            return;
+        }
+        if self.univ_of(cx, ty) == Univ::LType {
+            self.report_ubind(cx, ty, span, what);
+        } else if self.has_metas(cx, ty) {
+            self.shareable
+                .borrow_mut()
+                .push((cx.clone(), ty.clone(), Val::Type, span, what));
+        }
+    }
+
+    fn report_ubind(&self, cx: &Cxt, ty: &Val, span: Span, what: &str) {
+        self.report(
+            self.error(
+                "E0301",
+                span,
+                format!(
+                    "{what} of linear type `{}` is bound with multiplicity ω",
+                    self.show(cx, ty)
+                ),
+            )
+            .with_note("values of an LType may be used only once")
+            .with_help(
+                "bind it with multiplicity 1, e.g. `(1 x : A)`, or make it shareable with `freeze`",
+            ),
+        );
+    }
+
+    /// A value that may hold a linear value (its type does not show it) is
+    /// shared (spec-v0.0.2.md §5.1): the linear value would be used once per
+    /// use of the value.
+    fn report_shared_holder(&self, at: Span, what: &str) {
+        self.report(self.shared_holder(at, what).with_help(
+            "bind the value with multiplicity 1, or create the linear value where it is used",
+        ));
+    }
+
+    fn shared_holder(&self, at: Span, what: &str) -> Diagnostic {
+        self.error(
+            "E0305",
+            at,
+            "a linear value is captured by a value that may be used more than once",
+        )
+        .with_note(format!("the value that captures it is {what}"))
+        .with_note("a closure or an action keeps the linear value it was built from")
+    }
+
+    /// Records that the linear value at `at` (of type `ty`), held by the
+    /// value being built, has a finalizer.
+    fn note_held(&self, cx: &Cxt, at: Span, ty: &Val) {
+        if self.drop_status(cx, ty) == DropStatus::Fin {
+            self.fin_held.borrow_mut().insert(at);
+        }
+    }
+
+    /// A holder that is given up without being used drops the value it
+    /// holds without its finalizer (spec-v0.0.2.md §5.5): a leak, which is
+    /// safe but reported.
+    fn warn_leak(&self, cx: &Cxt, l: u32, name: &str) {
+        let Some(h) = cx.holds.get(&l) else {
+            return;
+        };
+        if !self.fin_held.borrow().contains(h) {
+            return;
+        }
+        self.report(
+            Diagnostic::warning(format!(
+                "`{name}` is never used, so the value it holds is not finalized"
+            ))
+            .with_code("W0308")
+            .with_label(cx.spans[l as usize], "never used")
+            .with_secondary(*h, "this value has a finalizer that will not run")
+            .with_note("a closure or an action keeps the linear value it was built from")
+            .with_help(format!(
+                "use `{name}`, or create the linear value where it is used"
+            )),
+        );
+    }
+
+    /// The value of an expression of type `ty` may hold a linear value
+    /// without showing it: its type is in `Type` and not resource-free
+    /// (a function, an action or a data type that may contain one).
+    fn may_hide_linear(&self, cx: &Cxt, ty: &Val) -> bool {
+        self.univ_of(cx, ty) == Univ::Type && !self.resource_free(cx, ty)
+    }
+
+    fn has_metas(&self, cx: &Cxt, v: &Val) -> bool {
+        fn go(t: &Term) -> bool {
+            match t {
+                Term::Meta(_) | Term::InsertedMeta(..) => true,
+                Term::Pi(_, _, _, a, b) | Term::Lam(_, _, _, a, b) | Term::App(a, b, _) => {
+                    go(a) || go(b)
+                }
+                Term::Let(_, _, a, v, b) => go(a) || go(v) || go(b),
+                Term::Case(_) => true,
+                _ => false,
+            }
+        }
+        go(&self.quote(cx, v))
+    }
+
+    /// A type argument `t` of sort `sort` (`Type` or `… -> Type`) must be
+    /// shareable (spec-v0.0.2.md §5.1); checked at once or, when it is not
+    /// known yet, at the end of the definition.
+    fn check_type_arg(&self, cx: &Cxt, t: &Val, sort: &Val, span: Span) {
+        if !self.type_valued(cx.lvl(), sort) {
+            return;
+        }
+        if self.has_metas(cx, t) {
+            self.shareable.borrow_mut().push((
+                cx.clone(),
+                t.clone(),
+                sort.clone(),
+                span,
+                "type argument",
+            ));
+        } else {
+            self.check_shareable_one(cx, t, sort, span, "type argument");
+        }
+    }
+
+    /// `Type` or a function sort ending in `Type`.
+    fn type_valued(&self, lvl: u32, sort: &Val) -> bool {
+        match self.whnf(sort) {
+            Val::Type => true,
+            Val::Pi(_, _, _, _, c) => self.type_valued(lvl + 1, &self.ev().inst(&c, Val::var(lvl))),
+            _ => false,
+        }
+    }
+
+    /// Runs the checks that waited for the metas of a definition.
+    fn check_shareable(&self) {
+        let items = std::mem::take(&mut *self.shareable.borrow_mut());
+        for (cx, t, sort, span, what) in items {
+            self.check_shareable_one(&cx, &t, &sort, span, what);
+        }
+    }
+
+    /// Whether the type (constructor) `t` of sort `sort` is linear: a type
+    /// constructor is applied to fresh shareable types.
+    fn linear_arg(&self, cx: &Cxt, t: &Val, sort: &Val) -> bool {
+        if matches!(self.whnf(t), Val::Error) {
+            return false;
+        }
+        let mut cx2 = cx.clone();
+        let mut app = t.clone();
+        let mut s = self.whnf(sort);
+        while let Val::Pi(x, _, i, dom, c) = s {
+            let dom = if matches!(self.whnf(&dom), Val::LType) {
+                Val::Type
+            } else {
+                (*dom).clone()
+            };
+            let l = self.push(&mut cx2, &x, Mult::Zero, &dom, None, Span::DUMMY, None);
+            app = self.ev().apply(app, Val::var(l), i);
+            s = self.whnf(&self.ev().inst(&c, Val::var(l)));
+        }
+        self.univ_of(&cx2, &app) == Univ::LType
+    }
+
+    fn check_shareable_one(&self, cx: &Cxt, t: &Val, sort: &Val, span: Span, what: &str) {
+        if !self.linear_arg(cx, t, sort) {
+            return;
+        }
+        if what == "type argument" {
             self.report(
-                self.error("E0301", span, format!("{what} of linear type `{}` is bound with multiplicity ω", self.show(cx, ty)))
-                    .with_note("values of an LType may be used only once")
-                    .with_help("bind it with multiplicity 1, e.g. `(1 x : A)`, or make it shareable with `freeze`"),
+                self.error(
+                    "E0301",
+                    span,
+                    format!(
+                        "a shareable type is expected here, but `{}` is linear",
+                        self.show(cx, t)
+                    ),
+                )
+                .with_note("this type parameter is declared in `Type`")
+                .with_help("declare the parameter in `LType`, e.g. `{a : LType}`"),
             );
+        } else {
+            self.report_ubind(cx, t, span, what);
         }
     }
 
@@ -283,23 +531,26 @@ impl<'r> Elab<'r> {
             match u.mult() {
                 Mult::Zero => {
                     let ty = self.ty_val(cx, l);
-                    if !self.has_drop(cx, &ty) {
-                        self.report(
-                            self.error(
-                                "E0302",
-                                cx.spans[l as usize],
-                                format!("linear value `{name}` is not consumed"),
-                            )
-                            .with_note(format!(
-                                "its type `{}` cannot be dropped implicitly",
-                                self.show(cx, &ty)
-                            ))
-                            .with_help(
-                                "consume it by pattern matching or by passing it to a function",
-                            ),
+                    if self.can_weaken(cx, &ty) {
+                        self.note_fin(cx, l, &ty);
+                        self.warn_leak(cx, l, &name);
+                    } else {
+                        let d = self.error(
+                            "E0302",
+                            cx.spans[l as usize],
+                            format!("linear value `{name}` is not consumed"),
                         );
+                        self.report(self.why_not_weaken(
+                            cx,
+                            &ty,
+                            d,
+                            "consume it by pattern matching or by passing it to a function",
+                        ));
                     }
                 }
+                // A value without resources may be copied (spec-v0.0.2.md
+                // §5.1): it holds no linear resource.
+                Mult::Many if self.resource_free(cx, &self.ty_val(cx, l)) => {}
                 Mult::Many => {
                     let at = u
                         .spans
@@ -317,9 +568,17 @@ impl<'r> Elab<'r> {
                     {
                         d = d.with_secondary(*first, "first use");
                     }
-                    self.report(
-                        d.with_help("use it only once, or make it shareable with `freeze`"),
-                    );
+                    let help = if let Some(h) = cx.holds.get(&l) {
+                        d = d
+                            .with_secondary(*h, "its value holds this linear value")
+                            .with_note(format!(
+                                "`{name}` is linear because its value holds a linear value"
+                            ));
+                        "use it only once, or make it a function that creates the linear value at each call"
+                    } else {
+                        "use it only once, or make it shareable with `freeze`"
+                    };
+                    self.report(d.with_help(help));
                 }
                 Mult::One => {}
             }
@@ -332,6 +591,7 @@ impl<'r> Elab<'r> {
         cx.spans.pop();
         cx.scope.retain(|(_, x)| *x < l);
         cx.shapes.remove(&l);
+        cx.holds.remove(&l);
         u
     }
 
@@ -361,22 +621,40 @@ impl<'r> Elab<'r> {
         }
     }
 
-    fn enter_scope(&self, cx: &mut Cxt) -> Vec<Usage> {
+    fn enter_scope(&self, cx: &mut Cxt) -> Scope {
         let saved = cx.uses.clone();
         for u in &mut cx.uses {
             *u = Usage::default();
         }
-        saved
+        Scope {
+            uses: saved,
+            holders: std::mem::take(&mut cx.holders),
+        }
     }
 
     /// Combines the usage of a scope (a lambda body, a let right-hand side)
     /// used `factor` times with the usage before it.
-    fn exit_scope(&self, cx: &mut Cxt, saved: Vec<Usage>, factor: Mult, code: &str, what: &str) {
+    fn exit_scope(&self, cx: &mut Cxt, saved: Scope, factor: Mult, code: &str, what: &str) {
+        let held = std::mem::replace(&mut cx.holders, saved.holders);
+        match factor {
+            Mult::Many => {
+                if let Some(at) = held.first() {
+                    self.report_shared_holder(*at, what);
+                }
+            }
+            Mult::One => cx.holders.extend(held),
+            Mult::Zero => {}
+        }
+        let saved = saved.uses;
         let n = saved.len();
         for (l, s) in saved.into_iter().enumerate() {
             let cur = std::mem::take(&mut cx.uses[l]);
             let mut f = factor;
-            if cur.mult() != Mult::Zero && factor == Mult::Many && cx.mults[l] == Mult::One {
+            if cur.mult() != Mult::Zero
+                && factor == Mult::Many
+                && cx.mults[l] == Mult::One
+                && !self.resource_free(cx, &self.ty_val(cx, l as u32))
+            {
                 let at = cur.spans.first().copied().unwrap_or(cx.spans[l]);
                 self.report(
                     self.error(
@@ -423,13 +701,20 @@ impl<'r> Elab<'r> {
             };
             if !all_eq && cx.mults[l] == Mult::One {
                 let ty = self.ty_val(cx, l as u32);
-                if !self.has_drop(cx, &ty) {
-                    self.report(
-                        self.error("E0306", span, format!("linear variable `{}` is consumed in some branches but not in others", cx.names[l]))
-                            .with_secondary(cx.spans[l], "bound here")
-                            .with_note(format!("its type `{}` cannot be dropped implicitly", self.show(cx, &ty)))
-                            .with_help("consume it in every branch"),
-                    );
+                if self.can_weaken(cx, &ty) {
+                    self.note_fin(cx, l as u32, &ty);
+                } else {
+                    let d = self
+                        .error(
+                            "E0306",
+                            span,
+                            format!(
+                                "linear variable `{}` is consumed in some branches but not in others",
+                                cx.names[l]
+                            ),
+                        )
+                        .with_secondary(cx.spans[l], "bound here");
+                    self.report(self.why_not_weaken(cx, &ty, d, "consume it in every branch"));
                 }
             }
             let mut spans = Vec::new();
@@ -448,25 +733,36 @@ impl<'r> Elab<'r> {
 
     // ---- universes and Drop ----
 
+    /// The universe of a type (spec-v0.0.2.md §5.1). Data types propagate
+    /// the linearity of their `LType` parameters, and an applied type
+    /// variable is linear when its sort ends in `LType` or when an argument
+    /// in an `LType` position is linear (it may be such a data type).
     fn univ_of(&self, cx: &Cxt, ty: &Val) -> Univ {
         match self.whnf(ty) {
-            Val::Data(d, _) => match self.prog.get(d) {
-                Global::Data { univ, .. } => *univ,
+            Val::Data(d, args) => match self.prog.get(d) {
+                Global::Data {
+                    univ: Univ::LType, ..
+                } => Univ::LType,
+                Global::Data { lin_params, .. } => {
+                    let lin = lin_params.iter().enumerate().any(|(k, lin)| {
+                        *lin && args
+                            .get(k)
+                            .is_some_and(|(a, _)| self.univ_of(cx, a) == Univ::LType)
+                    });
+                    if lin { Univ::LType } else { Univ::Type }
+                }
                 _ => Univ::Type,
             },
             Val::Neutral(Head::Global(g), _) if Some(g) == self.prog.builtins.unique => Univ::LType,
             Val::Neutral(Head::Var(l), sp) if (l as usize) < cx.tys.len() => {
                 let mut k = self.whnf(&self.ty_val(cx, l));
-                // Applied type constructor variable: look at the result sort.
-                let mut lvl = cx.lvl();
-                for _ in 0..sp.len() {
-                    match k {
-                        Val::Pi(_, _, _, _, c) => {
-                            k = self.whnf(&self.ev().inst(&c, Val::var(lvl)));
-                            lvl += 1;
-                        }
-                        _ => break,
+                for e in &sp {
+                    let Elim::App(a, _) = e else { break };
+                    let Val::Pi(_, _, _, dom, c) = k else { break };
+                    if matches!(self.whnf(&dom), Val::LType) && self.univ_of(cx, a) == Univ::LType {
+                        return Univ::LType;
                     }
+                    k = self.whnf(&self.ev().inst(&c, a.clone()));
                 }
                 if matches!(k, Val::LType) {
                     Univ::LType
@@ -478,14 +774,131 @@ impl<'r> Elab<'r> {
         }
     }
 
-    fn has_drop(&self, cx: &Cxt, ty: &Val) -> bool {
-        match self.whnf(ty) {
-            Val::Data(d, _) => match self.prog.get(d) {
-                Global::Data { drop, .. } => *drop,
-                _ => true,
-            },
-            v @ Val::Neutral(Head::Var(_), _) => self.univ_of(cx, &v) == Univ::Type,
-            _ => true,
+    /// Whether the data type `d` has a finalizer: an implementation of
+    /// `Drop` or `Release` without a context. An implementation with a
+    /// context (`impl Drop a => Drop (List a)`) only lifts the finalizers
+    /// of the fields (spec-v0.0.2.md §5.3).
+    fn has_fin_impl(&self, d: GName) -> bool {
+        let b = &self.prog.builtins;
+        [b.drop_trait, b.release_trait]
+            .into_iter()
+            .flatten()
+            .any(|tr| {
+                self.prog.impls.get(&tr).is_some_and(|is| {
+                    is.iter().any(|i| {
+                        i.nctx == 0
+                            && matches!(self.impl_head_args(i).first().map(|a| self.whnf(&a.0)),
+                            Some(Val::Data(h, _)) if h == d)
+                    })
+                })
+            })
+    }
+
+    /// How a value of this type can be given up without being used
+    /// (spec-v0.0.2.md §5.3).
+    fn drop_status(&self, cx: &Cxt, ty: &Val) -> DropStatus {
+        self.drop_status_go(cx, cx.lvl(), ty, &mut Vec::new())
+    }
+
+    fn drop_status_go(
+        &self,
+        cx: &Cxt,
+        lvl: u32,
+        ty: &Val,
+        visiting: &mut Vec<GName>,
+    ) -> DropStatus {
+        let w = self.whnf(ty);
+        if self.univ_of(cx, &w) == Univ::Type {
+            return DropStatus::Free;
+        }
+        match w {
+            Val::Data(d, args) => {
+                if self.has_fin_impl(d) {
+                    return DropStatus::Fin;
+                }
+                if visiting.contains(&d) {
+                    return DropStatus::Free;
+                }
+                let Global::Data { cons, nparams, .. } = self.prog.get(d).clone() else {
+                    return DropStatus::Free;
+                };
+                if cons.is_empty() {
+                    return DropStatus::Stuck;
+                }
+                visiting.push(d);
+                let mut st = DropStatus::Free;
+                for c in cons {
+                    let Some(cty) = self.prog.type_of(c) else {
+                        continue;
+                    };
+                    let mut v = self.ev().eval(&Vec::new(), cty);
+                    for (a, _) in args.iter().take(nparams) {
+                        match self.whnf(&v) {
+                            Val::Pi(_, _, _, _, clo) => v = self.ev().inst(&clo, a.clone()),
+                            _ => break,
+                        }
+                    }
+                    let mut l = lvl;
+                    while let Val::Pi(_, m, _, a, clo) = self.whnf(&v) {
+                        if m != Mult::Zero {
+                            st = st.max(self.drop_status_go(cx, l, &a, visiting));
+                        }
+                        v = self.ev().inst(&clo, Val::var(l));
+                        l += 1;
+                    }
+                }
+                visiting.pop();
+                st
+            }
+            // A linear type variable: given up through `Drop` / `Release`
+            // from the context.
+            Val::Neutral(Head::Var(_), _) => DropStatus::Fin,
+            _ => DropStatus::Free,
+        }
+    }
+
+    /// The note and help of E0302 / E0306.
+    fn why_not_weaken(&self, cx: &Cxt, ty: &Val, d: Diagnostic, help: &str) -> Diagnostic {
+        let t = self.show(cx, ty);
+        if self.drop_status(cx, ty) == DropStatus::Fin {
+            d.with_note(format!(
+                "`{t}` holds values with a finalizer, but has no `Drop` or `Release` implementation"
+            ))
+            .with_help("derive one, e.g. `deriving (Release)`, or consume the value on every path")
+        } else {
+            d.with_note(format!("its type `{t}` cannot be dropped implicitly"))
+                .with_help(help)
+        }
+    }
+
+    /// Records a linear binder that some path leaves unused, when it may
+    /// need a finalizer (decided by the RAII pass on the solved program).
+    fn note_fin(&self, cx: &Cxt, l: u32, ty: &Val) {
+        if self.drop_status(cx, ty) == DropStatus::Fin || self.has_metas(cx, ty) {
+            self.fin_spans
+                .borrow_mut()
+                .push((cx.names[l as usize].clone(), cx.spans[l as usize]));
+        }
+    }
+
+    /// Weaken-Drop / Weaken-Release: a linear value of this type may be
+    /// left unused (the finalizer is inserted by the RAII pass).
+    fn can_weaken(&self, cx: &Cxt, ty: &Val) -> bool {
+        match self.drop_status(cx, ty) {
+            DropStatus::Free => true,
+            DropStatus::Stuck => false,
+            DropStatus::Fin => {
+                let b = &self.prog.builtins;
+                // An answer that depends on unsolved metas is left to the
+                // RAII pass, which runs on the solved program.
+                [b.drop_trait, b.release_trait]
+                    .into_iter()
+                    .flatten()
+                    .any(|tr| {
+                        let goal = Val::Data(tr, vec![(ty.clone(), Icit::Expl)]);
+                        !matches!(self.search(cx, &goal, 0), Search::NotFound)
+                    })
+            }
         }
     }
 
@@ -576,12 +989,7 @@ impl<'r> Elab<'r> {
 
     fn unify_or_err(&self, cx: &Cxt, span: Span, expected: &Val, actual: &Val) -> bool {
         let ev = self.ev();
-        if matches!(ev.whnf(expected.clone()), Val::LType)
-            && matches!(ev.whnf(actual.clone()), Val::Type)
-        {
-            return true;
-        }
-        match ev.unify(cx.lvl(), expected, actual) {
+        match ev.sub(cx.lvl(), expected, actual, self.ltype_vars.get()) {
             Ok(()) => {
                 self.check_fuel(span);
                 true
@@ -592,7 +1000,11 @@ impl<'r> Elab<'r> {
                     return false;
                 }
                 // A type may depend on a constraint that has not been solved.
-                if self.solve_pending(false) && ev.unify(cx.lvl(), expected, actual).is_ok() {
+                if self.solve_pending(false)
+                    && ev
+                        .sub(cx.lvl(), expected, actual, self.ltype_vars.get())
+                        .is_ok()
+                {
                     return true;
                 }
                 // The types are shown with the literals at their defaults.
@@ -622,7 +1034,7 @@ impl<'r> Elab<'r> {
 
     fn check_type(&self, cx: &mut Cxt, e: &rast::Expr) -> Term {
         if matches!(e.kind, ExprKind::Unit | ExprKind::Tuple(_)) {
-            return self.check(cx, e, &Val::Type, Mult::Zero);
+            return self.check(cx, e, &Val::LType, Mult::Zero);
         }
         let (t, s) = self.infer(cx, e, Mult::Zero);
         match self.whnf(&s) {
@@ -648,10 +1060,15 @@ impl<'r> Elab<'r> {
         let span = sp(e);
         let wty = self.whnf(ty);
         if let Val::Pi(x, m, Icit::Impl, a, c) = &wty {
+            // A runtime lambda (a dictionary) evaluates its body at each call.
+            let held = (*m != Mult::Zero).then(|| std::mem::take(&mut cx.holders));
             let l = self.push(cx, x, *m, a, None, span, None);
             let b = self.ev().inst(c, Val::var(l));
             let body = self.check(cx, e, &b, rig);
             self.pop(cx, false);
+            if let Some(h) = held {
+                cx.holders = h;
+            }
             let at = self.quote(cx, a);
             return Term::Lam(x.clone(), *m, Icit::Impl, Rc::new(at), Rc::new(body));
         }
@@ -666,9 +1083,10 @@ impl<'r> Elab<'r> {
                 None => Term::Error,
             },
             ExprKind::Do(ss) => {
-                let io = matches!(&wty, Val::Neutral(Head::Global(g), _)
-                    if Some(*g) == self.prog.builtins.io);
-                match self.desugar_do(ss, span, io) {
+                if self.io_kind(&wty).is_some() {
+                    return self.elab_io_do(cx, ss, &wty, rig, span);
+                }
+                match self.desugar_do(ss, span, false) {
                     Some(d) => self.check(cx, &d, ty, rig),
                     None => Term::Error,
                 }
@@ -708,9 +1126,10 @@ impl<'r> Elab<'r> {
                 let Some(pair) = self.builtin(self.prog.builtins.pair, "Pair", span) else {
                     return Term::Error;
                 };
+                // The components may be linear (`Pair` propagates it).
                 let ts: Vec<Term> = es
                     .iter()
-                    .map(|x| self.check(cx, x, &wty, Mult::Zero))
+                    .map(|x| self.check(cx, x, &Val::LType, Mult::Zero))
                     .collect();
                 let mut it = ts.into_iter().rev();
                 let mut acc = it.next().unwrap_or(Term::Error);
@@ -724,6 +1143,10 @@ impl<'r> Elab<'r> {
                         Rc::new(acc),
                         Icit::Expl,
                     );
+                }
+                if matches!(wty, Val::Type) {
+                    let v = self.eval(cx, &acc);
+                    self.check_type_arg(cx, &v, &wty, span);
                 }
                 acc
             }
@@ -762,6 +1185,10 @@ impl<'r> Elab<'r> {
         let (t, a) = self.infer(cx, e, rig);
         let (t, a) = self.insert_implicits(cx, t, a, sp(e));
         if self.unify_or_err(cx, sp(e), ty, &a) {
+            if self.type_valued(cx.lvl(), ty) {
+                let tv = self.eval(cx, &t);
+                self.check_type_arg(cx, &tv, ty, sp(e));
+            }
             t
         } else {
             Term::Error
@@ -884,6 +1311,11 @@ impl<'r> Elab<'r> {
             Mult::One
         };
         let t = self.check_lam_go(cx, bs, body, ty, inner, span);
+        // The body of a runtime lambda is evaluated at each call, so the
+        // linear values it creates are not shared.
+        if runtime_lam(&t) {
+            cx.holders.clear();
+        }
         self.exit_scope(cx, saved, rig, "E0305", "a closure used many times");
         t
     }
@@ -956,6 +1388,7 @@ impl<'r> Elab<'r> {
                 Val::Pi(_, _, Icit::Impl, dom, c) => {
                     let m = self.fresh_meta(cx, span);
                     let mv = self.eval(cx, &m);
+                    self.check_type_arg(cx, &mv, &dom, span);
                     if self.trait_of(&dom).is_some() {
                         self.pending.borrow_mut().push(Pending {
                             meta: m.clone(),
@@ -1053,7 +1486,16 @@ impl<'r> Elab<'r> {
             ExprKind::Lam(bs, body) => self.infer_lam(cx, bs, body, rig, span),
             ExprKind::Let(bs, body) => self.elab_let(cx, bs, body, None, rig),
             ExprKind::Case(..) | ExprKind::If(..) | ExprKind::Do(..) | ExprKind::Hole(_) => {
-                let m = self.fresh_meta(cx, span);
+                // An inferred match has a non-dependent type: it does not
+                // depend on the matched variable, which the branches refine.
+                let mut mask = cx.bound.clone();
+                if let ExprKind::Case(s, _) | ExprKind::If(s, _, _) = &e.kind
+                    && let ExprKind::Local(x) = &s.kind
+                    && let Some(l) = cx.lookup(x)
+                {
+                    mask[l as usize] = false;
+                }
+                let m = self.fresh_meta_masked(&mask, span);
                 let ty = self.eval(cx, &m);
                 let t = self.check(cx, e, &ty, rig);
                 (t, ty)
@@ -1120,7 +1562,7 @@ impl<'r> Elab<'r> {
                     let (_, s) = self.infer(&mut probe, first, Mult::Zero);
                     self.diags.borrow_mut().truncate(before);
                     if matches!(self.whnf(&s), Val::Type | Val::LType) {
-                        return (self.check(cx, e, &Val::Type, Mult::Zero), Val::Type);
+                        return (self.check(cx, e, &Val::LType, Mult::Zero), Val::Type);
                     }
                 }
                 match self.desugar_value(e) {
@@ -1149,6 +1591,8 @@ impl<'r> Elab<'r> {
         let is_con =
             matches!(h.kind, ExprKind::Global(g) if matches!(self.prog.get(g), Global::Con { .. }));
         let mut span = sp(h);
+        // A linear argument that is not a variable (whose usage is tracked).
+        let mut lin_arg = None;
         for a in args {
             let (t2, ty2) = self.insert_implicits(cx, t, ty, span);
             t = t2;
@@ -1220,6 +1664,14 @@ impl<'r> Elab<'r> {
                         };
                         self.check(cx, a, &dom, rig.times(m))
                     };
+                    if m != Mult::Zero
+                        && lin_arg.is_none()
+                        && !matches!(a.kind, ExprKind::Local(_))
+                        && self.univ_of(cx, &dom) == Univ::LType
+                    {
+                        lin_arg = Some(sp(a));
+                        self.note_held(cx, sp(a), &dom);
+                    }
                     let av = self.eval(cx, &at);
                     t = Term::App(Rc::new(t), Rc::new(at), Icit::Expl);
                     ty = self.ev().inst(&c, av);
@@ -1242,6 +1694,19 @@ impl<'r> Elab<'r> {
                 }
             }
             span = span.to(sp(a));
+        }
+        // The result may keep the linear argument (a partial application, an
+        // action or a closure in a data value) without showing it in its
+        // type (spec-v0.0.2.md §5.1).
+        if let Some(at) = lin_arg
+            && rig != Mult::Zero
+            && self.may_hide_linear(cx, &ty)
+        {
+            if rig == Mult::Many {
+                self.report_shared_holder(at, "used many times");
+            } else {
+                cx.holders.push(at);
+            }
         }
         (t, ty)
     }
@@ -1306,6 +1771,8 @@ impl<'r> Elab<'r> {
             Mult::One
         };
         let mut binds = Vec::new();
+        // The first linear binder that the result may hold.
+        let mut lin_bind = None;
         for b in bs {
             let saved = self.enter_scope(cx);
             let inner = rig;
@@ -1320,25 +1787,52 @@ impl<'r> Elab<'r> {
                     self.insert_implicits(cx, t, a, b.rhs.span)
                 }
             };
-            let uses_linear = cx
-                .uses
-                .iter()
-                .enumerate()
-                .any(|(l, u)| u.mult() != Mult::Zero && cx.mults[l] == Mult::One);
+            let uses_linear = cx.uses.iter().enumerate().any(|(l, u)| {
+                u.mult() != Mult::Zero
+                    && cx.mults[l] == Mult::One
+                    && !self.resource_free(cx, &self.ty_val(cx, l as u32))
+            });
+            // The value may hold a linear value it was built from.
+            let holds = !cx.holders.is_empty();
+            // Prefer a held value with a finalizer (for W0308).
+            let held_at = {
+                let fh = self.fin_held.borrow();
+                cx.holders
+                    .iter()
+                    .find(|h| fh.contains(h))
+                    .or(cx.holders.first())
+                    .copied()
+            };
             let rf = self.resource_free(cx, &ty);
             let m = match b.mult {
                 Some(m) => conv_mult(m),
-                None if self.univ_of(cx, &ty) == Univ::LType || (uses_linear && !rf) => Mult::One,
+                None if self.univ_of(cx, &ty) == Univ::LType || ((uses_linear || holds) && !rf) => {
+                    Mult::One
+                }
                 None => Mult::Many,
             };
             let factor = if m == Mult::Many && rf { Mult::One } else { m };
+            // A linear binder holds them (its uses are tracked), and a
+            // resource-free value cannot.
+            if m != Mult::Many || rf {
+                cx.holders.clear();
+            }
+            if m == Mult::One && !rf && lin_bind.is_none() {
+                lin_bind = Some(b.span);
+                self.note_held(cx, b.span, &ty);
+            }
             self.exit_scope(cx, saved, rig.times(factor), "E0303", "an ω let binding");
             if rig != Mult::Zero {
                 self.check_ubind(cx, m, &ty, b.span, "let binding");
             }
             let val = self.eval(cx, &vt);
             let at = self.quote(cx, &ty);
-            self.push(cx, &b.name, m, &ty, Some(val), b.span, Some(&b.name));
+            let l = self.push(cx, &b.name, m, &ty, Some(val), b.span, Some(&b.name));
+            if let (Some(h), None, Mult::One, false) = (held_at, b.mult, m, uses_linear)
+                && self.univ_of(cx, &ty) == Univ::Type
+            {
+                cx.holds.insert(l, h);
+            }
             binds.push((Name::from(b.name.as_str()), m, at, vt));
         }
         let (bt, bty) = match expected {
@@ -1349,6 +1843,13 @@ impl<'r> Elab<'r> {
             }
             None => self.infer(cx, body, rig),
         };
+        // The result may hold a linear binder (in a closure or an action).
+        if let Some(at) = lin_bind
+            && rig != Mult::Zero
+            && self.may_hide_linear(cx, &bty)
+        {
+            cx.holders.push(at);
+        }
         for _ in 0..binds.len() {
             self.pop(cx, rig != Mult::Zero);
         }
@@ -1432,6 +1933,17 @@ impl<'r> Elab<'r> {
         }
         let rest_span = span;
         let rest_e = mk(ExprKind::Do(rest.to_vec()), rest_span);
+        if let rast::Stmt::Try(_, _, q) = s {
+            self.report(
+                self.error(
+                    "E1260",
+                    *q,
+                    "`?` can only be used in a `do` block of `IO` or `IO1`",
+                )
+                .with_note("in other monads, `<-` already returns the error early"),
+            );
+            return None;
+        }
         Some(match s {
             // `e; rest` is `e >>= \_ => rest`, not `e >> rest`: evaluation is
             // strict, so `rest` must stay under a lambda until `e` has run.
@@ -1466,7 +1978,243 @@ impl<'r> Elab<'r> {
                 app(app(self.gexpr(bind.0, bind.1, e.span)?, e.clone()), lam)
             }
             rast::Stmt::Let(bs) => mk(ExprKind::Let(bs.clone(), Box::new(rest_e)), span),
+            rast::Stmt::Try(..) => return None,
         })
+    }
+
+    /// `Some(false)` for `IO b`, `Some(true)` for `IO1 b`.
+    fn io_kind(&self, ty: &Val) -> Option<bool> {
+        let b = &self.prog.builtins;
+        match self.whnf(ty) {
+            Val::Neutral(Head::Global(g), sp) if sp.len() == 1 && Some(g) == b.io => Some(false),
+            Val::Neutral(Head::Global(g), sp) if sp.len() == 1 && Some(g) == b.io1 => Some(true),
+            _ => None,
+        }
+    }
+
+    /// The result type of `IO b` / `IO1 b`.
+    fn io_result(&self, ty: &Val) -> Val {
+        match self.whnf(ty) {
+            Val::Neutral(_, sp) => match sp.first() {
+                Some(Elim::App(a, _)) => a.clone(),
+                _ => Val::Error,
+            },
+            _ => Val::Error,
+        }
+    }
+
+    /// A `do` block of `IO b` / `IO1 b` (spec-v0.0.2.md §5.2). Each action
+    /// is elaborated first: the result of an `IO` action is bound with
+    /// multiplicity ω and that of an `IO1` action with 1, and the bind is
+    /// chosen by the kinds of the action and of the block.
+    fn elab_io_do(&self, cx: &mut Cxt, ss: &[rast::Stmt], ty: &Val, rig: Mult, span: Span) -> Term {
+        let Some((s, rest)) = ss.split_first() else {
+            self.report(self.error("E1002", span, "empty `do` block"));
+            return Term::Error;
+        };
+        if rest.is_empty() {
+            return match s {
+                rast::Stmt::Expr(e) => self.check(cx, e, ty, rig),
+                _ => {
+                    self.report(self.error(
+                        "E1002",
+                        span,
+                        "the last statement of a `do` block must be an expression",
+                    ));
+                    Term::Error
+                }
+            };
+        }
+        let rest_e = mk(ExprKind::Do(rest.to_vec()), span);
+        match s {
+            rast::Stmt::Let(bs) => self.elab_let(cx, bs, &rest_e, Some(ty), rig).0,
+            rast::Stmt::Expr(e) => self.io_bind(cx, None, e, None, &rest_e, ty, rig),
+            rast::Stmt::Bind(x, xs, e) => {
+                self.io_bind(cx, Some((x.as_str(), *xs)), e, None, &rest_e, ty, rig)
+            }
+            rast::Stmt::Try(x, e, q) => {
+                let x = x.as_ref().map(|(n, sp)| (n.as_str(), *sp));
+                self.io_bind(cx, x, e, Some(*q), &rest_e, ty, rig)
+            }
+        }
+    }
+
+    /// `x <- e; rest` (or `x <- e?; rest` when `try_at` is set) in a block
+    /// of type `ty`.
+    #[allow(clippy::too_many_arguments)]
+    fn io_bind(
+        &self,
+        cx: &mut Cxt,
+        x: Option<(&str, Span)>,
+        e: &rast::Expr,
+        try_at: Option<Span>,
+        rest: &rast::Expr,
+        ty: &Val,
+        rig: Mult,
+    ) -> Term {
+        let b = &self.prog.builtins;
+        let block1 = self.io_kind(ty) == Some(true);
+        let bty = self.io_result(ty);
+        let (et, ety) = self.infer(cx, e, rig);
+        let (et, ety) = self.insert_implicits(cx, et, ety, e.span);
+        if matches!(self.whnf(&ety), Val::Error) {
+            return Term::Error;
+        }
+        // `e?` on a `Result` value (not an action): `case e of ...`.
+        if let Some(q) = try_at
+            && self.io_kind(&ety).is_none()
+            && self.is_result(&ety)
+        {
+            let m = if self.univ_of(cx, &ety) == Univ::LType {
+                Mult::One
+            } else {
+                Mult::Many
+            };
+            let at = self.quote(cx, &ety);
+            let ev = self.eval(cx, &et);
+            self.push(cx, "r$try", m, &ety, Some(ev), e.span, Some("r$try"));
+            let body = self.try_case(cx, x, q, rest, ty, block1, rig);
+            // The action may hold the fields of a linear result.
+            if m == Mult::One && rig != Mult::Zero && !self.resource_free(cx, &ety) {
+                cx.holders.push(e.span);
+                self.note_held(cx, e.span, &ety);
+            }
+            self.pop(cx, rig != Mult::Zero);
+            return Term::Let("r$try".into(), m, Rc::new(at), Rc::new(et), Rc::new(body));
+        }
+        let stmt1 = match self.io_kind(&ety) {
+            Some(k) => k,
+            None => {
+                // An action whose type is not known yet is an `IO` action.
+                let Some(io) = b.io else {
+                    return Term::Error;
+                };
+                let a = self.fresh_meta(cx, e.span);
+                let av = self.eval(cx, &a);
+                let want = Val::Neutral(Head::Global(io), vec![Elim::App(av, Icit::Expl)]);
+                if !self.unify_or_err(cx, e.span, &want, &ety) {
+                    return Term::Error;
+                }
+                false
+            }
+        };
+        let a = self.io_result(&ety);
+        let bind = match (stmt1, block1) {
+            (false, false) => b.prim_bind,
+            (true, false) => b.prim_bind1,
+            (false, true) => b.prim_bind_to1,
+            (true, true) => b.prim_bind11,
+        };
+        let Some(bind) = self.builtin(bind, "primBind", e.span) else {
+            return Term::Error;
+        };
+        let xm = if stmt1 { Mult::One } else { Mult::Many };
+        let (name, xspan, src): (Name, Span, Option<&str>) = match (try_at, x) {
+            (Some(_), _) => ("r$try".into(), e.span, Some("r$try")),
+            (None, Some((n, sp))) => (n.into(), sp, Some(n)),
+            (None, None) => ("_".into(), e.span, None),
+        };
+        if rig != Mult::Zero {
+            self.check_ubind(cx, xm, &a, xspan, "result");
+        }
+        self.push(cx, &name, xm, &a, None, xspan, src);
+        // The continuation runs at each run of the action: the linear values
+        // it creates are not shared.
+        let held = std::mem::take(&mut cx.holders);
+        let body = match try_at {
+            Some(q) => {
+                if self.is_result(&a) {
+                    self.try_case(cx, x, q, rest, ty, block1, rig)
+                } else {
+                    self.report(
+                        self.error("E1260", q, "`?` needs a value or an action of `Result`")
+                            .with_note(format!("the action returns `{}`", self.show(cx, &a))),
+                    );
+                    Term::Error
+                }
+            }
+            None => self.check(cx, rest, ty, rig),
+        };
+        cx.holders = held;
+        self.pop(cx, rig != Mult::Zero);
+        let aq = self.quote(cx, &a);
+        let bq = self.quote(cx, &bty);
+        let f = Term::App(
+            Rc::new(Term::App(
+                Rc::new(Term::Global(bind)),
+                Rc::new(aq.clone()),
+                Icit::Impl,
+            )),
+            Rc::new(bq),
+            Icit::Impl,
+        );
+        Term::App(
+            Rc::new(Term::App(Rc::new(f), Rc::new(et), Icit::Expl)),
+            Rc::new(Term::Lam(name, xm, Icit::Expl, Rc::new(aq), Rc::new(body))),
+            Icit::Expl,
+        )
+    }
+
+    fn is_result(&self, ty: &Val) -> bool {
+        matches!(self.whnf(ty), Val::Data(d, _) if Some(d) == self.prog.builtins.result)
+    }
+
+    /// `case r$try of { Err e => pure (Err e); Ok x => rest }` in the
+    /// context where `r$try` is bound (spec-v0.0.2.md §6.2).
+    #[allow(clippy::too_many_arguments)]
+    fn try_case(
+        &self,
+        cx: &mut Cxt,
+        x: Option<(&str, Span)>,
+        q: Span,
+        rest: &rast::Expr,
+        ty: &Val,
+        block1: bool,
+        rig: Mult,
+    ) -> Term {
+        let b = &self.prog.builtins;
+        if !self.is_result(&self.io_result(ty))
+            && !matches!(
+                self.whnf(&self.io_result(ty)),
+                Val::Neutral(Head::Meta(_), _)
+            )
+        {
+            self.report(
+                self.error(
+                    "E1260",
+                    q,
+                    "`?` returns an error early, but this block does not return `Result`",
+                )
+                .with_note(format!("the block has type `{}`", self.show(cx, ty))),
+            );
+            return Term::Error;
+        }
+        let (Some(err), Some(ok)) = (b.err, b.ok) else {
+            self.builtin(None, "Result", q);
+            return Term::Error;
+        };
+        let pure = if block1 { b.prim_pure1 } else { b.prim_pure };
+        let Some(pure) = self.gexpr(pure, "primPure", q) else {
+            return Term::Error;
+        };
+        let var = |n: &str| mk(ExprKind::Local(n.into()), q);
+        let pat = |kind| rast::Pat { kind, span: q };
+        let ok_pat = match x {
+            Some((n, _)) => pat(PatKind::Var(n.into())),
+            None => pat(PatKind::Wild),
+        };
+        let alts = vec![
+            rast::Alt {
+                pat: pat(PatKind::Con(err, vec![pat(PatKind::Var("e$try".into()))])),
+                rhs: app(pure, app(mk(ExprKind::Global(err), q), var("e$try"))),
+            },
+            rast::Alt {
+                pat: pat(PatKind::Con(ok, vec![ok_pat])),
+                rhs: rest.clone(),
+            },
+        ];
+        let c = mk(ExprKind::Case(Box::new(var("r$try")), alts), q);
+        self.check(cx, &c, ty, rig)
     }
 
     /// Tuple and list values.
@@ -1589,16 +2337,15 @@ impl<'r> Elab<'r> {
         };
         let (st, sty) = self.infer(cx, s, inner);
         let (st, sty) = self.insert_implicits(cx, st, sty, s.span);
-        let m = if self.univ_of(cx, &sty) == Univ::LType {
+        let rf = self.resource_free(cx, &sty);
+        // A scrutinee that holds a linear value is linear (its fields too).
+        let m = if self.univ_of(cx, &sty) == Univ::LType || (!cx.holders.is_empty() && !rf) {
             Mult::One
         } else {
             Mult::Many
         };
-        let factor = if m == Mult::Many && self.resource_free(cx, &sty) {
-            Mult::One
-        } else {
-            m
-        };
+        let factor = if m == Mult::Many && rf { Mult::One } else { m };
+        cx.holders.clear();
         self.exit_scope(cx, saved, rig.times(factor), "E0303", "a shared scrutinee");
         let val = self.eval(cx, &st);
         let at = self.quote(cx, &sty);
@@ -1616,6 +2363,11 @@ impl<'r> Elab<'r> {
             .collect();
         let goal = self.quote(cx, ty);
         let body = self.compile(cx, rows, &goal, rig, &mut ci);
+        // The result may hold the linear scrutinee's fields.
+        if m == Mult::One && !rf && rig != Mult::Zero && self.may_hide_linear(cx, ty) {
+            cx.holders.push(s.span);
+            self.note_held(cx, s.span, &sty);
+        }
         self.pop(cx, rig != Mult::Zero);
         self.warn_unused(&ci);
         Term::Let("scrut$".into(), m, Rc::new(at), Rc::new(st), Rc::new(body))
@@ -2146,7 +2898,7 @@ impl<'r> Elab<'r> {
             let xb = bcx.uses[x as usize].mult();
             let body = self.compile(&mut bcx, brows, &bgoal, rig, ci);
             let x_used = bcx.uses[x as usize].mult() != xb;
-            let lin = xm == Mult::One;
+            let lin = xm == Mult::One && !self.resource_free(cx, &self.ty_val(cx, x));
             for _ in 0..field_lvls.len() {
                 let fl = bcx.lvl() - 1;
                 let u = self.pop(&mut bcx, !(lin && x_used));
@@ -2597,6 +3349,119 @@ impl<'r> Elab<'r> {
         }
     }
 
+    // ---- top-level values (spec-v0.0.2.md §5.1) ----
+
+    /// A top-level value (a definition or a method that is not a function)
+    /// is evaluated once and shared by all its uses: its type must not be
+    /// linear.
+    fn check_shared_type(&self, ty: &Term, span: Span, what: &str, name: &str, by: &str) {
+        let mut cx = Cxt::default();
+        let mut v = self.eval(&cx, ty);
+        while let Val::Pi(x, Mult::Zero, _, a, c) = self.whnf(&v) {
+            let l = self.push(&mut cx, &x, Mult::Zero, &a, None, span, None);
+            v = self.ev().inst(&c, Val::var(l));
+        }
+        if matches!(self.whnf(&v), Val::Pi(..)) || self.univ_of(&cx, &v) != Univ::LType {
+            return;
+        }
+        self.report(
+            self.error(
+                "E0301",
+                span,
+                format!(
+                    "{what} has the linear type `{}`, but {by}",
+                    self.show(&cx, &v)
+                ),
+            )
+            .with_help(format!(
+                "make it a function, e.g. `{name} : () -> {}`",
+                self.show(&cx, &v)
+            )),
+        );
+    }
+
+    /// The body of a top-level value whose evaluation (outside runtime
+    /// lambdas) holds linear values: an action is delayed, so that each run
+    /// creates its own; anything else would share them (E0305).
+    fn share_top(&self, cx: &mut Cxt, ty: &Term, body: Term) -> Term {
+        let held = std::mem::take(&mut cx.holders);
+        let Some(&at) = held.first() else {
+            return body;
+        };
+        if matches!(body, Term::Error) {
+            return body;
+        }
+        // Erased lambdas do not delay anything.
+        let mut tcx = Cxt::default();
+        let mut v = self.eval(&tcx, ty);
+        let mut t = body;
+        let mut lams = Vec::new();
+        while let (Val::Pi(_, Mult::Zero, _, a, c), Term::Lam(x, Mult::Zero, i, at, b)) =
+            (self.whnf(&v), &t)
+        {
+            let l = self.push(&mut tcx, x, Mult::Zero, &a, None, Span::DUMMY, None);
+            v = self.ev().inst(&c, Val::var(l));
+            lams.push((x.clone(), *i, at.clone()));
+            let b = (**b).clone();
+            t = b;
+        }
+        let b = &self.prog.builtins;
+        let delayed = match self.io_kind(&v) {
+            Some(lin) => {
+                let r = self.quote(&tcx, &self.io_result(&v));
+                let bind = if lin { b.prim_bind_to1 } else { b.prim_bind };
+                match (bind, b.prim_pure, b.unit, b.mk_unit) {
+                    (Some(bind), Some(pure), Some(unit), Some(mk_unit)) => {
+                        let unit = Term::Global(unit);
+                        let start = self.apply_global(
+                            pure,
+                            std::slice::from_ref(&unit),
+                            &[Term::Global(mk_unit)],
+                        );
+                        let k = Term::Lam(
+                            "_".into(),
+                            Mult::Many,
+                            Icit::Expl,
+                            Rc::new(unit.clone()),
+                            Rc::new(shift(&t, 0, 1)),
+                        );
+                        Some(self.apply_global(bind, &[unit, r], &[start, k]))
+                    }
+                    _ => None,
+                }
+            }
+            None => None,
+        };
+        let Some(mut t) = delayed else {
+            self.report(
+                self.shared_holder(at, "the value of a top-level definition, shared by all its uses")
+                    .with_help("write the parameters of the definition (e.g. `f x = ...`), so that the linear value is created at each call"),
+            );
+            return Term::Error;
+        };
+        for (x, i, a) in lams.into_iter().rev() {
+            t = Term::Lam(x, Mult::Zero, i, a, Rc::new(t));
+        }
+        t
+    }
+
+    /// `g {imps} exps`, following the binders of the type of `g`.
+    fn apply_global(&self, g: GName, imps: &[Term], exps: &[Term]) -> Term {
+        let mut t = Term::Global(g);
+        let mut ty = self.prog.type_of(g).cloned().unwrap_or(Term::Error);
+        let (mut i, mut e) = (imps.iter(), exps.iter());
+        while let Term::Pi(_, _, icit, _, b) = ty {
+            let next = match icit {
+                Icit::Impl => i.next(),
+                Icit::Expl => e.next(),
+            };
+            let Some(a) = next else { break };
+            t = Term::App(Rc::new(t), Rc::new(a.clone()), icit);
+            ty = (*b).clone();
+        }
+        t
+    }
+
     fn error_count(&self) -> usize {
         self.diags.borrow().iter().filter(|x| x.is_error()).count()
     }
@@ -2609,6 +3474,9 @@ impl<'r> Elab<'r> {
     }
 
     fn begin(&self, name: String) {
+        self.shareable.borrow_mut().clear();
+        self.fin_spans.borrow_mut().clear();
+        self.fin_held.borrow_mut().clear();
         *self.current.borrow_mut() = name;
         self.fuel.set(FUEL);
         self.out_of_fuel.set(false);
@@ -2619,12 +3487,20 @@ impl<'r> Elab<'r> {
         self.begin(self.prog.name(d.name).to_string());
         let mut cx = Cxt::default();
         let mut ps = Vec::new();
+        let mut lin_params = Vec::new();
+        // The dictionary type of a trait keeps shareable parameters.
+        let is_trait = self.prog.traits.contains_key(&d.name);
         for p in &d.params {
+            // A parameter without a type ranges over `LType` and the data
+            // type propagates its linearity (`Pair Int Int : Type`, `Pair
+            // File Int` is linear).
             let a = match &p.ty {
                 Some(t) => self.check_type(&mut cx, t),
-                None => Term::Type,
+                None if is_trait => Term::Type,
+                None => Term::LType,
             };
             let av = self.eval(&cx, &a);
+            lin_params.push(matches!(self.whnf(&av), Val::LType));
             let m = match p.mult {
                 Some(m) => conv_mult(m),
                 None if self.is_universe_valued(cx.lvl(), &av) => Mult::Zero,
@@ -2676,7 +3552,7 @@ impl<'r> Elab<'r> {
             nparams: d.params.len(),
             univ,
             cons: d.cons.iter().map(|c| c.name).collect(),
-            drop: true,
+            lin_params,
         };
         self.prog.order.push(d.name);
     }
@@ -2687,12 +3563,12 @@ impl<'r> Elab<'r> {
             ty: dty,
             univ,
             nparams,
+            lin_params,
             ..
         } = self.prog.get(d.name).clone()
         else {
             return;
         };
-        let mut all_drop = true;
         let mut lin_field = false;
         for (tag, c) in d.cons.iter().enumerate() {
             let mut cx = Cxt::default();
@@ -2740,21 +3616,23 @@ impl<'r> Elab<'r> {
             let mut mults = Vec::new();
             let mut icits = Vec::new();
             let mut fcx = cx.clone();
+            // The universe of the data type itself is computed with the
+            // propagating parameters taken as shareable.
+            for (k, lin) in lin_params.iter().enumerate() {
+                if *lin && k < fcx.tys.len() {
+                    fcx.tys[k] = Term::Type;
+                }
+            }
             loop {
                 match self.whnf(&v) {
                     Val::Pi(x, m, i, a, clo) => {
-                        if m != Mult::Zero {
-                            if self.univ_of(&fcx, &a) == Univ::LType {
-                                lin_field = true;
-                                if univ == Univ::Type && !d.short {
-                                    self.report(
-                                        self.error("E1203", c.span, format!("`{}` is declared in `Type` but has a field of linear type `{}`", self.prog.short_name(d.name), self.show(&fcx, &a)))
-                                            .with_help("declare the data type in `LType`"),
-                                    );
-                                }
-                            }
-                            if !self.has_drop(&fcx, &a) {
-                                all_drop = false;
+                        if m != Mult::Zero && self.univ_of(&fcx, &a) == Univ::LType {
+                            lin_field = true;
+                            if univ == Univ::Type && !d.short {
+                                self.report(
+                                    self.error("E1203", c.span, format!("`{}` is declared in `Type` but has a field of linear type `{}`", self.prog.short_name(d.name), self.show(&fcx, &a)))
+                                        .with_help("declare the data type in `LType`"),
+                                );
                             }
                         }
                         mults.push(m);
@@ -2813,16 +3691,8 @@ impl<'r> Elab<'r> {
         } else {
             univ
         };
-        let drop = match univ {
-            Univ::Type => true,
-            Univ::LType => !d.cons.is_empty() && all_drop,
-        };
-        if let Global::Data {
-            univ: u, drop: dr, ..
-        } = &mut self.prog.globals[d.name.0 as usize]
-        {
+        if let Global::Data { univ: u, .. } = &mut self.prog.globals[d.name.0 as usize] {
             *u = univ;
-            *dr = drop;
         }
     }
 
@@ -2850,6 +3720,14 @@ impl<'r> Elab<'r> {
         let tt = self.check_type(&mut cx, &d.sig);
         self.solve_pending(true);
         let ty = self.zonk(0, &tt);
+        let short = self.prog.short_name(d.name).to_string();
+        self.check_shared_type(
+            &ty,
+            d.sig.span,
+            &format!("`{short}`"),
+            &short,
+            "a top-level value is shared by all its uses",
+        );
         self.prog.globals[d.name.0 as usize] = Global::Def { ty, body: None };
     }
 
@@ -2864,12 +3742,28 @@ impl<'r> Elab<'r> {
         let mut cx = Cxt::default();
         let body = self.elab_clauses(&mut cx, &name, &d.clauses, &tv, d.span);
         let body = self.finish(&cx, &body);
+        let body = self.share_top(&mut cx, &ty, body);
+        let body = if self.error_count() == before {
+            self.insert_finalizers(&ty, body, d.span)
+        } else {
+            body
+        };
         let after = self.error_count();
         self.prog.globals[d.name.0 as usize] = Global::Def {
             ty,
             body: if after == before { Some(body) } else { None },
         };
         self.prog.order.push(d.name);
+    }
+}
+
+/// Whether the leading lambdas of `t` take a runtime argument (an erased
+/// lambda disappears at runtime: its body is evaluated with the value
+/// around it).
+fn runtime_lam(t: &Term) -> bool {
+    match t {
+        Term::Lam(_, m, _, _, b) => *m != Mult::Zero || runtime_lam(b),
+        _ => false,
     }
 }
 

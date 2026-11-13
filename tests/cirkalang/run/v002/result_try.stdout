@@ -1,0 +1,6 @@
+both parsed: 12 30
+ok 42
+error BadDigit 120
+error Empty
+77
+41

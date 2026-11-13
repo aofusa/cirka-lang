@@ -222,6 +222,8 @@ pub enum Stmt {
     Bind(String, Span, Expr),
     Let(Vec<LetBind>),
     Expr(Expr),
+    /// `x <- e?` / `e?` (the span is that of the `?`).
+    Try(Option<(String, Span)>, Expr, Span),
 }
 
 #[derive(Clone, Debug, PartialEq)]

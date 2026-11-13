@@ -1,0 +1,13 @@
+-- A top-level value of a linear type would be shared (BUG-0015).
+
+data Tok : LType where
+  MkTok : Int -> Tok
+
+use : (1 t : Tok) -> Int
+use (MkTok n) = n
+
+tok : Tok
+tok = MkTok 5
+
+main : IO ()
+main = printInt (use tok + use tok)

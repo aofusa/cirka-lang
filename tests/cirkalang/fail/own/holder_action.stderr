@@ -1,0 +1,12 @@
+error[E0303]: linear variable `act` is used more than once
+  --> tests/cirkalang/fail/own/holder_action.cirka:14:5
+   |
+11 |   let act = useIO (MkTok 3) in
+   |                   --------- its value holds this linear value
+...
+13 |     act
+   |     --- first use
+14 |     act
+   |     ^^^
+   = note: `act` is linear because its value holds a linear value
+   = help: use it only once, or make it a function that creates the linear value at each call

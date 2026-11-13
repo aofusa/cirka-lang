@@ -1,0 +1,6 @@
+error[E1260]: `?` returns an error early, but this block does not return `Result`
+ --> tests/cirkalang/fail/type/try_not_result.cirka:9:21
+  |
+9 |   n <- parseNum "12"?
+  |                     ^
+  = note: the block has type `IO Unit`

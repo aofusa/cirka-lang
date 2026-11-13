@@ -1,0 +1,43 @@
+-- Data types propagate the linearity of their parameters, and values
+-- without resources may be used many times (spec-v0.0.2.md §5.1).
+
+data Tok : LType where
+  MkTok : Int -> Tok
+
+mk : Int -> Tok
+mk n = MkTok n
+
+use : (1 t : Tok) -> Int
+use t = case t of
+  MkTok n => n
+
+data Box a = MkBox a
+
+sumBoxes : List (Box Int) -> Int
+sumBoxes Nil = 0
+sumBoxes (MkBox n :: rest) = n + n + sumBoxes rest
+
+useBox : (1 b : Box Tok) -> Int
+useBox b = case b of
+  MkBox t => use t
+
+double : (1 n : Int) -> Int
+double n = n + n
+
+sumOk : (1 r : Result String Int) -> Int
+sumOk r = case r of
+  Ok n => n + n
+  Err _ => 0
+
+main : IO ()
+main = do
+  -- `Pair Tok Tok` is linear: each component is used once.
+  case MkPair (mk 1) (mk 2) of
+    MkPair a b => printInt (use a + use b)
+  -- `Box Int` is shareable.
+  let xs = [MkBox 1, MkBox 2]
+  printInt (sumBoxes xs + sumBoxes xs)
+  printInt (useBox (MkBox (MkTok 5)))
+  printInt (double 21)
+  printInt (sumOk (Ok 4))
+  printInt (sumOk (Err "no"))

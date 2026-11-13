@@ -166,6 +166,8 @@ pub fn expr(p: &Program, e: &Expr) -> String {
                         format!("(let {})", b.join(" "))
                     }
                     Stmt::Expr(e) => expr(p, e),
+                    Stmt::Try(Some((x, _)), e, _) => format!("({x} <- {}?)", expr(p, e)),
+                    Stmt::Try(None, e, _) => format!("({}?)", expr(p, e)),
                 })
                 .collect();
             format!("(do {})", s.join(" "))

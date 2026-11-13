@@ -1,0 +1,10 @@
+error[E0303]: linear variable `g` is used more than once
+  --> tests/cirkalang/fail/own/holder_let.cirka:16:19
+   |
+15 |   let g = f (MkTok 3) in
+   |             --------- its value holds this linear value
+16 |   printInt (g 1 + g 2)
+   |             - first use
+   |                   ^
+   = note: `g` is linear because its value holds a linear value
+   = help: use it only once, or make it a function that creates the linear value at each call

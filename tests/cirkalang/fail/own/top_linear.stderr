@@ -1,0 +1,6 @@
+error[E0301]: `tok` has the linear type `Tok`, but a top-level value is shared by all its uses
+ --> tests/cirkalang/fail/own/top_linear.cirka:9:7
+  |
+9 | tok : Tok
+  |       ^^^
+  = help: make it a function, e.g. `tok : () -> Tok`

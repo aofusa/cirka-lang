@@ -1,0 +1,7 @@
+error[E0307]: linear value `r` is left unused, and it can only be released in an action
+  --> tests/cirkalang/fail/own/release_pure.cirka:12:7
+   |
+12 | count r = 0
+   |       ^
+   = note: its type `Res` has a `Release` implementation but no `Drop` implementation
+   = help: use it on every path, or release it explicitly in an action with `release`

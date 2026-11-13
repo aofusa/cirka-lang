@@ -1,0 +1,7 @@
+error[E1258]: `Drop` can only be implemented for linear types, but `Counter` is shareable
+ --> tests/cirkalang/fail/type/drop_shareable.cirka:6:6
+  |
+6 | impl Drop Counter where
+  |      ^^^^^^^^^^^^
+  = note: shared values are freed by reference counting and have no finalizer
+  = help: declare the data type in `LType`

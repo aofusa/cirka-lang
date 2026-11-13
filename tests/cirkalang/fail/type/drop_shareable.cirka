@@ -1,0 +1,10 @@
+-- `Drop` and `Release` are for linear types: a shareable value is used any
+-- number of times (spec-v0.0.2.md §5.3).
+
+data Counter = MkCounter Int
+
+impl Drop Counter where
+  drop (MkCounter _) = MkUnit
+
+main : IO ()
+main = putStrLn "x"

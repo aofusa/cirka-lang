@@ -1,0 +1,8 @@
+error[E0305]: a linear value is captured by a value that may be used more than once
+  --> tests/cirkalang/fail/own/holder_top.cirka:11:9
+   |
+11 | f = use (MkRes "x")
+   |         ^^^^^^^^^^^
+   = note: the value that captures it is the value of a top-level definition, shared by all its uses
+   = note: a closure or an action keeps the linear value it was built from
+   = help: write the parameters of the definition (e.g. `f x = ...`), so that the linear value is created at each call

@@ -1,0 +1,34 @@
+-- Finalizers outside actions (spec-v0.0.2.md §5.3): `drop` before the
+-- rest of the path that does not use the value; in an action, `Drop` is
+-- preferred to `Release`.
+
+data Buf : LType where
+  MkBuf : Int -> Buf
+
+impl Drop Buf where
+  drop (MkBuf _) = MkUnit
+
+-- Dropped before the rest of the path (the function keeps its arity).
+ignore : (1 b : Buf) -> Int -> Int
+ignore b n = n * 2
+
+pick : Bool -> (1 b : Buf) -> Int
+pick c b = if c then (case b of MkBuf n => n) else 0
+
+-- A let binding that is not used.
+letUnused : Int -> Int
+letUnused n = let b = MkBuf n in n + 1
+
+-- In an action, dropped at the end (Drop is preferred over Release).
+act : IO ()
+act = do
+  b <- pure1 (MkBuf 3)
+  putStrLn "act"
+
+main : IO ()
+main = do
+  printInt (ignore (MkBuf 1) 5)
+  printInt (pick True (MkBuf 7))
+  printInt (pick False (MkBuf 7))
+  printInt (letUnused 4)
+  act

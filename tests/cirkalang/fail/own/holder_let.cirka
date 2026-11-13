@@ -1,0 +1,16 @@
+-- A partial application keeps its linear argument: the binding is linear
+-- (BUG-0015).
+
+data Tok : LType where
+  MkTok : Int -> Tok
+
+use : (1 t : Tok) -> Int
+use (MkTok n) = n
+
+f : (1 t : Tok) -> Int -> Int
+f t k = use t + k
+
+main : IO ()
+main =
+  let g = f (MkTok 3) in
+  printInt (g 1 + g 2)

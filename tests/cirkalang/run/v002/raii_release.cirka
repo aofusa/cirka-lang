@@ -1,0 +1,71 @@
+-- Finalizers in actions (spec-v0.0.2.md §5.3): a linear value that a path
+-- does not use is released at the end of the action, the last bound first.
+
+data Res : LType where
+  MkRes : String -> Res
+
+impl Release Res where
+  release (MkRes n) = putStrLn ("release " ++ n)
+
+open : String -> IO1 Res
+open n = do
+  putStrLn ("open " ++ n)
+  pure1 (MkRes n)
+
+use : (1 r : Res) -> IO ()
+use (MkRes n) = putStrLn ("use " ++ n)
+
+twoUnused : IO ()
+twoUnused = do
+  a <- open "a"
+  b <- open "b"
+  putStrLn "body"
+
+-- Used on one path only: released at the end of the other path.
+maybeUse : Bool -> IO ()
+maybeUse c = do
+  r <- open "r"
+  if c then use r else putStrLn "not used"
+  putStrLn "after"
+
+data Two : LType where
+  MkTwo : Res -> Res -> Two
+
+-- The fields of a matched value belong to the branch.
+oneField : (1 t : Two) -> IO ()
+oneField t = case t of
+  MkTwo x y => use y
+
+-- A type that holds resources gets its finalizer by deriving: the fields
+-- are released in order.
+data Three : LType where
+  MkThree : Res -> Int -> Res -> Three
+  deriving (Release)
+
+data Box a = MkBox a deriving (Release)
+
+derived : IO ()
+derived = do
+  a <- open "a"
+  b <- open "b"
+  t <- pure1 (MkThree a 1 b)
+  c <- open "c"
+  bx <- pure1 (MkBox c)
+  putStrLn "body"
+
+-- A parameter of a function returning an action.
+later : (1 r : Res) -> Int -> IO ()
+later r n = printInt n
+
+main : IO ()
+main = do
+  twoUnused
+  maybeUse True
+  maybeUse False
+  x <- open "x"
+  y <- open "y"
+  oneField (MkTwo x y)
+  derived
+  z <- open "z"
+  later z 7
+  putStrLn "end"

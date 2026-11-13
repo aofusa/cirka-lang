@@ -35,6 +35,8 @@ pub enum Tok {
     Semi,
     Backtick,
     Underscore,
+    /// A lone `?`: error propagation at the end of a `do` statement.
+    Question,
     // Inserted by the layout algorithm.
     VLBrace,
     VSemi,
@@ -170,6 +172,7 @@ impl Tok {
             Tok::Semi => "`;`".into(),
             Tok::Backtick => "`` ` ``".into(),
             Tok::Underscore => "`_`".into(),
+            Tok::Question => "`?`".into(),
             Tok::VLBrace => "start of a block".into(),
             Tok::VSemi => "new line".into(),
             Tok::VRBrace => "end of a block".into(),
@@ -419,6 +422,7 @@ impl Lexer<'_> {
                     "|" => Tok::Bar,
                     "<-" => Tok::LArrow,
                     "@" => Tok::At,
+                    "?" => Tok::Question,
                     _ => Tok::Op(Vec::new(), op.to_string()),
                 };
                 self.push(t, start, line, col);

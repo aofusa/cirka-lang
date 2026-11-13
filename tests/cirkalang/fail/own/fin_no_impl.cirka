@@ -1,0 +1,18 @@
+-- A type that holds values with finalizers needs its own (spec-v0.0.2.md
+-- §5.3).
+
+data Res : LType where
+  MkRes : String -> Res
+
+impl Release Res where
+  release (MkRes n) = putStrLn ("release " ++ n)
+
+-- No finalizer for the type that holds the resource.
+data Holder : LType where
+  MkHolder : Res -> Holder
+
+forget : (1 h : Holder) -> IO ()
+forget h = putStrLn "forgotten"
+
+main : IO ()
+main = forget (MkHolder (MkRes "x"))

@@ -1,0 +1,7 @@
+error[E0302]: linear value `h` is not consumed
+  --> tests/cirkalang/fail/own/fin_no_impl.cirka:15:8
+   |
+15 | forget h = putStrLn "forgotten"
+   |        ^
+   = note: `Holder` holds values with a finalizer, but has no `Drop` or `Release` implementation
+   = help: derive one, e.g. `deriving (Release)`, or consume the value on every path

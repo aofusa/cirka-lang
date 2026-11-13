@@ -1,0 +1,10 @@
+-- `?` returns the error early, so the block must return `Result`
+-- (spec-v0.0.2.md §6).
+
+parseNum : String -> Result String Int
+parseNum s = if strLength s == 0 then Err "empty" else Ok 1
+
+main : IO ()
+main = do
+  n <- parseNum "12"?
+  printInt n

@@ -1,0 +1,27 @@
+-- A top-level action that creates a linear value creates it at each run
+-- (spec-v0.0.2.md §5.1): the two runs use two values.
+
+data Res : LType where
+  MkRes : String -> Res
+
+impl Release Res where
+  release (MkRes n) = putStrLn ("release " ++ n)
+
+use : (1 r : Res) -> IO ()
+use (MkRes n) = putStrLn ("use " ++ n)
+
+act : IO ()
+act = use (MkRes "t")
+
+-- The value is created by the action, then released at its end.
+unused : IO ()
+unused = do
+  r <- pure1 (MkRes "u")
+  putStrLn "unused"
+
+main : IO ()
+main = do
+  act
+  act
+  unused
+  unused

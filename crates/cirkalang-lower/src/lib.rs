@@ -279,8 +279,12 @@ impl<'a> Lower<'a> {
                     (Some(Prim::String), []) => c::Type::bytes(),
                     // A newtype of `Unit# -> a` (06-ir.md §1.6), so that it
                     // can be the argument of a higher-kinded parameter.
-                    (Some(Prim::IO), []) => c::Type::Con("IO".into(), Vec::new()),
-                    (Some(Prim::IO), [a]) => c::Type::Con("IO".into(), vec![self.lower_ty(tvs, a)]),
+                    // `IO1` has the same representation (only the
+                    // multiplicity of the result differs).
+                    (Some(Prim::IO | Prim::IO1), []) => c::Type::Con("IO".into(), Vec::new()),
+                    (Some(Prim::IO | Prim::IO1), [a]) => {
+                        c::Type::Con("IO".into(), vec![self.lower_ty(tvs, a)])
+                    }
                     (Some(Prim::Unique), [a]) => self.lower_ty(tvs, a),
                     _ => c::Type::Any,
                 }
@@ -1221,7 +1225,11 @@ impl<'a> Lower<'a> {
             | Prim::Char
             | Prim::String
             | Prim::IO
+            | Prim::IO1
             | Prim::Unique => return None,
+            // The value holds only memory: Perceus frees it.
+            Prim::DropFree => self.skeleton(ty, 1, |_, _| self.unit_val()),
+            Prim::ReleaseFree => self.skeleton(ty, 2, |_, _| self.unit_val()),
             Prim::AddInt => int2(O::Add, "I#", "Int"),
             Prim::SubInt => int2(O::Sub, "I#", "Int"),
             Prim::MulInt => int2(O::Mul, "I#", "Int"),

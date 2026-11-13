@@ -93,6 +93,7 @@ impl<'r> Elab<'r> {
             for p in std::mem::take(&mut *self.pending.borrow_mut()) {
                 self.report_stuck(&p);
             }
+            self.check_shareable();
         }
         any
     }
@@ -217,6 +218,27 @@ impl<'r> Elab<'r> {
                 Search::NotFound
             };
         };
+        // `Drop` / `Release` of a value that holds only memory do nothing
+        // (spec-v0.0.2.md §5.3), whatever the implementations are.
+        let b = &self.prog.builtins;
+        let fin = if Some(tr) == b.drop_trait {
+            Some((Fin::Drop, b.drop_free))
+        } else if Some(tr) == b.release_trait {
+            Some((Fin::Release, b.release_free))
+        } else {
+            None
+        };
+        if let (Some((_, Some(free))), Some((t, _))) = (fin, gargs.first())
+            && !matches!(self.whnf(t), Val::Neutral(Head::Meta(_), _))
+            && self.drop_status(cx, t) == DropStatus::Free
+        {
+            let tq = self.quote(cx, t);
+            return Search::Found(self.fin_dict_term(
+                tr,
+                &tq,
+                Term::App(Rc::new(Term::Global(free)), Rc::new(tq.clone()), Icit::Impl),
+            ));
+        }
         let mut stuck = false;
         for l in (0..cx.lvl()).rev() {
             if cx.mults[l as usize] == Mult::Zero {
@@ -241,10 +263,46 @@ impl<'r> Elab<'r> {
             .iter()
             .any(|(a, _)| matches!(self.whnf(a), Val::Neutral(Head::Meta(_), _)));
         if stuck || open {
-            Search::Stuck
-        } else {
-            Search::NotFound
+            return Search::Stuck;
         }
+        // A value that can be dropped can be released.
+        if let (Some((Fin::Release, _)), Some(drop_tr), Some(by_drop), Some((t, _))) =
+            (fin, b.drop_trait, b.release_by_drop, gargs.first())
+        {
+            let dg = Val::Data(drop_tr, vec![(t.clone(), Icit::Expl)]);
+            match self.search(cx, &dg, depth + 1) {
+                Search::Found(d) => {
+                    let tq = self.quote(cx, t);
+                    let m = Term::App(
+                        Rc::new(Term::App(
+                            Rc::new(Term::Global(by_drop)),
+                            Rc::new(tq.clone()),
+                            Icit::Impl,
+                        )),
+                        Rc::new(d),
+                        Icit::Impl,
+                    );
+                    return Search::Found(self.fin_dict_term(tr, &tq, m));
+                }
+                Search::Stuck => return Search::Stuck,
+                Search::NotFound => {}
+            }
+        }
+        Search::NotFound
+    }
+
+    /// The dictionary of `Drop t` / `Release t` with this method.
+    fn fin_dict_term(&self, tr: GName, t: &Term, method: Term) -> Term {
+        let con = self.prog.traits.get(&tr).map(|i| i.con).unwrap_or(tr);
+        Term::App(
+            Rc::new(Term::App(
+                Rc::new(Term::Global(con)),
+                Rc::new(t.clone()),
+                Icit::Impl,
+            )),
+            Rc::new(method),
+            Icit::Expl,
+        )
     }
 
     /// A dictionary in scope, or one of its supertraits.
@@ -332,9 +390,14 @@ impl<'r> Elab<'r> {
         let mut v = ty;
         for s in sub {
             let a = s.unwrap_or(Val::Error);
-            let Val::Pi(_, _, _, _, c) = self.whnf(&v) else {
+            let Val::Pi(_, _, _, dom, c) = self.whnf(&v) else {
                 return Search::NotFound;
             };
+            // A variable of a shareable sort does not match a linear type
+            // (spec-v0.0.2.md §5.1).
+            if self.type_valued(cx.lvl(), &dom) && self.linear_arg(cx, &a, &dom) {
+                return Search::NotFound;
+            }
             t = Term::App(Rc::new(t), Rc::new(self.quote(cx, &a)), Icit::Impl);
             v = self.ev().inst(&c, a);
         }
@@ -488,6 +551,31 @@ impl<'r> Elab<'r> {
             .copied()
             .chain(t.methods.iter().map(|m| m.name))
             .collect();
+        // A method that is not a function is shared by all the uses of an
+        // implementation: its type must not be linear.
+        for (j, m) in t.methods.iter().enumerate() {
+            let Some(f) = ftys.get(nsup + j) else { break };
+            let ty = params
+                .iter()
+                .rev()
+                .fold(self.ev().quote(lvl, f), |b, (x, k)| {
+                    Term::Pi(
+                        x.clone(),
+                        Mult::Zero,
+                        Icit::Impl,
+                        Rc::new(k.clone()),
+                        Rc::new(b),
+                    )
+                });
+            let short = self.prog.short_name(m.name).to_string();
+            self.check_shared_type(
+                &ty,
+                m.span,
+                &format!("method `{short}`"),
+                &short,
+                "the value of a method is shared by all the uses of an implementation",
+            );
+        }
         for (j, sel) in sels.iter().enumerate() {
             if j < nsup {
                 match self.trait_of(&ftys[j]) {
@@ -635,8 +723,15 @@ impl<'r> Elab<'r> {
             let short = self.prog.short_name(m.name).to_string();
             let body = self.elab_clauses(&mut cx, &short, clauses, &v, m.span);
             let body = self.finish(&cx, &body);
+            // It takes the dictionary: its body is evaluated at each use.
+            cx.holders.clear();
             let body = wrap_lams(binders, body);
             let ok = self.error_count() == before;
+            let body = if ok {
+                self.insert_finalizers(&ty, body, m.span)
+            } else {
+                body
+            };
             self.prog.globals[dm.0 as usize] = Global::Def {
                 ty,
                 body: ok.then_some(body),
@@ -649,6 +744,12 @@ impl<'r> Elab<'r> {
 
     pub(super) fn impl_sig(&mut self, i: &rast::Impl) {
         self.begin(self.prog.name(i.name).to_string());
+        // The variables of an `impl` of a trait over `LType` (`Drop`,
+        // `Release`) range over `LType`.
+        let over_ltype = self.global_type(i.trait_).is_some_and(
+            |t| matches!(self.whnf(&t), Val::Pi(_, _, _, d, _) if matches!(self.whnf(&d), Val::LType)),
+        );
+        self.ltype_vars.set(over_ltype);
         let mut cx = Cxt::default();
         let mut binders: Vec<(Name, Mult, Term)> = Vec::new();
         for (n, sp) in &i.vars {
@@ -667,6 +768,29 @@ impl<'r> Elab<'r> {
             self.push(&mut cx, "_", Mult::Many, &tv, None, c.span, None);
         }
         let head = self.check_type(&mut cx, &i.head);
+        self.ltype_vars.set(false);
+        // A finalizer runs once per value, so only linear types can have
+        // one (shared values are freed by reference counting).
+        let b = &self.prog.builtins;
+        if (Some(i.trait_) == b.drop_trait || Some(i.trait_) == b.release_trait)
+            && let Val::Data(_, args) = self.whnf(&self.eval(&cx, &head))
+            && let Some((t, _)) = args.first()
+            && self.univ_of(&cx, t) == Univ::Type
+        {
+            self.report(
+                self.error(
+                    "E1258",
+                    i.head.span,
+                    format!(
+                        "`{}` can only be implemented for linear types, but `{}` is shareable",
+                        self.prog.short_name(i.trait_),
+                        self.show(&cx, t)
+                    ),
+                )
+                .with_note("shared values are freed by reference counting and have no finalizer")
+                .with_help("declare the data type in `LType`"),
+            );
+        }
         let mut ty = head;
         for (x, m, a) in binders.into_iter().rev() {
             ty = Term::Pi(x, m, Icit::Impl, Rc::new(a), Rc::new(ty));
@@ -702,7 +826,7 @@ impl<'r> Elab<'r> {
     }
 
     /// The arguments of the head of an instance, with pattern variables.
-    fn impl_head_args(&self, i: &ImplInfo) -> Vec<(Val, Icit)> {
+    pub(super) fn impl_head_args(&self, i: &ImplInfo) -> Vec<(Val, Icit)> {
         let Some(mut v) = self.global_type(i.dict) else {
             return Vec::new();
         };
@@ -908,8 +1032,22 @@ impl<'r> Elab<'r> {
                 let b = self.elab_clauses(&mut cx, &short, &m.clauses, fty, i.span);
                 self.finish(&cx, &b)
             };
-            let ok = self.error_count() == m_before;
             let body = wrap_lams(binders.clone(), body);
+            // Without a runtime argument (a context), the method is a value
+            // shared by all the uses of the implementation.
+            let body = if binders.iter().any(|b| b.1 != Mult::Zero) {
+                cx.holders.clear();
+                body
+            } else {
+                self.share_top(&mut cx, &ty, body)
+            };
+            let ok = self.error_count() == m_before;
+            let body = if ok {
+                self.insert_finalizers(&ty, body, i.span)
+            } else {
+                body
+            };
+            let ok = self.error_count() == m_before;
             self.prog.globals[m.def.0 as usize] = Global::Def {
                 ty,
                 body: ok.then_some(body),

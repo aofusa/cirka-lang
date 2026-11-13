@@ -1,0 +1,7 @@
+error[E0301]: parameter of linear type `Tok` is bound with multiplicity ω
+  --> tests/cirkalang/fail/own/lambda_binder_linear.cirka:15:15
+   |
+15 | main = case (\x => MkPair x x) (mk 3) of
+   |               ^
+   = note: values of an LType may be used only once
+   = help: bind it with multiplicity 1, e.g. `(1 x : A)`, or make it shareable with `freeze`

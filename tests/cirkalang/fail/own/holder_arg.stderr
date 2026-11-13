@@ -1,0 +1,8 @@
+error[E0305]: a linear value is captured by a value that may be used more than once
+  --> tests/cirkalang/fail/own/holder_arg.cirka:15:19
+   |
+15 | main = twice (use (MkRes "x"))
+   |                   ^^^^^^^^^^^
+   = note: the value that captures it is used many times
+   = note: a closure or an action keeps the linear value it was built from
+   = help: bind the value with multiplicity 1, or create the linear value where it is used

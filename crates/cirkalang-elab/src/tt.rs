@@ -194,8 +194,11 @@ pub enum Global {
         nparams: usize,
         univ: Univ,
         cons: Vec<GName>,
-        /// Values of this type may be dropped implicitly (spec §4.4).
-        drop: bool,
+        /// Parameters of sort `LType` whose linearity the type propagates:
+        /// `univ` is the universe when they are all instantiated with
+        /// shareable types, and the type is linear when one of them is
+        /// (spec-v0.0.2.md §5.1).
+        lin_params: Vec<bool>,
     },
     Con {
         ty: Term,
@@ -223,6 +226,7 @@ pub enum Prim {
     Char,
     String,
     IO,
+    IO1,
     Unique,
     // Int.
     AddInt,
@@ -287,6 +291,9 @@ pub enum Prim {
     // Unique.
     MkUnique,
     Freeze,
+    // Resources: giving up a value that holds only memory.
+    DropFree,
+    ReleaseFree,
 }
 
 impl Prim {
@@ -297,6 +304,7 @@ impl Prim {
         ("Char", Prim::Char),
         ("String", Prim::String),
         ("IO", Prim::IO),
+        ("IO1", Prim::IO1),
         ("Unique", Prim::Unique),
         ("primAddInt", Prim::AddInt),
         ("primSubInt", Prim::SubInt),
@@ -343,6 +351,11 @@ impl Prim {
         ("primCharToStr", Prim::CharToStr),
         ("primPure", Prim::Pure),
         ("primBind", Prim::Bind),
+        // The same operations at other types (spec-v0.0.2.md §5.2).
+        ("primPure1", Prim::Pure),
+        ("primBind1", Prim::Bind),
+        ("primBindTo1", Prim::Bind),
+        ("primBind11", Prim::Bind),
         ("putStr", Prim::PutStr),
         ("printInt", Prim::PrintInt),
         ("printFloat", Prim::PrintFloat),
@@ -354,6 +367,8 @@ impl Prim {
         ("panic", Prim::Panic),
         ("unique", Prim::MkUnique),
         ("freeze", Prim::Freeze),
+        ("dropFree", Prim::DropFree),
+        ("releaseFree", Prim::ReleaseFree),
     ];
 
     pub fn from_name(s: &str) -> Option<Prim> {
@@ -378,6 +393,7 @@ impl Prim {
                 | Prim::Char
                 | Prim::String
                 | Prim::IO
+                | Prim::IO1
                 | Prim::Unique
         )
     }
@@ -450,6 +466,29 @@ pub struct Builtins {
     pub string: Option<GName>,
     pub io: Option<GName>,
     pub unique: Option<GName>,
+    // IO with a linear result (spec-v0.0.2.md §5.2).
+    pub io1: Option<GName>,
+    pub prim_pure: Option<GName>,
+    pub prim_pure1: Option<GName>,
+    pub prim_bind1: Option<GName>,
+    pub prim_bind_to1: Option<GName>,
+    pub prim_bind11: Option<GName>,
+    // Resources (§5.3).
+    pub drop_trait: Option<GName>,
+    pub release_trait: Option<GName>,
+    pub drop_method: Option<GName>,
+    pub release_method: Option<GName>,
+    pub drop_free: Option<GName>,
+    pub release_free: Option<GName>,
+    pub release_by_drop: Option<GName>,
+    pub drop_after: Option<GName>,
+    pub release_after: Option<GName>,
+    pub drop_after1: Option<GName>,
+    pub release_after1: Option<GName>,
+    // Errors (§6).
+    pub result: Option<GName>,
+    pub ok: Option<GName>,
+    pub err: Option<GName>,
 }
 
 impl Program {
@@ -715,6 +754,70 @@ pub fn term_mentions(t: &Term, i: u32) -> bool {
                     Alt::Lit { body, .. } => term_mentions(body, i),
                 })
         }
+    }
+}
+
+/// Shifts the variables of `t` with index `>= cutoff` by `by` (for moving
+/// a term under `by` new binders).
+pub fn shift(t: &Term, cutoff: u32, by: u32) -> Term {
+    let s = |t: &Term, c: u32| Rc::new(shift(t, c, by));
+    match t {
+        Term::Var(i) if *i >= cutoff => Term::Var(i + by),
+        Term::Var(_)
+        | Term::Global(_)
+        | Term::Type
+        | Term::LType
+        | Term::Lit(_)
+        | Term::Meta(_)
+        | Term::InsertedMeta(..)
+        | Term::Error => t.clone(),
+        Term::Pi(x, m, i, a, b) => Term::Pi(x.clone(), *m, *i, s(a, cutoff), s(b, cutoff + 1)),
+        Term::Lam(x, m, i, a, b) => Term::Lam(x.clone(), *m, *i, s(a, cutoff), s(b, cutoff + 1)),
+        Term::App(f, a, i) => Term::App(s(f, cutoff), s(a, cutoff), *i),
+        Term::Let(x, m, a, v, b) => {
+            Term::Let(x.clone(), *m, s(a, cutoff), s(v, cutoff), s(b, cutoff + 1))
+        }
+        Term::Case(k) => Term::Case(Rc::new(Case {
+            scrut: shift(&k.scrut, cutoff, by),
+            ret: shift(&k.ret, cutoff, by),
+            default: k.default.as_ref().map(|d| shift(d, cutoff, by)),
+            alts: k
+                .alts
+                .iter()
+                .map(|a| match a {
+                    Alt::Con {
+                        con,
+                        fields,
+                        refine,
+                        body,
+                    } => {
+                        let n = fields.len() as u32;
+                        Alt::Con {
+                            con: *con,
+                            fields: fields
+                                .iter()
+                                .enumerate()
+                                .map(|(j, (x, m, ty))| {
+                                    (x.clone(), *m, shift(ty, cutoff + j as u32, by))
+                                })
+                                .collect(),
+                            refine: refine
+                                .iter()
+                                .map(|(ix, t)| {
+                                    let ix = if *ix >= cutoff + n { ix + by } else { *ix };
+                                    (ix, shift(t, cutoff + n, by))
+                                })
+                                .collect(),
+                            body: shift(body, cutoff + n, by),
+                        }
+                    }
+                    Alt::Lit { lit, body } => Alt::Lit {
+                        lit: lit.clone(),
+                        body: shift(body, cutoff, by),
+                    },
+                })
+                .collect(),
+        })),
     }
 }
 

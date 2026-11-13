@@ -33,6 +33,11 @@ prim printInt : Int -> IO ()
 prim unique : a -> Unique a
 prim freeze : (1 u : Unique a) -> a
 
+trait Drop (a : LType) where
+  drop : (1 x : a) -> ()
+
+prim dropFree : {a : LType} -> (1 x : a) -> ()
+
 pure : a -> IO a
 pure x = primPure x
 
@@ -353,4 +358,125 @@ fn resource_free_after_solving_metas() {
         "len : List a -> Int\nlen _ = 0\ng : (1 u : Unique Int) -> Int\ng u = len [u]\nmain : IO ()\nmain = pure ()\n",
         "E0303",
     );
+}
+
+#[test]
+fn shift_moves_free_variables() {
+    use std::rc::Rc;
+    use tt::*;
+    // \x => f x y   (y free: index 1 under the binder)
+    let t = Term::Lam(
+        "x".into(),
+        Mult::Many,
+        Icit::Expl,
+        Rc::new(Term::Type),
+        Rc::new(Term::App(
+            Rc::new(Term::App(
+                Rc::new(Term::Var(2)),
+                Rc::new(Term::Var(0)),
+                Icit::Expl,
+            )),
+            Rc::new(Term::Var(1)),
+            Icit::Expl,
+        )),
+    );
+    let s = shift(&t, 0, 1);
+    let Term::Lam(_, _, _, _, b) = &s else {
+        panic!("{s:?}")
+    };
+    let Term::App(f, y, _) = &**b else {
+        panic!("{b:?}")
+    };
+    assert_eq!(**y, Term::Var(2));
+    let Term::App(g, x, _) = &**f else {
+        panic!("{f:?}")
+    };
+    assert_eq!(**x, Term::Var(0));
+    assert_eq!(**g, Term::Var(3));
+}
+
+const TOK: &str = "data Tok : LType where\n  MkTok : Int -> Tok\nuse : (1 t : Tok) -> Int -> Int\nuse t k = case t of\n  MkTok n => n + k\nuseIO : (1 t : Tok) -> IO ()\nuseIO t = printInt (use t 0)\n";
+
+/// A value whose type does not show the linear value it holds is linear
+/// itself, and a top-level value cannot hold one (BUG-0015).
+#[test]
+fn holders_are_linear() {
+    fails(
+        &format!("{TOK}main : IO ()\nmain = let g = use (MkTok 3) in printInt (g 1 + g 2)\n"),
+        "E0303",
+    );
+    ok(&format!(
+        "{TOK}main : IO ()\nmain = let g = use (MkTok 3) in printInt (g 1)\n"
+    ));
+    fails(
+        &format!("{TOK}tok : Tok\ntok = MkTok 1\nmain : IO ()\nmain = pure ()\n"),
+        "E0301",
+    );
+    fails(
+        &format!("{TOK}f : Int -> Int\nf = use (MkTok 1)\nmain : IO ()\nmain = pure ()\n"),
+        "E0305",
+    );
+    // An action creates the value at each run.
+    let p = ok(&format!(
+        "{TOK}act : IO ()\nact = useIO (MkTok 1)\nmain : IO ()\nmain = act >> act\n"
+    ));
+    let out = tt::print_program(&p);
+    assert!(
+        out.contains("act = primBind (primPure MkUnit) (\\_ => useIO (MkTok 1))"),
+        "{out}"
+    );
+}
+
+/// Values without resources may be used many times (spec-v0.0.2.md §5.1).
+#[test]
+fn resource_free_binders_are_copied() {
+    ok("double : (1 n : Int) -> Int\ndouble n = n + n\nmain : IO ()\nmain = pure ()\n");
+    fails(
+        &format!(
+            "{TOK}twice : (1 t : Tok) -> Int\ntwice t = use t (use t 0)\nmain : IO ()\nmain = pure ()\n"
+        ),
+        "E0303",
+    );
+}
+
+/// `drop` is inserted before the rest of a path that does not use a value,
+/// after the parameters that follow (the arity stays) (spec-v0.0.2.md §5.3).
+#[test]
+fn drops_keep_the_arity() {
+    let p = ok(
+        "data Buf : LType where\n  MkBuf : Int -> Buf\nimpl Drop Buf where\n  drop (MkBuf _) = MkUnit\nignore : (1 b : Buf) -> Int -> Int\nignore b n = n\npick : Bool -> (1 b : Buf) -> Int\npick c b = case c of\n  True => (case b of\n    MkBuf n => n)\n  False => 0\nmain : IO ()\nmain = pure ()\n",
+    );
+    let out = tt::print_program(&p);
+    assert!(
+        out.contains("ignore = \\b => \\n => let drop$ = drop b in n"),
+        "{out}"
+    );
+    assert!(out.contains("False => let drop$ = drop b in 0"), "{out}");
+}
+
+/// A holder of a value with a finalizer that is never used drops it
+/// without the finalizer: a leak, reported as a warning (spec-v0.0.2.md
+/// §5.5).
+#[test]
+fn unused_holders_of_finalized_values_warn() {
+    const BUF: &str = "data Buf : LType where\n  MkBuf : Int -> Buf\nimpl Drop Buf where\n  drop (MkBuf _) = MkUnit\nuse : (1 b : Buf) -> Int -> Int\nuse (MkBuf n) k = n + k\n";
+    let (e, _) = elab(&format!(
+        "{BUF}f : Int -> Int\nf n = let g = use (MkBuf n) in n\nmain : IO ()\nmain = pure ()\n"
+    ));
+    assert!(e.program.is_some(), "{:?}", codes(&e));
+    assert!(
+        codes(&e).iter().any(|c| c.starts_with("W0308")),
+        "{:?}",
+        codes(&e)
+    );
+    // Using the holder runs the finalizer: no warning.
+    let (e, _) = elab(&format!(
+        "{BUF}f : Int -> Int\nf n = let g = use (MkBuf n) in g 1\nmain : IO ()\nmain = pure ()\n"
+    ));
+    assert!(codes(&e).is_empty(), "{:?}", codes(&e));
+    // A holder of a value without a finalizer is freed by Perceus.
+    let (e, _) = elab(&format!(
+        "{TOK}f : Int -> Int\nf n = let g = use (MkTok n) in n\nmain : IO ()\nmain = pure ()\n"
+    ));
+    assert!(codes(&e).is_empty(), "{:?}", codes(&e));
 }

@@ -1,0 +1,15 @@
+-- An argument used many times cannot keep a linear value (BUG-0015).
+
+data Res : LType where
+  MkRes : String -> Res
+
+use : (1 r : Res) -> IO ()
+use (MkRes n) = putStrLn n
+
+twice : IO () -> IO ()
+twice a = do
+  a
+  a
+
+main : IO ()
+main = twice (use (MkRes "x"))

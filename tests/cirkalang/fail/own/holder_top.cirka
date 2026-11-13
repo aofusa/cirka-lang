@@ -1,0 +1,14 @@
+-- A top-level value is shared by all its uses: it cannot keep a linear
+-- value (BUG-0015).
+
+data Res : LType where
+  MkRes : String -> Res
+
+use : (1 r : Res) -> Int -> Int
+use (MkRes n) k = k
+
+f : Int -> Int
+f = use (MkRes "x")
+
+main : IO ()
+main = printInt (f 1 + f 2)

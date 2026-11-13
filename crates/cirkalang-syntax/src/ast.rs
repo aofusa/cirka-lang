@@ -222,6 +222,9 @@ pub enum Stmt {
     Bind(String, Span, Expr),
     Let(Vec<LetBind>),
     Expr(Expr),
+    /// `x <- e?` / `e?`: run `e` and return its error early
+    /// (spec-v0.0.2.md §6.2). The span is that of the `?`.
+    Try(Option<(String, Span)>, Expr, Span),
 }
 
 /// An operator occurrence in an operator sequence.

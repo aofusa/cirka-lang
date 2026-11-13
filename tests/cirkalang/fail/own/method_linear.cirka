@@ -1,0 +1,8 @@
+-- A method that is not a function is shared by all the uses of an
+-- implementation (BUG-0015).
+
+trait Make (a : LType) where
+  make : a
+
+main : IO ()
+main = putStrLn "x"

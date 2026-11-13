@@ -428,6 +428,39 @@ impl<'a> Ev<'a> {
 
     // ---- unification ----
 
+    /// Subsumption: `actual` can be used where `expected` is wanted
+    /// (spec-v0.0.2.md §5.1). `Type ⊑ LType`, function types are
+    /// contravariant in their domains, and everything else is unified. An
+    /// unsolved meta checked against `LType` is taken to be `Type` (type
+    /// variables are shareable by default) unless `ltype_default`.
+    pub fn sub(
+        &self,
+        lvl: u32,
+        expected: &Val,
+        actual: &Val,
+        ltype_default: bool,
+    ) -> Result<(), UnifyError> {
+        let e = self.force(expected.clone());
+        let a = self.force(actual.clone());
+        match (&e, &a) {
+            (Val::LType, Val::Type) => Ok(()),
+            (Val::LType, Val::Neutral(Head::Meta(_), _)) if !ltype_default => {
+                self.unify(lvl, &Val::Type, &a)
+            }
+            (Val::Pi(_, m1, i1, d1, c1), Val::Pi(_, m2, i2, d2, c2)) if m1 == m2 && i1 == i2 => {
+                self.sub(lvl, d2, d1, ltype_default)?;
+                let x = Val::var(lvl);
+                self.sub(
+                    lvl + 1,
+                    &self.inst(c1, x.clone()),
+                    &self.inst(c2, x),
+                    ltype_default,
+                )
+            }
+            _ => self.unify(lvl, &e, &a),
+        }
+    }
+
     pub fn unify(&self, lvl: u32, a: &Val, b: &Val) -> Result<(), UnifyError> {
         let a = self.force(a.clone());
         let b = self.force(b.clone());
