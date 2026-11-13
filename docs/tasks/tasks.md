@@ -120,6 +120,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0078](features/FEAT-0078-unboxed-values-in-speculation.md) | 評価済みの引数の判定で unboxed の値を値として数える | done | P1 | 0056, 0068 |
 | [FEAT-0079](features/FEAT-0079-boxes-in-string-loops.md) | 文字列処理のループの箱の除去 (多相の静的引数・積型の worker/wrapper・腕をまたぐ再利用) | done | P1 | 0022, 0056, 0061, 0066 |
 | [FEAT-0080](features/FEAT-0080-join-points.md) | Core の結合点 (join point) | todo | P2 | 0079 |
+| [FEAT-0081](features/FEAT-0081-cpr-single-boxed-result.md) | 箱入りの値 1 つだけを返す積の結果の分解 | todo | P2 | 0065, 0220 |
 
 
 ## aCHC
@@ -233,8 +234,8 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 
 | ID | タイトル | 状態 | 優先度 | 依存 |
 |---|---|---|---|---|
-| [FEAT-0220](features/FEAT-0220-cl-borrowing.md) | 借用 | todo | P0 | 0215 |
-| [FEAT-0221](features/FEAT-0221-cl-regions.md) | リージョン | todo | P1 | 0220, 0049 |
+| [FEAT-0220](features/FEAT-0220-cl-borrowing.md) | 借用 | done | P0 | 0215 |
+| [FEAT-0221](features/FEAT-0221-cl-regions.md) | リージョン | in-progress | P1 | 0220, 0049 |
 | [FEAT-0222](features/FEAT-0222-cl-lazy-cycles.md) | 明示的な遅延 (Lazy a) と循環の扱い | todo | P1 | 0215 |
 | [FEAT-0223](features/FEAT-0223-cl-release-v003.md) | CirkaLang v0.0.3 リリース | todo | P0 | 0220, 0222, 0041 |
 
@@ -311,5 +312,6 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [BUG-0013](bugs/BUG-0013-cl-do-last-poly-io.md) | CirkaLang の do の最後の文に exit などの多相な IO を書くと型エラーになる | done | minor | FEAT-0203 |
 | [BUG-0014](bugs/BUG-0014-lazy-con-strict-fields.md) | 遅延束縛の構築子の正格フィールドが束縛の時点で評価される | done | major | BUG-0008 |
 | [BUG-0015](bugs/BUG-0015-cl-linear-instantiation.md) | CirkaLang で線形型の値が Type の型変数や IO の結果を通じて複製できる | done | critical | FEAT-0212 |
+| [BUG-0016](bugs/BUG-0016-opt-stale-known-after-beta.md) | β 簡約の後に既知の構築子の表が古い引数を指す | done | major | FEAT-0220 |
 
 新しいチケットは `features/_TEMPLATE.md` / `bugs/_TEMPLATE.md` をコピーして作成する。
