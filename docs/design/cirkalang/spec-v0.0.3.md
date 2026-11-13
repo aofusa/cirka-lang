@@ -17,6 +17,7 @@ v0.0.3 の目的は、**所有権を手で受け渡さずに、線形な値を�
 | §2.3 | 借用越しの操作: `Data.Array` / `Data.Array.Unboxed` の `lengthB` `readB` `writeB` `modifyB` `swapB`、`Std.Fs` の `readB` `readAllB` `writeB` | FEAT-0220 |
 | §2.4 | `impl` の変数の種の宣言 `impl {a : LType} -> C (T a)` | FEAT-0220 |
 | §2.5 | 実行時の表現: 借用は所有者を受け渡す状態の関数で、参照数の操作も確保もない | FEAT-0220 |
+| §3 | リージョン `Data.Region`: `withRegion`、`Arena r`、`RIO r`、不変のハンドル `In r a`、可変の参照 `RefIn r a` | FEAT-0221 |
 
 ## 2. 借用 (FEAT-0220)
 
@@ -118,6 +119,58 @@ impl {a : LType} -> Monad (Borrow a r) where ...
   これにより `do` の bind が作るクロージャが消え、借用越しのループは所有者を手で受け渡すループと同じコードになる (tests/cirkalang.rs の `cirkalang_borrow_costs_nothing`)。
 - 制限: 結果が `()` の借用の計算を末尾でない位置で呼ぶと、(値, `Ur ()`) の組が呼び出しごとに 1 つ確保される (構成した積の結果の最適化が、箱入りの値 1 つだけの結果を扱わないため。FEAT-0081)。
 
+## 3. リージョン (FEAT-0221)
+
+### 3.1 型と関数
+
+`Data.Region` が次を定める。リージョンの添字は借用と同じ `Region` (`Data.Borrow`) である。
+
+```
+Arena : Region -> Type              -- リージョン r のアリーナ
+RIO : Region -> Type -> Type        -- r の中のアクション (Functor / Monad)
+In : Region -> Type -> Type         -- r に置いた不変の値のハンドル
+RefIn : Region -> Type -> Type      -- r に置いた可変の参照
+
+withRegion  : ((0 r : Region) -> Arena r -> RIO r a) -> IO a
+allocIn     : Arena r -> a -> RIO r (In r a)
+readIn      : In r a -> RIO r a
+newRefIn    : Arena r -> a -> RIO r (RefIn r a)
+readRefIn   : RefIn r a -> RIO r a
+writeRefIn  : RefIn r a -> a -> RIO r ()
+modifyRefIn : RefIn r a -> (a -> a) -> RIO r ()
+liftRIO     : IO a -> RIO r a
+```
+
+- `withRegion f` は新しいリージョンを作って `f` を実行し、終わったらリージョンとその中の値をまとめて解放する
+  (値は drop され、ほかでまだ使われている値は残る)。
+- 置ける値は共有可能な型 (`Type`) に限る。線形な値はリージョンに置けない。
+- **持ち出しの禁止**: 借用 (§2.1) と同じく `r` は `withRegion` が渡す多重度 0 の引数なので、ハンドルや `RIO r` の計算を結果にすると E1200
+  (リージョンの注記付き) になる。
+- ハンドルは参照数を持たないので、値どうしがハンドルを通して任意の形 (循環を含む) で参照し合っても参照数の循環にならず、
+  循環の回収器なしにリージョンの終了で解放される。グラフはノードの型をリージョンで添字付けて書く:
+
+```
+import Data.Borrow (Region)
+import Data.Region
+
+data Node (r : Region) = MkNode Int (List (RefIn r (Node r)))
+
+main : IO ()
+main = do
+  xs <- withRegion (\r, reg => do
+    a <- newRefIn reg (MkNode 1 [])
+    b <- newRefIn reg (MkNode 2 [a])
+    writeRefIn a (MkNode 1 [b])         -- a と b が互いを指す
+    walk a 5)
+  print xs
+```
+
+### 3.2 実行時の表現
+
+- 共通基盤のアリーナ (04-memory-model.md §6、FEAT-0049) をそのまま使う。`Arena r` はランタイムのリージョンのオブジェクト、
+  ハンドルはセルのアドレス (`Int`)、`RIO r a` は `IO a` と同じ表現で、ラップと取り出しは消える。
+- 読み出しは値の参照数を 1 増やし、書き込みは古い値を drop する。リージョンの終了時にセルの値をまとめて drop する。
+
 ## 9. 対象外
 
 v0.0.3 で扱わないもの (各チケットで更新する)。
@@ -125,3 +178,5 @@ v0.0.3 で扱わないもの (各チケットで更新する)。
 - `&x` / `&mut x` の借用構文と、関数をまたぐリージョンの推論 (ADR-071)。
 - 借用中の値の一部 (フィールド) だけを借りること。構造体の分解で書く。
 - 2 つの値を同時に借りる専用の構文。組を借りるか、`borrow` を入れ子にする。
+- リージョンに線形な値を置くこと、リージョンのアリーナに値そのものを確保すること (セルは値への参照を持つ。ADR-044)。
+- `RIO` の中から外側のリージョンのハンドルを使う入れ子のリージョン (リージョンの包含関係の型)。
