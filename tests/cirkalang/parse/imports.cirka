@@ -1,0 +1,10 @@
+-- Imports: plain, aliased, with a list of names, and both.
+module Imports
+
+import Data.Array
+import Data.Array as A
+import Data.Array.Unboxed (UArray, (!), size)
+import Data.List as L (sort, (++))
+
+f : Int
+f = 1

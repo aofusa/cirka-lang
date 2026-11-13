@@ -1,0 +1,9 @@
+-- Import lists (spec-v0.0.2.md §7.1): the listed names exist and are
+-- public, and only they are visible unqualified.
+import Lib (x, nothing, hidden)
+
+f : Lib.T
+f = x
+
+g : T
+g = hidden

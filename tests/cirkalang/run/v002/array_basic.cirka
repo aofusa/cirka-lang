@@ -1,0 +1,31 @@
+-- Shared boxed arrays (FEAT-0211): building, indexing, folds, `Eq` /
+-- `Show`, boxed elements, and `thaw` of a shared array (which copies).
+import Data.Array as A
+import Data.Array (Array, (!))
+
+squares : Int -> Array Int
+squares n = A.generate n (\i => i * i)
+
+main : IO ()
+main = do
+  let a = squares 6
+  putStrLn (show a)
+  printInt (A.size a)
+  printInt (a ! 4)
+  putStrLn (show (A.get a 10))
+  putStrLn (show (A.get a 2))
+  printInt (A.foldl (\s, x => s + x) 0 a)
+  putStrLn (show (A.foldr (\x, acc => x :: acc) Nil a))
+  putStrLn (show (A.map (\x => x * 2) a))
+  putStrLn (show (A.toList (A.fromList ["x", "y"])))
+  let words = A.fromList ["one", "two", "three"]
+  putStrLn (words ! 2)
+  putStrLn (show (A.map (\w => (w, 1)) words))
+  putStrLn (show (a == squares 6))
+  putStrLn (show (a == squares 5))
+  -- `a` is still used below, so `thaw` copies it.
+  let b = freeze (A.write (A.thaw a) 0 100)
+  putStrLn (show (A.toList b))
+  putStrLn (show a)
+  let e = freeze (A.empty ())
+  printInt (A.size (A.map (\x => x + 1) e))

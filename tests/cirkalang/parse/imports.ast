@@ -1,0 +1,7 @@
+(module Imports)
+(import Data.Array)
+(import Data.Array as A)
+(import Data.Array.Unboxed (UArray ! size))
+(import Data.List as L (sort ++))
+(sig (f) Int)
+(def f () 1)

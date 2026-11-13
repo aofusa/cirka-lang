@@ -1,0 +1,9 @@
+-- Import aliases (spec-v0.0.2.md §7.1): one module per alias, and an
+-- alias is not the name of an imported module.
+import Lib as L
+import Other as L
+import Other
+import Lib as Other
+
+f : L.T
+f = L.x

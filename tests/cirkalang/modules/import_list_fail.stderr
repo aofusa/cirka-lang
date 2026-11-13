@@ -1,0 +1,20 @@
+error[E1101]: `nothing` is not defined in module `Lib`
+ --> tests/cirkalang/modules/import_list_fail/Main.cirka:3:16
+  |
+3 | import Lib (x, nothing, hidden)
+  |                ^^^^^^^ cannot be imported
+error[E1106]: `Lib.hidden` is private
+ --> tests/cirkalang/modules/import_list_fail/Main.cirka:3:25
+  |
+3 | import Lib (x, nothing, hidden)
+  |                         ^^^^^^ cannot be imported
+error[E1101]: `T` is not defined
+ --> tests/cirkalang/modules/import_list_fail/Main.cirka:8:5
+  |
+8 | g : T
+  |     ^ not in scope
+error[E1101]: `hidden` is not defined
+ --> tests/cirkalang/modules/import_list_fail/Main.cirka:9:5
+  |
+9 | g = hidden
+  |     ^^^^^^ not in scope

@@ -205,8 +205,15 @@ pub fn resolve_main(
 struct Loaded {
     file: FileId,
     ast: ast::Module,
-    /// Imported module names (including the implicit Prelude).
+    /// Modules whose names are visible unqualified (including the implicit
+    /// Prelude).
     imports: Vec<String>,
+    /// `import A.B as X`: `X` → `A.B` (visible only as `X.name`).
+    aliases: HashMap<String, String>,
+    /// Modules usable qualified by their own path (imported without alias).
+    qualified: Vec<String>,
+    /// `import A.B (x, y)`: module → the names visible unqualified.
+    only: Vec<(String, Vec<(String, Span)>)>,
 }
 
 struct State {
@@ -262,6 +269,57 @@ impl State {
         if prelude && name != "Prelude" && !imports.iter().any(|(n, _)| n == "Prelude") {
             imports.insert(0, ("Prelude".to_string(), Span::new(file, 0, 0)));
         }
+        // Aliases (spec-v0.0.2.md §7.1): one module per alias, and an alias
+        // is not the name of a module imported without one.
+        let mut aliases: HashMap<String, String> = HashMap::new();
+        for i in &m.imports {
+            let Some((a, asp)) = &i.alias else { continue };
+            let (a, target) = (a.join("."), i.path.join("."));
+            let plain = m
+                .imports
+                .iter()
+                .any(|j| j.alias.is_none() && j.path.join(".") == a);
+            match aliases.get(&a) {
+                Some(t) if *t != target => self.errs.push(
+                    Diagnostic::error(format!("`{a}` is the alias of two modules"))
+                        .with_code("E1120")
+                        .with_label(*asp, format!("already the alias of `{t}`")),
+                ),
+                _ if plain || a == name => self.errs.push(
+                    Diagnostic::error(format!("the alias `{a}` is the name of a module"))
+                        .with_code("E1120")
+                        .with_label(*asp, "choose another alias"),
+                ),
+                _ => {
+                    aliases.insert(a, target);
+                }
+            }
+        }
+        let unqualified: Vec<String> = imports
+            .iter()
+            .filter(|(n, _)| {
+                n == "Prelude" && !m.imports.iter().any(|i| i.path.join(".") == "Prelude")
+                    || m.imports
+                        .iter()
+                        .any(|i| i.alias.is_none() && i.names.is_none() && i.path.join(".") == *n)
+            })
+            .map(|(n, _)| n.clone())
+            .collect();
+        let qualified: Vec<String> = imports
+            .iter()
+            .filter(|(n, _)| {
+                n == "Prelude"
+                    || m.imports
+                        .iter()
+                        .any(|i| i.alias.is_none() && i.path.join(".") == *n)
+            })
+            .map(|(n, _)| n.clone())
+            .collect();
+        let only: Vec<(String, Vec<(String, Span)>)> = m
+            .imports
+            .iter()
+            .filter_map(|i| Some((i.path.join("."), i.names.clone()?)))
+            .collect();
         self.visiting.push(name.clone());
         for (imp, sp) in &imports {
             if self.visiting.contains(imp) {
@@ -312,7 +370,10 @@ impl State {
             Loaded {
                 file,
                 ast: m,
-                imports: imports.into_iter().map(|x| x.0).collect(),
+                imports: unqualified,
+                aliases,
+                qualified,
+                only,
             },
         );
         self.order.push(name);
@@ -711,8 +772,14 @@ impl<'s> Resolver<'s> {
 
     fn lookup_global(&mut self, q: &ast::QName, span: Span) -> Option<GName> {
         if !q.module.is_empty() {
-            let m = q.module.join(".");
-            let imported = m == self.cur || self.st.loaded[&self.cur].imports.contains(&m);
+            let mut m = q.module.join(".");
+            if let Some(t) = self.st.loaded[&self.cur].aliases.get(&m) {
+                m = t.clone();
+            }
+            let imported = m == self.cur
+                || self.st.loaded[&self.cur].qualified.contains(&m)
+                || self.st.loaded[&self.cur].aliases.values().any(|t| *t == m)
+                    && q.module.join(".") != m;
             if !imported {
                 self.errs.push(
                     Diagnostic::error(format!("module `{m}` is not imported"))
@@ -751,7 +818,15 @@ impl<'s> Resolver<'s> {
             return Some(g);
         }
         let mut found: Vec<GName> = Vec::new();
-        for imp in &self.st.loaded[&self.cur].imports {
+        let loaded = &self.st.loaded[&self.cur];
+        let mods = loaded.imports.iter().chain(
+            loaded
+                .only
+                .iter()
+                .filter(|(_, ns)| ns.iter().any(|(n, _)| *n == q.name))
+                .map(|(m, _)| m),
+        );
+        for imp in mods {
             if let Some(g) = self.visible(imp, &q.name)
                 && !found.contains(&g)
             {
@@ -819,6 +894,26 @@ impl<'s> Resolver<'s> {
 
     fn module(&mut self, name: &str) -> Module {
         self.cur = name.to_string();
+        // The names of import lists exist and are public.
+        for (m, ns) in self.st.loaded[name].only.clone() {
+            if !self.tables.contains_key(&m) {
+                continue;
+            }
+            for (n, sp) in ns {
+                if self.visible(&m, &n).is_none() {
+                    let private = self.tables[&m].own.contains_key(&n);
+                    self.errs.push(
+                        Diagnostic::error(if private {
+                            format!("`{m}.{n}` is private")
+                        } else {
+                            format!("`{n}` is not defined in module `{m}`")
+                        })
+                        .with_code(if private { "E1106" } else { "E1101" })
+                        .with_label(sp, "cannot be imported"),
+                    );
+                }
+            }
+        }
         let loaded = &self.st.loaded[name];
         let mut items = Vec::new();
         // Group clauses with their signature.

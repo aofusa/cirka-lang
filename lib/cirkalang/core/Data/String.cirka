@@ -1,0 +1,394 @@
+-- Strings (spec-v0.0.2.md §7.4).
+--
+-- A `String` is immutable UTF-8 text. A `Str` is a view of a range of the
+-- bytes of a `String`: taking a part of it (`slice`, `splitOn`, `lines`,
+-- `trim`, ...) does not copy. `fromStr` copies the bytes into a new string
+-- (or returns the string itself when the view covers all of it). Indices
+-- and lengths count bytes. Import the module with an alias
+-- (`import Data.String as S`).
+module Data.String
+
+private prim primStrSlice : String -> Int -> Int -> String
+private prim primStrFindByte : String -> Int -> Int -> Int -> Int
+private prim primStrFind : String -> Int -> Int -> String -> Int
+private prim primStrRangeEq : String -> Int -> String -> Int -> Int -> Bool
+private prim primStrNew : Int -> Unique String
+private prim primStrWrite : (1 u : Unique String) -> Int -> String -> Int -> Int -> Unique String
+private prim primStrSetByte : (1 u : Unique String) -> Int -> Int -> Unique String
+
+-- `MkStr s i j` is the bytes `[i, j)` of `s` (`0 <= i <= j <= length s`).
+data Str = MkStr String Int Int
+
+-- ---- conversions ----
+
+-- The whole string as a view.
+toStr : String -> Str
+toStr s = MkStr s 0 (strLength s)
+
+-- The text of a view (a copy unless it covers the whole string).
+fromStr : Str -> String
+fromStr (MkStr s i j) = if i == 0 then (if j == strLength s then s else primStrSlice s i j) else primStrSlice s i j
+
+-- ---- views ----
+
+-- The number of bytes.
+length : Str -> Int
+length (MkStr _ i j) = j - i
+
+isEmpty : Str -> Bool
+isEmpty (MkStr _ i j) = i == j
+
+-- The byte at index `k` (0..255). Out of bounds panics.
+byteAt : Str -> Int -> Int
+byteAt (MkStr s i j) k =
+  if k < 0 then panic "Data.String.byteAt: index out of bounds"
+  else if i + k >= j then panic "Data.String.byteAt: index out of bounds"
+  else primStrIndex s (i + k)
+
+-- The bytes `[a, b)` of the view (clamped to it).
+slice : Str -> Int -> Int -> Str
+slice (MkStr s i j) a b =
+  let a2 = clamp (i + a) i j in
+  MkStr s a2 (clamp (i + b) a2 j)
+
+private clamp : Int -> Int -> Int -> Int
+clamp x lo hi = if x < lo then lo else if x > hi then hi else x
+
+-- The first `n` bytes.
+take : Int -> Str -> Str
+take n v = slice v 0 n
+
+-- Without the first `n` bytes.
+drop : Int -> Str -> Str
+drop n v = slice v n (length v)
+
+-- ---- searching ----
+
+-- The index of the first occurrence of `p`.
+indexOf : Str -> String -> Maybe Int
+indexOf (MkStr s i j) p =
+  let k = primStrFind s i j p in
+  if k < 0 then Nothing else Just (k - i)
+
+-- The index of the first occurrence of the character `c`.
+indexOfChar : Str -> Char -> Maybe Int
+indexOfChar (MkStr s i j) c =
+  let b = primCharToInt c in
+  let k = if b < 128 then primStrFindByte s b i j else primStrFind s i j (primCharToStr c) in
+  if k < 0 then Nothing else Just (k - i)
+
+contains : Str -> String -> Bool
+contains (MkStr s i j) p = primStrFind s i j p >= 0
+
+startsWith : Str -> String -> Bool
+startsWith (MkStr s i j) p =
+  let n = strLength p in
+  if n > j - i then False else primStrRangeEq s i p 0 n
+
+endsWith : Str -> String -> Bool
+endsWith (MkStr s i j) p =
+  let n = strLength p in
+  if n > j - i then False else primStrRangeEq s (j - n) p 0 n
+
+-- ---- splitting ----
+
+-- The parts between the occurrences of `sep` (a nonempty separator; the
+-- empty one gives the whole view).
+splitOn : String -> Str -> List Str
+splitOn sep (MkStr s i j) =
+  if strLength sep == 0 then MkStr s i j :: Nil else splitFrom sep s i i j
+
+private splitFrom : String -> String -> Int -> Int -> Int -> List Str
+splitFrom sep s start i j =
+  let k = primStrFind s i j sep in
+  if k < 0 then MkStr s start j :: Nil
+  else MkStr s start k :: splitFrom sep s (k + strLength sep) (k + strLength sep) j
+
+-- The lines, without their `\n` (and a `\r` before it). A final `\n`
+-- does not start another line.
+lines : Str -> List Str
+lines (MkStr s i j) = linesFrom s i j
+
+private linesFrom : String -> Int -> Int -> List Str
+linesFrom s i j =
+  if i >= j then Nil
+  else
+    let k = primStrFindByte s 10 i j in
+    if k < 0 then dropCR s i j :: Nil
+    else dropCR s i k :: linesFrom s (k + 1) j
+
+-- (One constructor with a computed end: branches that each build the view
+-- would allocate it before the caller takes it apart.)
+private dropCR : String -> Int -> Int -> Str
+dropCR s i k = MkStr s i (if k > i then (if primStrIndex s (k - 1) == 13 then k - 1 else k) else k)
+
+-- `f` applied to each line in order (as `lines`, without building a list).
+foldLines : (b -> Str -> b) -> b -> Str -> b
+foldLines f z (MkStr s i j) = foldLinesFrom f z s i j
+
+private foldLinesFrom : (b -> Str -> b) -> b -> String -> Int -> Int -> b
+foldLinesFrom f z s i j =
+  if i >= j then z
+  else
+    let k = primStrFindByte s 10 i j in
+    if k < 0 then f z (dropCR s i j)
+    else foldLinesFrom f (f z (dropCR s i k)) s (k + 1) j
+
+-- `f` applied to each word in order (as `words`, without building a list).
+foldWords : (b -> Str -> b) -> b -> Str -> b
+foldWords f z (MkStr s i j) = foldWordsFrom f z s i j
+
+private foldWordsFrom : (b -> Str -> b) -> b -> String -> Int -> Int -> b
+foldWordsFrom f z s i j =
+  let a = skipSpace s i j in
+  if a >= j then z
+  else
+    let e = skipWord s a j in
+    foldWordsFrom f (f z (MkStr s a e)) s e j
+
+-- The parts separated by ASCII white space.
+words : Str -> List Str
+words (MkStr s i j) = wordsFrom s i j
+
+private wordsFrom : String -> Int -> Int -> List Str
+wordsFrom s i j =
+  let a = skipSpace s i j in
+  if a >= j then Nil
+  else
+    let b = skipWord s a j in
+    MkStr s a b :: wordsFrom s b j
+
+private skipSpace : String -> Int -> Int -> Int
+skipSpace s i j = if i >= j then j else if isSpaceByte (primStrIndex s i) then skipSpace s (i + 1) j else i
+
+private skipWord : String -> Int -> Int -> Int
+skipWord s i j = if i >= j then j else if isSpaceByte (primStrIndex s i) then i else skipWord s (i + 1) j
+
+-- Space, tab, newline, vertical tab, form feed, carriage return.
+isSpaceByte : Int -> Bool
+isSpaceByte b = if b == 32 then True else if b >= 9 then b <= 13 else False
+
+-- Without leading and trailing ASCII white space.
+trim : Str -> Str
+trim v = trimEnd (trimStart v)
+
+trimStart : Str -> Str
+trimStart (MkStr s i j) = MkStr s (skipSpace s i j) j
+
+trimEnd : Str -> Str
+trimEnd (MkStr s i j) = MkStr s i (trimEndFrom s i j)
+
+private trimEndFrom : String -> Int -> Int -> Int
+trimEndFrom s i j = if j <= i then i else if isSpaceByte (primStrIndex s (j - 1)) then trimEndFrom s i (j - 1) else j
+
+-- ---- parsing ----
+
+-- A decimal integer with an optional `-` or `+` (the whole view).
+toInt : Str -> Maybe Int
+toInt (MkStr s i j) =
+  if i >= j then Nothing
+  else if primStrIndex s i == 45 then mapMaybe negate (digits s (i + 1) j)
+  else if primStrIndex s i == 43 then digits s (i + 1) j
+  else digits s i j
+
+private mapMaybe : (a -> b) -> Maybe a -> Maybe b
+mapMaybe f Nothing = Nothing
+mapMaybe f (Just x) = Just (f x)
+
+private digits : String -> Int -> Int -> Maybe Int
+digits s i j = if i >= j then Nothing else digitsFrom s i j 0
+
+private digitsFrom : String -> Int -> Int -> Int -> Maybe Int
+digitsFrom s i j acc =
+  if i >= j then Just acc
+  else
+    let b = primStrIndex s i in
+    if isDigit b then digitsFrom s (i + 1) j (acc * 10 + b - 48) else Nothing
+
+-- ---- characters ----
+
+-- The characters (UTF-8 decoded).
+chars : Str -> List Char
+chars (MkStr s i j) = charsFrom s i j
+
+private charsFrom : String -> Int -> Int -> List Char
+charsFrom s i j =
+  if i >= j then Nil
+  else
+    let n = utf8Len (primStrIndex s i) in
+    primIntToChar (decode s i n j) :: charsFrom s (i + n) j
+
+private utf8Len : Int -> Int
+utf8Len b = if b < 128 then 1 else if b < 224 then 2 else if b < 240 then 3 else 4
+
+-- The code point of the `n` bytes at `i` (bytes past `j` count as zero).
+private decode : String -> Int -> Int -> Int -> Int
+decode s i n j =
+  if n == 1 then primStrIndex s i
+  else if n == 2 then (primStrIndex s i - 192) * 64 + cont s (i + 1) j
+  else if n == 3 then (primStrIndex s i - 224) * 4096 + cont s (i + 1) j * 64 + cont s (i + 2) j
+  else (primStrIndex s i - 240) * 262144 + cont s (i + 1) j * 4096 + cont s (i + 2) j * 64 + cont s (i + 3) j
+
+private cont : String -> Int -> Int -> Int
+cont s i j = if i < j then primStrIndex s i - 128 else 0
+
+-- The text of a list of characters.
+fromChars : List Char -> String
+fromChars cs = concat (Prelude.map primCharToStr cs)
+
+-- ASCII letters to upper / lower case.
+toUpper : Str -> String
+toUpper v = mapBytes (\b => if b >= 97 then (if b <= 122 then b - 32 else b) else b) v
+
+toLower : Str -> String
+toLower v = mapBytes (\b => if b >= 65 then (if b <= 90 then b + 32 else b) else b) v
+
+private mapBytes : (Int -> Int) -> Str -> String
+mapBytes f (MkStr s i j) = freeze (mapBytesFrom f s i j (primStrNew (j - i)) 0)
+
+private mapBytesFrom : (Int -> Int) -> String -> Int -> Int -> (1 u : Unique String) -> Int -> Unique String
+mapBytesFrom f s i j u k = if i + k >= j then u else mapBytesFrom f s i j (primStrSetByte u k (f (primStrIndex s (i + k)))) (k + 1)
+
+-- ---- building ----
+
+-- The strings one after another (one allocation).
+concat : List String -> String
+concat ss = freeze (writeAll ss (primStrNew (totalLength ss 0)) 0)
+
+private totalLength : List String -> Int -> Int
+totalLength Nil n = n
+totalLength (s :: ss) n = totalLength ss (n + strLength s)
+
+private writeAll : List String -> (1 u : Unique String) -> Int -> Unique String
+writeAll Nil u _ = u
+writeAll (s :: ss) u off = writeAll ss (primStrWrite u off s 0 (strLength s)) (off + strLength s)
+
+-- The texts of the views one after another (one allocation).
+concatStr : List Str -> String
+concatStr vs = freeze (writeViews vs (primStrNew (viewsLength vs 0)) 0)
+
+private viewsLength : List Str -> Int -> Int
+viewsLength Nil n = n
+viewsLength (v :: vs) n = viewsLength vs (n + length v)
+
+private writeViews : List Str -> (1 u : Unique String) -> Int -> Unique String
+writeViews Nil u _ = u
+writeViews ((MkStr s i j) :: vs) u off = writeViews vs (primStrWrite u off s i j) (off + j - i)
+
+-- The strings with `sep` between them.
+intercalate : String -> List String -> String
+intercalate sep Nil = ""
+intercalate sep (s :: ss) = concat (s :: withSep sep ss)
+
+private withSep : String -> List String -> List String
+withSep sep Nil = Nil
+withSep sep (s :: ss) = sep :: s :: withSep sep ss
+
+-- Each string followed by `\n`.
+unlines : List String -> String
+unlines ss = concat (Prelude.concatMap (\s => s :: "\n" :: Nil) ss)
+
+unwords : List String -> String
+unwords ss = intercalate " " ss
+
+-- `n` copies of `s`.
+replicate : Int -> String -> String
+replicate n s = concat (copies n s)
+
+private copies : Int -> String -> List String
+copies n s = if n <= 0 then Nil else s :: copies (n - 1) s
+
+-- ---- builders ----
+
+-- A string being built: appending writes into a buffer in place, which
+-- doubles its capacity when it is full.
+data Builder : LType where
+  MkBuilder : (1 buf : Unique String) -> Int -> Int -> Builder
+
+-- An empty builder with room for `cap` bytes.
+builder : Int -> Builder
+builder cap = let c = if cap < 16 then 16 else cap in MkBuilder (primStrNew c) 0 c
+
+-- The text built (one copy of the bytes).
+build : (1 b : Builder) -> String
+build (MkBuilder buf n cap) = primStrSlice (freeze buf) 0 n
+
+-- Room for `k` more bytes. (Recursive, so it stays a call whose result
+-- is returned unboxed, instead of being inlined into every append with
+-- its rarely taken growing path.)
+private reserve : (1 b : Builder) -> Int -> Builder
+reserve (MkBuilder buf n cap) k =
+  if n + k <= cap then MkBuilder buf n cap
+  else
+    let c2 = if cap * 2 >= n + k then cap * 2 else n + k in
+    reserve (MkBuilder (primStrWrite (primStrNew c2) 0 (freeze buf) 0 n) n c2) k
+
+append : (1 b : Builder) -> String -> Builder
+append b s = appendRange b s 0 (strLength s)
+
+appendStr : (1 b : Builder) -> Str -> Builder
+appendStr b (MkStr s i j) = appendRange b s i j
+
+private appendRange : (1 b : Builder) -> String -> Int -> Int -> Builder
+appendRange b s i j = case reserve b (j - i) of
+  MkBuilder buf n cap => MkBuilder (primStrWrite buf n s i j) (n + j - i) cap
+
+-- Appends one byte (0..255).
+appendByte : (1 b : Builder) -> Int -> Builder
+appendByte b x = case reserve b 1 of
+  MkBuilder buf n cap => MkBuilder (primStrSetByte buf n x) (n + 1) cap
+
+appendChar : (1 b : Builder) -> Char -> Builder
+appendChar b c = if primCharToInt c < 128 then appendByte b (primCharToInt c) else append b (primCharToStr c)
+
+-- Appends the decimal digits of `x` (without an intermediate string).
+-- (A negative `x` recurses: as for `reserve`, the call returns its result
+-- unboxed instead of joining two inlined branches.)
+appendInt : (1 b : Builder) -> Int -> Builder
+appendInt b x =
+  if x >= 0 then appendDigits b x
+  -- The smallest Int has no positive counterpart.
+  else if x == 0 - 9223372036854775807 - 1 then append b (showInt x)
+  else appendInt (appendByte b 45) (0 - x)
+
+private appendDigits : (1 b : Builder) -> Int -> Builder
+appendDigits b x =
+  let k = numDigits x 1 in
+  case reserve b k of
+    MkBuilder buf n cap => MkBuilder (writeDigits buf (n + k - 1) x) (n + k) cap
+
+private numDigits : Int -> Int -> Int
+numDigits x k = if x < 10 then k else numDigits (x / 10) (k + 1)
+
+private writeDigits : (1 u : Unique String) -> Int -> Int -> Unique String
+writeDigits u i x =
+  let u2 = primStrSetByte u i (48 + x % 10) in
+  if x < 10 then u2 else writeDigits u2 (i - 1) (x / 10)
+
+-- ---- output ----
+
+-- Writes the text of the view.
+putStr : Str -> IO ()
+putStr v = Prelude.putStr (fromStr v)
+
+putStrLn : Str -> IO ()
+putStrLn v = Prelude.putStrLn (fromStr v)
+
+-- ---- comparison ----
+
+impl Eq Str where
+  (MkStr s i j) == (MkStr t k l) = if j - i == l - k then primStrRangeEq s i t k (j - i) else False
+
+impl Ord Str where
+  compare (MkStr s i j) (MkStr t k l) = compareFrom s i j t k l
+
+private compareFrom : String -> Int -> Int -> String -> Int -> Int -> Ordering
+compareFrom s i j t k l =
+  if i >= j then (if k >= l then EQ else LT)
+  else if k >= l then GT
+  else if primStrIndex s i < primStrIndex t k then LT
+  else if primStrIndex s i > primStrIndex t k then GT
+  else compareFrom s (i + 1) j t (k + 1) l
+
+impl Show Str where
+  show v = show (fromStr v)

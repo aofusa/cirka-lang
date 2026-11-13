@@ -1,0 +1,100 @@
+-- Growable arrays (spec-v0.0.2.md §7.2).
+--
+-- A `Vec a` is linear: every operation takes it and gives it back, and
+-- updates its array in place. `push` doubles the capacity when the array
+-- is full, so it takes amortized constant time. A slot freed by `pop`
+-- keeps its element alive until it is overwritten or the vector is
+-- dropped. Import the module with an alias (`import Data.Vec as V`).
+module Data.Vec
+
+import Data.Array as A
+
+data Vec (a : Type) : LType where
+  MkVec : (1 arr : Unique (A.Array a)) -> Int -> Vec a
+
+-- An empty vector.
+empty : () -> Vec a
+empty u = MkVec (A.empty u) 0
+
+-- `n` copies of `x`.
+replicate : Int -> a -> Vec a
+replicate n x = if n <= 0 then empty () else MkVec (A.new n x) n
+
+-- The number of elements, and the vector back.
+length : (1 v : Vec a) -> (Vec a, Int)
+length (MkVec arr n) = (MkVec arr n, n)
+
+-- Adds `x` at the end.
+push : (1 v : Vec a) -> a -> Vec a
+push (MkVec arr n) x = case A.length arr of
+  (arr, cap) =>
+    if n < cap then MkVec (A.write arr n x) (n + 1)
+    else MkVec (A.write (copyInto arr (A.new (cap * 2 + 4) x) 0 n) n x) (n + 1)
+
+-- Copies the first `n` elements of `old` to `new` (and frees `old`).
+private copyInto : (1 old : Unique (A.Array a)) -> (1 new : Unique (A.Array a)) -> Int -> Int -> Unique (A.Array a)
+copyInto old new i n =
+  if i >= n then new
+  else case A.read old i of
+    (old, MkUr x) => copyInto old (A.write new i x) (i + 1) n
+
+-- Removes the last element.
+pop : (1 v : Vec a) -> (Vec a, Ur (Maybe a))
+pop (MkVec arr n) =
+  if n <= 0 then (MkVec arr n, MkUr Nothing)
+  else case A.read arr (n - 1) of
+    (arr, MkUr x) => (MkVec arr (n - 1), MkUr (Just x))
+
+-- The element at index `i`. Out of bounds (`i >= length`) panics.
+read : (1 v : Vec a) -> Int -> (Vec a, Ur a)
+read (MkVec arr n) i =
+  if i >= n then outOfBounds (MkVec arr n) "Data.Vec.read"
+  else case A.read arr i of
+    (arr, r) => (MkVec arr n, r)
+
+-- Stores `x` at index `i`. Out of bounds panics.
+write : (1 v : Vec a) -> Int -> a -> Vec a
+write (MkVec arr n) i x =
+  if i >= n then outOfBounds (MkVec arr n) "Data.Vec.write"
+  else MkVec (A.write arr i x) n
+
+private outOfBounds : {b : LType} -> (1 v : Vec a) -> String -> b
+outOfBounds v what = panic (what ++ ": index out of bounds")
+
+modify : (1 v : Vec a) -> Int -> (a -> a) -> Vec a
+modify v i f = case read v i of
+  (v, MkUr x) => write v i (f x)
+
+swap : (1 v : Vec a) -> Int -> Int -> Vec a
+swap v i j = case read v i of
+  (v, MkUr x) => case read v j of
+    (v, MkUr y) => write (write v i y) j x
+
+-- The elements of a list, in order.
+fromList : List a -> Vec a
+fromList xs = pushAll (empty ()) xs
+
+private pushAll : (1 v : Vec a) -> List a -> Vec a
+pushAll v Nil = v
+pushAll v (x :: xs) = pushAll (push v x) xs
+
+-- The elements as a shared array (copied when the capacity is larger).
+toArray : (1 v : Vec a) -> A.Array a
+toArray (MkVec arr n) = case A.length arr of
+  (arr, cap) =>
+    if n == cap then freeze arr
+    else if n == 0 then dropThen arr (freeze (A.empty ()))
+    else case A.read arr 0 of
+      (arr, MkUr x) => freeze (copyInto arr (A.new n x) 0 n)
+
+private dropThen : (1 arr : Unique (A.Array a)) -> b -> b
+dropThen arr y = y
+
+toList : (1 v : Vec a) -> List a
+toList (MkVec arr n) = collect arr (n - 1) Nil
+
+private collect : (1 arr : Unique (A.Array a)) -> Int -> List a -> List a
+collect arr i acc =
+  if i < 0 then dropThen arr acc
+  else case A.read arr i of
+    (arr, MkUr x) => collect arr (i - 1) (x :: acc)

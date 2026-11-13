@@ -1,0 +1,156 @@
+-- Unboxed arrays (spec-v0.0.2.md §7.3).
+--
+-- A `UArray a` stores its elements as 8-byte words without boxes. The
+-- element types are those of `Unbox`: `Int`, `UInt`, `Float`, `Char` and
+-- `Bool`. The functions have the names of `Data.Array`; import the module
+-- with an alias (`import Data.Array.Unboxed as U`). The `Unbox` dictionary
+-- is specialized away (spec-v0.0.2.md §3), so the loops work on raw words.
+module Data.Array.Unboxed
+
+infixl 9 !
+
+prim UArray : Type -> Type
+
+private prim primUArrayNew : {a : Type} -> Int -> Unique (UArray a)
+private prim primUArraySize : {a : Type} -> UArray a -> Int
+private prim primUArrayLength : {a : Type} -> (1 u : Unique (UArray a)) -> Pair (Unique (UArray a)) Int
+private prim primUArrayThaw : {a : Type} -> UArray a -> Unique (UArray a)
+private prim primUArrayIndexWord : {a : Type} -> UArray a -> Int -> Int
+private prim primUArrayReadWord : {a : Type} -> (1 u : Unique (UArray a)) -> Int -> Pair (Unique (UArray a)) (Ur Int)
+private prim primUArrayWriteWord : {a : Type} -> (1 u : Unique (UArray a)) -> Int -> Int -> Unique (UArray a)
+private prim primUArrayIndexFloat : {a : Type} -> UArray a -> Int -> Float
+private prim primUArrayReadFloat : {a : Type} -> (1 u : Unique (UArray a)) -> Int -> Pair (Unique (UArray a)) (Ur Float)
+private prim primUArrayWriteFloat : {a : Type} -> (1 u : Unique (UArray a)) -> Int -> Float -> Unique (UArray a)
+
+-- Element types stored as one word.
+trait Unbox a where
+  -- The element at index `i` of a shared array.
+  unboxIndex : UArray a -> Int -> a
+  -- The element at index `i` and the array back.
+  unboxRead : (1 u : Unique (UArray a)) -> Int -> (Unique (UArray a), Ur a)
+  -- Stores an element in place.
+  unboxWrite : (1 u : Unique (UArray a)) -> Int -> a -> Unique (UArray a)
+
+impl Unbox Int where
+  unboxIndex arr i = primUArrayIndexWord arr i
+  unboxRead u i = primUArrayReadWord u i
+  unboxWrite u i x = primUArrayWriteWord u i x
+
+impl Unbox Float where
+  unboxIndex arr i = primUArrayIndexFloat arr i
+  unboxRead u i = primUArrayReadFloat u i
+  unboxWrite u i x = primUArrayWriteFloat u i x
+
+impl Unbox UInt where
+  unboxIndex arr i = primIntToUInt (primUArrayIndexWord arr i)
+  unboxRead u i = case primUArrayReadWord u i of
+    (u, MkUr w) => (u, MkUr (primIntToUInt w))
+  unboxWrite u i x = primUArrayWriteWord u i (primUIntToInt x)
+
+impl Unbox Char where
+  unboxIndex arr i = primIntToChar (primUArrayIndexWord arr i)
+  unboxRead u i = case primUArrayReadWord u i of
+    (u, MkUr w) => (u, MkUr (primIntToChar w))
+  unboxWrite u i x = primUArrayWriteWord u i (primCharToInt x)
+
+impl Unbox Bool where
+  unboxIndex arr i = primUArrayIndexWord arr i /= 0
+  unboxRead u i = case primUArrayReadWord u i of
+    (u, MkUr w) => (u, MkUr (w /= 0))
+  unboxWrite u i x = primUArrayWriteWord u i (if x then 1 else 0)
+
+-- ---- unique arrays (in place) ----
+
+-- A fresh array of `n` elements, all `x` (empty when `n <= 0`).
+new : Unbox a => Int -> a -> Unique (UArray a)
+new n x = fill (primUArrayNew n) 0 n x
+
+private fill : Unbox a => (1 u : Unique (UArray a)) -> Int -> Int -> a -> Unique (UArray a)
+fill u i n x = if i >= n then u else fill (unboxWrite u i x) (i + 1) n x
+
+-- A fresh array of `n` zero words (`0`, `0.0`, `'\0'`, `False`).
+zeros : Int -> Unique (UArray a)
+zeros n = primUArrayNew n
+
+-- A fresh empty array.
+empty : () -> Unique (UArray a)
+empty _ = primUArrayNew 0
+
+-- A unique array with the contents of `arr` (a copy when shared).
+thaw : UArray a -> Unique (UArray a)
+thaw arr = primUArrayThaw arr
+
+read : Unbox a => (1 u : Unique (UArray a)) -> Int -> (Unique (UArray a), Ur a)
+read u i = unboxRead u i
+
+write : Unbox a => (1 u : Unique (UArray a)) -> Int -> a -> Unique (UArray a)
+write u i x = unboxWrite u i x
+
+length : (1 u : Unique (UArray a)) -> (Unique (UArray a), Int)
+length u = primUArrayLength u
+
+modify : Unbox a => (1 u : Unique (UArray a)) -> Int -> (a -> a) -> Unique (UArray a)
+modify u i f = case read u i of
+  (u, MkUr x) => write u i (f x)
+
+swap : Unbox a => (1 u : Unique (UArray a)) -> Int -> Int -> Unique (UArray a)
+swap u i j = case read u i of
+  (u, MkUr x) => case read u j of
+    (u, MkUr y) => write (write u i y) j x
+
+fromListU : Unbox a => List a -> Unique (UArray a)
+fromListU xs = fillList (zeros (Prelude.length xs)) 0 xs
+
+private fillList : Unbox a => (1 u : Unique (UArray a)) -> Int -> List a -> Unique (UArray a)
+fillList u _ Nil = u
+fillList u i (x :: xs) = fillList (write u i x) (i + 1) xs
+
+-- ---- shared arrays ----
+
+size : UArray a -> Int
+size arr = primUArraySize arr
+
+(!) : Unbox a => UArray a -> Int -> a
+arr ! i = unboxIndex arr i
+
+get : Unbox a => UArray a -> Int -> Maybe a
+get arr i = if i >= 0 && i < size arr then Just (arr ! i) else Nothing
+
+fromList : Unbox a => List a -> UArray a
+fromList xs = freeze (fromListU xs)
+
+toList : Unbox a => UArray a -> List a
+toList arr = toListFrom arr (size arr - 1) Nil
+
+private toListFrom : Unbox a => UArray a -> Int -> List a -> List a
+toListFrom arr i acc = if i < 0 then acc else toListFrom arr (i - 1) (arr ! i :: acc)
+
+generate : Unbox a => Int -> (Int -> a) -> UArray a
+generate n f = freeze (generateFrom n f (zeros n) 0)
+
+private generateFrom : Unbox a => Int -> (Int -> a) -> (1 u : Unique (UArray a)) -> Int -> Unique (UArray a)
+generateFrom n f u i = if i >= n then u else generateFrom n f (write u i (f i)) (i + 1)
+
+map : (Unbox a, Unbox b) => (a -> b) -> UArray a -> UArray b
+map f arr = generate (size arr) (\i => f (arr ! i))
+
+foldl : Unbox a => (b -> a -> b) -> b -> UArray a -> b
+foldl f z arr = foldlFrom f z arr 0
+
+private foldlFrom : Unbox a => (b -> a -> b) -> b -> UArray a -> Int -> b
+foldlFrom f z arr i = if i >= size arr then z else foldlFrom f (f z (arr ! i)) arr (i + 1)
+
+foldr : Unbox a => (a -> b -> b) -> b -> UArray a -> b
+foldr f z arr = foldrFrom f z arr (size arr - 1)
+
+private foldrFrom : Unbox a => (a -> b -> b) -> b -> UArray a -> Int -> b
+foldrFrom f z arr i = if i < 0 then z else foldrFrom f (f (arr ! i) z) arr (i - 1)
+
+impl (Unbox a, Eq a) => Eq (UArray a) where
+  a == b = if size a == size b then eqFrom a b 0 else False
+
+private eqFrom : (Unbox a, Eq a) => UArray a -> UArray a -> Int -> Bool
+eqFrom a b i = if i >= size a then True else if a ! i == b ! i then eqFrom a b (i + 1) else False
+
+impl (Unbox a, Show a) => Show (UArray a) where
+  show arr = show (toList arr)

@@ -262,3 +262,60 @@ fn test_only_names_are_rejected_outside_tests() {
     let e = run_tests(&files, TestMode::Strip).unwrap_err();
     assert!(e.contains("E1101"), "{e}");
 }
+
+/// `import M (x, (+))` makes only the listed names visible unqualified;
+/// `M.y` stays available, and the names must exist and be public.
+#[test]
+fn import_lists() {
+    const A: &str = "infixl 6 +.\nx : Int\nx = 1\ny : Int\ny = 2\n(+.) : Int -> Int -> Int\na +. b = a\nprivate z : Int\nz = 3\n";
+    let ok = [
+        ("Prelude", PRELUDE),
+        ("A", A),
+        (
+            "Main",
+            "import A (x, (+.))\ny : Int\ny = 5\nf : Int\nf = x +. y +. A.y\n",
+        ),
+    ];
+    let (p, _) = run(&ok, "Main").unwrap();
+    let out = print::print_module(&p, "Main");
+    assert!(out.contains("(A.+. (A.+. A.x Main.y) A.y)"), "{out}");
+    // An alias with a list: `X.name` and the listed names.
+    let alias = [
+        ("Prelude", PRELUDE),
+        ("A", A),
+        ("Main", "import A as X (x)\nf : Int\nf = x + X.y\n"),
+    ];
+    run(&alias, "Main").unwrap();
+    // Unlisted names are not visible unqualified, nor `A.y` with an alias.
+    let e = run(
+        &[
+            ("Prelude", PRELUDE),
+            ("A", A),
+            ("Main", "import A (x)\nf : Int\nf = y\n"),
+        ],
+        "Main",
+    )
+    .unwrap_err();
+    assert!(e.contains("E1101: `y` is not defined"), "{e}");
+    let e = run(
+        &[
+            ("Prelude", PRELUDE),
+            ("A", A),
+            ("Main", "import A as X (x)\nf : Int\nf = A.y\n"),
+        ],
+        "Main",
+    )
+    .unwrap_err();
+    assert!(e.contains("E1101: module `A` is not imported"), "{e}");
+    let e = run(
+        &[
+            ("Prelude", PRELUDE),
+            ("A", A),
+            ("Main", "import A (w, z)\nf : Int\nf = 1\n"),
+        ],
+        "Main",
+    )
+    .unwrap_err();
+    assert!(e.contains("E1101: `w` is not defined in module `A`"), "{e}");
+    assert!(e.contains("E1106: `A.z` is private"), "{e}");
+}

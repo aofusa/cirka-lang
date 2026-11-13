@@ -130,3 +130,104 @@
       (case c (k Int#) Int#
         (45 (prim neg (cirka$read_digits (extern cirka_read_byte) 0)))
          (_ (cirka$read_digits c 0))))))
+
+; ---- unboxed arrays (spec-v0.0.2.md §7.3) ----
+; A fresh array of `n` zeroed 8-byte words (an empty one for `n <= 0`).
+(def cirka$uarr_new (-> Int# Bytes)
+  (lam ((n Int#))
+    (prim bytes_new (prim mul (case (prim lt n 0) (c Int#) Int# (1 0) (_ n)) 8))))
+
+; ---- byte-level string operations (spec-v0.0.2.md §7.4) ----
+
+(def cirka$clamp (-> Int# Int# Int# Int#)
+  (lam ((x Int#) (lo Int#) (hi Int#))
+    (case (prim lt x lo) (c Int#) Int#
+      (0 (case (prim lt hi x) (d Int#) Int# (0 x) (_ hi)))
+       (_ lo))))
+
+; Copies src[i..i+n] to dst[off..] and returns dst.
+(def cirka$bytes_copy_at (-> Bytes Int# Bytes Int# Int# Bytes)
+  (lam ((dst Bytes) (off Int#) (src Bytes) (i Int#) (n Int#))
+    (case (prim lt 0 n) (c Int#) Bytes
+      (0 dst)
+       (_ (let! (u Unit# (prim bytes_set dst off (prim bytes_get src i)))
+            (cirka$bytes_copy_at dst (prim add off 1) src (prim add i 1) (prim sub n 1)))))))
+
+; A copy of s[i..j], with i and j clamped to the string.
+(def cirka$bytes_slice (-> Bytes Int# Int# Bytes)
+  (lam ((s Bytes) (i Int#) (j Int#))
+    (let! (n Int# (prim bytes_len s))
+      (let! (a Int# (cirka$clamp i 0 n))
+        (let! (b Int# (cirka$clamp j a n))
+          (cirka$bytes_copy_at (prim bytes_new (prim sub b a)) 0 s a (prim sub b a)))))))
+
+(def cirka$bytes_find_byte_loop (-> Bytes Int# Int# Int# Int#)
+  (lam ((s Bytes) (b Int#) (i Int#) (j Int#))
+    (case (prim lt i j) (c Int#) Int#
+      (0 -1)
+       (_ (case (prim eq (prim bytes_get s i) b) (d Int#) Int#
+            (0 (cirka$bytes_find_byte_loop s b (prim add i 1) j))
+             (_ i))))))
+
+; The first index in [i, j) (clamped) of byte b, or -1.
+(def cirka$bytes_find_byte (-> Bytes Int# Int# Int# Int#)
+  (lam ((s Bytes) (b Int#) (i Int#) (j Int#))
+    (let! (n Int# (prim bytes_len s))
+      (let! (a Int# (cirka$clamp i 0 n))
+        (cirka$bytes_find_byte_loop s b a (cirka$clamp j a n))))))
+
+(def cirka$bytes_range_eq_loop (-> Bytes Int# Bytes Int# Int# Int#)
+  (lam ((s Bytes) (i Int#) (t Bytes) (j Int#) (n Int#))
+    (case (prim lt 0 n) (c Int#) Int#
+      (0 1)
+       (_ (case (prim eq (prim bytes_get s i) (prim bytes_get t j)) (d Int#) Int#
+            (0 0)
+             (_ (cirka$bytes_range_eq_loop s (prim add i 1) t (prim add j 1) (prim sub n 1))))))))
+
+; s[i..i+n] == t[j..j+n] (0 when a range is out of bounds).
+(def cirka$bytes_range_eq (-> Bytes Int# Bytes Int# Int# Int#)
+  (lam ((s Bytes) (i Int#) (t Bytes) (j Int#) (n Int#))
+    (case (prim lt n 0) (c0 Int#) Int#
+      (0 (case (prim lt i 0) (c1 Int#) Int#
+           (0 (case (prim lt j 0) (c2 Int#) Int#
+                (0 (case (prim lt (prim bytes_len s) (prim add i n)) (c3 Int#) Int#
+                     (0 (case (prim lt (prim bytes_len t) (prim add j n)) (c4 Int#) Int#
+                          (0 (cirka$bytes_range_eq_loop s i t j n))
+                           (_ 0)))
+                      (_ 0)))
+                 (_ 0)))
+            (_ 0)))
+       (_ 0))))
+
+(def cirka$bytes_find_loop (-> Bytes Int# Int# Bytes Int# Int# Int#)
+  (lam ((s Bytes) (i Int#) (last Int#) (p Bytes) (first Int#) (m Int#))
+    (case (prim lt last i) (c Int#) Int#
+      (0 (let! (k Int# (cirka$bytes_find_byte_loop s first i (prim add last 1)))
+           (case (prim lt k 0) (d Int#) Int#
+             (0 (case (cirka$bytes_range_eq_loop s k p 0 m) (e Int#) Int#
+                  (0 (cirka$bytes_find_loop s (prim add k 1) last p first m))
+                   (_ k)))
+              (_ -1))))
+       (_ -1))))
+
+; The first index in [i, j) (clamped) where p starts (p fits before j),
+; or -1. The empty pattern is found at i.
+(def cirka$bytes_find (-> Bytes Int# Int# Bytes Int#)
+  (lam ((s Bytes) (i Int#) (j Int#) (p Bytes))
+    (let! (n Int# (prim bytes_len s))
+      (let! (a Int# (cirka$clamp i 0 n))
+        (let! (b Int# (cirka$clamp j a n))
+          (let! (m Int# (prim bytes_len p))
+            (case m (c Int#) Int#
+              (0 a)
+               (_ (cirka$bytes_find_loop s a (prim sub b m) p (prim bytes_get p 0) m)))))))))
+
+; Copies s[i..j] (clamped) to u at off (clamped to fit) and returns u.
+(def cirka$bytes_write (-> Bytes Int# Bytes Int# Int# Bytes)
+  (lam ((u Bytes) (off Int#) (s Bytes) (i Int#) (j Int#))
+    (let! (n Int# (prim bytes_len s))
+      (let! (a Int# (cirka$clamp i 0 n))
+        (let! (b Int# (cirka$clamp j a n))
+          (let! (o Int# (cirka$clamp off 0 (prim bytes_len u)))
+            (let! (room Int# (prim sub (prim bytes_len u) o))
+              (cirka$bytes_copy_at u o s a (cirka$clamp (prim sub b a) 0 room)))))))))

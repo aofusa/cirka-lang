@@ -1,0 +1,12 @@
+-- Array indices are checked at run time (FEAT-0211): an update out of
+-- bounds panics before touching memory (the check can be removed by a
+-- proof from v0.0.4).
+import Data.Array.Unboxed as U
+import Data.Array as A
+
+main : IO ()
+main = do
+  putStrLn (show (A.get (A.fromList [1, 2]) 2))
+  putStrLn "before"
+  let u = U.write (U.zeros 4) 4 (7 : Int)
+  printInt (U.size (freeze u))

@@ -208,6 +208,9 @@ pub enum Global {
         field_mults: Vec<Mult>,
         /// Field plicities (implicit fields are not written in patterns).
         field_icits: Vec<Icit>,
+        /// Fields declared `ω` (spec-v0.0.2.md §5.6): unrestricted even in
+        /// a linear value. Other fields are used as often as the value.
+        field_shared: Vec<bool>,
         tag: usize,
     },
     Prim {
@@ -273,6 +276,14 @@ pub enum Prim {
     StrIndex,
     StrConcat,
     StrEq,
+    // Byte-level string operations (spec-v0.0.2.md §7.4).
+    StrSlice,
+    StrFindByte,
+    StrFind,
+    StrRangeEq,
+    StrNew,
+    StrWrite,
+    StrSetByte,
     IntToStr,
     FloatToStr,
     CharToStr,
@@ -294,6 +305,28 @@ pub enum Prim {
     // Resources: giving up a value that holds only memory.
     DropFree,
     ReleaseFree,
+    // Arrays (spec-v0.0.2.md §7): boxed `Array a` and unboxed `UArray a`
+    // (8-byte words). Updates of a unique array are in place.
+    Array,
+    UArray,
+    ArrayNew,
+    ArrayEmpty,
+    ArraySize,
+    ArrayIndex,
+    ArrayRead,
+    ArrayLength,
+    ArrayWrite,
+    ArrayThaw,
+    UArrayNew,
+    UArraySize,
+    UArrayLength,
+    UArrayThaw,
+    UArrayIndexWord,
+    UArrayReadWord,
+    UArrayWriteWord,
+    UArrayIndexFloat,
+    UArrayReadFloat,
+    UArrayWriteFloat,
 }
 
 impl Prim {
@@ -346,6 +379,13 @@ impl Prim {
         ("primStrIndex", Prim::StrIndex),
         ("primStrConcat", Prim::StrConcat),
         ("primStrEq", Prim::StrEq),
+        ("primStrSlice", Prim::StrSlice),
+        ("primStrFindByte", Prim::StrFindByte),
+        ("primStrFind", Prim::StrFind),
+        ("primStrRangeEq", Prim::StrRangeEq),
+        ("primStrNew", Prim::StrNew),
+        ("primStrWrite", Prim::StrWrite),
+        ("primStrSetByte", Prim::StrSetByte),
         ("primIntToStr", Prim::IntToStr),
         ("primFloatToStr", Prim::FloatToStr),
         ("primCharToStr", Prim::CharToStr),
@@ -369,6 +409,26 @@ impl Prim {
         ("freeze", Prim::Freeze),
         ("dropFree", Prim::DropFree),
         ("releaseFree", Prim::ReleaseFree),
+        ("Array", Prim::Array),
+        ("UArray", Prim::UArray),
+        ("primArrayNew", Prim::ArrayNew),
+        ("primArrayEmpty", Prim::ArrayEmpty),
+        ("primArraySize", Prim::ArraySize),
+        ("primArrayIndex", Prim::ArrayIndex),
+        ("primArrayRead", Prim::ArrayRead),
+        ("primArrayLength", Prim::ArrayLength),
+        ("primArrayWrite", Prim::ArrayWrite),
+        ("primArrayThaw", Prim::ArrayThaw),
+        ("primUArrayNew", Prim::UArrayNew),
+        ("primUArraySize", Prim::UArraySize),
+        ("primUArrayLength", Prim::UArrayLength),
+        ("primUArrayThaw", Prim::UArrayThaw),
+        ("primUArrayIndexWord", Prim::UArrayIndexWord),
+        ("primUArrayReadWord", Prim::UArrayReadWord),
+        ("primUArrayWriteWord", Prim::UArrayWriteWord),
+        ("primUArrayIndexFloat", Prim::UArrayIndexFloat),
+        ("primUArrayReadFloat", Prim::UArrayReadFloat),
+        ("primUArrayWriteFloat", Prim::UArrayWriteFloat),
     ];
 
     pub fn from_name(s: &str) -> Option<Prim> {
@@ -395,6 +455,8 @@ impl Prim {
                 | Prim::IO
                 | Prim::IO1
                 | Prim::Unique
+                | Prim::Array
+                | Prim::UArray
         )
     }
 }
@@ -489,6 +551,8 @@ pub struct Builtins {
     pub result: Option<GName>,
     pub ok: Option<GName>,
     pub err: Option<GName>,
+    // Unrestricted values (§5.6).
+    pub mk_ur: Option<GName>,
 }
 
 impl Program {

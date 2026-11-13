@@ -1,0 +1,25 @@
+-- max-array-copies: 0
+-- Growable vectors (FEAT-0211): push with doubling, read / write / swap /
+-- modify / pop in place, and conversion to a list.
+import Data.Vec as V
+import Data.Vec (Vec)
+
+build : (1 v : Vec Int) -> Int -> Int -> Vec Int
+build v i n = if i >= n then v else build (V.push v (i * i)) (i + 1) n
+
+sumAll : (1 v : Vec Int) -> Int -> Int -> Int
+sumAll v i acc = case V.length v of
+  (v, n) => if i >= n then acc else case V.read v i of
+    (v, MkUr x) => sumAll v (i + 1) (acc + x)
+
+main : IO ()
+main = do
+  printInt (sumAll (build (V.empty ()) 0 1000) 0 0)
+  putStrLn (show (V.toList (V.swap (V.fromList ["a", "b", "c"]) 0 2)))
+  putStrLn (show (popTwice (V.fromList [1, 2, 3])))
+  putStrLn (show (V.toList (V.modify (V.replicate 3 1) 1 (\x => x + 10))))
+
+popTwice : (1 v : Vec Int) -> (List Int, Maybe Int, Maybe Int)
+popTwice v = case V.pop v of
+  (v, MkUr a) => case V.pop v of
+    (v, MkUr b) => (V.toList v, a, b)

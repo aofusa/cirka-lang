@@ -1,0 +1,29 @@
+-- Strings (FEAT-0211): `Str` views (slicing, searching, splitting,
+-- trimming), parsing, UTF-8 characters and building with one allocation.
+import Data.String as S
+import Data.String (Str, toStr, fromStr)
+
+main : IO ()
+main = do
+  let t = toStr "  hello, world  \nsecond line\r\nthird\n"
+  putStrLn (show (S.lines t))
+  putStrLn (show (S.words t))
+  putStrLn (show (S.trim (S.take 16 t)))
+  putStrLn (show (S.splitOn ", " (S.trim t)))
+  putStrLn (show (S.indexOf t "world"))
+  putStrLn (show (S.indexOfChar t 'w'))
+  putStrLn (show (S.contains t "line"))
+  putStrLn (show (S.startsWith t "  he"))
+  putStrLn (show (S.endsWith t "third\n"))
+  putStrLn (show (S.toInt (toStr "-123")))
+  putStrLn (show (S.toInt (toStr "12a")))
+  putStrLn (show (S.chars (toStr "aé日")))
+  putStrLn (S.toUpper (toStr "abcXyz1"))
+  putStrLn (S.intercalate ", " ("a" :: "b" :: "c" :: Nil))
+  putStr (S.unlines ("x" :: "y" :: Nil))
+  putStrLn (S.replicate 3 "ab")
+  putStrLn (S.fromChars ('h' :: 'é' :: Nil))
+  putStrLn (show (toStr "abc" == S.slice (toStr "xabcx") 1 4))
+  putStrLn (show (compare (toStr "abc") (toStr "abd")))
+  S.putStrLn (S.slice t 2 7)
+  putStrLn (S.concatStr (S.words t))

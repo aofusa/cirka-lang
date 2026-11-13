@@ -1,0 +1,14 @@
+-- `Ur` holds its value unrestricted (spec-v0.0.2.md §5.6): a closure that
+-- captures a linear value cannot be put in it.
+data Tok : LType where
+  MkTok : Int -> Tok
+
+use : (1 t : Tok) -> Int -> Int
+use t k = case t of
+  MkTok n => n + k
+
+wrap : (1 t : Tok) -> Ur (Int -> Int)
+wrap t = MkUr (\k => use t k)
+
+main : IO ()
+main = pure ()

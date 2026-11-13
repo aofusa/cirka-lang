@@ -62,6 +62,12 @@ pub struct Module {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Import {
     pub path: Vec<String>,
+    /// `import A.B as X`: the names of `A.B` are visible only as `X.name`
+    /// (spec-v0.0.2.md §7.1).
+    pub alias: Option<(Vec<String>, Span)>,
+    /// `import A.B (x, (+))`: only these names are visible unqualified
+    /// (with an alias, in addition to `X.name`).
+    pub names: Option<Vec<(String, Span)>>,
     pub span: Span,
 }
 

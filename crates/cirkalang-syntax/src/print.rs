@@ -9,7 +9,15 @@ pub fn print_module(m: &Module) -> String {
         let _ = writeln!(s, "(module {})", n.join("."));
     }
     for i in &m.imports {
-        let _ = writeln!(s, "(import {})", i.path.join("."));
+        let _ = write!(s, "(import {}", i.path.join("."));
+        if let Some((a, _)) = &i.alias {
+            let _ = write!(s, " as {}", a.join("."));
+        }
+        if let Some(ns) = &i.names {
+            let ns: Vec<&str> = ns.iter().map(|(n, _)| n.as_str()).collect();
+            let _ = write!(s, " ({})", ns.join(" "));
+        }
+        s.push_str(")\n");
     }
     for d in &m.decls {
         s.push_str(&decl(d));

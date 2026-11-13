@@ -1,0 +1,22 @@
+["  hello, world  ", "second line", "third"]
+["hello,", "world", "second", "line", "third"]
+"hello, world"
+["hello", "world  \nsecond line\r\nthird"]
+Just 9
+Just 9
+True
+True
+True
+Just (-123)
+Nothing
+['a', 'é', '日']
+ABCXYZ1
+a, b, c
+x
+y
+ababab
+hé
+True
+LT
+hello
+hello,worldsecondlinethird

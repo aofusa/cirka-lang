@@ -1,0 +1,39 @@
+-- max-array-copies: 0
+-- Unboxed arrays (FEAT-0211): the `Unbox` element types, shared and
+-- unique operations, and an in-place sieve without copies.
+import Data.Array.Unboxed as U
+import Data.Array.Unboxed (UArray, (!))
+
+cross : (1 u : Unique (UArray Bool)) -> Int -> Int -> Int -> Unique (UArray Bool)
+cross u j step n = if j >= n then u else cross (U.write u j False) (j + step) step n
+
+sieve : (1 u : Unique (UArray Bool)) -> Int -> Int -> Unique (UArray Bool)
+sieve u i n =
+  if i * i >= n then u
+  else case U.read u i of
+    (u, MkUr True) => sieve (cross u (i * i) i n) (i + 1) n
+    (u, MkUr False) => sieve u (i + 1) n
+
+countTrue : UArray Bool -> Int
+countTrue a = U.foldl (\c, b => if b then c + 1 else c) 0 a
+
+main : IO ()
+main = do
+  let a = U.generate 5 (\i => i * 3)
+  putStrLn (show a)
+  printInt (a ! 2)
+  let f = U.fromList [1.5, 2.5]
+  putStrLn (show f)
+  let c = U.fromList ['h', 'i']
+  putStrLn (show c)
+  let b = U.map (\x => x > 5) a
+  putStrLn (show b)
+  let w = U.fromList [primIntToUInt 7]
+  putStrLn (show w)
+  let s = U.swap (U.new 3 'x') 0 1
+  putStrLn (show (freeze (U.write s 2 'y')))
+  printInt (U.foldl (\s, x => s + x) 0 a)
+  let n = 10000
+  let primes = freeze (sieve (U.write (U.write (U.new n True) 0 False) 1 False) 2 n)
+  printInt (countTrue primes)
+  putStrLn (show (U.get primes 9973))

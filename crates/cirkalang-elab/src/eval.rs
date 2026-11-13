@@ -11,6 +11,8 @@ use std::rc::Rc;
 #[derive(Default)]
 pub struct Metas {
     pub sol: RefCell<Vec<Option<Val>>>,
+    /// Metas made by pruning another one: new → the pruned one.
+    pub pruned_from: RefCell<HashMap<MetaId, MetaId>>,
 }
 
 impl Metas {
@@ -18,6 +20,16 @@ impl Metas {
         let mut s = self.sol.borrow_mut();
         s.push(None);
         (s.len() - 1) as MetaId
+    }
+
+    /// The meta the elaborator created that `m` stands for (itself, or the
+    /// one it was pruned from).
+    pub fn origin(&self, mut m: MetaId) -> MetaId {
+        let p = self.pruned_from.borrow();
+        while let Some(&o) = p.get(&m) {
+            m = o;
+        }
+        m
     }
 
     pub fn get(&self, m: MetaId) -> Option<Val> {
@@ -623,6 +635,63 @@ impl<'a> Ev<'a> {
         Ok(())
     }
 
+    /// `?m2 x1 .. xn` where some `xi` are out of the solution's scope and
+    /// all are distinct variables: solves `?m2 := \xs. ?m3 (kept xs)` with a
+    /// fresh `?m3` and renames `?m3 (kept xs)` (pruning).
+    fn prune(
+        &self,
+        m: MetaId,
+        dom: u32,
+        cod: u32,
+        ren: &HashMap<u32, u32>,
+        m2: MetaId,
+        sp: &[Elim],
+    ) -> Result<Option<Term>, UnifyError> {
+        let mut vars = Vec::new();
+        for e in sp {
+            let Elim::App(a, i) = e else { return Ok(None) };
+            match self.force(a.clone()) {
+                Val::Neutral(Head::Var(x), s)
+                    if s.is_empty() && !vars.iter().any(|(y, _)| *y == x) =>
+                {
+                    vars.push((x, *i));
+                }
+                _ => return Ok(None),
+            }
+        }
+        if vars.iter().all(|(x, _)| ren.contains_key(x)) {
+            return Ok(None);
+        }
+        let m3 = self.metas.fresh();
+        self.metas.pruned_from.borrow_mut().insert(m3, m2);
+        let n = vars.len() as u32;
+        let mut body = Term::Meta(m3);
+        for (k, (x, i)) in vars.iter().enumerate() {
+            if ren.contains_key(x) {
+                body = Term::App(Rc::new(body), Rc::new(Term::Var(n - 1 - k as u32)), *i);
+            }
+        }
+        for (k, (_, i)) in vars.iter().enumerate().rev() {
+            body = Term::Lam(
+                format!("x{k}").into(),
+                Mult::Many,
+                *i,
+                Rc::new(Term::Error),
+                Rc::new(body),
+            );
+        }
+        let v = self.eval(&Vec::new(), &body);
+        self.metas.sol.borrow_mut()[m2 as usize] = Some(v);
+        let mut t = Term::Meta(m3);
+        for (x, i) in &vars {
+            if let Some(y) = ren.get(x) {
+                t = Term::App(Rc::new(t), Rc::new(Term::Var(dom - 1 - y)), *i);
+            }
+        }
+        let _ = (m, cod);
+        Ok(Some(t))
+    }
+
     /// Renames `v` (at level `cod`) into the solution context of `dom`
     /// variables, with occurs and scope checks.
     fn rename(
@@ -641,6 +710,12 @@ impl<'a> Ev<'a> {
         };
         Ok(match &v {
             Val::Neutral(h, sp) => {
+                if let Head::Meta(m2) = h
+                    && *m2 != m
+                    && let Some(t) = self.prune(m, dom, cod, ren, *m2, sp)?
+                {
+                    return Ok(t);
+                }
                 let mut t = match h {
                     Head::Meta(m2) if *m2 == m => return Err(UnifyError::Meta),
                     Head::Meta(m2) => Term::Meta(*m2),

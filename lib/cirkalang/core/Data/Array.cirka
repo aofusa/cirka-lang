@@ -1,0 +1,129 @@
+-- Boxed arrays (spec-v0.0.2.md §7.2).
+--
+-- An `Array a` is shared and read-only. A `Unique (Array a)` is updated in
+-- place: an update checks at run time that nothing else refers to the
+-- array and copies it first otherwise, so the type is a promise of speed,
+-- not of safety. The names follow the other containers; import the module
+-- with an alias (`import Data.Array as A`) to use them as `A.write`.
+module Data.Array
+
+infixl 9 !
+
+prim Array : Type -> Type
+
+private prim primArrayNew : {a : Type} -> Int -> a -> Unique (Array a)
+private prim primArrayEmpty : {a : Type} -> () -> Unique (Array a)
+private prim primArraySize : {a : Type} -> Array a -> Int
+private prim primArrayIndex : {a : Type} -> Array a -> Int -> a
+private prim primArrayRead : {a : Type} -> (1 u : Unique (Array a)) -> Int -> Pair (Unique (Array a)) (Ur a)
+private prim primArrayLength : {a : Type} -> (1 u : Unique (Array a)) -> Pair (Unique (Array a)) Int
+private prim primArrayWrite : {a : Type} -> (1 u : Unique (Array a)) -> Int -> a -> Unique (Array a)
+private prim primArrayThaw : {a : Type} -> Array a -> Unique (Array a)
+
+-- ---- unique arrays (in place) ----
+
+-- A fresh array of `n` elements, all `x` (empty when `n <= 0`).
+new : Int -> a -> Unique (Array a)
+new n x = primArrayNew n x
+
+-- A fresh empty array.
+empty : () -> Unique (Array a)
+empty u = primArrayEmpty u
+
+-- A unique array with the contents of `arr`: `arr` itself when nothing
+-- else refers to it, otherwise a copy.
+thaw : Array a -> Unique (Array a)
+thaw arr = primArrayThaw arr
+
+-- The array back and the element at index `i` (unrestricted: the array
+-- shares its elements). Out of bounds panics.
+read : (1 u : Unique (Array a)) -> Int -> (Unique (Array a), Ur a)
+read u i = primArrayRead u i
+
+-- Stores `x` at index `i`. Out of bounds panics.
+write : (1 u : Unique (Array a)) -> Int -> a -> Unique (Array a)
+write u i x = primArrayWrite u i x
+
+-- The number of elements, and the array back.
+length : (1 u : Unique (Array a)) -> (Unique (Array a), Int)
+length u = primArrayLength u
+
+-- Applies `f` to the element at index `i`.
+modify : (1 u : Unique (Array a)) -> Int -> (a -> a) -> Unique (Array a)
+modify u i f = case read u i of
+  (u, MkUr x) => write u i (f x)
+
+-- Swaps the elements at indices `i` and `j`.
+swap : (1 u : Unique (Array a)) -> Int -> Int -> Unique (Array a)
+swap u i j = case read u i of
+  (u, MkUr x) => case read u j of
+    (u, MkUr y) => write (write u i y) j x
+
+-- A unique array holding the elements of a list.
+fromListU : List a -> Unique (Array a)
+fromListU Nil = empty ()
+fromListU (x :: xs) = fill (new (Prelude.length xs + 1) x) 1 xs
+
+private fill : (1 u : Unique (Array a)) -> Int -> List a -> Unique (Array a)
+fill u _ Nil = u
+fill u i (x :: xs) = fill (write u i x) (i + 1) xs
+
+-- ---- shared arrays ----
+
+-- The number of elements.
+size : Array a -> Int
+size arr = primArraySize arr
+
+-- The element at index `i`. Out of bounds panics.
+(!) : Array a -> Int -> a
+arr ! i = primArrayIndex arr i
+
+-- The element at index `i`, if there is one.
+get : Array a -> Int -> Maybe a
+get arr i = if i >= 0 && i < size arr then Just (arr ! i) else Nothing
+
+fromList : List a -> Array a
+fromList xs = freeze (fromListU xs)
+
+toList : Array a -> List a
+toList arr = toListFrom arr (size arr - 1) Nil
+
+private toListFrom : Array a -> Int -> List a -> List a
+toListFrom arr i acc = if i < 0 then acc else toListFrom arr (i - 1) (arr ! i :: acc)
+
+-- The array of `f 0`, ..., `f (n - 1)`.
+generate : Int -> (Int -> a) -> Array a
+generate n f =
+  if n <= 0 then freeze (empty ())
+  else freeze (generateFrom n f (new n (f 0)) 1)
+
+private generateFrom : Int -> (Int -> a) -> (1 u : Unique (Array a)) -> Int -> Unique (Array a)
+generateFrom n f u i = if i >= n then u else generateFrom n f (write u i (f i)) (i + 1)
+
+map : (a -> b) -> Array a -> Array b
+map f arr = generate (size arr) (\i => f (arr ! i))
+
+foldl : (b -> a -> b) -> b -> Array a -> b
+foldl f z arr = foldlFrom f z arr 0
+
+private foldlFrom : (b -> a -> b) -> b -> Array a -> Int -> b
+foldlFrom f z arr i = if i >= size arr then z else foldlFrom f (f z (arr ! i)) arr (i + 1)
+
+foldr : (a -> b -> b) -> b -> Array a -> b
+foldr f z arr = foldrFrom f z arr (size arr - 1)
+
+private foldrFrom : (a -> b -> b) -> b -> Array a -> Int -> b
+foldrFrom f z arr i = if i < 0 then z else foldrFrom f (f (arr ! i) z) arr (i - 1)
+
+-- No `Functor Array`: the Core `Array` type is always fully applied
+-- (spec-v0.0.2.md §7.2). Use `map`.
+
+impl Eq a => Eq (Array a) where
+  -- `&&` evaluates both sides (spec-v0.0.1.md §5): test the sizes first.
+  a == b = if size a == size b then eqFrom a b 0 else False
+
+private eqFrom : Eq a => Array a -> Array a -> Int -> Bool
+eqFrom a b i = if i >= size a then True else if a ! i == b ! i then eqFrom a b (i + 1) else False
+
+impl Show a => Show (Array a) where
+  show arr = show (toList arr)

@@ -58,6 +58,19 @@ struct Scope {
     holders: Vec<Span>,
 }
 
+/// An argument assumed used once until its type is known (see
+/// `defer_resource_free`).
+struct DeferredRf {
+    cx: Cxt,
+    ty: Val,
+    /// The linear variables it consumed.
+    linear: Vec<(Rc<str>, Span)>,
+    /// The first holder it captured.
+    holder: Option<Span>,
+    code: &'static str,
+    what: &'static str,
+}
+
 #[derive(Clone)]
 enum Shape {
     Con(String, Vec<u32>),
@@ -140,6 +153,9 @@ pub struct Elab<'r> {
     /// (spec-v0.0.2.md §5.1): `(cx, type, sort, span, what)` must be
     /// shareable.
     shareable: RefCell<Vec<(Cxt, Val, Val, Span, &'static str)>>,
+    /// Arguments of `ω` parameters whose type was not yet known to be
+    /// resource-free, with what they consume (checked at the end).
+    deferred_rf: RefCell<Vec<DeferredRf>>,
     /// Linear binders of the definition that are left unused on some path
     /// and may need a finalizer (name, span), for the RAII pass.
     fin_spans: RefCell<Vec<(Name, Span)>>,
@@ -184,6 +200,7 @@ impl<'r> Elab<'r> {
             mk_unit: f("MkUnit"),
             pair: f("Pair"),
             mk_pair: f("MkPair"),
+            mk_ur: f("MkUr"),
             list: f("List"),
             nil: f("Nil"),
             cons: f("::"),
@@ -238,6 +255,7 @@ impl<'r> Elab<'r> {
             pending: RefCell::new(Vec::new()),
             ltype_vars: Cell::new(false),
             shareable: RefCell::new(Vec::new()),
+            deferred_rf: RefCell::new(Vec::new()),
             fin_spans: RefCell::new(Vec::new()),
             fin_span_default: Cell::new(Span::DUMMY),
             fin_held: RefCell::new(HashSet::new()),
@@ -387,6 +405,10 @@ impl<'r> Elab<'r> {
         .with_note("a closure or an action keeps the linear value it was built from")
     }
 
+    fn is_unique(&self, ty: &Val) -> bool {
+        matches!(self.whnf(ty), Val::Neutral(Head::Global(g), _) if Some(g) == self.prog.builtins.unique)
+    }
+
     /// Records that the linear value at `at` (of type `ty`), held by the
     /// value being built, has a finalizer.
     fn note_held(&self, cx: &Cxt, at: Span, ty: &Val) {
@@ -476,6 +498,67 @@ impl<'r> Elab<'r> {
         for (cx, t, sort, span, what) in items {
             self.check_shareable_one(&cx, &t, &sort, span, what);
         }
+        let items = std::mem::take(&mut *self.deferred_rf.borrow_mut());
+        for d in items {
+            if self.resource_free(&d.cx, &d.ty) {
+                continue;
+            }
+            for (name, at) in &d.linear {
+                self.report_captured(*at, name, d.code, d.what);
+            }
+            if let Some(at) = d.holder {
+                self.report_shared_holder(at, d.what);
+            }
+        }
+    }
+
+    /// Records what the scope of an argument consumed, to report it if the
+    /// argument's type turns out not to be resource-free.
+    fn defer_resource_free(
+        &self,
+        cx: &Cxt,
+        saved: &Scope,
+        ty: &Val,
+        code: &'static str,
+        what: &'static str,
+    ) {
+        let mut linear = Vec::new();
+        for l in 0..saved.uses.len() {
+            let cur = &cx.uses[l];
+            if cur.mult() != Mult::Zero
+                && cx.mults[l] == Mult::One
+                && !self.resource_free(cx, &self.ty_val(cx, l as u32))
+            {
+                let at = cur.spans.first().copied().unwrap_or(cx.spans[l]);
+                linear.push((cx.names[l].clone(), at));
+            }
+        }
+        let holder = cx.holders.first().copied();
+        if linear.is_empty() && holder.is_none() {
+            return;
+        }
+        self.deferred_rf.borrow_mut().push(DeferredRf {
+            cx: cx.clone(),
+            ty: ty.clone(),
+            linear,
+            holder,
+            code,
+            what,
+        });
+    }
+
+    fn report_captured(&self, at: Span, name: &str, code: &str, what: &str) {
+        self.report(
+            self.error(
+                code,
+                at,
+                format!("linear variable `{name}` is captured by {what}"),
+            )
+            .with_note(format!(
+                "it may be evaluated more than once, so `{name}` could be used more than once"
+            ))
+            .with_help("use the closure linearly, or pass the value as an argument"),
+        );
     }
 
     /// Whether the type (constructor) `t` of sort `sort` is linear: a type
@@ -656,18 +739,7 @@ impl<'r> Elab<'r> {
                 && !self.resource_free(cx, &self.ty_val(cx, l as u32))
             {
                 let at = cur.spans.first().copied().unwrap_or(cx.spans[l]);
-                self.report(
-                    self.error(
-                        code,
-                        at,
-                        format!("linear variable `{}` is captured by {what}", cx.names[l]),
-                    )
-                    .with_note(format!(
-                        "it may be evaluated more than once, so `{}` could be used more than once",
-                        cx.names[l]
-                    ))
-                    .with_help("use the closure linearly, or pass the value as an argument"),
-                );
+                self.report_captured(at, &cx.names[l], code, what);
                 f = Mult::One;
             }
             let mut spans = s.spans.clone();
@@ -932,6 +1004,16 @@ impl<'r> Elab<'r> {
                 self.prog.prim_of(g),
                 Some(Prim::Int | Prim::UInt | Prim::Float | Prim::Char | Prim::String)
             ),
+            // Unboxed arrays hold words; boxed ones hold their elements
+            // (spec-v0.0.2.md §7).
+            Val::Neutral(Head::Global(g), sp) if sp.len() == 1 => match self.prog.prim_of(g) {
+                Some(Prim::UArray) => true,
+                Some(Prim::Array) => match &sp[0] {
+                    Elim::App(a, _) => self.resource_free_go(lvl, a, visiting, blocked),
+                    _ => false,
+                },
+                _ => false,
+            },
             Val::Data(d, args) => {
                 if visiting.contains(&d) {
                     return true;
@@ -1590,6 +1672,24 @@ impl<'r> Elab<'r> {
         // (`1·ω = 1`, spec §4.5).
         let is_con =
             matches!(h.kind, ExprKind::Global(g) if matches!(self.prog.get(g), Global::Con { .. }));
+        // Explicit fields declared `ω` keep their multiplicity (§5.6).
+        let con_shared: Vec<bool> = match &h.kind {
+            ExprKind::Global(g) => match self.prog.get(*g) {
+                Global::Con {
+                    field_shared,
+                    field_icits,
+                    ..
+                } => field_shared
+                    .iter()
+                    .zip(field_icits)
+                    .filter(|(_, i)| **i == Icit::Expl)
+                    .map(|(s, _)| *s)
+                    .collect(),
+                _ => Vec::new(),
+            },
+            _ => Vec::new(),
+        };
+        let mut expl_k = 0;
         let mut span = sp(h);
         // A linear argument that is not a variable (whose usage is tracked).
         let mut lin_arg = None;
@@ -1633,7 +1733,9 @@ impl<'r> Elab<'r> {
             }
             match self.whnf(&ty) {
                 Val::Pi(_, m, Icit::Expl, dom, c) => {
-                    let known = if m == Mult::Many && !is_con && rig != Mult::Zero {
+                    let con_field = is_con && !con_shared.get(expl_k).copied().unwrap_or(false);
+                    expl_k += 1;
+                    let known = if m == Mult::Many && !con_field && rig != Mult::Zero {
                         self.resource_free_known(cx, &dom)
                     } else {
                         Some(false)
@@ -1644,30 +1746,40 @@ impl<'r> Elab<'r> {
                         // check it as a scope and scale its usage afterwards.
                         let saved = self.enter_scope(cx);
                         let at = self.check(cx, a, &dom, Mult::One);
-                        let f = if self.resource_free(cx, &dom) {
-                            Mult::One
-                        } else {
-                            Mult::Many
-                        };
                         let (code, what) = if matches!(a.kind, ExprKind::Lam(..)) {
                             ("E0305", "a closure used many times")
                         } else {
                             ("E0303", "an argument used many times")
                         };
+                        let f = match self.resource_free_known(cx, &dom) {
+                            Some(true) => Mult::One,
+                            Some(false) => Mult::Many,
+                            // Still blocked (`Array ?n` with a literal whose
+                            // type is decided later): assume it is used once
+                            // and check again when the definition is done.
+                            None => {
+                                self.defer_resource_free(cx, &saved, &dom, code, what);
+                                Mult::One
+                            }
+                        };
                         self.exit_scope(cx, saved, rig.times(f), code, what);
                         at
                     } else {
-                        let m = if m == Mult::Many && (is_con || known == Some(true)) {
+                        let m = if m == Mult::Many && (con_field || known == Some(true)) {
                             Mult::One
                         } else {
                             m
                         };
                         self.check(cx, a, &dom, rig.times(m))
                     };
+                    // `Unique t` is only a promise of speed (updates check
+                    // at run time that the value is not shared, §7.2):
+                    // holding one is harmless.
                     if m != Mult::Zero
                         && lin_arg.is_none()
                         && !matches!(a.kind, ExprKind::Local(_))
                         && self.univ_of(cx, &dom) == Univ::LType
+                        && !self.is_unique(&dom)
                     {
                         lin_arg = Some(sp(a));
                         self.note_held(cx, sp(a), &dom);
@@ -2488,6 +2600,10 @@ impl<'r> Elab<'r> {
             span,
         };
         let mut body = self.compile(cx, rows, &goal, Mult::One, &mut ci);
+        // The body runs at each call: what it holds is not shared.
+        if lams.iter().any(|(_, m, _, _)| *m != Mult::Zero) {
+            cx.holders.clear();
+        }
         for _ in 0..lams.len() {
             self.pop(cx, true);
         }
@@ -2606,6 +2722,24 @@ impl<'r> Elab<'r> {
             .find(|(l, _)| *l == x)
             .map(|q| q.1.clone())
             .unwrap_or(p);
+        // Still unknown (`\b => if b then ..` checked before its argument):
+        // the constructor decides the data type.
+        if let (Val::Neutral(Head::Meta(_), _), PatKind::Con(c, _)) = (&xty, &p.kind)
+            && let Global::Con { data, .. } = self.prog.get(*c)
+            && let Some(dty) = self.prog.type_of(*data)
+        {
+            let mut v = self.ev().eval(&Vec::new(), dty);
+            let mut dv = Val::Neutral(Head::Global(*data), Vec::new());
+            while let Val::Pi(_, _, i, _, clo) = self.whnf(&v) {
+                let m = self.fresh_meta(cx, p.span);
+                let mv = self.eval(cx, &m);
+                dv = self.ev().apply(dv, mv.clone(), i);
+                v = self.ev().inst(&clo, mv);
+            }
+            if self.ev().unify(cx.lvl(), &xty, &dv).is_ok() {
+                xty = self.whnf(&self.ty_val(cx, x));
+            }
+        }
         match &p.kind {
             PatKind::Con(..) => self.split_con(cx, rows, x, &xty, goal, rig, ci, p.span),
             PatKind::Lit(..) => self.split_lit(cx, rows, x, &xty, goal, rig, ci),
@@ -2721,6 +2855,7 @@ impl<'r> Elab<'r> {
             let Global::Con {
                 ty: cty,
                 field_icits,
+                field_shared,
                 ..
             } = self.prog.get(c).clone()
             else {
@@ -2761,6 +2896,8 @@ impl<'r> Elab<'r> {
                 };
                 let m = match (xm, fm) {
                     (Mult::Zero, _) | (_, Mult::Zero) => Mult::Zero,
+                    // A field declared `ω` is unrestricted (§5.6).
+                    (Mult::One, _) if field_shared.get(k).copied().unwrap_or(false) => Mult::Many,
                     (Mult::One, _) => Mult::One,
                     (Mult::Many, _) => Mult::Many,
                 };
@@ -3173,10 +3310,11 @@ impl<'r> Elab<'r> {
                     self.zonk(lvl, &q)
                 }
                 None => {
-                    let reported = &mut self.meta_reported.borrow_mut()[*m as usize];
+                    let o = self.metas.origin(*m) as usize;
+                    let reported = &mut self.meta_reported.borrow_mut()[o];
                     if !*reported {
                         *reported = true;
-                        let span = self.meta_spans.borrow()[*m as usize];
+                        let span = self.meta_spans.borrow()[o];
                         self.report(
                             self.error("E1210", span, "cannot infer this implicit argument or `_`")
                                 .with_help("add a type annotation"),
@@ -3583,6 +3721,24 @@ impl<'r> Elab<'r> {
                 ps.push((x, self.ev().quote(l, &a)));
                 dt = self.ev().inst(&clo, Val::var(l));
             }
+            // Fields declared `(ω x : A)` (spec-v0.0.2.md §5.6).
+            let mut shared_names: Vec<String> = Vec::new();
+            if let rast::ConBody::Sig(t) = &c.body {
+                let mut e = t;
+                while let ExprKind::Pi {
+                    mult,
+                    implicit,
+                    name,
+                    cod,
+                    ..
+                } = &e.kind
+                {
+                    if let (Some(rast::Mult::Many), false, Some(n)) = (mult, implicit, name) {
+                        shared_names.push(n.clone());
+                    }
+                    e = cod;
+                }
+            }
             let sig = match &c.body {
                 rast::ConBody::Sig(t) => self.check_type(&mut cx, t),
                 rast::ConBody::Fields(fs) => {
@@ -3615,6 +3771,7 @@ impl<'r> Elab<'r> {
             let mut v = self.eval(&cx, &sig);
             let mut mults = Vec::new();
             let mut icits = Vec::new();
+            let mut shared = Vec::new();
             let mut fcx = cx.clone();
             // The universe of the data type itself is computed with the
             // propagating parameters taken as shareable.
@@ -3637,6 +3794,7 @@ impl<'r> Elab<'r> {
                         }
                         mults.push(m);
                         icits.push(i);
+                        shared.push(m == Mult::Many && shared_names.iter().any(|n| **n == *x));
                         let l = self.push(&mut fcx, &x, m, &a, None, c.span, None);
                         v = self.ev().inst(&clo, Val::var(l));
                     }
@@ -3682,6 +3840,7 @@ impl<'r> Elab<'r> {
                 nparams,
                 field_mults: mults,
                 field_icits: icits,
+                field_shared: shared,
                 tag,
             };
             self.prog.order.push(c.name);

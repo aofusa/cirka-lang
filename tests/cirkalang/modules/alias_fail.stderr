@@ -1,0 +1,10 @@
+error[E1120]: `L` is the alias of two modules
+ --> tests/cirkalang/modules/alias_fail/Main.cirka:4:17
+  |
+4 | import Other as L
+  |                 ^ already the alias of `Lib`
+error[E1120]: the alias `Other` is the name of a module
+ --> tests/cirkalang/modules/alias_fail/Main.cirka:6:15
+  |
+6 | import Lib as Other
+  |               ^^^^^ choose another alias

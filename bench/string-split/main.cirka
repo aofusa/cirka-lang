@@ -1,0 +1,39 @@
+module Main
+
+-- String processing (FEAT-0211): builds a text of `n` lines with a
+-- `Builder` (in place), then goes through its lines and words as `Str`
+-- views (no copies), parses numbers and searches substrings. The same
+-- work as rust/main.rs.
+
+import Data.String as S
+import Data.String (Str, Builder, toStr)
+
+-- "item<i> <i*7%1000>  tag<i%13> \n"
+lines : (1 b : Builder) -> Int -> Int -> Builder
+lines b i n =
+  if i >= n then b
+  else
+    let b2 = S.appendInt (S.append (S.appendInt (S.append b "item") i) " ") (i * 7 % 1000) in
+    lines (S.append (S.appendInt (S.append b2 "  tag") (i % 13)) " \n") (i + 1) n
+
+-- (words, sum of the second words, lines with "tag7", bytes of trimmed lines)
+data Stats = MkStats Int Int Int Int
+
+-- Per line: the number of words and the value of the second one.
+data Words = MkWords Int Int
+
+word : Words -> Str -> Words
+word (MkWords k v) w = MkWords (k + 1) (if k == 1 then fromMaybe 0 (S.toInt w) else v)
+
+step : Stats -> Str -> Stats
+step (MkStats w s t b) line = case S.foldWords word (MkWords 0 0) line of
+  MkWords k v => MkStats (w + k) (s + v) (if S.contains line "tag7" then t + 1 else t) (b + S.length (S.trim line))
+
+main : IO ()
+main = do
+  argc <- argCount
+  arg <- if argc > 0 then getArg 0 else pure "1000"
+  let n = parseInt arg
+  let text = S.build (lines (S.builder 0) 0 n)
+  case S.foldLines step (MkStats 0 0 0 0) (toStr text) of
+    MkStats w s t b => putStrLn ("(" ++ showInt w ++ "," ++ showInt s ++ "," ++ showInt t ++ "," ++ showInt b ++ ")")

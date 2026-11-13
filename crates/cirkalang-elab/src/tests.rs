@@ -480,3 +480,32 @@ fn unused_holders_of_finalized_values_warn() {
     ));
     assert!(codes(&e).is_empty(), "{:?}", codes(&e));
 }
+
+const LIST_FNS: &str = "map : (a -> b) -> List a -> List b\nmap f Nil = Nil\nmap f (x :: xs) = f x :: map f xs\nfoldl : (b -> a -> b) -> b -> List a -> b\nfoldl f z Nil = z\nfoldl f z (x :: xs) = foldl f (f z x) xs\nlen : List a -> Int\nlen xs = foldl (\\n, _ => n + 1) 0 xs\n";
+
+/// A meta that may depend on a lambda's variable is pruned when it is
+/// part of the solution of an outer meta (`map (\w => MkPair w 1)`).
+#[test]
+fn metas_are_pruned() {
+    ok(&format!(
+        "{LIST_FNS}ps : List (Pair Int Int)\nps = map (\\w => MkPair w 1) (1 :: 2 :: Nil)\nmain : IO ()\nmain = printInt (len (map (\\w => MkPair w 1) (3 :: Nil)))\n"
+    ));
+}
+
+/// A case on a value of unknown type takes the data type of its
+/// constructor patterns (`\c, b => case b of True => ..`).
+#[test]
+fn constructor_patterns_decide_unknown_types() {
+    ok(&format!(
+        "{LIST_FNS}count : List Bool -> Int\ncount xs = foldl (\\c, b => case b of\n  True => c + 1\n  False => c) 0 xs\nmain : IO ()\nmain = printInt (count (True :: False :: Nil))\n"
+    ));
+}
+
+/// An argument of an `ω` parameter whose type is decided later (a literal
+/// element) consumes a linear variable once, checked at the end.
+#[test]
+fn resource_freedom_decided_after_literals() {
+    ok(&format!(
+        "{LIST_FNS}main : IO ()\nmain = let u = unique (1 :: Nil) in printInt (len (freeze u))\n"
+    ));
+}

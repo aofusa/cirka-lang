@@ -1,0 +1,43 @@
+-- max-array-copies: 0
+-- Unique boxed arrays (FEAT-0211): in-place quicksort with `read` /
+-- `write` / `swap`, `Ur` results, and `freeze` at the end. No update copies.
+import Data.Array as A
+
+partition : (1 u : Unique (A.Array Int)) -> Int -> Int -> Int -> Int -> (Unique (A.Array Int), Int)
+partition u p i j hi =
+  if j >= hi then (A.swap u i hi, i)
+  else case A.read u j of
+    (u, MkUr x) =>
+      if x < p then partition (A.swap u i j) p (i + 1) (j + 1) hi
+      else partition u p i (j + 1) hi
+
+qsort : (1 u : Unique (A.Array Int)) -> Int -> Int -> Unique (A.Array Int)
+qsort u lo hi =
+  if lo >= hi then u
+  else case A.read u hi of
+    (u, MkUr p) => case partition u p lo lo hi of
+      (u, m) => qsort (qsort u lo (m - 1)) (m + 1) hi
+
+fill : (1 u : Unique (A.Array Int)) -> Int -> Int -> Int -> Unique (A.Array Int)
+fill u i n seed =
+  if i >= n then u
+  else fill (A.write u i (seed % 1000)) (i + 1) n ((seed * 1103515245 + 12345) % 2147483648)
+
+sorted : A.Array Int -> Int -> Bool
+sorted a i = if i + 1 >= A.size a then True else a A.! i <= a A.! (i + 1) && sorted a (i + 1)
+
+sortAll : (1 u : Unique (A.Array Int)) -> A.Array Int
+sortAll u = case A.length u of
+  (u, len) => freeze (qsort u 0 (len - 1))
+
+main : IO ()
+main = do
+  let n = 2000
+  let u = fill (A.new n 0) 0 n 42
+  let u = A.modify u 0 (\x => x + 1)
+  let a = sortAll u
+  printInt (A.size a)
+  putStrLn (show (sorted a 0))
+  printInt (a A.! 0 + a A.! (n - 1))
+  let small = A.fromListU [5, 3, 9, 1]
+  putStrLn (show (sortAll small))

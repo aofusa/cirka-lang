@@ -269,6 +269,21 @@ impl Parser {
             Tok::Kw(Kw::Import) => {
                 self.bump();
                 let path = self.modname()?;
+                // `as` is a keyword only here.
+                let alias = if matches!(self.peek(), Tok::LIdent(q, n) if q.is_empty() && n == "as")
+                {
+                    self.bump();
+                    let s = self.span();
+                    let a = self.modname()?;
+                    Some((a, self.from(s)))
+                } else {
+                    None
+                };
+                let names = if self.at(&Tok::LParen) {
+                    Some(self.import_names()?)
+                } else {
+                    None
+                };
                 if !m.decls.is_empty() {
                     self.errs.push(
                         Diagnostic::error("`import` must come before the declarations")
@@ -278,6 +293,8 @@ impl Parser {
                 }
                 m.imports.push(Import {
                     path,
+                    alias,
+                    names,
                     span: self.from(start),
                 });
                 Ok(())
@@ -288,6 +305,50 @@ impl Parser {
                 Ok(())
             }
         }
+    }
+
+    /// `(x, T, (+))`: the names of an import list.
+    fn import_names(&mut self) -> R<Vec<(String, Span)>> {
+        self.expect(&Tok::LParen, "`(`")?;
+        let mut names = Vec::new();
+        if self.at(&Tok::RParen) {
+            self.bump();
+            return Ok(names);
+        }
+        loop {
+            let s = self.span();
+            match self.peek().clone() {
+                Tok::LIdent(q, n) | Tok::UIdent(q, n) if q.is_empty() => {
+                    self.bump();
+                    names.push((n, self.from(s)));
+                }
+                Tok::LParen => {
+                    self.bump();
+                    match self.peek().clone() {
+                        Tok::Op(q, o) if q.is_empty() => {
+                            self.bump();
+                            self.expect(&Tok::RParen, "`)`")?;
+                            names.push((o, self.from(s)));
+                        }
+                        _ => {
+                            self.error_here("an operator");
+                            return Err(());
+                        }
+                    }
+                }
+                _ => {
+                    self.error_here("a name to import");
+                    return Err(());
+                }
+            }
+            if self.at(&Tok::Comma) {
+                self.bump();
+            } else {
+                break;
+            }
+        }
+        self.expect(&Tok::RParen, "`)` or `,`")?;
+        Ok(names)
     }
 
     fn modname(&mut self) -> R<Vec<String>> {
@@ -964,6 +1025,10 @@ impl Parser {
                 self.bump();
                 Some(Mult::One)
             }
+            Tok::Omega if matches!(self.peek_at(1), Tok::LIdent(..) | Tok::Underscore) => {
+                self.bump();
+                Some(Mult::Many)
+            }
             _ => None,
         }
     }
@@ -1128,10 +1193,10 @@ impl Parser {
         }
     }
 
-    /// `(` [0|1] name {, name} `:` ...
+    /// `(` [0|1|ω] name {, name} `:` ...
     fn looks_like_binder(&self) -> bool {
         let mut k = 1;
-        if matches!(self.peek_at(k), Tok::Int(0 | 1)) {
+        if matches!(self.peek_at(k), Tok::Int(0 | 1) | Tok::Omega) {
             k += 1;
         }
         loop {

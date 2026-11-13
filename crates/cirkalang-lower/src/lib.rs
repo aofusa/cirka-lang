@@ -104,6 +104,19 @@ fn int_ty() -> c::Type {
     c::Type::con("Int")
 }
 
+/// `I# e`: an `Int` from an `Int#`.
+fn int_con(e: c::Expr) -> c::Expr {
+    c::Expr::Con("I#".into(), Vec::new(), vec![e])
+}
+
+/// The element type of the Core type `Array a` (`Any` otherwise).
+fn array_elem(t: &c::Type) -> c::Type {
+    match t {
+        c::Type::Con(n, args) if n == c::ARRAY && args.len() == 1 => args[0].clone(),
+        _ => c::Type::Any,
+    }
+}
+
 /// `t` with `IO a` replaced by its representation `Unit# -> a`.
 fn io_rep(t: &c::Type) -> c::Type {
     match t {
@@ -286,6 +299,11 @@ impl<'a> Lower<'a> {
                         c::Type::Con("IO".into(), vec![self.lower_ty(tvs, a)])
                     }
                     (Some(Prim::Unique), [a]) => self.lower_ty(tvs, a),
+                    (Some(Prim::Array), [a]) => {
+                        c::Type::Con(c::ARRAY.into(), vec![self.lower_ty(tvs, a)])
+                    }
+                    // 8-byte words (spec-v0.0.2.md §7.3).
+                    (Some(Prim::UArray), [_]) => c::Type::bytes(),
                     _ => c::Type::Any,
                 }
             }
@@ -1120,6 +1138,31 @@ impl<'a> Lower<'a> {
         )
     }
 
+    /// Unboxes the `Int`s `es` and passes their `Int#` values to `k`.
+    fn unbox_ints(
+        &self,
+        es: Vec<c::Expr>,
+        res: c::Type,
+        k: impl FnOnce(Vec<c::Expr>) -> c::Expr,
+    ) -> c::Expr {
+        fn go<'b>(
+            l: &'b Lower<'_>,
+            mut es: std::vec::IntoIter<c::Expr>,
+            mut done: Vec<c::Expr>,
+            res: c::Type,
+            k: Box<dyn FnOnce(Vec<c::Expr>) -> c::Expr + 'b>,
+        ) -> c::Expr {
+            match es.next() {
+                None => k(done),
+                Some(e) => l.unbox(e, "I#", "Int", c::Type::int(), res.clone(), move |x| {
+                    done.push(x);
+                    go(l, es, done, res, k)
+                }),
+            }
+        }
+        go(self, es.into_iter(), Vec::new(), res, Box::new(k))
+    }
+
     fn seq_unit(&self, e: c::Expr, rest: c::Expr) -> c::Expr {
         c::Expr::LetStrict(
             c::Binder::new(self.id("w"), c::Mult::Many, c::Type::unit()),
@@ -1226,7 +1269,9 @@ impl<'a> Lower<'a> {
             | Prim::String
             | Prim::IO
             | Prim::IO1
-            | Prim::Unique => return None,
+            | Prim::Unique
+            | Prim::Array
+            | Prim::UArray => return None,
             // The value holds only memory: Perceus frees it.
             Prim::DropFree => self.skeleton(ty, 1, |_, _| self.unit_val()),
             Prim::ReleaseFree => self.skeleton(ty, 2, |_, _| self.unit_val()),
@@ -1304,6 +1349,84 @@ impl<'a> Lower<'a> {
             }),
             Prim::StrConcat => self.skeleton(ty, 2, |a, _| g("cirka$bytes_concat", a)),
             Prim::StrEq => self.skeleton(ty, 2, |a, _| self.bool_of(g("cirka$bytes_eq", a))),
+            // `primStrSlice s i j`: a copy of bytes `[i, j)` (clamped).
+            Prim::StrSlice => self.skeleton(ty, 3, |a, r| {
+                let s = a[0].clone();
+                self.unbox_ints(a[1..].to_vec(), r, |k| {
+                    g("cirka$bytes_slice", vec![s, k[0].clone(), k[1].clone()])
+                })
+            }),
+            // `primStrFindByte s b i j`: the first index in `[i, j)` of
+            // byte `b`, or -1.
+            Prim::StrFindByte => self.skeleton(ty, 4, |a, r| {
+                let s = a[0].clone();
+                self.unbox_ints(a[1..].to_vec(), r, |k| {
+                    let mut args = vec![s];
+                    args.extend(k);
+                    int_con(g("cirka$bytes_find_byte", args))
+                })
+            }),
+            // `primStrFind s i j p`: the first index in `[i, j)` where `p`
+            // starts, or -1.
+            Prim::StrFind => self.skeleton(ty, 4, |a, r| {
+                let (s, p) = (a[0].clone(), a[3].clone());
+                self.unbox_ints(a[1..3].to_vec(), r, |k| {
+                    int_con(g(
+                        "cirka$bytes_find",
+                        vec![s, k[0].clone(), k[1].clone(), p],
+                    ))
+                })
+            }),
+            // `primStrRangeEq s i t j n`: bytes `s[i, i+n)` and `t[j, j+n)`
+            // are equal (False when out of range).
+            Prim::StrRangeEq => self.skeleton(ty, 5, |a, r| {
+                let (s, t) = (a[0].clone(), a[2].clone());
+                self.unbox_ints(vec![a[1].clone(), a[3].clone(), a[4].clone()], r, |k| {
+                    self.bool_of(g(
+                        "cirka$bytes_range_eq",
+                        vec![s, k[0].clone(), t, k[1].clone(), k[2].clone()],
+                    ))
+                })
+            }),
+            Prim::StrNew => self.skeleton(ty, 1, |a, r| {
+                self.unbox_ints(vec![a[0].clone()], r, |k| {
+                    prim(O::BytesNew, vec![k[0].clone()])
+                })
+            }),
+            // `primStrWrite u off s i j`: copies `s[i, j)` to `u` at `off`
+            // in place (the string is copied first when shared).
+            Prim::StrWrite => self.skeleton(ty, 5, |a, r| {
+                let (u, s) = (a[0].clone(), a[2].clone());
+                self.unbox_ints(vec![a[1].clone(), a[3].clone(), a[4].clone()], r, |k| {
+                    g(
+                        "cirka$bytes_write",
+                        vec![
+                            prim(O::BytesUnique, vec![u]),
+                            k[0].clone(),
+                            s,
+                            k[1].clone(),
+                            k[2].clone(),
+                        ],
+                    )
+                })
+            }),
+            Prim::StrSetByte => self.skeleton(ty, 3, |a, r| {
+                let u = a[0].clone();
+                self.unbox_ints(a[1..].to_vec(), r, |k| {
+                    let b = self.id("b");
+                    c::Expr::LetStrict(
+                        c::Binder::new(b.clone(), c::Mult::Many, c::Type::bytes()),
+                        Box::new(prim(O::BytesUnique, vec![u])),
+                        Box::new(self.seq_unit(
+                            prim(
+                                O::BytesSet,
+                                vec![c::Expr::Var(b.clone()), k[0].clone(), k[1].clone()],
+                            ),
+                            c::Expr::Var(b),
+                        )),
+                    )
+                })
+            }),
             Prim::IntToStr => self.skeleton(ty, 1, |a, r| {
                 self.unbox(a[0].clone(), "I#", "Int", c::Type::int(), r, |u| {
                     g("cirka$int_to_bytes", vec![u])
@@ -1404,6 +1527,241 @@ impl<'a> Lower<'a> {
                 )
             }),
             Prim::MkUnique | Prim::Freeze => id1(),
+            // ---- arrays (spec-v0.0.2.md §7) ----
+            Prim::ArrayNew => self.skeleton(ty, 2, |a, r| {
+                let elem = array_elem(&r);
+                self.unbox(a[0].clone(), "I#", "Int", c::Type::int(), r, |k| {
+                    c::Expr::Prim(O::ArrayNew, vec![elem], vec![k, a[1].clone()])
+                })
+            }),
+            // No element is ever read: the placeholder is never seen.
+            Prim::ArrayEmpty => self.skeleton(ty, 1, |_, r| {
+                let elem = array_elem(&r);
+                c::Expr::Prim(
+                    O::ArrayNew,
+                    vec![elem.clone()],
+                    vec![
+                        c::Expr::int(0),
+                        c::Expr::Cast(Box::new(self.unit_val()), elem),
+                    ],
+                )
+            }),
+            Prim::ArraySize => self.skeleton(ty, 1, |a, _| {
+                let elem = self.array_elem_of(ty, 0);
+                c::Expr::Con(
+                    "I#".into(),
+                    Vec::new(),
+                    vec![c::Expr::Prim(O::ArrayLen, vec![elem], vec![a[0].clone()])],
+                )
+            }),
+            Prim::ArrayIndex => self.skeleton(ty, 2, |a, r| {
+                let elem = r.clone();
+                self.unbox(a[1].clone(), "I#", "Int", c::Type::int(), r, |k| {
+                    c::Expr::Prim(O::ArrayGet, vec![elem], vec![a[0].clone(), k])
+                })
+            }),
+            Prim::ArrayRead => self.skeleton(ty, 2, |a, r| {
+                let elem = self.array_elem_of(ty, 0);
+                let arr = a[0].clone();
+                let x = self.id("x");
+                let rr = r.clone();
+                self.unbox(a[1].clone(), "I#", "Int", c::Type::int(), r, |k| {
+                    c::Expr::LetStrict(
+                        c::Binder::new(x.clone(), c::Mult::Many, elem.clone()),
+                        Box::new(c::Expr::Prim(O::ArrayGet, vec![elem], vec![arr.clone(), k])),
+                        Box::new(self.pair_ur(&rr, arr, c::Expr::Var(x))),
+                    )
+                })
+            }),
+            Prim::ArrayLength => self.skeleton(ty, 1, |a, r| {
+                let elem = self.array_elem_of(ty, 0);
+                let k = self.id("k");
+                c::Expr::LetStrict(
+                    c::Binder::new(k.clone(), c::Mult::Many, c::Type::int()),
+                    Box::new(c::Expr::Prim(O::ArrayLen, vec![elem], vec![a[0].clone()])),
+                    Box::new(self.pair_val(
+                        &r,
+                        a[0].clone(),
+                        c::Expr::Con("I#".into(), Vec::new(), vec![c::Expr::Var(k)]),
+                    )),
+                )
+            }),
+            Prim::ArrayWrite => self.skeleton(ty, 3, |a, r| {
+                let elem = array_elem(&r);
+                let b = self.id("b");
+                let arr_ty = r.clone();
+                self.unbox(a[1].clone(), "I#", "Int", c::Type::int(), r, |k| {
+                    c::Expr::LetStrict(
+                        c::Binder::new(b.clone(), c::Mult::Many, arr_ty),
+                        Box::new(c::Expr::Prim(
+                            O::ArrayUnique,
+                            vec![elem.clone()],
+                            vec![a[0].clone()],
+                        )),
+                        Box::new(self.seq_unit(
+                            c::Expr::Prim(
+                                O::ArraySet,
+                                vec![elem],
+                                vec![c::Expr::Var(b.clone()), k, a[2].clone()],
+                            ),
+                            c::Expr::Var(b),
+                        )),
+                    )
+                })
+            }),
+            Prim::ArrayThaw => self.skeleton(ty, 1, |a, r| {
+                let elem = array_elem(&r);
+                c::Expr::Prim(O::ArrayUnique, vec![elem], vec![a[0].clone()])
+            }),
+            Prim::UArrayNew => self.skeleton(ty, 1, |a, r| {
+                self.unbox(a[0].clone(), "I#", "Int", c::Type::int(), r, |k| {
+                    g("cirka$uarr_new", vec![k])
+                })
+            }),
+            Prim::UArraySize => self.skeleton(ty, 1, |a, _| {
+                c::Expr::Con(
+                    "I#".into(),
+                    Vec::new(),
+                    vec![prim(
+                        O::Shr,
+                        vec![prim(O::BytesLen, vec![a[0].clone()]), c::Expr::int(3)],
+                    )],
+                )
+            }),
+            Prim::UArrayLength => self.skeleton(ty, 1, |a, r| {
+                let k = self.id("k");
+                c::Expr::LetStrict(
+                    c::Binder::new(k.clone(), c::Mult::Many, c::Type::int()),
+                    Box::new(prim(
+                        O::Shr,
+                        vec![prim(O::BytesLen, vec![a[0].clone()]), c::Expr::int(3)],
+                    )),
+                    Box::new(self.pair_val(
+                        &r,
+                        a[0].clone(),
+                        c::Expr::Con("I#".into(), Vec::new(), vec![c::Expr::Var(k)]),
+                    )),
+                )
+            }),
+            Prim::UArrayThaw => {
+                self.skeleton(ty, 1, |a, _| prim(O::BytesUnique, vec![a[0].clone()]))
+            }
+            Prim::UArrayIndexWord => self.uarr_index(ty, O::BytesGet64, "I#", c::Type::int()),
+            Prim::UArrayIndexFloat => self.uarr_index(ty, O::BytesGetF, "F#", c::Type::double()),
+            Prim::UArrayReadWord => self.uarr_read(ty, O::BytesGet64, "I#", c::Type::int()),
+            Prim::UArrayReadFloat => self.uarr_read(ty, O::BytesGetF, "F#", c::Type::double()),
+            Prim::UArrayWriteWord => {
+                self.uarr_write(ty, O::BytesSet64, ("I#", "Int"), c::Type::int())
+            }
+            Prim::UArrayWriteFloat => {
+                self.uarr_write(ty, O::BytesSetF, ("F#", "Float"), c::Type::double())
+            }
+        })
+    }
+
+    /// The element type of the `n`-th parameter (`Array a`) of the Core
+    /// type `ty` of a primitive.
+    fn array_elem_of(&self, ty: &c::Type, n: usize) -> c::Type {
+        let mut t = ty;
+        while let c::Type::Forall(_, _, b) = t {
+            t = b;
+        }
+        let mut k = 0;
+        while let c::Type::Fun(_, a, r) = t {
+            if k == n {
+                return array_elem(a);
+            }
+            k += 1;
+            t = r;
+        }
+        c::Type::Any
+    }
+
+    /// `MkPair a b` at the Core type `ty` (`Pair A B`).
+    fn pair_val(&self, ty: &c::Type, a: c::Expr, b: c::Expr) -> c::Expr {
+        let Some(mk) = self.p.builtins.mk_pair else {
+            return c::Expr::Panic("no Pair".into(), ty.clone());
+        };
+        let targs = match ty {
+            c::Type::Con(_, args) => args.clone(),
+            _ => Vec::new(),
+        };
+        c::Expr::Con(self.gname(mk), targs, vec![a, b])
+    }
+
+    /// `MkPair a (MkUr b)` at the Core type `ty` (`Pair A (Ur B)`).
+    fn pair_ur(&self, ty: &c::Type, a: c::Expr, b: c::Expr) -> c::Expr {
+        let Some(mk_ur) = self.p.builtins.mk_ur else {
+            return c::Expr::Panic("no Ur".into(), ty.clone());
+        };
+        let ur_args = match ty {
+            c::Type::Con(_, args) => match args.get(1) {
+                Some(c::Type::Con(_, u)) => u.clone(),
+                _ => Vec::new(),
+            },
+            _ => Vec::new(),
+        };
+        self.pair_val(ty, a, c::Expr::Con(self.gname(mk_ur), ur_args, vec![b]))
+    }
+
+    /// `primUArrayIndex*`: the word at index `i`, boxed with `con`.
+    fn uarr_index(&self, ty: &c::Type, op: c::PrimOp, con: &str, rep: c::Type) -> c::Expr {
+        let _ = rep;
+        self.skeleton(ty, 2, |a, r| {
+            self.unbox(a[1].clone(), "I#", "Int", c::Type::int(), r, |k| {
+                c::Expr::Con(
+                    con.into(),
+                    Vec::new(),
+                    vec![c::Expr::Prim(op, Vec::new(), vec![a[0].clone(), k])],
+                )
+            })
+        })
+    }
+
+    /// `primUArrayRead*`: the word at index `i` and the array back.
+    fn uarr_read(&self, ty: &c::Type, op: c::PrimOp, con: &str, rep: c::Type) -> c::Expr {
+        self.skeleton(ty, 2, |a, r| {
+            let x = self.id("x");
+            let rr = r.clone();
+            let arr = a[0].clone();
+            self.unbox(a[1].clone(), "I#", "Int", c::Type::int(), r, |k| {
+                c::Expr::LetStrict(
+                    c::Binder::new(x.clone(), c::Mult::Many, rep),
+                    Box::new(c::Expr::Prim(op, Vec::new(), vec![arr.clone(), k])),
+                    Box::new(self.pair_ur(
+                        &rr,
+                        arr,
+                        c::Expr::Con(con.into(), Vec::new(), vec![c::Expr::Var(x)]),
+                    )),
+                )
+            })
+        })
+    }
+
+    /// `primUArrayWrite*`: stores the word in place (copying the array
+    /// first when it is shared) and returns the array.
+    fn uarr_write(
+        &self,
+        ty: &c::Type,
+        op: c::PrimOp,
+        (con, tyn): (&str, &str),
+        rep: c::Type,
+    ) -> c::Expr {
+        self.skeleton(ty, 3, |a, r| {
+            let b = self.id("b");
+            let (arr, v) = (a[0].clone(), a[2].clone());
+            self.unbox(a[1].clone(), "I#", "Int", c::Type::int(), r.clone(), |k| {
+                self.unbox(v, con, tyn, rep, r, |x| {
+                    c::Expr::LetStrict(
+                        c::Binder::new(b.clone(), c::Mult::Many, c::Type::bytes()),
+                        Box::new(prim(c::PrimOp::BytesUnique, vec![arr])),
+                        Box::new(self.seq_unit(
+                            c::Expr::Prim(op, Vec::new(), vec![c::Expr::Var(b.clone()), k, x]),
+                            c::Expr::Var(b),
+                        )),
+                    )
+                })
+            })
         })
     }
 

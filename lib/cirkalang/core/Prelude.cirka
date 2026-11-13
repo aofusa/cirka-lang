@@ -35,6 +35,12 @@ data Either a b = Left a | Right b deriving (Eq, Ord, Show)
 -- The result of an operation that can fail (spec-v0.0.2.md §6).
 data Result e a = Err e | Ok a deriving (Eq, Ord, Show)
 
+-- An unrestricted value (spec-v0.0.2.md §5.6): its field is declared `ω`,
+-- so it may be used many times even when it comes out of a linear value
+-- (`case read u i of (u, MkUr x) => ...`).
+data Ur (a : Type) : Type where
+  MkUr : (ω x : a) -> Ur a
+
 -- Primitive operations (§5.6)
 prim primAddInt : Int -> Int -> Int
 prim primSubInt : Int -> Int -> Int
@@ -100,7 +106,8 @@ prim readInt : IO Int
 prim argCount : IO Int
 prim getArg : Int -> IO String
 prim exit : Int -> IO a
-prim panic : String -> a
+-- The result may be linear: `panic` does not return (spec-v0.0.2.md §6).
+prim panic : {a : LType} -> String -> a
 
 -- Uniqueness (§4.3)
 prim unique : a -> Unique a

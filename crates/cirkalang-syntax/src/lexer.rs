@@ -37,6 +37,9 @@ pub enum Tok {
     Underscore,
     /// A lone `?`: error propagation at the end of a `do` statement.
     Question,
+    /// `ω`: the unrestricted multiplicity of a constructor field
+    /// (spec-v0.0.2.md §5.6).
+    Omega,
     // Inserted by the layout algorithm.
     VLBrace,
     VSemi,
@@ -173,6 +176,7 @@ impl Tok {
             Tok::Backtick => "`` ` ``".into(),
             Tok::Underscore => "`_`".into(),
             Tok::Question => "`?`".into(),
+            Tok::Omega => "`ω`".into(),
             Tok::VLBrace => "start of a block".into(),
             Tok::VSemi => "new line".into(),
             Tok::VRBrace => "end of a block".into(),
@@ -320,7 +324,7 @@ impl Lexer<'_> {
                 self.push(t, start, line, col);
                 continue;
             }
-            if c.is_alphabetic() || c == '_' {
+            if c.is_ascii_alphabetic() || c == '_' {
                 let t = self.ident(start);
                 self.push(t, start, line, col);
                 continue;
@@ -400,6 +404,7 @@ impl Lexer<'_> {
                 ',' => Some(Tok::Comma),
                 ';' => Some(Tok::Semi),
                 '`' => Some(Tok::Backtick),
+                'ω' => Some(Tok::Omega),
                 _ => None,
             };
             if let Some(t) = simple {

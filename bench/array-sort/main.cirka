@@ -1,0 +1,56 @@
+module Main
+
+-- In-place quicksort of a unique unboxed array (FEAT-0211): the same
+-- algorithm and input as own.chs and rust/main.rs. Every write goes
+-- through `Unique (UArray Int)`, so it is in place.
+
+import Data.Array.Unboxed as U
+import Data.Array.Unboxed (UArray, (!))
+
+-- Pseudo-random input (LCG).
+build : Int -> Unique (UArray Int)
+build n = fill (U.zeros n) 0 n 12345
+
+fill : (1 u : Unique (UArray Int)) -> Int -> Int -> Int -> Unique (UArray Int)
+fill u i n s =
+  if i >= n then u
+  else
+    let s2 = (s * 1103515245 + 12345) % 2147483648 in
+    fill (U.write u i (s2 % 1000000)) (i + 1) n s2
+
+-- Lomuto partition of [lo, hi] around the last element.
+partition : (1 u : Unique (UArray Int)) -> Int -> Int -> (Unique (UArray Int), Int)
+partition u lo hi = case U.read u hi of
+  (u, MkUr p) => loop u p hi lo lo
+
+loop : (1 u : Unique (UArray Int)) -> Int -> Int -> Int -> Int -> (Unique (UArray Int), Int)
+loop u p hi i j =
+  if j >= hi then (U.swap u i hi, i)
+  else case U.read u j of
+    (u, MkUr x) =>
+      if x < p then loop (U.swap u i j) p hi (i + 1) (j + 1)
+      else loop u p hi i (j + 1)
+
+qsort : (1 u : Unique (UArray Int)) -> Int -> Int -> Unique (UArray Int)
+qsort u lo hi =
+  if lo >= hi then u
+  else case partition u lo hi of
+    (u, m) => qsort (qsort u lo (m - 1)) (m + 1) hi
+
+-- Checks the order and sums a sample of the elements.
+check : UArray Int -> Int -> Int -> Int -> Bool -> (Int, Bool)
+check a n i acc ok =
+  if i >= n then (acc, ok)
+  else
+    let x = a ! i in
+    let ok2 = if ok then (if i == 0 then True else a ! (i - 1) <= x) else False in
+    check a n (i + 1) ((acc + x * (i % 7)) % 1000000007) ok2
+
+main : IO ()
+main = do
+  argc <- argCount
+  arg <- if argc > 0 then getArg 0 else pure "1000"
+  let n = parseInt arg
+  let a = freeze (qsort (build n) 0 (n - 1))
+  case check a n 0 0 True of
+    (acc, ok) => putStrLn ("(" ++ showInt acc ++ "," ++ show ok ++ ")")

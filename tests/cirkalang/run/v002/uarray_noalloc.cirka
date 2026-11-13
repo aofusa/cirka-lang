@@ -1,0 +1,25 @@
+-- max-allocs: 3
+-- max-array-copies: 0
+-- In-place writes to a unique unboxed array do not allocate (FEAT-0211):
+-- the sieve allocates only the array.
+import Data.Array.Unboxed as U
+import Data.Array.Unboxed (UArray, (!))
+
+cross : (1 u : Unique (UArray Bool)) -> Int -> Int -> Int -> Unique (UArray Bool)
+cross u j step n = if j >= n then u else cross (U.write u j False) (j + step) step n
+
+sieve : (1 u : Unique (UArray Bool)) -> Int -> Int -> Unique (UArray Bool)
+sieve u i n =
+  if i * i >= n then u
+  else case U.read u i of
+    (u, MkUr True) => sieve (cross u (i * i) i n) (i + 1) n
+    (u, MkUr False) => sieve u (i + 1) n
+
+count : UArray Bool -> Int -> Int -> Int
+count a i c = if i >= U.size a then c else count a (i + 1) (if a ! i then c + 1 else c)
+
+main : IO ()
+main = do
+  let n = 100000
+  let primes = freeze (sieve (U.new n True) 2 n)
+  printInt (count primes 0 0)
