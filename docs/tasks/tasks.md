@@ -221,7 +221,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 |---|---|---|---|---|
 | [FEAT-0210](features/FEAT-0210-cl-traits.md) | トレイト (型クラス) と特殊化 | done | P0 | 0207 |
 | [FEAT-0211](features/FEAT-0211-cl-strings-arrays.md) | 文字列と配列 | todo | P0 | 0210, 0022 |
-| [FEAT-0212](features/FEAT-0212-cl-raii-errors.md) | RAII (Drop/Release) とエラー処理 | todo | P0 | 0210 |
+| [FEAT-0212](features/FEAT-0212-cl-raii-errors.md) | RAII (Drop/Release) とエラー処理 | done | P0 | 0210 |
 | [FEAT-0213](features/FEAT-0213-cl-ffi-std.md) | FFI と libc ベースの std (CUI 向け) | todo | P0 | 0212 |
 | [FEAT-0214](features/FEAT-0214-cl-packages.md) | パッケージと依存 (cirka.toml) | done | P1 | 0205 |
 | [FEAT-0216](features/FEAT-0216-cl-inline-tests.md) | ソース内のテスト (test 宣言と cirka test) | done | P1 | 0207 |
@@ -308,5 +308,6 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [BUG-0012](bugs/BUG-0012-dead-join-undefined-param.md) | どこからも飛ばれない合流ブロックの引数が LLVM IR で未定義になる | done | major | BUG-0011 |
 | [BUG-0013](bugs/BUG-0013-cl-do-last-poly-io.md) | CirkaLang の do の最後の文に exit などの多相な IO を書くと型エラーになる | done | minor | FEAT-0203 |
 | [BUG-0014](bugs/BUG-0014-lazy-con-strict-fields.md) | 遅延束縛の構築子の正格フィールドが束縛の時点で評価される | done | major | BUG-0008 |
+| [BUG-0015](bugs/BUG-0015-cl-linear-instantiation.md) | CirkaLang で線形型の値が Type の型変数や IO の結果を通じて複製できる | done | critical | FEAT-0212 |
 
 新しいチケットは `features/_TEMPLATE.md` / `bugs/_TEMPLATE.md` をコピーして作成する。

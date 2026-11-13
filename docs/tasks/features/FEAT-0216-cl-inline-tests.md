@@ -37,7 +37,7 @@ FEAT-0132 のレビューでの要望。
 - `cirka test` は `exe --list` で一覧を得て、`exe N` をテストごとに `CIRKA_LEAK_CHECK=1` で実行する。既定のランタイムは debug。
   panic・`exit` で終わったときに生きているオブジェクトはリークとして扱わない (05-runtime.md と同じ)。
 - テスト: `tests/cirkalang/test/` (`driver` の `cirka_source_tests`)、`tests/cirkalang/fail/test/` (E1112/E1113、check のモード)、
-  `tests/cirkalang/run/v0.0.2/tests_stripped.cirka` (型の誤りのあるテストがあっても build で捨てられる。`cirkalang_run` は Core に
+  `tests/cirkalang/run/v002/tests_stripped.cirka` (型の誤りのあるテストがあっても build で捨てられる。`cirkalang_run` は Core に
   `test$` が残らないことも確かめる)、構文・展開・収集・リーク判定のユニットテスト。リークの失敗は安全なコードでは作れないため、判定関数 `test_failure` のユニットテストで確かめた。
 - `do` の最後の文に `exit` を書くと型エラーになる既存の不具合を BUG-0013 として起票した (テストでは注釈で回避)。
 - aCHC の `achc test` は「対応しない」診断で終了コード 1。
