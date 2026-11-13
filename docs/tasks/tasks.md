@@ -121,6 +121,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0079](features/FEAT-0079-boxes-in-string-loops.md) | 文字列処理のループの箱の除去 (多相の静的引数・積型の worker/wrapper・腕をまたぐ再利用) | done | P1 | 0022, 0056, 0061, 0066 |
 | [FEAT-0080](features/FEAT-0080-join-points.md) | Core の結合点 (join point) | todo | P2 | 0079 |
 | [FEAT-0081](features/FEAT-0081-cpr-single-boxed-result.md) | 箱入りの値 1 つだけを返す積の結果の分解 | todo | P2 | 0065, 0220 |
+| [FEAT-0082](features/FEAT-0082-cl-cli-grep-line-allocs.md) | 行ごとの畳み込みの確保の除去 (cli-grep) | todo | P2 | 0223 |
 
 
 ## aCHC
@@ -237,7 +238,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0220](features/FEAT-0220-cl-borrowing.md) | 借用 | done | P0 | 0215 |
 | [FEAT-0221](features/FEAT-0221-cl-regions.md) | リージョン | done | P1 | 0220, 0049 |
 | [FEAT-0222](features/FEAT-0222-cl-lazy-cycles.md) | 明示的な遅延 (Lazy a) と循環の扱い | done | P1 | 0215 |
-| [FEAT-0223](features/FEAT-0223-cl-release-v003.md) | CirkaLang v0.0.3 リリース | in-progress | P0 | 0220, 0221, 0222, 0224, 0041 |
+| [FEAT-0223](features/FEAT-0223-cl-release-v003.md) | CirkaLang v0.0.3 リリース | done | P0 | 0220, 0221, 0222, 0224, 0041 |
 | [FEAT-0224](features/FEAT-0224-cl-do-patterns.md) | do の構文の整理 (パターンの束縛) | done | P1 | 0215 |
 
 ### CirkaLang v0.0.4 証明と検証
