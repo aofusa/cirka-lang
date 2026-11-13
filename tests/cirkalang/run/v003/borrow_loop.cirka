@@ -1,0 +1,31 @@
+-- Insertion sort through a borrow (spec-v0.0.3.md §2.5): compared with
+-- owned_loop.cirka by cirkalang_borrow_costs_nothing (no more allocations
+-- or reference-count operations than threading the array by hand).
+import Data.Array.Unboxed as U
+import Data.Borrow
+
+-- Sinks element `j`; the number of swaps.
+sink : Ref (Unique (U.UArray Int)) r -> Int -> Int -> Borrow (Unique (U.UArray Int)) r Int
+sink a j k = if j <= 0 then pure k else do
+  x <- U.readB a (j - 1)
+  y <- U.readB a j
+  if x <= y then pure k else do
+    U.swapB a (j - 1) j
+    sink a (j - 1) (k + 1)
+
+outer : Ref (Unique (U.UArray Int)) r -> Int -> Int -> Int -> Borrow (Unique (U.UArray Int)) r Int
+outer a i n k = if i >= n then pure k else do
+  s <- sink a i 0
+  outer a (i + 1) n (k + s)
+
+fill : (1 u : Unique (U.UArray Int)) -> Int -> Int -> Unique (U.UArray Int)
+fill u i n = if i >= n then u else fill (U.write u i ((i * 7919) % 1009)) (i + 1) n
+
+main : IO ()
+main = do
+  let n = 300
+  case borrow (fill (U.zeros n) 0 n) as a in outer a 1 n 0 of
+    (u, swaps) => do
+      print swaps
+      let v = freeze u
+      print [U.get v 0, U.get v 1, U.get v 150, U.get v 299]

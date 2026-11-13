@@ -1,0 +1,10 @@
+-- The token of a borrow cannot leave it (spec-v0.0.3.md §2.1): its type
+-- mentions the region, which is bound inside the block.
+import Data.Array.Unboxed as U
+import Data.Borrow
+
+main : IO ()
+main = do
+  let arr = U.new 4 (0 : Int)
+  case borrow arr as a in pure a of
+    (arr2, t) => print (U.size (freeze arr2))

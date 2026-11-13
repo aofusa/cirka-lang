@@ -124,6 +124,8 @@ pub struct Impl {
     pub name: GName,
     /// Variables of the head, implicitly bound.
     pub vars: Vec<(String, Span)>,
+    /// The declared sorts of the first variables (`impl {a : LType} ->`).
+    pub kinds: Vec<Expr>,
     pub context: Vec<Expr>,
     /// The trait applied to its arguments.
     pub head: Expr,

@@ -1,0 +1,6 @@
+(module Main)
+(impl {a : LType} {b : Type} {c : Type} () (Show (T a b c)) (def show (x) "T"))
+(def f (x) (borrow x (\ (_ a) (g a))))
+(def h (x) (borrowIO x (\ (_ a) (do (y <- (g a)) (pure y)))))
+(def k (x) (borrow x (\ (r a) (g a))))
+(def l (borrow) (borrow 1))

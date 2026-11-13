@@ -7,6 +7,8 @@
 -- with an alias (`import Data.Array as A`) to use them as `A.write`.
 module Data.Array
 
+import Data.Borrow
+
 infixl 9 !
 
 prim Array : Type -> Type
@@ -127,3 +129,27 @@ eqFrom a b i = if i >= size a then True else if a ! i == b ! i then eqFrom a b (
 
 impl Show a => Show (Array a) where
   show arr = show (toList arr)
+
+-- ---- borrowed (spec-v0.0.3.md §2.3) ----
+
+-- The operations on a unique array lent by `Data.Borrow.borrow`
+-- (`borrow arr as a in do { x <- readB a 0; writeB a 1 x }`).
+
+lengthB : Ref (Unique (Array a)) r -> Borrow (Unique (Array a)) r Int
+lengthB a = using a lengthUr
+
+private lengthUr : (1 u : Unique (Array a)) -> (Unique (Array a), Ur Int)
+lengthUr u = case length u of
+  (u, n) => (u, MkUr n)
+
+readB : Ref (Unique (Array a)) r -> Int -> Borrow (Unique (Array a)) r a
+readB a i = using a (\(1 u : _) => read u i)
+
+writeB : Ref (Unique (Array a)) r -> Int -> a -> Borrow (Unique (Array a)) r ()
+writeB a i x = update a (\(1 u : _) => write u i x)
+
+modifyB : Ref (Unique (Array a)) r -> Int -> (a -> a) -> Borrow (Unique (Array a)) r ()
+modifyB a i f = update a (\(1 u : _) => modify u i f)
+
+swapB : Ref (Unique (Array a)) r -> Int -> Int -> Borrow (Unique (Array a)) r ()
+swapB a i j = update a (\(1 u : _) => swap u i j)

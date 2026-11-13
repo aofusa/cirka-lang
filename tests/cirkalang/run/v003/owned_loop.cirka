@@ -1,0 +1,23 @@
+-- borrow_loop.cirka with the array threaded by hand.
+import Data.Array.Unboxed as U
+
+sink : (1 u : Unique (U.UArray Int)) -> Int -> Int -> (Unique (U.UArray Int), Int)
+sink u j k = if j <= 0 then (u, k) else case U.read u (j - 1) of
+  (u, MkUr x) => case U.read u j of
+    (u, MkUr y) => if x <= y then (u, k) else sink (U.swap u (j - 1) j) (j - 1) (k + 1)
+
+outer : (1 u : Unique (U.UArray Int)) -> Int -> Int -> Int -> (Unique (U.UArray Int), Int)
+outer u i n k = if i >= n then (u, k) else case sink u i 0 of
+  (u, s) => outer u (i + 1) n (k + s)
+
+fill : (1 u : Unique (U.UArray Int)) -> Int -> Int -> Unique (U.UArray Int)
+fill u i n = if i >= n then u else fill (U.write u i ((i * 7919) % 1009)) (i + 1) n
+
+main : IO ()
+main = do
+  let n = 300
+  case outer (fill (U.zeros n) 0 n) 1 n 0 of
+    (u, swaps) => do
+      print swaps
+      let v = freeze u
+      print [U.get v 0, U.get v 1, U.get v 150, U.get v 299]

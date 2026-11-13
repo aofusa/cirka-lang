@@ -1,0 +1,103 @@
+-- Scoped borrows (spec-v0.0.3.md §2).
+--
+-- `borrow x f` lends the linear value `x` to `f` for a region `r` and
+-- gives it back with the result. `f` works through the token `Ref a r` in
+-- the monad `Borrow a r`: each operation receives the value, may update
+-- it in place, and hands it to the next one. Nothing is copied and no
+-- reference count changes: the value is threaded linearly, so updates of
+-- a `Unique` array or a `File` stay in place. `r` is bound by `borrow`, so
+-- neither the token nor a computation that uses it can leave `f`.
+--
+-- `BorrowIO a r` is the same with actions (`File` reads and writes).
+-- The sugar `borrow x as a in e` is `borrow x (\r, a => e)`.
+module Data.Borrow
+
+-- The region of a borrow (erased).
+prim Region : Type
+-- The token through which a borrow of a value of type `a` in region `r`
+-- is used (erased).
+prim Ref : LType -> Region -> Type
+-- A computation in region `r` that may read and update the borrowed value.
+prim Borrow : LType -> Region -> Type -> Type
+-- The same with actions.
+prim BorrowIO : LType -> Region -> Type -> Type
+
+private prim primRegion : Region
+private prim primRef : {a : LType} -> {r : Region} -> Ref a r
+private prim primBorrowWrap : {a : LType} -> {r : Region} -> {b : Type} -> ((1 s : a) -> (a, Ur b)) -> Borrow a r b
+private prim primBorrowRun : {a : LType} -> {r : Region} -> {b : Type} -> Borrow a r b -> (1 s : a) -> (a, Ur b)
+private prim primBorrowIOWrap : {a : LType} -> {r : Region} -> {b : Type} -> ((1 s : a) -> IO1 (a, Ur b)) -> BorrowIO a r b
+private prim primBorrowIORun : {a : LType} -> {r : Region} -> {b : Type} -> BorrowIO a r b -> (1 s : a) -> IO1 (a, Ur b)
+
+-- ---- running ----
+
+-- Lends `x` to `f` and gives it back with the result.
+borrow : {a : LType} -> (1 x : a) -> ((0 r : Region) -> Ref a r -> Borrow a r b) -> (a, b)
+borrow x f = unUr (primBorrowRun (f primRegion primRef) x)
+
+-- Lends `x` to the actions of `f`.
+borrowIO : {a : LType} -> (1 x : a) -> ((0 r : Region) -> Ref a r -> BorrowIO a r b) -> IO1 (a, b)
+borrowIO x f = do
+  p <- primBorrowIORun (f primRegion primRef) x
+  pure1 (unUr p)
+
+private unUr : {a : LType} -> (1 p : (a, Ur b)) -> (a, b)
+unUr (s, MkUr y) = (s, y)
+
+-- ---- operations ----
+
+-- Applies a function that gives the value back with a result.
+using : {a : LType} -> Ref a r -> ((1 s : a) -> (a, Ur c)) -> Borrow a r c
+using _ g = primBorrowWrap g
+
+-- Replaces the value by `g` of it.
+update : {a : LType} -> Ref a r -> ((1 s : a) -> a) -> Borrow a r ()
+update _ g = primBorrowWrap (\(1 s : _) => (g s, MkUr ()))
+
+-- The same in actions.
+usingIO : {a : LType} -> Ref a r -> ((1 s : a) -> IO1 (a, Ur c)) -> BorrowIO a r c
+usingIO _ g = primBorrowIOWrap g
+
+-- An action that does not use the value.
+liftIO : {a : LType} -> {r : Region} -> IO c -> BorrowIO a r c
+liftIO m = primBorrowIOWrap (\(1 s : _) => keep s m)
+
+private keep : {a : LType} -> (1 s : a) -> IO c -> IO1 (a, Ur c)
+keep s m = do
+  x <- m
+  pure1 (s, MkUr x)
+
+-- ---- monads ----
+
+impl {a : LType} -> Functor (Borrow a r) where
+  fmap f m = primBorrowWrap (\(1 s : _) => mapSnd f (primBorrowRun m s))
+
+impl {a : LType} -> Monad (Borrow a r) where
+  pure x = primBorrowWrap (\(1 s : _) => (s, MkUr x))
+  m >>= k = primBorrowWrap (\(1 s : _) => next k (primBorrowRun m s))
+
+private mapSnd : {a : LType} -> (b -> c) -> (1 p : (a, Ur b)) -> (a, Ur c)
+mapSnd f (s, MkUr x) = (s, MkUr (f x))
+
+private next : {a : LType} -> {r : Region} -> (b -> Borrow a r c) -> (1 p : (a, Ur b)) -> (a, Ur c)
+next k (s, MkUr x) = primBorrowRun (k x) s
+
+impl {a : LType} -> Functor (BorrowIO a r) where
+  fmap f m = primBorrowIOWrap (\(1 s : _) => mapSndIO f (primBorrowIORun m s))
+
+impl {a : LType} -> Monad (BorrowIO a r) where
+  pure x = primBorrowIOWrap (\(1 s : _) => pure1 (s, MkUr x))
+  m >>= k = primBorrowIOWrap (\(1 s : _) => nextIO k (primBorrowIORun m s))
+
+private mapSndIO : {a : LType} -> (b -> c) -> (1 m : IO1 (a, Ur b)) -> IO1 (a, Ur c)
+mapSndIO f m = do
+  p <- m
+  pure1 (mapSnd f p)
+
+private nextIO : {a : LType} -> {r : Region} -> (b -> BorrowIO a r c) -> (1 m : IO1 (a, Ur b)) -> IO1 (a, Ur c)
+nextIO k m = do
+  p <- m
+  stepIO k p
+
+private stepIO : {a : LType} -> {r : Region} -> (b -> BorrowIO a r c) -> (1 p : (a, Ur b)) -> IO1 (a, Ur c)
+stepIO k (s, MkUr x) = primBorrowIORun (k x) s

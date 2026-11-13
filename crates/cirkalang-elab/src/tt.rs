@@ -334,6 +334,18 @@ pub enum Prim {
     UArrayIndexFloat,
     UArrayReadFloat,
     UArrayWriteFloat,
+    // Borrows (spec-v0.0.3.md §2): the types and the wrappers of their
+    // representations.
+    Region,
+    Ref,
+    Borrow,
+    BorrowIO,
+    RegionVal,
+    RefVal,
+    BorrowWrap,
+    BorrowRun,
+    BorrowIOWrap,
+    BorrowIORun,
 }
 
 impl Prim {
@@ -436,6 +448,16 @@ impl Prim {
         ("primUArrayIndexFloat", Prim::UArrayIndexFloat),
         ("primUArrayReadFloat", Prim::UArrayReadFloat),
         ("primUArrayWriteFloat", Prim::UArrayWriteFloat),
+        ("Region", Prim::Region),
+        ("Ref", Prim::Ref),
+        ("Borrow", Prim::Borrow),
+        ("BorrowIO", Prim::BorrowIO),
+        ("primRegion", Prim::RegionVal),
+        ("primRef", Prim::RefVal),
+        ("primBorrowWrap", Prim::BorrowWrap),
+        ("primBorrowRun", Prim::BorrowRun),
+        ("primBorrowIOWrap", Prim::BorrowIOWrap),
+        ("primBorrowIORun", Prim::BorrowIORun),
     ];
 
     pub fn from_name(s: &str) -> Option<Prim> {
@@ -464,6 +486,10 @@ impl Prim {
                 | Prim::Unique
                 | Prim::Array
                 | Prim::UArray
+                | Prim::Region
+                | Prim::Ref
+                | Prim::Borrow
+                | Prim::BorrowIO
         )
     }
 }

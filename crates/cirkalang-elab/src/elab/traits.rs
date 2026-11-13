@@ -752,8 +752,11 @@ impl<'r> Elab<'r> {
         self.ltype_vars.set(over_ltype);
         let mut cx = Cxt::default();
         let mut binders: Vec<(Name, Mult, Term)> = Vec::new();
-        for (n, sp) in &i.vars {
-            let k = self.fresh_meta(&cx, *sp);
+        for (j, (n, sp)) in i.vars.iter().enumerate() {
+            let k = match i.kinds.get(j) {
+                Some(k) => self.check_type(&mut cx, k),
+                None => self.fresh_meta(&cx, *sp),
+            };
             let kv = self.eval(&cx, &k);
             binders.push((n.as_str().into(), Mult::Zero, k));
             self.push(&mut cx, n, Mult::Zero, &kv, None, *sp, Some(n));

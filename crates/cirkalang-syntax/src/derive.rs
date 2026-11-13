@@ -111,6 +111,7 @@ fn derive_all(dd: &DataDecl, errs: &mut Vec<Diagnostic>) -> Vec<Decl> {
             private: false,
             span: *sp,
             kind: DeclKind::Impl(ImplDecl {
+                binders: Vec::new(),
                 context,
                 head: app(trait_, self_ty, *sp),
                 items,

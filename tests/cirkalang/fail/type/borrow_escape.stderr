@@ -1,0 +1,9 @@
+error[E1200]: type mismatch
+ --> tests/cirkalang/fail/type/borrow_escape.cirka:9:27
+  |
+9 |   case borrow arr as a in pure a of
+  |                           ^^^^^^
+  = note: expected `Borrow (Unique (UArray Int)) r _`
+  = note:    found `Borrow (Unique (UArray Int)) r (Ref (Unique (UArray Int)) r)`
+  = note: the region `r` of a borrow exists only inside the borrow, so neither its reference nor a computation in it can be the result
+  = help: return a value read through the reference instead (spec-v0.0.3.md §2.1)

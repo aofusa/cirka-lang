@@ -6,6 +6,7 @@
 module Std.Fs
 
 import Std.IO (IOError, MkIOError, checked)
+import Data.Borrow
 
 private extern "cirka" where
   cirka_errno : IO Int
@@ -104,3 +105,33 @@ removeFile : String -> IO (Result IOError ())
 removeFile path = do
   r <- cirka_fs_remove path
   pure (checked r)
+
+-- ---- borrowed (spec-v0.0.3.md §2.3) ----
+
+-- The operations on a file lent by `Data.Borrow.borrowIO`
+-- (`borrowIO f as h in do { r <- writeB h "x"; readAllB h }`).
+
+readB : Ref File r -> Int -> BorrowIO File r (Result IOError String)
+readB h n = usingIO h (\(1 f : _) => urRead (read f n))
+
+readAllB : Ref File r -> BorrowIO File r (Result IOError String)
+readAllB h = usingIO h (\(1 f : _) => urRead (readAll f))
+
+writeB : Ref File r -> String -> BorrowIO File r (Result IOError ())
+writeB h s = usingIO h (\(1 f : _) => urWrite (write f s))
+
+private urRead : (1 m : IO1 (File, Result IOError String)) -> IO1 (File, Ur (Result IOError String))
+urRead m = do
+  p <- m
+  urPair p
+
+private urPair : (1 p : (File, Result IOError String)) -> IO1 (File, Ur (Result IOError String))
+urPair (f, x) = pure1 (f, MkUr x)
+
+private urWrite : (1 m : IO1 (File, Result IOError ())) -> IO1 (File, Ur (Result IOError ()))
+urWrite m = do
+  p <- m
+  urPairW p
+
+private urPairW : (1 p : (File, Result IOError ())) -> IO1 (File, Ur (Result IOError ()))
+urPairW (f, x) = pure1 (f, MkUr x)

@@ -838,6 +838,19 @@ impl Parser {
 
     fn impl_decl(&mut self) -> R<ImplDecl> {
         self.bump(); // impl
+        // `{a, b : K} ->` declares the sort of variables of the head.
+        let mut binders = Vec::new();
+        while self.at(&Tok::LBrace) {
+            self.bump();
+            let names = self.name_list()?;
+            self.expect(&Tok::Colon, "`:`")?;
+            let k = self.expr()?;
+            self.expect(&Tok::RBrace, "`}`")?;
+            self.expect(&Tok::Arrow, "`->`")?;
+            for (n, sp) in names {
+                binders.push((n, sp, k.clone()));
+            }
+        }
         let context = self.opt_context()?;
         let head = self.opseq()?;
         let mut items = Vec::new();
@@ -855,6 +868,7 @@ impl Parser {
             }
         }
         Ok(ImplDecl {
+            binders,
             context,
             head,
             items,
@@ -1136,6 +1150,9 @@ impl Parser {
 
     pub(crate) fn expr(&mut self) -> R<Expr> {
         let start = self.span();
+        if let Some(e) = self.borrow_sugar()? {
+            return Ok(e);
+        }
         match self.peek().clone() {
             Tok::Backslash => {
                 self.bump();
@@ -1404,6 +1421,70 @@ impl Parser {
             kind: ExprKind::OpSeq { neg, operands, ops },
             span: self.from(start),
         })
+    }
+
+    /// `borrow x as a in e` is `borrow x (\_, a => e)`, and likewise for
+    /// `borrowIO` (spec-v0.0.3.md §2.2): the region is not named.
+    fn borrow_sugar(&mut self) -> R<Option<Expr>> {
+        let start = self.span();
+        let f = match self.peek() {
+            Tok::LIdent(q, n) if q.is_empty() && (n == "borrow" || n == "borrowIO") => n.clone(),
+            _ => return Ok(None),
+        };
+        let save = (self.pos, self.errs.len());
+        self.bump();
+        let x = match self.atom() {
+            Ok(x) if matches!(self.peek(), Tok::LIdent(q, n) if q.is_empty() && n == "as") => x,
+            _ => {
+                self.pos = save.0;
+                self.errs.truncate(save.1);
+                return Ok(None);
+            }
+        };
+        self.bump(); // as
+        let sp = self.span();
+        let name = match self.peek().clone() {
+            Tok::LIdent(q, n) if q.is_empty() => {
+                self.bump();
+                n
+            }
+            _ => {
+                self.error_here("a variable name");
+                return Err(());
+            }
+        };
+        if !self.at_kw(Kw::In) {
+            self.error_here("`in`");
+            return Err(());
+        }
+        self.bump();
+        let body = self.expr()?;
+        let span = self.from(start);
+        let bind = |name: Option<String>, span| LamBinder {
+            name,
+            span,
+            mult: None,
+            ty: None,
+        };
+        let lam = Expr {
+            kind: ExprKind::Lam(
+                vec![bind(None, start), bind(Some(name), sp)],
+                Box::new(body),
+            ),
+            span,
+        };
+        let head = Expr {
+            kind: ExprKind::Var(QName::simple(f)),
+            span: start,
+        };
+        let app = Expr {
+            kind: ExprKind::App(Box::new(head), Box::new(x)),
+            span,
+        };
+        Ok(Some(Expr {
+            kind: ExprKind::App(Box::new(app), Box::new(lam)),
+            span,
+        }))
     }
 
     /// An operand of an operator: an application, or a keyword expression

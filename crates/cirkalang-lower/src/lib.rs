@@ -309,6 +309,24 @@ impl<'a> Lower<'a> {
                     }
                     // 8-byte words (spec-v0.0.2.md §7.3).
                     (Some(Prim::UArray), [_]) => c::Type::bytes(),
+                    // Borrows (spec-v0.0.3.md §2): regions and references
+                    // are erased tokens; a borrow is a newtype of a state
+                    // function over the owner.
+                    (Some(Prim::Region | Prim::Ref), _) => self.unit_ty(),
+                    (Some(Prim::Borrow), [a, _, rest @ ..]) => c::Type::Con(
+                        "Borrow".into(),
+                        std::iter::once(*a)
+                            .chain(rest.iter().copied())
+                            .map(|t| self.lower_ty(tvs, t))
+                            .collect(),
+                    ),
+                    (Some(Prim::BorrowIO), [a, _, rest @ ..]) => c::Type::Con(
+                        "BorrowIO".into(),
+                        std::iter::once(*a)
+                            .chain(rest.iter().copied())
+                            .map(|t| self.lower_ty(tvs, t))
+                            .collect(),
+                    ),
                     _ => c::Type::Any,
                 }
             }
@@ -1090,6 +1108,92 @@ impl<'a> Lower<'a> {
         }
     }
 
+    fn unit_ty(&self) -> c::Type {
+        match self.p.builtins.unit {
+            Some(u) => c::Type::con(self.p.name(u)),
+            None => c::Type::unit(),
+        }
+    }
+
+    /// The field of `Borrow# s b` (`s -> Pair s (Ur b)`) or of
+    /// `BorrowIO# s b` (`s -> IO (Pair s (Ur b))`).
+    fn borrow_field(&self, io: bool, s: c::Type, b: c::Type) -> c::Type {
+        let (Some(pair), Some(ur)) = (self.p.builtins.pair, self.p.builtins.mk_ur) else {
+            return c::Type::Any;
+        };
+        let ur_ty = match self.p.get(ur) {
+            Global::Con { data, .. } => self.gname(*data),
+            _ => String::new(),
+        };
+        let res = c::Type::Con(
+            self.gname(pair),
+            vec![s.clone(), c::Type::Con(ur_ty, vec![b])],
+        );
+        let res = if io {
+            c::Type::Con("IO".into(), vec![res])
+        } else {
+            res
+        };
+        c::Type::fun(c::Mult::Many, s, res)
+    }
+
+    /// The field type of a `Borrow` / `BorrowIO` type.
+    fn borrow_field_of(&self, t: &c::Type) -> c::Type {
+        match t {
+            c::Type::Con(n, a) if a.len() == 2 && (n == "Borrow" || n == "BorrowIO") => {
+                self.borrow_field(n == "BorrowIO", a[0].clone(), a[1].clone())
+            }
+            _ => c::Type::Any,
+        }
+    }
+
+    /// `λf. K f` for the newtype constructor `K` of the result type.
+    fn newtype_wrap(&self, ty: &c::Type, con: &str) -> c::Expr {
+        self.skeleton(ty, 1, |a, r| {
+            let targs = match &r {
+                c::Type::Con(_, t) => t.clone(),
+                _ => Vec::new(),
+            };
+            let field = self.borrow_field_of(&r);
+            c::Expr::Con(
+                con.into(),
+                targs,
+                vec![c::Expr::Cast(Box::new(a[0].clone()), field)],
+            )
+        })
+    }
+
+    /// `λm. case m of K f -> f` for the newtype of the parameter.
+    fn newtype_run(&self, ty: &c::Type, con: &str) -> c::Expr {
+        let mut t = ty;
+        while let c::Type::Forall(_, _, b) = t {
+            t = b;
+        }
+        let pty = match t {
+            c::Type::Fun(_, a, _) => (**a).clone(),
+            _ => c::Type::Any,
+        };
+        self.skeleton(ty, 1, |a, r| {
+            let f = self.id("f");
+            c::Expr::Case(
+                Box::new(a[0].clone()),
+                c::Binder::new(self.id("s"), c::Mult::Many, pty.clone()),
+                r.clone(),
+                vec![c::Alt {
+                    con: c::AltCon::Con(
+                        con.into(),
+                        vec![c::Binder::new(
+                            f.clone(),
+                            c::Mult::Many,
+                            self.borrow_field_of(&pty),
+                        )],
+                    ),
+                    rhs: c::Expr::Cast(Box::new(c::Expr::Var(f)), r),
+                }],
+            )
+        })
+    }
+
     fn unit_val(&self) -> c::Expr {
         match self.p.builtins.mk_unit {
             Some(u) => c::Expr::Con(self.gname(u), Vec::new(), Vec::new()),
@@ -1276,7 +1380,16 @@ impl<'a> Lower<'a> {
             | Prim::IO1
             | Prim::Unique
             | Prim::Array
-            | Prim::UArray => return None,
+            | Prim::UArray
+            | Prim::Region
+            | Prim::Ref
+            | Prim::Borrow
+            | Prim::BorrowIO => return None,
+            Prim::RegionVal | Prim::RefVal => self.skeleton(ty, 0, |_, _| self.unit_val()),
+            Prim::BorrowWrap => self.newtype_wrap(ty, "Borrow#"),
+            Prim::BorrowIOWrap => self.newtype_wrap(ty, "BorrowIO#"),
+            Prim::BorrowRun => self.newtype_run(ty, "Borrow#"),
+            Prim::BorrowIORun => self.newtype_run(ty, "BorrowIO#"),
             // The value holds only memory: Perceus frees it.
             Prim::DropFree => self.skeleton(ty, 1, |_, _| self.unit_val()),
             Prim::ReleaseFree => self.skeleton(ty, 2, |_, _| self.unit_val()),
@@ -1816,6 +1929,26 @@ impl<'a> Lower<'a> {
             }],
             newtype: true,
         });
+        // Borrow s b = Borrow# (s -> Pair s (Ur b)) and BorrowIO s b =
+        // BorrowIO# (s -> IO (Pair s (Ur b))) (spec-v0.0.3.md §2).
+        for (name, con, io) in [
+            ("Borrow", "Borrow#", false),
+            ("BorrowIO", "BorrowIO#", true),
+        ] {
+            let (sv, bv) = (self.tv("s"), self.tv("b"));
+            let field = self.borrow_field(io, c::Type::Var(sv.clone()), c::Type::Var(bv.clone()));
+            prog.datas.push(c::DataDecl {
+                name: name.into(),
+                params: vec![(sv, c::Kind::Type), (bv, c::Kind::Type)],
+                linear: false,
+                ctors: vec![c::CtorDecl {
+                    name: con.into(),
+                    fields: vec![field],
+                    strict: vec![true],
+                }],
+                newtype: true,
+            });
+        }
         let datas: Vec<GName> = self
             .p
             .order

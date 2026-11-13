@@ -7,6 +7,8 @@
 -- is specialized away (spec-v0.0.2.md §3), so the loops work on raw words.
 module Data.Array.Unboxed
 
+import Data.Borrow
+
 infixl 9 !
 
 prim UArray : Type -> Type
@@ -154,3 +156,27 @@ eqFrom a b i = if i >= size a then True else if a ! i == b ! i then eqFrom a b (
 
 impl (Unbox a, Show a) => Show (UArray a) where
   show arr = show (toList arr)
+
+-- ---- borrowed (spec-v0.0.3.md §2.3) ----
+
+-- The operations on a unique array lent by `Data.Borrow.borrow`
+-- (`borrow arr as a in do { x <- readB a 0; writeB a 1 x }`).
+
+lengthB : Ref (Unique (UArray a)) r -> Borrow (Unique (UArray a)) r Int
+lengthB a = using a lengthUr
+
+private lengthUr : (1 u : Unique (UArray a)) -> (Unique (UArray a), Ur Int)
+lengthUr u = case length u of
+  (u, n) => (u, MkUr n)
+
+readB : Unbox a => Ref (Unique (UArray a)) r -> Int -> Borrow (Unique (UArray a)) r a
+readB a i = using a (\(1 u : _) => read u i)
+
+writeB : Unbox a => Ref (Unique (UArray a)) r -> Int -> a -> Borrow (Unique (UArray a)) r ()
+writeB a i x = update a (\(1 u : _) => write u i x)
+
+modifyB : Unbox a => Ref (Unique (UArray a)) r -> Int -> (a -> a) -> Borrow (Unique (UArray a)) r ()
+modifyB a i f = update a (\(1 u : _) => modify u i f)
+
+swapB : Unbox a => Ref (Unique (UArray a)) r -> Int -> Int -> Borrow (Unique (UArray a)) r ()
+swapB a i j = update a (\(1 u : _) => swap u i j)

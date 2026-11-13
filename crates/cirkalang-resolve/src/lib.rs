@@ -1185,7 +1185,13 @@ impl<'s> Resolver<'s> {
     }
 
     fn impl_(&mut self, i: &ast::ImplDecl, k: usize, span: Span) -> Option<Impl> {
-        let saved = self.auto_bind.replace(Vec::new());
+        let kinds: Vec<Expr> = i.binders.iter().map(|(_, _, k)| self.expr(k)).collect();
+        let declared: Vec<(String, Span)> = i
+            .binders
+            .iter()
+            .map(|(n, sp, _)| (n.clone(), *sp))
+            .collect();
+        let saved = self.auto_bind.replace(declared);
         let head = self.expr(&i.head);
         let context: Vec<Expr> = i.context.iter().map(|c| self.expr(c)).collect();
         let vars = std::mem::replace(&mut self.auto_bind, saved).unwrap_or_default();
@@ -1252,6 +1258,7 @@ impl<'s> Resolver<'s> {
         Some(Impl {
             name,
             vars,
+            kinds,
             context,
             head,
             trait_: tr,

@@ -455,6 +455,23 @@ impl<'r> Elab<'r> {
         self.univ_of(cx, ty) == Univ::Type && !self.resource_free(cx, ty)
     }
 
+    /// Solves the metas of `t` as errors (already reported).
+    fn fail_metas(&self, t: &Term) {
+        match t {
+            Term::Meta(m) | Term::InsertedMeta(m, _) => {
+                let mut sol = self.metas.sol.borrow_mut();
+                if sol[*m as usize].is_none() {
+                    sol[*m as usize] = Some(Val::Error);
+                }
+            }
+            Term::Pi(_, _, _, a, b) | Term::Lam(_, _, _, a, b) | Term::App(a, b, _) => {
+                self.fail_metas(a);
+                self.fail_metas(b);
+            }
+            _ => {}
+        }
+    }
+
     fn has_metas(&self, cx: &Cxt, v: &Val) -> bool {
         fn go(t: &Term) -> bool {
             match t {
@@ -1098,14 +1115,43 @@ impl<'r> Elab<'r> {
                 }
                 // The types are shown with the literals at their defaults.
                 self.default_literals();
-                self.report(
-                    self.error("E1200", span, "type mismatch")
-                        .with_note(format!("expected `{}`", self.show(cx, expected)))
-                        .with_note(format!("   found `{}`", self.show(cx, actual))),
-                );
+                let mut d = self
+                    .error("E1200", span, "type mismatch")
+                    .with_note(format!("expected `{}`", self.show(cx, expected)))
+                    .with_note(format!("   found `{}`", self.show(cx, actual)));
+                if let Some(r) = self.escaping_region(cx, expected, actual) {
+                    d = d
+                        .with_note(format!(
+                            "the region `{r}` of a borrow exists only inside the borrow, \
+                             so neither its reference nor a computation in it can be the result"
+                        ))
+                        .with_help(
+                            "return a value read through the reference instead \
+                             (spec-v0.0.3.md §2.1)",
+                        );
+                    // The result type is not reported again as unknown.
+                    self.fail_metas(&self.quote(cx, expected));
+                }
+                self.report(d);
                 false
             }
         }
+    }
+
+    /// The name of a borrow region (a variable of type `Region`) that
+    /// `actual` mentions while `expected` has unsolved parts made outside
+    /// the region: the mismatch is a borrow escaping (spec-v0.0.3.md §2.1).
+    fn escaping_region(&self, cx: &Cxt, expected: &Val, actual: &Val) -> Option<String> {
+        if !self.has_metas(cx, expected) {
+            return None;
+        }
+        let at = self.quote(cx, actual);
+        (0..cx.lvl()).find_map(|l| {
+            let region = matches!(self.whnf(&self.ty_val(cx, l)),
+                Val::Neutral(Head::Global(g), sp)
+                    if sp.is_empty() && self.prog.prim_of(g) == Some(Prim::Region));
+            (region && term_mentions(&at, cx.ix(l))).then(|| cx.names[l as usize].to_string())
+        })
     }
 
     fn builtin(&self, g: Option<GName>, what: &str, span: Span) -> Option<GName> {

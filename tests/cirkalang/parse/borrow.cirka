@@ -1,0 +1,13 @@
+-- `impl` variables with a declared sort and the borrow sugar
+-- (spec-v0.0.3.md §2.2, §2.4).
+module Main
+
+impl {a : LType} -> {b, c : Type} -> Show (T a b c) where
+  show x = "T"
+
+f x = borrow x as a in g a
+h x = borrowIO x as a in do
+  y <- g a
+  pure y
+k x = borrow x (\r, a => g a)
+l borrow = borrow 1

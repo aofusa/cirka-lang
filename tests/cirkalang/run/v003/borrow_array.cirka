@@ -1,0 +1,52 @@
+-- Scoped borrows of unique arrays (spec-v0.0.3.md §2): the block reads
+-- and updates the array in place and the owner gets it back.
+import Data.Array as A
+import Data.Array.Unboxed as U
+import Data.Borrow
+
+-- Insertion sort through a borrow.
+sortB : Ref (Unique (U.UArray Int)) r -> Borrow (Unique (U.UArray Int)) r ()
+sortB a = do
+  n <- U.lengthB a
+  outer a 1 n
+
+outer : Ref (Unique (U.UArray Int)) r -> Int -> Int -> Borrow (Unique (U.UArray Int)) r ()
+outer a i n = if i >= n then pure () else do
+  sink a i
+  outer a (i + 1) n
+
+sink : Ref (Unique (U.UArray Int)) r -> Int -> Borrow (Unique (U.UArray Int)) r ()
+sink a j = if j <= 0 then pure () else do
+  x <- U.readB a (j - 1)
+  y <- U.readB a j
+  if x <= y then pure () else do
+    U.swapB a (j - 1) j
+    sink a (j - 1)
+
+-- The sum of a boxed array, written with the region named.
+sumAll : (1 arr : Unique (A.Array Int)) -> (Unique (A.Array Int), Int)
+sumAll arr = borrow arr (\r, a => do
+  n <- A.lengthB a
+  sumFrom a 0 n 0)
+
+sumFrom : Ref (Unique (A.Array Int)) r -> Int -> Int -> Int -> Borrow (Unique (A.Array Int)) r Int
+sumFrom a i n acc = if i >= n then pure acc else do
+  x <- A.readB a i
+  sumFrom a (i + 1) n (acc + x)
+
+main : IO ()
+main = do
+  let u = U.fromListU [5, 3, 9, 1, 7, 2]
+  case borrow u as a in sortB a of
+    (u2, done) => print (U.toList (freeze u2))
+  let b = A.fromListU [10, 20, 30]
+  case sumAll b of
+    (b2, s) => do
+      print s
+      case borrow b2 as a in do
+             A.modifyB a 0 (\x => x * 2)
+             A.writeB a 2 1
+             A.readB a 0 of
+        (b3, x) => do
+          print x
+          print (A.toList (freeze b3))

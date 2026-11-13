@@ -166,6 +166,8 @@ pub struct TraitDecl {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ImplDecl {
+    /// Declared variables `{a : LType} ->` (spec-v0.0.3.md §2.4).
+    pub binders: Vec<(String, Span, Expr)>,
     pub context: Vec<Expr>,
     /// `Trait arg1 ... argn`.
     pub head: Expr,

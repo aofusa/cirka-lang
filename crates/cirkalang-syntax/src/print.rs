@@ -97,8 +97,13 @@ fn decl(d: &Decl) -> String {
         DeclKind::Impl(i) => {
             let ctx: Vec<String> = i.context.iter().map(expr).collect();
             let items: Vec<String> = i.items.iter().map(decl).collect();
+            let vars: String = i
+                .binders
+                .iter()
+                .map(|(n, _, k)| format!("{{{n} : {}}} ", expr(k)))
+                .collect();
             format!(
-                "({p}impl ({}) {} {})",
+                "({p}impl {vars}({}) {} {})",
                 ctx.join(" "),
                 expr(&i.head),
                 items.join(" ")

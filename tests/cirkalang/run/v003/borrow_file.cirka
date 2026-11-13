@@ -1,0 +1,46 @@
+-- A file lent to a block of actions (spec-v0.0.3.md §2): the block writes
+-- and the owner gets the file back to close it.
+import Data.Borrow
+import Std.Fs as Fs
+import Std.Process as P
+
+-- Two writes through a borrow; the results are combined in the block.
+writeTwice : (1 f : Fs.File) -> IO1 (Fs.File, Bool)
+writeTwice f = borrowIO f as h in do
+  a <- Fs.writeB h "one\n"
+  b <- Fs.writeB h "two\n"
+  liftIO (putStrLn "written")
+  pure (isOk a && isOk b)
+
+-- The first bytes, then the rest, through one borrow.
+readParts : (1 f : Fs.File) -> IO1 (Fs.File, String)
+readParts f = borrowIO f as h in do
+  a <- Fs.readB h 4
+  b <- Fs.readAllB h
+  pure (show a ++ " " ++ show b)
+
+main : IO ()
+main = do
+  pid <- P.processId
+  let path = "/tmp/cirka-borrow-file-" ++ show pid ++ ".txt"
+  r <- Fs.create path
+  case r of
+    Err e => print e
+    Ok f => do
+      p <- writeTwice f
+      case p of
+        (f, ok) => do
+          c <- Fs.close f
+          print (ok && isOk c)
+  r2 <- Fs.openRead path
+  case r2 of
+    Err e => print e
+    Ok f => do
+      p <- readParts f
+      case p of
+        (f, s) => do
+          putStrLn s
+          c <- Fs.close f
+          print (isOk c)
+  d <- Fs.removeFile path
+  print (isOk d)
