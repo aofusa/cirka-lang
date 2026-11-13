@@ -532,3 +532,23 @@ BUG-0014 のコストは spectral-norm `plain.hs` に出た。リストの要素
 - n-body は v0.0.1 の 52.9 倍から 10.3 倍になった。残りは 5 体を `List` のレコードで持つことと `Float` のフィールドの箱で、
   CirkaLang の構造体の unboxing (FEAT-0041 の CirkaLang 側、v0.0.3) で扱う。
 
+## CirkaLang v0.0.3 (FEAT-0223)
+
+計測: `bench/run.sh` (Docker コンテナ内、hyperfine、`CIRKA_BENCH_RUNS=3`、2026-11-13)。`cirka build -O2` と `rustc -C opt-level=3`。引数は各 `bench/<name>/args`。
+
+| ベンチ | CirkaLang v0.0.3 | Rust | 比 (Rust=1) | 最大 RSS (Cirka / Rust) |
+|--------|-----------------:|-----:|------------:|------------------------:|
+| array-sort | 0.090 s | 0.086 s | 1.04 | 10.9 / 11.0 MB |
+| binary-trees (深さ 21) | 11.49 s | 22.40 s | **0.51** | 194 / 258 MB |
+| cli-grep | 0.341 s | 0.178 s | 1.91 | 55 / 44 MB |
+| mandelbrot | 0.106 s | 0.100 s | 1.06 | 11.1 / 11.1 MB |
+| n-body (500 万ステップ) | 0.573 s | 0.393 s | **1.46** | 11.1 / 11.0 MB |
+| spectral-norm | 0.176 s | 0.189 s | 0.93 | 11.1 / 11.0 MB |
+| string-split | 0.282 s | 0.177 s | 1.60 | 44 / 23 MB |
+
+- (RSS は Docker 内の hyperfine 経由の値で、v0.0.2 の表 (ホストの GNU time) とは基準が違う。)
+- n-body は v0.0.2 の 10.3 倍から 1.46 倍になった。5 体を 35 個の `Float` の一意な `UArray` に置き、借用 (spec-v0.0.3.md §2) でその場で更新する。
+  確保は全体で 102 回。借用のモナドは状態トークンの worker の一般化 (FEAT-0220) で直接の呼び出しになる。残りの差は配列の境界検査と、
+  読み書きのたびの添字の計算 (Rust は構造体のフィールド)。
+- G3 (Rust の 1.5 倍以内) は 7 題材中 5 つで達成。文字列処理の 2 つが未達で、どちらも 1 行あたり約 2 回の確保が残る
+  (string-split は case の後の計算が結果を箱で受け取ること: FEAT-0080。cli-grep は `foldLines` の行のビュー `Str` と累積値のレコード: FEAT-0082)。
