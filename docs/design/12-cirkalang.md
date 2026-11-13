@@ -140,6 +140,7 @@ trait Monoid (a : Type) where
 
 - 正格評価。`Lazy a` / `delay` / `force` で明示的に遅延 (共通基盤のサンクを使う)。
 - 循環が生じうるのは `Lazy` の自己参照と可変参照 (`Ref`/`IORef` 相当) だけ。静的に警告し、リージョンを勧める。
+  v0.0.3 (spec-v0.0.3.md §4、ADR-074): 局所の `let` は再帰せず可変の参照はリージョンだけなので、自己参照はトップレベルの値に限られ、W0310 で警告する。`&&` / `||` は短絡する。
 - 例外: `Result` が基本。`panic` は最初 abort、共通基盤のアンワインド (FEAT-0040) 後は unwind し、landing pad で `Drop`/`Release` を実行する。
 - メモリモデル・ランタイム・バックエンドは共通基盤 ([04](04-memory-model.md) / [05](05-runtime.md) / [07](07-backend.md))。
 
@@ -178,7 +179,7 @@ trait Monoid (a : Type) where
 - 性能: binary-trees は Rust の 1.60 倍、n-body は 52.9 倍 ([bench-report.md](bench-report.md))。原因は数値のボックス化と
   配列の欠如であり、v0.0.2 の一意な配列 (FEAT-0211) と v0.0.3 の worker/wrapper・unboxing (FEAT-0041) で対処する。
   CirkaLang は正格なので、正格な `Int`/`Float` の引数・戻り値は常に unboxing してよい (FEAT-0041 に記録)。
-- 書き味: `&&` が短絡しないので境界検査が入れ子の `if` になる (v0.0.3 の短絡評価を前倒しする候補)。
+- 書き味: `&&` が短絡しないので境界検査が入れ子の `if` になる (v0.0.3 で短絡させた、FEAT-0222)。
   `Pair` などの型引数に LType を入れられない (宇宙多相か LType への一般化を v0.0.2 のトレイトとともに検討)。
   `show` がないので数値の出力が型ごとの関数になる (v0.0.2 のトレイト)。
 - 所有権: 資源を持たない型の規則 (ADR-030) と、`let` をスコープとして数える規則により、
