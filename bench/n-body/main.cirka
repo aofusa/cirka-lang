@@ -1,11 +1,12 @@
 module Main
 
--- n-body (Benchmarks Game), single-threaded. v0.0.1 has no arrays or
--- mutation, so each step rebuilds the list of 5 bodies (Perceus reuses the
--- cells in place). Same output as rust/main.rs.
+-- n-body (Benchmarks Game), single-threaded: the bodies in one unique
+-- unboxed array of 35 floats (7 per body: x y z vx vy vz m), updated in
+-- place through a borrow (spec-v0.0.3.md §2). Same algorithm and output as
+-- rust/main.rs.
+import Data.Array.Unboxed as U
+import Data.Borrow
 
--- position, velocity, mass
-data Body = B Float Float Float Float Float Float Float
 
 solarMass : Float
 solarMass = 4.0 *. 3.141592653589793 *. 3.141592653589793
@@ -13,90 +14,105 @@ solarMass = 4.0 *. 3.141592653589793 *. 3.141592653589793
 daysPerYear : Float
 daysPerYear = 365.24
 
-planet : Float -> Float -> Float -> Float -> Float -> Float -> Float -> Body
-planet x y z vx vy vz m = B x y z (vx *. daysPerYear) (vy *. daysPerYear) (vz *. daysPerYear) (m *. solarMass)
+planet : Float -> Float -> Float -> Float -> Float -> Float -> Float -> List Float
+planet x y z vx vy vz m = [x, y, z, vx *. daysPerYear, vy *. daysPerYear, vz *. daysPerYear, m *. solarMass]
 
-initial : List Body
-initial =
-  [ B 0.0 0.0 0.0 0.0 0.0 0.0 solarMass
+initial : () -> Unique (U.UArray Float)
+initial _ = U.fromListU (concat
+  [ [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, solarMass]
   , planet 4.84143144246472090 (-1.16032004402742839) (-0.103622044471123109)
-      0.00166007664274403694 0.00769901118419740425 (-0.0000690460016972063023)
-      0.000954791938424326609
+       0.00166007664274403694 0.00769901118419740425 (-0.0000690460016972063023)
+       0.000954791938424326609
   , planet 8.34336671824457987 4.12479856412430479 (-0.403523417114321381)
-      (-0.00276742510726862411) 0.00499852801234917238 0.0000230417297573763929
-      0.000285885980666130812
+       (-0.00276742510726862411) 0.00499852801234917238 0.0000230417297573763929
+       0.000285885980666130812
   , planet 12.8943695621391310 (-15.1111514016986312) (-0.223307578892655734)
-      0.00296460137564761618 0.00237847173959480950 (-0.0000296589568540237556)
-      0.0000436624404335156298
+       0.00296460137564761618 0.00237847173959480950 (-0.0000296589568540237556)
+       0.0000436624404335156298
   , planet 15.3796971148509165 (-25.9193146099879641) 0.179258772950371181
-      0.00268067772490389322 0.00162824170038242295 (-0.0000951592254519715870)
-      0.0000515138902046611451
-  ]
+       0.00268067772490389322 0.00162824170038242295 (-0.0000951592254519715870)
+       0.0000515138902046611451 ])
 
 -- ---- momentum ----
 
-momentum : List Body -> Float -> Float -> Float -> Pair Float (Pair Float Float)
-momentum Nil px py pz = (px, (py, pz))
-momentum (B _ _ _ vx vy vz m :: bs) px py pz =
-  momentum bs (px +. vx *. m) (py +. vy *. m) (pz +. vz *. m)
-
-offset : List Body -> List Body
-offset Nil = Nil
-offset (B x y z _ _ _ m :: bs) = case momentum (B x y z 0.0 0.0 0.0 m :: bs) 0.0 0.0 0.0 of
-  (px, (py, pz)) =>
-    B x y z (negateF px /. solarMass) (negateF py /. solarMass) (negateF pz /. solarMass) m :: bs
+momentum : Ref (Unique (U.UArray Float)) r -> Int -> Float -> Float -> Float -> Borrow (Unique (U.UArray Float)) r ()
+momentum b i px py pz = if i >= 5 then do
+    U.writeB b 3 (negateF px /. solarMass)
+    U.writeB b 4 (negateF py /. solarMass)
+    U.writeB b 5 (negateF pz /. solarMass)
+  else do
+    vx <- U.readB b (i * 7 + 3)
+    vy <- U.readB b (i * 7 + 4)
+    vz <- U.readB b (i * 7 + 5)
+    m <- U.readB b (i * 7 + 6)
+    momentum b (i + 1) (px +. vx *. m) (py +. vy *. m) (pz +. vz *. m)
 
 -- ---- energy ----
 
-potential : Body -> List Body -> Float -> Float
-potential _ Nil e = e
-potential (B x y z vx vy vz m) (B x2 y2 z2 _ _ _ m2 :: bs) e =
-  let dx = x -. x2 in
-  let dy = y -. y2 in
-  let dz = z -. z2 in
-  potential (B x y z vx vy vz m) bs (e -. m *. m2 /. sqrt (dx *. dx +. dy *. dy +. dz *. dz))
+energy : Ref (Unique (U.UArray Float)) r -> Int -> Float -> Borrow (Unique (U.UArray Float)) r Float
+energy b i e = if i >= 5 then pure e else do
+  vx <- U.readB b (i * 7 + 3)
+  vy <- U.readB b (i * 7 + 4)
+  vz <- U.readB b (i * 7 + 5)
+  m <- U.readB b (i * 7 + 6)
+  potential b i (i + 1) (e +. 0.5 *. m *. (vx *. vx +. vy *. vy +. vz *. vz))
 
-energy : List Body -> Float -> Float
-energy Nil e = e
-energy (B x y z vx vy vz m :: bs) e =
-  let k = e +. 0.5 *. m *. (vx *. vx +. vy *. vy +. vz *. vz) in
-  energy bs (potential (B x y z vx vy vz m) bs k)
+potential : Ref (Unique (U.UArray Float)) r -> Int -> Int -> Float -> Borrow (Unique (U.UArray Float)) r Float
+potential b i j e = if j >= 5 then energy b (i + 1) e else do
+  x <- U.readB b (i * 7)
+  y <- U.readB b (i * 7 + 1)
+  z <- U.readB b (i * 7 + 2)
+  m <- U.readB b (i * 7 + 6)
+  x2 <- U.readB b (j * 7)
+  y2 <- U.readB b (j * 7 + 1)
+  z2 <- U.readB b (j * 7 + 2)
+  m2 <- U.readB b (j * 7 + 6)
+  let dx = x -. x2
+  let dy = y -. y2
+  let dz = z -. z2
+  potential b i (j + 1) (e -. m *. m2 /. sqrt (dx *. dx +. dy *. dy +. dz *. dz))
 
 -- ---- advance ----
 
--- Interaction of one pair: the updated pair.
-pairStep : Float -> Body -> Body -> Pair Body Body
-pairStep dt (B x y z vx vy vz m) (B x2 y2 z2 vx2 vy2 vz2 m2) =
-  let dx = x -. x2 in
-  let dy = y -. y2 in
-  let dz = z -. z2 in
-  let d2 = dx *. dx +. dy *. dy +. dz *. dz in
-  let mag = dt /. (d2 *. sqrt d2) in
-  let mj = m2 *. mag in
-  let mi = m *. mag in
-  ( B x y z (vx -. dx *. mj) (vy -. dy *. mj) (vz -. dz *. mj) m
-  , B x2 y2 z2 (vx2 +. dx *. mi) (vy2 +. dy *. mi) (vz2 +. dz *. mi) m2 )
+-- The pairs (i, j) for j > i, then the moves; then the next step.
+pairs : Ref (Unique (U.UArray Float)) r -> Int -> Int -> Int -> Borrow (Unique (U.UArray Float)) r ()
+pairs b n i j = if i >= 5 then moves b n 0 else if j >= 5 then pairs b n (i + 1) (i + 2) else do
+  x <- U.readB b (i * 7)
+  y <- U.readB b (i * 7 + 1)
+  z <- U.readB b (i * 7 + 2)
+  m <- U.readB b (i * 7 + 6)
+  x2 <- U.readB b (j * 7)
+  y2 <- U.readB b (j * 7 + 1)
+  z2 <- U.readB b (j * 7 + 2)
+  m2 <- U.readB b (j * 7 + 6)
+  let dx = x -. x2
+  let dy = y -. y2
+  let dz = z -. z2
+  let d2 = dx *. dx +. dy *. dy +. dz *. dz
+  let mag = 0.01 /. (d2 *. sqrt d2)
+  let mj = m2 *. mag
+  let mi = m *. mag
+  U.modifyB b (i * 7 + 3) (\v => v -. dx *. mj)
+  U.modifyB b (i * 7 + 4) (\v => v -. dy *. mj)
+  U.modifyB b (i * 7 + 5) (\v => v -. dz *. mj)
+  U.modifyB b (j * 7 + 3) (\v => v +. dx *. mi)
+  U.modifyB b (j * 7 + 4) (\v => v +. dy *. mi)
+  U.modifyB b (j * 7 + 5) (\v => v +. dz *. mi)
+  pairs b n i (j + 1)
 
--- `b` interacts with every body of the list.
-interactAll : Float -> Body -> List Body -> Pair Body (List Body)
-interactAll dt b Nil = (b, Nil)
-interactAll dt b (c :: cs) = case pairStep dt b c of
-  (b1, c1) => case interactAll dt b1 cs of
-    (b2, cs1) => (b2, c1 :: cs1)
+moves : Ref (Unique (U.UArray Float)) r -> Int -> Int -> Borrow (Unique (U.UArray Float)) r ()
+moves b n i = if i >= 5 then steps b (n - 1) else do
+  vx <- U.readB b (i * 7 + 3)
+  vy <- U.readB b (i * 7 + 4)
+  vz <- U.readB b (i * 7 + 5)
+  U.modifyB b (i * 7) (\p => p +. 0.01 *. vx)
+  U.modifyB b (i * 7 + 1) (\p => p +. 0.01 *. vy)
+  U.modifyB b (i * 7 + 2) (\p => p +. 0.01 *. vz)
+  moves b n (i + 1)
 
-velocities : Float -> List Body -> List Body
-velocities dt Nil = Nil
-velocities dt (b :: bs) = case interactAll dt b bs of
-  (b1, bs1) => b1 :: velocities dt bs1
-
-move : Float -> List Body -> List Body
-move dt Nil = Nil
-move dt (B x y z vx vy vz m :: bs) =
-  B (x +. dt *. vx) (y +. dt *. vy) (z +. dt *. vz) vx vy vz m :: move dt bs
-
-steps : Int -> List Body -> List Body
-steps 0 bs = bs
-steps n bs = steps (n - 1) (move 0.01 (velocities 0.01 bs))
+-- `n` steps.
+steps : Ref (Unique (U.UArray Float)) r -> Int -> Borrow (Unique (U.UArray Float)) r ()
+steps b n = if n <= 0 then pure () else pairs b n 0 1
 
 -- ---- output with 9 decimals ----
 
@@ -115,6 +131,13 @@ main = do
   argc <- argCount
   arg <- if argc > 0 then getArg 0 else pure "1000"
   let n = parseInt arg
-  let bs = offset initial
-  putStrLn (fixed9 (energy bs 0.0))
-  putStrLn (fixed9 (energy (steps n bs) 0.0))
+  case borrow (initial ()) as b in do
+         momentum b 0 0.0 0.0 0.0
+         e0 <- energy b 0 0.0
+         steps b n
+         e1 <- energy b 0 0.0
+         pure (e0, e1) of
+    (bs, es) => case es of
+      (e0, e1) => do
+        putStrLn (fixed9 e0)
+        putStrLn (fixed9 e1)
