@@ -41,6 +41,12 @@ pub struct sigaction_t {
 }
 
 #[repr(C)]
+pub struct timespec {
+    pub tv_sec: i64,
+    pub tv_nsec: i64,
+}
+
+#[repr(C)]
 pub struct siginfo_t {
     pub si_signo: c_int,
     pub si_errno: c_int,
@@ -66,8 +72,10 @@ unsafe extern "C" {
     pub fn read(fd: c_int, buf: *mut c_void, n: size_t) -> ssize_t;
     pub fn open(path: *const c_char, flags: c_int, ...) -> c_int;
     pub fn close(fd: c_int) -> c_int;
+    pub fn unlink(path: *const c_char) -> c_int;
     pub fn __errno_location() -> *mut c_int;
     pub fn getenv(name: *const c_char) -> *const c_char;
+    pub fn clock_gettime(clock: c_int, ts: *mut timespec) -> c_int;
     pub fn _exit(code: c_int) -> !;
     pub fn abort() -> !;
     pub fn memset(p: *mut c_void, c: c_int, n: size_t) -> *mut c_void;

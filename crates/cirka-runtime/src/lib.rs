@@ -19,6 +19,7 @@ pub mod mutvar;
 pub mod object;
 pub mod region;
 pub mod start;
+pub mod stdio;
 pub mod sys;
 
 use core::cell::UnsafeCell;

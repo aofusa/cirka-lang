@@ -116,6 +116,12 @@ pub struct Interp<'m> {
     stdin: Vec<u8>,
     stdin_pos: usize,
     args: Vec<Vec<u8>>,
+    /// Files opened by `cirka_fs_open` (the standard library, FEAT-0213),
+    /// by descriptor, and the next descriptor.
+    files: HashMap<i64, std::fs::File>,
+    next_fd: i64,
+    /// `errno` as the runtime leaves it.
+    errno: i64,
     /// Per function: variables that hold reuse tokens.
     tokens: Vec<Vec<bool>>,
     /// Roots of the cycle collector (each holds a reference), and the
@@ -148,6 +154,9 @@ impl<'m> Interp<'m> {
             stdin: Vec::new(),
             stdin_pos: 0,
             args: Vec::new(),
+            files: HashMap::new(),
+            next_fd: 3,
+            errno: 0,
             tokens: m.funcs.iter().map(token_vars).collect(),
             cycle_roots: Vec::new(),
             cycle_limit: CYCLE_BUFFER,
@@ -1282,6 +1291,9 @@ impl<'m> Interp<'m> {
 
     /// Runtime functions callable through `extern` in the interpreter.
     fn external(&mut self, name: &str, a: &[Val]) -> R<Val> {
+        if let Some(r) = self.std_extern(name, a) {
+            return r;
+        }
         let unit = Val::I(0);
         match name {
             "cirka_write_i64" => {
@@ -1554,6 +1566,196 @@ impl<'m> Interp<'m> {
                 "extern `{name}` is not available in the interpreter"
             )),
         }
+    }
+}
+
+impl Interp<'_> {
+    /// The runtime functions of the standard library (`stdio.rs` in
+    /// `cirka-runtime`), with files of this process and the captured
+    /// standard streams. `None` for other names.
+    fn std_extern(&mut self, name: &str, a: &[Val]) -> Option<R<Val>> {
+        use std::io::{Read, Write};
+        let os = |e: &std::io::Error| i64::from(e.raw_os_error().unwrap_or(5));
+        Some(match name {
+            "cirka_errno" => Ok(Val::I(self.errno)),
+            "cirka_strerror" => {
+                let t = strerror(a[0].int()).as_bytes().to_vec();
+                Ok(self.new_bytes(t))
+            }
+            "cirka_fs_open" => (|| {
+                let path = String::from_utf8_lossy(self.bytes(a[0])?).into_owned();
+                let mut o = std::fs::OpenOptions::new();
+                match a[1].int() {
+                    0 => o.read(true),
+                    1 => o.write(true).create(true).truncate(true),
+                    _ => o.append(true).create(true),
+                };
+                Ok(Val::I(match o.open(&path) {
+                    // A directory opens for reading (as with open(2)).
+                    Ok(f) => {
+                        let fd = self.next_fd;
+                        self.next_fd += 1;
+                        self.files.insert(fd, f);
+                        fd
+                    }
+                    Err(e) => -os(&e),
+                }))
+            })(),
+            "cirka_fs_remove" => (|| {
+                let path = String::from_utf8_lossy(self.bytes(a[0])?).into_owned();
+                Ok(Val::I(
+                    std::fs::remove_file(&path).map_or_else(|e| -os(&e), |_| 0),
+                ))
+            })(),
+            "cirka_fd_read" => {
+                let (fd, max) = (a[0].int(), a[1].int());
+                let mut buf = Vec::new();
+                let r = if fd == 0 {
+                    let rest = &self.stdin[self.stdin_pos..];
+                    let n = if max < 0 {
+                        rest.len()
+                    } else {
+                        rest.len().min(max as usize)
+                    };
+                    buf.extend_from_slice(&rest[..n]);
+                    self.stdin_pos += n;
+                    Ok(())
+                } else {
+                    match self.files.get_mut(&fd) {
+                        None => Err(9),
+                        Some(f) if max < 0 => {
+                            f.read_to_end(&mut buf).map(|_| ()).map_err(|e| os(&e))
+                        }
+                        Some(f) => {
+                            buf.resize(max.max(1) as usize, 0);
+                            match f.read(&mut buf) {
+                                Ok(n) => {
+                                    buf.truncate(n);
+                                    Ok(())
+                                }
+                                Err(e) => Err(os(&e)),
+                            }
+                        }
+                    }
+                };
+                self.errno = match r {
+                    Ok(()) => 0,
+                    Err(e) => {
+                        buf.clear();
+                        e
+                    }
+                };
+                Ok(self.new_bytes(buf))
+            }
+            "cirka_fd_write" => (|| {
+                let fd = a[0].int();
+                let b = self.bytes(a[1])?.clone();
+                Ok(Val::I(match fd {
+                    1 => {
+                        self.out.extend_from_slice(&b);
+                        0
+                    }
+                    2 => {
+                        self.err.extend_from_slice(&b);
+                        0
+                    }
+                    _ => match self.files.get_mut(&fd) {
+                        None => -9,
+                        Some(f) => f.write_all(&b).map_or_else(|e| -os(&e), |_| 0),
+                    },
+                }))
+            })(),
+            "cirka_fd_close" => Ok(Val::I(match self.files.remove(&a[0].int()) {
+                Some(_) => 0,
+                None => -9,
+            })),
+            "cirka_stdin_eof" => Ok(Val::I(i64::from(self.stdin_pos >= self.stdin.len()))),
+            "cirka_read_line" => {
+                let rest = &self.stdin[self.stdin_pos..];
+                let n = rest.iter().position(|&b| b == 10).unwrap_or(rest.len());
+                let mut line = rest[..n].to_vec();
+                self.stdin_pos += (n + 1).min(rest.len());
+                if line.last() == Some(&13) {
+                    line.pop();
+                }
+                Ok(self.new_bytes(line))
+            }
+            "cirka_getenv" | "cirka_env_has" => (|| {
+                let n = String::from_utf8_lossy(self.bytes(a[0])?).into_owned();
+                let v = std::env::var_os(&n);
+                Ok(if name == "cirka_env_has" {
+                    Val::I(i64::from(v.is_some()))
+                } else {
+                    use std::os::unix::ffi::OsStrExt;
+                    let b = v.map(|v| v.as_bytes().to_vec()).unwrap_or_default();
+                    self.new_bytes(b)
+                })
+            })(),
+            "cirka_clock_ns" => {
+                let ns = if a[0].int() == 0 {
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |d| d.as_nanos() as i64)
+                } else {
+                    static START: std::sync::OnceLock<std::time::Instant> =
+                        std::sync::OnceLock::new();
+                    START
+                        .get_or_init(std::time::Instant::now)
+                        .elapsed()
+                        .as_nanos() as i64
+                };
+                Ok(Val::I(ns))
+            }
+            "cirka_cstring_new" => (|| {
+                let mut b = self.bytes(a[0])?.clone();
+                b.push(0);
+                let p = match crate::ffi::call(
+                    "malloc",
+                    &[crate::CTy::U64],
+                    crate::CTy::Ptr,
+                    &[crate::ffi::Arg::I(b.len() as i64)],
+                ) {
+                    Ok(crate::ffi::Ret::I(p)) => p,
+                    _ => return fault("malloc failed"),
+                };
+                for (i, x) in b.iter().enumerate() {
+                    crate::ffi::mem_write(p + i as i64, 1, i64::from(*x)).or_else(fault)?;
+                }
+                Ok(Val::I(p))
+            })(),
+            "cirka_cstring_peek" => (|| {
+                let (p, n) = (a[0].int(), a[1].int().max(0));
+                let mut b = Vec::with_capacity(n as usize);
+                for i in 0..n {
+                    b.push(crate::ffi::mem_read(p + i, 1).or_else(fault)? as u8);
+                }
+                Ok(self.new_bytes(b))
+            })(),
+            _ => return None,
+        })
+    }
+}
+
+/// The runtime's text for an error number (`cirka_strerror`).
+fn strerror(e: i64) -> &'static str {
+    match e {
+        1 => "Operation not permitted",
+        2 => "No such file or directory",
+        5 => "Input/output error",
+        9 => "Bad file descriptor",
+        12 => "Cannot allocate memory",
+        13 => "Permission denied",
+        17 => "File exists",
+        20 => "Not a directory",
+        21 => "Is a directory",
+        22 => "Invalid argument",
+        24 => "Too many open files",
+        27 => "File too large",
+        28 => "No space left on device",
+        30 => "Read-only file system",
+        32 => "Broken pipe",
+        36 => "File name too long",
+        _ => "Unknown error",
     }
 }
 

@@ -339,6 +339,30 @@ pub extern "C" fn cirka_flush() {
     flush();
 }
 
+/// Reads from stdin into `out` through the buffer shared with
+/// `cirka_read_byte`: the number of bytes (0 at the end of input), or -1
+/// with `errno` set.
+pub fn stdin_read(out: &mut [u8]) -> isize {
+    // SAFETY: stdin buffer used from one thread.
+    let b = unsafe { STDIN.get() };
+    if b.pos < b.len {
+        let n = (b.len - b.pos).min(out.len());
+        out[..n].copy_from_slice(&b.data[b.pos..b.pos + n]);
+        b.pos += n;
+        return n as isize;
+    }
+    if b.eof {
+        return 0;
+    }
+    flush();
+    // SAFETY: valid buffer.
+    let n = unsafe { sys::read(0, out.as_mut_ptr() as *mut c_void, out.len()) };
+    if n == 0 {
+        b.eof = true;
+    }
+    n
+}
+
 /// The next byte of stdin without consuming it; -1 at end of input.
 #[unsafe(no_mangle)]
 pub extern "C" fn cirka_peek_byte() -> i64 {
