@@ -1,7 +1,7 @@
 # A program with two dependencies that share a third one.
 [package]
 name = "app"
-edition = "0.0.1"
+edition = "0.0.2"
 
 [dependencies]
 util = { path = "../util" }

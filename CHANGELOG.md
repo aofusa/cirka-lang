@@ -3,6 +3,49 @@
 CirkaLang の版ごとの変更を記録する。プロトタイプ (v0.0.x) の間は版間の互換性を保証しない
 (`cirka.toml` の `edition` で対象版を明示する)。aCHC は版を持たないので記録しない。
 
+## CirkaLang v0.0.2
+
+実用 CUI: トレイト、文字列と配列、RAII と `Result`、C FFI と標準ライブラリ、パッケージ、ソース内のテスト。
+仕様は [docs/design/cirkalang/spec-v0.0.2.md](docs/design/cirkalang/spec-v0.0.2.md) (v0.0.1 からの差分)。`cirka.toml` の `edition` は `"0.0.2"`。
+
+### 追加
+
+- トレイト: `trait` / `impl` / `deriving` と制約 `C a => T`、高階の型パラメータ、スーパートレイト、既定のメソッド。
+  Prelude の算術・比較・`show` はトレイトのメソッドで、数値リテラルは `fromInt`。辞書は全体特殊化で実行時に残らない (FEAT-0210)。
+- 所有権と資源: データ型のパラメータを通した線形性の伝播、線形な値を保持する値 (部分適用・アクション) の検査、
+  `IO1` (結果が線形なアクション)、`Drop` / `Release` と終了処理の自動挿入、リークの警告 W0308、`ω` のフィールドと `Ur` (FEAT-0212, 0211, BUG-0015)。
+- エラー処理: `Result e a` と `do` の文末の `?`、`unwrap` / `expect` などの補助関数 (FEAT-0212)。
+- 文字列と配列: `Data.Array` (箱入り、`Unique` でその場の更新)、`Data.Vec` (伸長する配列)、`Data.Array.Unboxed` (トレイト `Unbox`)、
+  `Data.String` (複製しないビュー `Str`、分割・検索・数値の解析、`Builder`) (FEAT-0211)。
+- モジュール: `import M as X` と `import M (a, b)` (FEAT-0211)。パッケージ: `cirka.toml` のパス依存と名前空間 (FEAT-0214)。
+- ソース内のテスト: `test "名前" = …`、`tests where`、`cirka test` (FEAT-0216)。
+- C FFI: `extern "C"` ブロック、`Foreign` (C の型・`Ptr` / `OwnedPtr`・C 文字列) (FEAT-0213)。
+- 標準ライブラリ `lib/cirkalang/std`: `Std.IO` `Std.Fs` (`File` は `Release` で閉じる) `Std.Env` `Std.Process` `Std.Time`。誤りは `Result IOError a` (FEAT-0213)。
+- Prelude: `print` `isJust` `isNothing`、`panic` の結果を線形な型にできる。
+- 共通基盤の最適化: 多相関数の静的引数の特殊化、積型の引数の worker/wrapper、`switch` の腕をまたぐ再利用など (FEAT-0079)。
+- ベンチ: `bench/array-sort/main.cirka`、`bench/string-split`、`bench/cli-grep`。
+
+### 変更 (互換性のない変更)
+
+- `edition = "0.0.1"` のパッケージは受け付けない (`"0.0.2"` に変える)。
+- 型を書かないデータ型のパラメータは `LType` を範囲とし、線形性を伝播する (`List File` は線形)。型を書かない型変数は `Type` で、線形な型での具体化は E0301。
+- 線形な値を保持する部分適用・アクションは 1 回しか使えない (E0303 / E0305。BUG-0015)。
+- `extern` と `link` は `extern "…"` の位置で文脈キーワード、`trait` `impl` `deriving` は予約語になった。
+
+### 性能 ([bench-report.md](docs/design/bench-report.md) の「CirkaLang v0.0.2」)
+
+- array-sort・mandelbrot・spectral-norm は Rust と同等、binary-trees は Rust の 0.49 倍 (v0.0.1 は 1.60 倍)。
+- 文字列処理は Rust の 1.6〜2.0 倍 (string-split・cli-grep)。n-body は 10.3 倍 (v0.0.1 は 52.9 倍)。
+
+### 既知の制限
+
+- `&&` / `||` は両辺を評価する (v0.0.3)。`do` の中の `let` に複数行の `case`、`_ <-`、組のパターン束縛は書けない。
+- `panic` / `exit` はアンワインドせず、終了処理を実行しない (FEAT-0040)。
+- FFI は 1 つのスカラーで渡せる型だけ。構造体・コールバック・可変長引数・任意のライブラリのリンクはない (FEAT-0047)。
+- 借用がなく、線形な値を読むだけの関数も値を返し直す (v0.0.3)。
+- case の後の計算が結果を箱で受け取る (結合点がない。FEAT-0080)。レコードの `Float` フィールドは箱 (v0.0.3)。
+- 標準入出力・ファイル以外の OS の機能 (ディレクトリ・プロセスの起動・ソケット) はない (v0.0.5)。
+
 ## CirkaLang v0.0.1
 
 最初のプロトタイプ: 最小の正格言語・所有権・ネイティブコード。仕様は [docs/design/cirkalang/spec-v0.0.1.md](docs/design/cirkalang/spec-v0.0.1.md)。

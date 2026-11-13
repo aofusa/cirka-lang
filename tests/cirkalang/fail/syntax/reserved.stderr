@@ -1,9 +1,9 @@
-error[E1004]: `total` is not supported in CirkaLang v0.0.1
+error[E1004]: `total` is not supported in CirkaLang v0.0.2
  --> reserved.cirka:1:1
   |
 1 | total f : Int -> Int
   | ^^^^^ reserved for a later version
-error[E1004]: `covering` is not supported in CirkaLang v0.0.1
+error[E1004]: `covering` is not supported in CirkaLang v0.0.2
  --> reserved.cirka:2:1
   |
 2 | covering g : Int -> Int

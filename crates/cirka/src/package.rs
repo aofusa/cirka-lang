@@ -5,7 +5,7 @@
 //! [package]
 //! name = "app"
 //! version = "0.1.0"
-//! edition = "0.0.1"
+//! edition = "0.0.2"
 //!
 //! [dependencies]
 //! util = { path = "../util" }
@@ -383,7 +383,7 @@ mod tests {
     #[test]
     fn parses_package() {
         let p = Package::parse(
-            "# a package\n[package]\nname = \"hello\"\nversion = \"0.1.0\"\nedition = \"0.0.1\"\n",
+            "# a package\n[package]\nname = \"hello\"\nversion = \"0.1.0\"\nedition = \"0.0.2\"\n",
             PathBuf::from("x"),
         )
         .unwrap();
@@ -398,7 +398,7 @@ mod tests {
             .contains("not supported")
         );
         assert!(
-            Package::parse("[package]\nedition = \"0.0.1\"\n", PathBuf::new())
+            Package::parse("[package]\nedition = \"0.0.2\"\n", PathBuf::new())
                 .unwrap_err()
                 .contains("name")
         );
@@ -407,7 +407,7 @@ mod tests {
     #[test]
     fn parses_dependencies() {
         let p = Package::parse(
-            "[package]\nname = \"app\"\nedition = \"0.0.1\"\n\
+            "[package]\nname = \"app\"\nedition = \"0.0.2\"\n\
              [dependencies]\nutil = { path = \"../util\" }\n",
             PathBuf::from("x"),
         )
@@ -421,7 +421,7 @@ mod tests {
             "util = { path = 1 }",
         ] {
             let text =
-                format!("[package]\nname = \"a\"\nedition = \"0.0.1\"\n[dependencies]\n{bad}\n");
+                format!("[package]\nname = \"a\"\nedition = \"0.0.2\"\n[dependencies]\n{bad}\n");
             assert!(Package::parse(&text, PathBuf::new()).is_err(), "{bad}");
         }
     }

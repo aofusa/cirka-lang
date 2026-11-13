@@ -1,6 +1,6 @@
 [package]
 name = "math-tools"
-edition = "0.0.1"
+edition = "0.0.2"
 
 [dependencies]
 base-lib = { path = "../base-lib" }

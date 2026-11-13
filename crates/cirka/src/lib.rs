@@ -15,7 +15,7 @@ use cirkalang_resolve::TestMode;
 use std::path::{Path, PathBuf};
 
 /// The version of the language implemented (`edition` in `cirka.toml`).
-pub const EDITION: &str = "0.0.1";
+pub const EDITION: &str = "0.0.2";
 
 /// Frontend stages accepted by `--dump=`.
 pub const DUMPS: &[&str] = &["rn", "tt"];
