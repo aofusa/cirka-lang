@@ -16,6 +16,11 @@
 //! The simplifier then applies the lambda in place, so the arguments and
 //! results that crossed the unknown call no longer need boxes (GHC gets the
 //! same effect from the static argument transformation and inlining).
+//!
+//! A polymorphic function (`Λa. λf x. …`) whose recursive calls are at its
+//! own type variables is copied for call sites with ground type arguments;
+//! the copy is monomorphic (a library fold called with a known function,
+//! FEAT-0079).
 
 use crate::expr::*;
 use crate::opt::{free_vars, freshen, map_children, replace_var, size, walk};
@@ -31,10 +36,11 @@ const MAX_SIZE: usize = 2000;
 
 /// A function with static function parameters.
 struct Target {
+    /// Type parameters (instantiated by each copy).
+    tvs: Vec<(TyVar, Kind)>,
     params: Vec<Binder>,
     /// Indices of the static function parameters.
     stat: Vec<usize>,
-    result: Type,
 }
 
 /// Specializes calls passing known functions to static parameters; returns
@@ -76,12 +82,32 @@ pub fn specialize_fun_args(p: &mut Program, next: &mut u32) -> usize {
     made
 }
 
-/// The static function parameters of `f` (monomorphic and recursive).
+/// `h @t1 .. @tn`: the head under type applications and the types.
+fn ty_args(e: &Expr) -> (&Expr, Vec<&Type>) {
+    let mut ts = Vec::new();
+    let mut e = e;
+    while let Expr::TyApp(h, t) = e {
+        ts.push(t);
+        e = h;
+    }
+    ts.reverse();
+    (e, ts)
+}
+
+/// The static function parameters of `f` (recursive, and polymorphic only
+/// at its own type variables).
 fn target(f: &str, ty: &Type, e: &Expr) -> Option<Target> {
     let (tvs, xs, body) = split_fun(e);
-    if !tvs.is_empty() || xs.is_empty() || size(e) > MAX_SIZE {
+    if xs.is_empty() || size(e) > MAX_SIZE {
         return None;
     }
+    let own_tys = |ts: &[&Type]| {
+        ts.len() == tvs.len()
+            && ts
+                .iter()
+                .zip(&tvs)
+                .all(|(t, (v, _))| matches!(t, Type::Var(w) if w == v))
+    };
     let n = xs.len();
     let mut cand: Vec<usize> = (0..n)
         .filter(|&i| xs[i].mult == Mult::Many && matches!(xs[i].ty, Type::Fun(..)))
@@ -110,7 +136,8 @@ fn target(f: &str, ty: &Type, e: &Expr) -> Option<Target> {
                 allowed[i] += 1;
             }
             let (h, args) = s.collect_args();
-            if matches!(h, Expr::Global(g) if g == f) && args.len() == n {
+            let (h, ts) = ty_args(h);
+            if matches!(h, Expr::Global(g) if g == f) && own_tys(&ts) && args.len() == n {
                 calls_f += 1;
                 for &i in &cand {
                     if matches!(args[i], Expr::Var(v) if v.id == ids[i]) {
@@ -130,17 +157,22 @@ fn target(f: &str, ty: &Type, e: &Expr) -> Option<Target> {
     if cand.is_empty() {
         return None;
     }
-    let mut result = ty.clone();
+    // The type must take the `n` parameters (its `∀` variables are
+    // instantiated by each copy).
+    let mut result = ty;
+    while let Type::Forall(_, _, b) = result {
+        result = b;
+    }
     for _ in 0..n {
         let Type::Fun(_, _, r) = result else {
             return None;
         };
-        result = *r;
+        result = r;
     }
     Some(Target {
+        tvs,
         params: xs,
         stat: cand,
-        result,
     })
 }
 
@@ -171,10 +203,12 @@ impl Sat {
             .into_iter()
             .map(|a| self.expr(p, tys, a, next))
             .collect();
-        if let Expr::Global(f) = &h
-            && let Some(r) = self.call(p, tys, f, &args, next)
-        {
-            return r;
+        let (head, ts) = ty_args(&h);
+        if let Expr::Global(f) = head {
+            let ts: Vec<Type> = ts.into_iter().cloned().collect();
+            if let Some(r) = self.call(p, tys, f, &ts, &args, next) {
+                return r;
+            }
         }
         let h = self.expr(p, tys, h, next);
         Expr::app(h, args)
@@ -186,19 +220,20 @@ impl Sat {
         p: &Program,
         tys: &HashMap<u32, Binder>,
         f: &str,
+        targs: &[Type],
         args: &[Expr],
         next: &mut u32,
     ) -> Option<Expr> {
         let t = self.targets.get(f)?;
         let n = t.params.len();
-        if args.len() < n {
+        if args.len() < n || targs.len() != t.tvs.len() || targs.iter().any(has_tyvars) {
             return None;
         }
         let stat: Vec<usize> = t
             .stat
             .iter()
             .copied()
-            .filter(|&i| known_fun(p, &args[i], f))
+            .filter(|&i| known_fun(p, &args[i], f) && !expr_has_tyvars(&args[i]))
             .collect();
         if stat.is_empty() {
             return None;
@@ -215,11 +250,14 @@ impl Sat {
             .iter()
             .map(|v| tys.get(v).cloned())
             .collect::<Option<Vec<Binder>>>()?;
-        if fv_binders.iter().any(|b| b.mult != Mult::Many) {
+        if fv_binders
+            .iter()
+            .any(|b| b.mult != Mult::Many || has_tyvars(&b.ty))
+        {
             return None;
         }
         let key = {
-            let mut k = format!("{f}|{stat:?}");
+            let mut k = format!("{f}|{stat:?}|{targs:?}");
             for &i in &stat {
                 let mut a = args[i].clone();
                 for (j, v) in fvs.iter().enumerate() {
@@ -236,7 +274,7 @@ impl Sat {
                 if self.specs.len() >= MAX_SPECS {
                     return None;
                 }
-                let name = self.copy(p, f, &stat, args, &fvs, &fv_binders, next)?;
+                let name = self.copy(p, f, targs, &stat, args, &fvs, &fv_binders, next)?;
                 self.specs.insert(key, name.clone());
                 name
             }
@@ -256,15 +294,29 @@ impl Sat {
         &mut self,
         p: &Program,
         f: &str,
+        targs: &[Type],
         stat: &[usize],
         args: &[Expr],
         fvs: &[u32],
         fv_binders: &[Binder],
         next: &mut u32,
     ) -> Option<String> {
-        let t = &self.targets[f];
         let fb = p.bind(f)?;
-        let (_, xs, body) = split_fun(&fb.expr);
+        let (tvs, xs, body) = split_fun(&fb.expr);
+        // The copy is monomorphic: the type arguments replace the variables.
+        let inst = |ty: &Type| {
+            tvs.iter()
+                .zip(targs)
+                .fold(ty.clone(), |ty, ((v, _), a)| ty.subst(v, a))
+        };
+        let xs: Vec<Binder> = xs
+            .iter()
+            .map(|x| Binder::new(x.id.clone(), x.mult, inst(&x.ty)))
+            .collect();
+        let mut body = body.clone();
+        for ((v, _), a) in tvs.iter().zip(targs) {
+            body = crate::opt::subst_ty(&body, v, a);
+        }
         let mut k = 1;
         let mut name = format!("{f}$f{k}");
         while self.names.contains(&name) {
@@ -280,7 +332,7 @@ impl Sat {
             })
             .collect();
         let fv_vars: Vec<Expr> = new_fvs.iter().map(|b| Expr::var(&b.id)).collect();
-        let mut body = rewrite(body.clone(), f, &name, xs.len(), stat, &fv_vars);
+        let mut body = rewrite(body, f, &name, xs.len(), stat, &fv_vars);
         for &i in stat {
             let mut a = args[i].clone();
             for (v, nb) in fvs.iter().zip(&new_fvs) {
@@ -294,7 +346,20 @@ impl Sat {
             .filter(|(i, _)| !stat.contains(i))
             .map(|(_, x)| x)
             .collect();
-        let mut ty = t.result.clone();
+        // The result type, from the binding's own `∀`s.
+        let mut ty = fb.ty.clone();
+        for a in targs {
+            let Type::Forall(v, _, b) = ty else {
+                return None;
+            };
+            ty = b.subst(&v, a);
+        }
+        for _ in 0..xs.len() {
+            let Type::Fun(_, _, r) = ty else {
+                return None;
+            };
+            ty = *r;
+        }
         let mut e = body;
         for x in kept.iter().rev() {
             ty = Type::Fun(x.mult, Box::new(x.ty.clone()), Box::new(ty));
@@ -309,6 +374,37 @@ impl Sat {
         self.new.push((name.clone(), ty, e));
         Some(name)
     }
+}
+
+fn has_tyvars(t: &Type) -> bool {
+    let mut vs = Vec::new();
+    t.free_vars(&mut vs);
+    !vs.is_empty()
+}
+
+/// Whether a type annotation in `e` mentions a type variable (such a
+/// function cannot go into a monomorphic copy).
+fn expr_has_tyvars(e: &Expr) -> bool {
+    let mut found = false;
+    walk(e, &mut |s| {
+        let b = |b: &Binder| has_tyvars(&b.ty);
+        found |= match s {
+            Expr::Panic(_, t) | Expr::TyApp(_, t) | Expr::Cast(_, t) => has_tyvars(t),
+            Expr::Con(_, ts, _) | Expr::Prim(_, ts, _) => ts.iter().any(has_tyvars),
+            Expr::Lam(x, _) | Expr::LetStrict(x, _, _) | Expr::Let(Bind::NonRec(x, _), _) => b(x),
+            Expr::Let(Bind::Rec(bs), _) => bs.iter().any(|(x, _)| b(x)),
+            Expr::TyLam(..) => true,
+            Expr::Case(_, x, t, alts) => {
+                b(x) || has_tyvars(t)
+                    || alts.iter().any(|a| match &a.con {
+                        AltCon::Con(_, fs) => fs.iter().any(b),
+                        _ => false,
+                    })
+            }
+            _ => false,
+        };
+    });
+    found
 }
 
 /// Whether `a` is a function worth specializing on: a global function or a
@@ -346,7 +442,9 @@ fn rewrite(e: Expr, f: &str, new: &str, n: usize, stat: &[usize], fvs: &[Expr]) 
         .into_iter()
         .map(|a| rewrite(a, f, new, n, stat, fvs))
         .collect();
-    if matches!(&h, Expr::Global(g) if g == f) && args.len() >= n {
+    // Recursive calls are at the copy's (now ground) type arguments.
+    let (head, _) = ty_args(&h);
+    if matches!(head, Expr::Global(g) if g == f) && args.len() >= n {
         let rest = args
             .into_iter()
             .enumerate()

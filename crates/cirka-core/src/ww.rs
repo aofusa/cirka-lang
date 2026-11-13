@@ -27,6 +27,13 @@
 //! (FEAT-0056, [`evaluated_params`]): evaluating it before the call then
 //! cannot change the meaning either. This covers call-by-value frontends
 //! (CirkaLang) and loops whose accumulators are only used on some paths.
+//!
+//! A parameter of a *product type* (one constructor, not linear, not a
+//! newtype: a record such as a loop's accumulator or a string view) is
+//! unboxed into its fields the same way when, besides being strict, every
+//! use of it is the scrutinee of a `case` or its own position in a
+//! self-call: the worker then never needs the box again (no reboxing), and
+//! the `case`s meet the rebuilt constructor (FEAT-0079).
 
 use crate::expr::*;
 use crate::ty::*;
@@ -514,14 +521,93 @@ fn is_self_call(e: &Expr, f: &str, n: usize) -> bool {
     matches!(h, Expr::Global(g) if g == f) && args.len() == n
 }
 
+/// The constructor, type arguments and field types of a product type
+/// (see the module documentation); box types are left to [`box_of`].
+fn prod_of(p: &Program, t: &Type) -> Option<Unbox> {
+    let Type::Con(d, args) = t else { return None };
+    let d = p.data(d)?;
+    if d.linear || d.newtype || d.ctors.len() != 1 || d.params.len() != args.len() {
+        return None;
+    }
+    let k = &d.ctors[0];
+    if k.fields.is_empty() || k.fields.len() > 8 || box_of(p, t).is_some() {
+        return None;
+    }
+    let s: Vec<(TyVar, Type)> = d
+        .params
+        .iter()
+        .map(|(v, _)| v.clone())
+        .zip(args.iter().cloned())
+        .collect();
+    Some(Unbox {
+        con: k.name.clone(),
+        targs: args.clone(),
+        fields: k.fields.iter().map(|f| f.subst_all(&s)).collect(),
+    })
+}
+
+/// Every occurrence of `x` in `e` is the scrutinee of a `case` or argument
+/// `pos` of a self-call `f` with `n` arguments; in a loop (a function with
+/// self-calls) also a return of `x` (reboxed once, when the loop ends).
+fn only_scrutinized(e: &Expr, x: u32, f: &str, pos: usize, n: usize) -> bool {
+    let mut all = 0usize;
+    let mut ok = 0usize;
+    let mut loops = false;
+    crate::opt::walk(e, &mut |s| match s {
+        Expr::Var(v) if v.id == x => all += 1,
+        Expr::Case(sc, ..) if matches!(&**sc, Expr::Var(v) if v.id == x) => ok += 1,
+        Expr::App(..) if is_self_call(s, f, n) => {
+            loops = true;
+            let (_, args) = s.collect_args();
+            if matches!(args[pos], Expr::Var(v) if v.id == x) {
+                ok += 1;
+            }
+        }
+        _ => {}
+    });
+    if loops {
+        ok += returns_of(e, x);
+    }
+    all == ok
+}
+
+/// The returns of `e` that are the variable `x`.
+fn returns_of(e: &Expr, x: u32) -> usize {
+    match e {
+        Expr::Var(v) => usize::from(v.id == x),
+        Expr::Let(_, b) | Expr::LetStrict(_, _, b) => returns_of(b, x),
+        Expr::Case(_, _, _, alts) => alts.iter().map(|a| returns_of(&a.rhs, x)).sum(),
+        _ => 0,
+    }
+}
+
+/// How a parameter is unboxed: its constructor (with type arguments) and
+/// the types of the fields the worker takes instead.
+#[derive(Clone)]
+struct Unbox {
+    con: String,
+    targs: Vec<Type>,
+    fields: Vec<Type>,
+}
+
+impl Unbox {
+    fn of_box((con, ft): (String, Type)) -> Unbox {
+        Unbox {
+            con,
+            targs: Vec::new(),
+            fields: vec![ft],
+        }
+    }
+}
+
 /// What the worker of a function unboxes.
 struct Plan {
     name: String,
     worker: String,
     tvs: Vec<(TyVar, Kind)>,
     params: Vec<Binder>,
-    /// For each parameter: its box constructor and field type when unboxed.
-    unbox: Vec<Option<(String, Type)>>,
+    /// For each parameter: how it is unboxed, if it is.
+    unbox: Vec<Option<Unbox>>,
     /// The result's box when the result is unboxed (CPR).
     cpr: Option<(String, Type)>,
     res: Type,
@@ -548,16 +634,18 @@ pub fn worker_wrapper(p: &mut Program, next: &mut u32) -> usize {
             continue;
         };
         let ev = evaluated.get(&b.name);
-        let unbox: Vec<Option<(String, Type)>> = xs
+        let n = xs.len();
+        let unbox: Vec<Option<Unbox>> = xs
             .iter()
             .zip(st)
             .enumerate()
             .map(|(i, (x, s))| {
-                if *s || ev.is_some_and(|e| e[i]) {
-                    box_of(p, &x.ty)
-                } else {
-                    None
+                if !(*s || ev.is_some_and(|e| e[i])) {
+                    return None;
                 }
+                box_of(p, &x.ty).map(Unbox::of_box).or_else(|| {
+                    prod_of(p, &x.ty).filter(|_| only_scrutinized(body, x.id.id, &b.name, i, n))
+                })
             })
             .collect();
         // The result type after the parameters.
@@ -590,7 +678,10 @@ pub fn worker_wrapper(p: &mut Program, next: &mut u32) -> usize {
             let boxed: HashSet<u32> = xs
                 .iter()
                 .zip(&unbox)
-                .filter(|(_, u)| u.as_ref().is_some_and(|(c, _)| c == k))
+                .filter(|(_, u)| {
+                    u.as_ref()
+                        .is_some_and(|u| u.con == *k && u.fields.len() == 1)
+                })
                 .map(|(x, _)| x.id.id)
                 .collect();
             returns_con(body, k, &b.name, xs.len(), &boxed)
@@ -623,10 +714,15 @@ pub fn worker_wrapper(p: &mut Program, next: &mut u32) -> usize {
         let mut rebox = Vec::new();
         for (x, u) in plan.params.iter().zip(&plan.unbox) {
             match u {
-                Some((k, ft)) => {
-                    let ub = Binder::new(fresh(next, &x.id.name), Mult::Many, ft.clone());
-                    rebox.push((x.clone(), k.clone(), ub.id.clone()));
-                    wparams.push(ub);
+                Some(u) => {
+                    let ubs: Vec<Binder> = u
+                        .fields
+                        .iter()
+                        .map(|ft| Binder::new(fresh(next, &x.id.name), Mult::Many, ft.clone()))
+                        .collect();
+                    let ids: Vec<Id> = ubs.iter().map(|b| b.id.clone()).collect();
+                    rebox.push((x.clone(), u.clone(), ids));
+                    wparams.extend(ubs);
                 }
                 None => wparams.push(x.clone()),
             }
@@ -636,18 +732,19 @@ pub fn worker_wrapper(p: &mut Program, next: &mut u32) -> usize {
             None => plan.res.clone(),
         };
         let mut wbody = match &plan.cpr {
-            Some((_, ft)) => {
-                let m: HashMap<u32, Id> =
-                    rebox.iter().map(|(x, _, u)| (x.id.id, u.clone())).collect();
+            Some((k, ft)) => {
+                let m: HashMap<u32, Id> = rebox
+                    .iter()
+                    .filter(|(_, u, ids)| u.con == *k && ids.len() == 1)
+                    .map(|(x, _, ids)| (x.id.id, ids[0].clone()))
+                    .collect();
                 unbox_returns(body, ft, &plan, &m, next)
             }
             None => body,
         };
-        for (x, k, u) in rebox.into_iter().rev() {
-            wbody = Expr::Let(
-                Bind::NonRec(x, Box::new(Expr::Con(k, Vec::new(), vec![Expr::Var(u)]))),
-                Box::new(wbody),
-            );
+        for (x, u, ids) in rebox.into_iter().rev() {
+            let con = Expr::Con(u.con, u.targs, ids.into_iter().map(Expr::Var).collect());
+            wbody = Expr::Let(Bind::NonRec(x, Box::new(con)), Box::new(wbody));
         }
         let wty = fun_type(&plan.tvs, &wparams, &wres);
         let wexpr = abstract_fun(&plan.tvs, &wparams, wbody);
@@ -665,10 +762,14 @@ pub fn worker_wrapper(p: &mut Program, next: &mut u32) -> usize {
         let mut args = Vec::new();
         for (x, u) in wparams_w.iter().zip(&plan.unbox) {
             match u {
-                Some((k, ft)) => {
-                    let ub = Binder::new(fresh(next, &x.id.name), Mult::Many, ft.clone());
-                    args.push(Expr::Var(ub.id.clone()));
-                    cases.push((x.clone(), k.clone(), ub));
+                Some(u) => {
+                    let ubs: Vec<Binder> = u
+                        .fields
+                        .iter()
+                        .map(|ft| Binder::new(fresh(next, &x.id.name), Mult::Many, ft.clone()))
+                        .collect();
+                    args.extend(ubs.iter().map(|b| Expr::Var(b.id.clone())));
+                    cases.push((x.clone(), u.con.clone(), ubs));
                 }
                 None => args.push(Expr::Var(x.id.clone())),
             }
@@ -677,14 +778,14 @@ pub fn worker_wrapper(p: &mut Program, next: &mut u32) -> usize {
         if let Some((k, _)) = &plan.cpr {
             wrap = Expr::Con(k.clone(), Vec::new(), vec![wrap]);
         }
-        for (x, k, ub) in cases.into_iter().rev() {
+        for (x, k, ubs) in cases.into_iter().rev() {
             let cb = Binder::new(fresh(next, "s"), Mult::Many, x.ty.clone());
             wrap = Expr::Case(
                 Box::new(Expr::Var(x.id.clone())),
                 cb,
                 plan.res.clone(),
                 vec![Alt {
-                    con: AltCon::Con(k, vec![ub]),
+                    con: AltCon::Con(k, ubs),
                     rhs: wrap,
                 }],
             );
@@ -767,17 +868,23 @@ fn unbox_returns(e: Expr, ft: &Type, plan: &Plan, m: &HashMap<u32, Id>, next: &m
             let mut cargs = Vec::new();
             for ((a, u), x) in args.into_iter().zip(&plan.unbox).zip(&plan.params) {
                 match u {
-                    Some((bk, bt)) => {
-                        let ub = Binder::new(Id::new("u", *next), Mult::Many, bt.clone());
-                        *next += 1;
-                        cargs.push(Expr::Var(ub.id.clone()));
-                        binds.push((a, bk.clone(), ub, x.ty.clone()));
+                    Some(u) => {
+                        let ubs: Vec<Binder> = u
+                            .fields
+                            .iter()
+                            .map(|bt| {
+                                *next += 1;
+                                Binder::new(Id::new("u", *next - 1), Mult::Many, bt.clone())
+                            })
+                            .collect();
+                        cargs.extend(ubs.iter().map(|b| Expr::Var(b.id.clone())));
+                        binds.push((a, u.con.clone(), ubs, x.ty.clone()));
                     }
                     None => cargs.push(a),
                 }
             }
             let mut out = Expr::app(call, cargs);
-            for (a, bk, ub, bty) in binds.into_iter().rev() {
+            for (a, bk, ubs, bty) in binds.into_iter().rev() {
                 let cb = Binder::new(Id::new("s", *next), Mult::Many, bty);
                 *next += 1;
                 out = Expr::Case(
@@ -785,7 +892,7 @@ fn unbox_returns(e: Expr, ft: &Type, plan: &Plan, m: &HashMap<u32, Id>, next: &m
                     cb,
                     ft.clone(),
                     vec![Alt {
-                        con: AltCon::Con(bk, vec![ub]),
+                        con: AltCon::Con(bk, ubs),
                         rhs: out,
                     }],
                 );

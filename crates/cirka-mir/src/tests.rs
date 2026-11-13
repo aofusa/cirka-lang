@@ -3120,3 +3120,57 @@ fn lazy_constructors_wait_only_for_unsafe_strict_fields() {
     // Dividing can: it has to wait until something demands the box.
     assert!(lazy_con_makes_thunk("(prim quot 7 n)"));
 }
+
+/// A drop before a `switch` passes its reuse token to the arms (through
+/// nested switches): an arm that allocates a cell of the same size reuses
+/// it, the others free it (FEAT-0079).
+#[test]
+fn reuse_crosses_switch_arms() {
+    let src = r#"
+type P { P = 0 { a: i64, b: i64 } }
+fn step(p: ptr @owned, k: i64) -> i64 {
+entry:
+  switch p { P.P => body }
+body:
+  let a = proj p P.P.a
+  let b = proj p P.P.b
+  drop p
+  switch k { 0 => done, default => more }
+done:
+  ret a
+more:
+  let c = prim lt(a, b)
+  switch c { 0 => again, default => last }
+again:
+  let q = alloc P.P(b, a)
+  let k2 = prim sub(k, 1)
+  let r = call step(q, k2)
+  ret r
+last:
+  ret b
+}
+fn main() -> i64 {
+entry:
+  let p = alloc P.P(5, 2)
+  let r = call step(p, 3)
+  ret r
+}
+"#;
+    let mut m = parse(FileId(0), src).unwrap();
+    crate::reuse::optimize(&mut m);
+    let errs = crate::verify::verify_module(&m);
+    assert!(errs.is_empty(), "{}", crate::verify::render_errors(&errs));
+    let out = print_module(&m);
+    assert!(out.contains("drop_reuse p"), "{out}");
+    assert!(out.contains("alloc P.P(b, a) reuse"), "{out}");
+    let f = m.func("step").unwrap();
+    let freed = f
+        .blocks
+        .iter()
+        .filter(|b| matches!(b.instrs.first(), Some(Instr::Drop(v)) if f.var_name(*v).starts_with("ru")))
+        .count();
+    assert_eq!(freed, 2, "{out}");
+    let r = crate::interp::run(&m, b"", 1_000_000).unwrap();
+    assert_eq!(r.leaked, 0);
+    assert_eq!(r.stats.allocs, 1, "{:?}", r.stats);
+}

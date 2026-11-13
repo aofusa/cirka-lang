@@ -165,8 +165,10 @@ fn opt_inlines_small_functions_and_removes_them() {
     let mut p = parse_program(FileId(0), &src).unwrap();
     let st = opt::optimize_with_stats(&mut p).unwrap();
     assert_eq!(print::print_expr(&p.bind("main").unwrap().expr).trim(), "7");
-    assert_eq!(st.removed_globals, 1);
+    // `unI` and the worker split from it (if any) are both gone.
+    assert!(st.removed_globals >= 1, "{st:?}");
     assert!(p.bind("unI").is_none());
+    assert!(p.bind("unI$w").is_none());
 }
 
 #[test]
@@ -1519,4 +1521,22 @@ fn opt_breaks_cycles_left_after_the_largest_function() {
     assert!(p.bind("big").is_some(), "{text}");
     assert!(p.bind("x").is_some(), "{text}");
     assert!(p.bind("y").is_none(), "{text}");
+}
+
+#[test]
+fn opt_floats_strict_binding_into_single_alternative_of_call() {
+    // `let! b = case (call) of p -> P x y in case b of P u v -> ..`: the
+    // binding moves into the alternative, where `b` is a known
+    // constructor, so the pair is never built (FEAT-0079).
+    let src = format!(
+        "{PRELUDE}(extern arg () Int#)
+         (def main Int#
+           (let! (b (Pair Int Int)
+                    (case (extern arg) (k Int#) (Pair Int Int)
+                      (_ (con P (Int Int) (con I# () k) (con I# () k)))))
+             (case b (s (Pair Int Int)) Int#
+               ((P u v) (case u (s1 Int) Int# ((I# x) (case v (s2 Int) Int# ((I# y) (prim mul x y)))))))))"
+    );
+    let (m, _) = opt_main(&src);
+    assert!(!m.contains("con P"), "{m}");
 }

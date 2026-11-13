@@ -1414,6 +1414,26 @@ impl Simp<'_> {
             }
             return body;
         }
+        // let! b = (case s of .. -> I# a | .. -> y) in k  ⇒
+        // let! u = (case s of .. -> a | .. -> case y of I# v -> v) in
+        // let b = I# u in k  for a box type: the branches no longer box
+        // their results, and a `case b` in `k` meets the constructor
+        // (Core has no join points to carry the unboxed value, FEAT-0080).
+        if b.mult == Mult::Many
+            && matches!(r, Expr::Case(..))
+            && let Some((kc, ft)) = crate::ww::box_of(self.p, &b.ty)
+            && box_tails(&r, &kc) == Some(true)
+        {
+            self.hit();
+            self.st.floated += 1;
+            let r2 = self.unbox_tails(r, &kc, &ft, &b.ty);
+            let u = Binder::new(Id::new("u", self.next), Mult::Many, ft);
+            self.next += 1;
+            self.bind(&u);
+            let con = Expr::Con(kc, Vec::new(), vec![Expr::Var(u.id.clone())]);
+            let rest = self.let_lazy(b, con, k);
+            return Expr::LetStrict(u, Box::new(r2), Box::new(rest));
+        }
         self.bind(&b);
         let x = b.id.id;
         let evaluated_var = matches!(&r, Expr::Var(v)
@@ -1482,7 +1502,7 @@ impl Simp<'_> {
         // separates the fields' last use from `k` (reuse).
         if let Expr::Case(s, _, _, alts) = &r
             && alts.len() == 1
-            && matches!(&**s, Expr::Var(_))
+            && (matches!(&**s, Expr::Var(_)) || single_con_tail(&alts[0].rhs))
             && b.mult == Mult::Many
             && let Some(res) = crate::strict::type_of(self.p, &HashMap::new(), &body)
         {
@@ -1515,6 +1535,45 @@ impl Simp<'_> {
         Expr::LetStrict(b, Box::new(r), Box::new(body))
     }
 
+    /// `e` with each return `K a` of box constructor `kc` replaced by `a`
+    /// and each returned variable unboxed (see `let_strict`).
+    fn unbox_tails(&mut self, e: Expr, kc: &str, ft: &Type, bty: &Type) -> Expr {
+        match e {
+            Expr::Con(_, _, mut args) => args.pop().unwrap(),
+            Expr::Panic(m, _) => Expr::Panic(m, ft.clone()),
+            Expr::Let(bd, body) => Expr::Let(bd, Box::new(self.unbox_tails(*body, kc, ft, bty))),
+            Expr::LetStrict(x, r, body) => {
+                Expr::LetStrict(x, r, Box::new(self.unbox_tails(*body, kc, ft, bty)))
+            }
+            Expr::Case(s, cb, _, alts) => Expr::Case(
+                s,
+                cb,
+                ft.clone(),
+                alts.into_iter()
+                    .map(|a| Alt {
+                        con: a.con,
+                        rhs: self.unbox_tails(a.rhs, kc, ft, bty),
+                    })
+                    .collect(),
+            ),
+            e => {
+                let sb = Binder::new(Id::new("s", self.next), Mult::Many, bty.clone());
+                let v = Binder::new(Id::new("v", self.next + 1), Mult::Many, ft.clone());
+                self.next += 2;
+                let rhs = Expr::Var(v.id.clone());
+                Expr::Case(
+                    Box::new(e),
+                    sb,
+                    ft.clone(),
+                    vec![Alt {
+                        con: AltCon::Con(kc.to_string(), vec![v]),
+                        rhs,
+                    }],
+                )
+            }
+        }
+    }
+
     /// Whether `case (case .. of alts2) as b of alts` may become a case in
     /// each alternative of the inner one: no linear binders, and either a
     /// single inner alternative or inner results whose shape is known
@@ -1524,7 +1583,16 @@ impl Simp<'_> {
             AltCon::Con(_, fs) => fs.iter().any(|f| f.mult != Mult::Many),
             _ => false,
         };
-        if b.mult != Mult::Many || alts.iter().any(linear) || alts2.iter().any(linear) {
+        if b.mult != Mult::Many || alts2.iter().any(linear) {
+            return false;
+        }
+        let known = alts2
+            .iter()
+            .all(|a| matches!(a.rhs, Expr::Con(..) | Expr::Lit(_) | Expr::Panic(..)));
+        // Linear fields of the outer alternatives: only when every copy is
+        // reduced right away by case-of-known-constructor (a linear `Unique`
+        // buffer threaded through a record, FEAT-0079).
+        if alts.iter().any(linear) && !known {
             return false;
         }
         if alts2.len() == 1 {
@@ -1540,9 +1608,6 @@ impl Simp<'_> {
         if pending {
             return false;
         }
-        let known = alts2
-            .iter()
-            .all(|a| matches!(a.rhs, Expr::Con(..) | Expr::Lit(_) | Expr::Panic(..)));
         let small = alts.iter().map(|a| size(&a.rhs)).sum::<usize>() <= INLINE_SIZE;
         known || small
     }
@@ -1938,6 +2003,35 @@ impl Simp<'_> {
             }
             _ => self.let_strict(b, Expr::Con(k, ts, args), K::Expr(alt.rhs)),
         }
+    }
+}
+
+/// The returns of `e` are box constructors `kc`, variables or divergence:
+/// `Some(true)` when at least one builds the box, `None` when another
+/// expression is returned.
+/// Whether `e` ends in one constructor application (after lets), so a
+/// strict binding of it becomes a known constructor once floated in.
+fn single_con_tail(e: &Expr) -> bool {
+    match e {
+        Expr::Con(..) => true,
+        Expr::Let(_, b) | Expr::LetStrict(_, _, b) => single_con_tail(b),
+        _ => false,
+    }
+}
+
+fn box_tails(e: &Expr, kc: &str) -> Option<bool> {
+    match e {
+        Expr::Con(c, _, a) => (c == kc && a.len() == 1).then_some(true),
+        Expr::Var(_) | Expr::Panic(..) => Some(false),
+        Expr::Let(_, b) | Expr::LetStrict(_, _, b) => box_tails(b, kc),
+        Expr::Case(_, _, _, alts) => {
+            let mut any = false;
+            for a in alts {
+                any |= box_tails(&a.rhs, kc)?;
+            }
+            Some(any)
+        }
+        _ => None,
     }
 }
 

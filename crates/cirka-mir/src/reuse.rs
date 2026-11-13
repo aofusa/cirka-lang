@@ -66,23 +66,31 @@ fn entry_known(f: &Function) -> Vec<Option<(Var, CtorRef)>> {
 
 fn reuse(m: &Module, f: &mut Function) {
     let entry = entry_known(f);
-    for bi in 0..f.blocks.len() {
+    let preds = f.predecessors();
+    let nb = f.blocks.len();
+    let mut claimed: Vec<Vec<bool>> = f
+        .blocks
+        .iter()
+        .map(|b| vec![false; b.instrs.len()])
+        .collect();
+    // (block, drop index, alloc index) within one block.
+    let mut pairs: Vec<(usize, usize, usize)> = Vec::new();
+    // Drops of known constructors left without an allocation in their block:
+    // (block, drop index, size).
+    let mut open: Vec<(usize, usize, usize)> = Vec::new();
+    for bi in 0..nb {
         let mut known: HashMap<Var, CtorRef> = HashMap::new();
         if let Some((v, c)) = entry[bi] {
             known.insert(v, c);
         }
-        // Pass 1: find (drop index, alloc index) pairs.
-        let mut pairs: Vec<(usize, usize)> = Vec::new();
-        let mut claimed = vec![false; f.blocks[bi].instrs.len()];
         let instrs = &f.blocks[bi].instrs;
         for (i, ins) in instrs.iter().enumerate() {
             match ins {
                 Instr::Let {
-                    var: Some(v),
+                    var: Some(_),
                     rhs: Rhs::Proj { obj, ctor, .. },
                 } => {
                     known.insert(*obj, *ctor);
-                    let _ = v;
                 }
                 Instr::Let {
                     var: Some(v),
@@ -97,46 +105,148 @@ fn reuse(m: &Module, f: &mut Function) {
                         continue;
                     }
                     let size = def.size();
-                    for (j, later) in instrs.iter().enumerate().skip(i + 1) {
-                        if let Instr::Let {
-                            rhs:
-                                Rhs::Alloc {
-                                    ctor, reuse: None, ..
-                                },
-                            ..
-                        } = later
-                        {
-                            let d = m.ctor(*ctor);
-                            if !claimed[j] && !d.fields.is_empty() && d.size() == size {
-                                claimed[j] = true;
-                                pairs.push((i, j));
-                                break;
-                            }
+                    match find_alloc(m, instrs, i + 1, size, &claimed[bi]) {
+                        Some(j) => {
+                            claimed[bi][j] = true;
+                            pairs.push((bi, i, j));
                         }
+                        None => open.push((bi, i, size)),
                     }
                 }
                 _ => {}
             }
         }
-        // Pass 2: rewrite.
-        for (i, j) in pairs {
-            let Instr::Drop(x) = f.blocks[bi].instrs[i] else {
-                continue;
-            };
-            let tok = f.fresh_var("ru", Ty::Ptr);
-            let b = &mut f.blocks[bi];
-            b.instrs[i] = Instr::Let {
-                var: Some(tok),
-                rhs: Rhs::DropReuse(x),
-            };
-            if let Instr::Let {
-                rhs: Rhs::Alloc { reuse, .. },
-                ..
-            } = &mut b.instrs[j]
-            {
-                *reuse = Some(tok);
+    }
+    // A drop before a `switch` whose arms each allocate: the arms that
+    // allocate a constructor of the same size reuse the token, the others
+    // free it (`drop` of a token). Only arms entered from this block alone.
+    let mut split: Vec<(usize, usize, Vec<(usize, Option<usize>)>)> = Vec::new();
+    for (bi, i, size) in open {
+        let Some(uses) = arm_uses(m, f, &preds, &claimed, bi, size, 0) else {
+            continue;
+        };
+        if uses.iter().all(|(_, j)| j.is_none()) {
+            continue;
+        }
+        for (t, j) in &uses {
+            if let Some(j) = j {
+                claimed[*t][*j] = true;
             }
         }
+        split.push((bi, i, uses));
+    }
+    // Rewrite.
+    for (bi, i, j) in pairs {
+        let Instr::Drop(x) = f.blocks[bi].instrs[i] else {
+            continue;
+        };
+        let tok = f.fresh_var("ru", Ty::Ptr);
+        let b = &mut f.blocks[bi];
+        b.instrs[i] = Instr::Let {
+            var: Some(tok),
+            rhs: Rhs::DropReuse(x),
+        };
+        set_reuse(&mut b.instrs[j], tok);
+    }
+    // Token drops are inserted last: they shift the indices of a block.
+    let mut frees: Vec<(usize, Var)> = Vec::new();
+    for (bi, i, uses) in split {
+        let Instr::Drop(x) = f.blocks[bi].instrs[i] else {
+            continue;
+        };
+        let tok = f.fresh_var("ru", Ty::Ptr);
+        f.blocks[bi].instrs[i] = Instr::Let {
+            var: Some(tok),
+            rhs: Rhs::DropReuse(x),
+        };
+        for (t, j) in uses {
+            match j {
+                Some(j) => set_reuse(&mut f.blocks[t].instrs[j], tok),
+                None => frees.push((t, tok)),
+            }
+        }
+    }
+    for (t, tok) in frees {
+        f.blocks[t].instrs.insert(0, Instr::Drop(tok));
+    }
+}
+
+/// Where the token of a drop at the end of block `b` goes: for each arm of
+/// its `switch` (entered from `b` alone), the allocation of the same size
+/// that reuses it, or `None` (the token is freed at the arm's start). An arm
+/// without such an allocation that ends in a `switch` passes the token on
+/// (up to a few levels). `None` when `b` does not end in a suitable switch.
+fn arm_uses(
+    m: &Module,
+    f: &Function,
+    preds: &[Vec<BlockId>],
+    claimed: &[Vec<bool>],
+    b: usize,
+    size: usize,
+    depth: u32,
+) -> Option<Vec<(usize, Option<usize>)>> {
+    let Terminator::Switch { arms, default, .. } = &f.blocks[b].term else {
+        return None;
+    };
+    let mut targets: Vec<usize> = arms.iter().map(|a| a.1.0 as usize).collect();
+    targets.extend(default.iter().map(|d| d.0 as usize));
+    let n = targets.len();
+    targets.sort();
+    targets.dedup();
+    if targets.len() != n || targets.iter().any(|t| preds[*t].len() != 1 || *t == b) {
+        return None;
+    }
+    let mut uses = Vec::new();
+    for t in targets {
+        if let Some(j) = find_alloc(m, &f.blocks[t].instrs, 0, size, &claimed[t]) {
+            uses.push((t, Some(j)));
+            continue;
+        }
+        match (depth < 3)
+            .then(|| arm_uses(m, f, preds, claimed, t, size, depth + 1))
+            .flatten()
+        {
+            Some(inner) if inner.iter().any(|(_, j)| j.is_some()) => uses.extend(inner),
+            _ => uses.push((t, None)),
+        }
+    }
+    Some(uses)
+}
+
+/// The first unclaimed allocation of a non-nullary constructor of `size`
+/// bytes in `instrs[from..]`.
+fn find_alloc(
+    m: &Module,
+    instrs: &[Instr],
+    from: usize,
+    size: usize,
+    claimed: &[bool],
+) -> Option<usize> {
+    instrs
+        .iter()
+        .enumerate()
+        .skip(from)
+        .find_map(|(j, ins)| match ins {
+            Instr::Let {
+                rhs: Rhs::Alloc {
+                    ctor, reuse: None, ..
+                },
+                ..
+            } if !claimed[j] => {
+                let d = m.ctor(*ctor);
+                (!d.fields.is_empty() && d.size() == size).then_some(j)
+            }
+            _ => None,
+        })
+}
+
+fn set_reuse(ins: &mut Instr, tok: Var) {
+    if let Instr::Let {
+        rhs: Rhs::Alloc { reuse, .. },
+        ..
+    } = ins
+    {
+        *reuse = Some(tok);
     }
 }
 
