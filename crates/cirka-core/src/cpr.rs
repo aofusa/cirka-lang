@@ -370,6 +370,11 @@ fn cand_call<'a>(e: &'a Expr, me: &str, cands: &HashMap<String, Cand>) -> Option
     (c.tvs.is_empty() || own).then_some(g)
 }
 
+/// Whether `x` is a call of a candidate whose result type is `t`.
+fn same_result_call(x: &Expr, t: &Type, me: &str, cands: &HashMap<String, Cand>) -> bool {
+    cand_call(x, me, cands).is_some_and(|g| cands[g].tvs.is_empty() && cands[g].res.alpha_eq(t))
+}
+
 /// Meets the shapes of the returns of `e` into `acc`.
 #[allow(clippy::too_many_arguments)]
 fn returns(
@@ -402,6 +407,11 @@ fn returns(
             }
         }
         Expr::Panic(..) => {}
+        // A call cast to its own result type (left by the state-token
+        // workers, `io.rs`) is the call.
+        Expr::Cast(x, t) if same_result_call(x, t, me, cands) => {
+            returns(p, me, x, env, res, cands, shapes, acc)
+        }
         e => match cand_call(e, me, cands) {
             Some(g) => {
                 if let Some(Some(s)) = shapes.get(g) {
@@ -793,6 +803,9 @@ impl Tr<'_> {
                     .collect(),
             ),
             Expr::Panic(m, _) => Expr::Panic(m, self.wres.clone()),
+            Expr::Cast(x, t) if same_result_call(&x, &t, self.me, self.cands) => {
+                self.expr(*x, env, next)
+            }
             e => {
                 let Some(g) = cand_call(&e, self.me, self.cands).map(str::to_string) else {
                     let mut out = Vec::new();

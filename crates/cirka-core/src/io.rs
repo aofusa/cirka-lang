@@ -22,12 +22,16 @@ use crate::opt::map_children;
 use crate::ww::split_fun;
 use crate::*;
 
-/// The result type `a` when `t` is `IO a` or a newtype over it.
-pub(crate) fn io_result(p: &Program, t: &Type) -> Option<Type> {
+/// The state type `s` and the result type `a` when `t` is `IO a`
+/// (`s = Unit#`) or a newtype over a function `s -> a` (the state monad of
+/// a borrow, spec-v0.0.3.md §2.5). A plain function type other than
+/// `Unit# -> a` is not one: expanding it could repeat work.
+pub(crate) fn io_result(p: &Program, t: &Type) -> Option<(Type, Type)> {
     let mut t = t.clone();
+    let mut newtype = false;
     for _ in 0..8 {
         match t {
-            Type::Fun(_, a, r) if a.alpha_eq(&Type::unit()) => return Some(*r),
+            Type::Fun(_, a, r) if newtype || a.alpha_eq(&Type::unit()) => return Some((*a, *r)),
             Type::Con(ref n, ref ts) => {
                 let d = p.datas.iter().find(|d| d.name == *n)?;
                 if !d.newtype || d.ctors.len() != 1 || d.ctors[0].fields.len() != 1 {
@@ -43,6 +47,7 @@ pub(crate) fn io_result(p: &Program, t: &Type) -> Option<Type> {
                     return None;
                 }
                 t = d.ctors[0].fields[0].subst_all(&s);
+                newtype = true;
             }
             _ => return None,
         }
@@ -81,8 +86,8 @@ fn result_after(t: &Type, n: usize) -> Option<&Type> {
     Some(t)
 }
 
-fn io_fun(a: &Type) -> Type {
-    Type::Fun(Mult::Many, Box::new(Type::unit()), Box::new(a.clone()))
+fn io_fun(st: &Type, a: &Type) -> Type {
+    Type::Fun(Mult::Many, Box::new(st.clone()), Box::new(a.clone()))
 }
 
 fn fresh(name: &str, ty: Type, next: &mut u32) -> Binder {
@@ -92,10 +97,10 @@ fn fresh(name: &str, ty: Type, next: &mut u32) -> Binder {
 
 /// `e w` for `e : R` (an IO-like type with result `a`), pushed into the
 /// lets and alternatives of `e`.
-fn run(p: &Program, e: Expr, w: &Expr, a: &Type) -> Expr {
+fn run(p: &Program, e: Expr, w: &Expr, st: &Type, a: &Type) -> Expr {
     match e {
-        Expr::Let(b, body) => Expr::Let(b, Box::new(run(p, *body, w, a))),
-        Expr::LetStrict(b, r, body) => Expr::LetStrict(b, r, Box::new(run(p, *body, w, a))),
+        Expr::Let(b, body) => Expr::Let(b, Box::new(run(p, *body, w, st, a))),
+        Expr::LetStrict(b, r, body) => Expr::LetStrict(b, r, Box::new(run(p, *body, w, st, a))),
         Expr::Case(s, b, _, alts) => Expr::Case(
             s,
             b,
@@ -103,31 +108,31 @@ fn run(p: &Program, e: Expr, w: &Expr, a: &Type) -> Expr {
             alts.into_iter()
                 .map(|alt| Alt {
                     con: alt.con,
-                    rhs: run(p, alt.rhs, w, a),
+                    rhs: run(p, alt.rhs, w, st, a),
                 })
                 .collect(),
         ),
         Expr::Con(k, _, mut args)
             if args.len() == 1 && p.ctor(&k).is_some_and(|(d, _)| d.newtype) =>
         {
-            run(p, args.pop().unwrap(), w, a)
+            run(p, args.pop().unwrap(), w, st, a)
         }
-        Expr::Cast(x, _) => run(p, *x, w, a),
+        Expr::Cast(x, _) => run(p, *x, w, st, a),
         Expr::Panic(m, _) => Expr::Panic(m, a.clone()),
         e => Expr::App(
-            Box::new(Expr::Cast(Box::new(e), io_fun(a))),
+            Box::new(Expr::Cast(Box::new(e), io_fun(st, a))),
             Box::new(w.clone()),
         ),
     }
 }
 
 /// `λx̄. cast (λw. worker x̄ w) r` with fresh binders like `xs`.
-fn wrapper(worker: Expr, xs: &[Binder], r: &Type, next: &mut u32) -> Expr {
+fn wrapper(worker: Expr, xs: &[Binder], st: &Type, r: &Type, next: &mut u32) -> Expr {
     let ys: Vec<Binder> = xs
         .iter()
         .map(|x| fresh(&x.id.name, x.ty.clone(), next))
         .collect();
-    let w = fresh("w", Type::unit(), next);
+    let w = fresh("w", st.clone(), next);
     let call = Expr::app(
         worker,
         ys.iter()
@@ -142,10 +147,17 @@ fn wrapper(worker: Expr, xs: &[Binder], r: &Type, next: &mut u32) -> Expr {
 }
 
 /// The worker body `λx̄ w. run(body, w)`.
-fn worker_body(p: &Program, xs: &[Binder], body: Expr, a: &Type, next: &mut u32) -> Expr {
-    let w = fresh("w", Type::unit(), next);
+fn worker_body(
+    p: &Program,
+    xs: &[Binder],
+    body: Expr,
+    st: &Type,
+    a: &Type,
+    next: &mut u32,
+) -> Expr {
+    let w = fresh("w", st.clone(), next);
     let wv = Expr::var(&w.id);
-    let mut e = Expr::Lam(w, Box::new(run(p, body, &wv, a)));
+    let mut e = Expr::Lam(w, Box::new(run(p, body, &wv, st, a)));
     for x in xs.iter().rev() {
         e = Expr::Lam(x.clone(), Box::new(e));
     }
@@ -182,24 +194,26 @@ pub fn io_arity(p: &mut Program, next: &mut u32) -> usize {
         let Some(r) = result_after(&ty, xs.len()).cloned() else {
             continue;
         };
-        let Some(a) = io_result(p, &r) else { continue };
+        let Some((st, a)) = io_result(p, &r) else {
+            continue;
+        };
         let body = body.clone();
         let name = format!("{}$io", b.name);
         let span = b.span;
         let mut wty = a.clone();
-        wty = Type::Fun(Mult::Many, Box::new(Type::unit()), Box::new(wty));
+        wty = Type::Fun(Mult::Many, Box::new(st.clone()), Box::new(wty));
         for x in xs.iter().rev() {
             wty = Type::Fun(x.mult, Box::new(x.ty.clone()), Box::new(wty));
         }
         for (v, kd) in tvs.iter().rev() {
             wty = Type::Forall(v.clone(), kd.clone(), Box::new(wty));
         }
-        let mut wexpr = worker_body(p, &xs, body, &a, next);
+        let mut wexpr = worker_body(p, &xs, body, &st, &a, next);
         let mut head = Expr::Global(name.clone());
         for (v, _) in &tvs {
             head = Expr::TyApp(Box::new(head), Type::Var(v.clone()));
         }
-        let mut wrap = wrapper(head, &xs, &r, next);
+        let mut wrap = wrapper(head, &xs, &st, &r, next);
         for (v, kd) in tvs.iter().rev() {
             wexpr = Expr::TyLam(v.clone(), kd.clone(), Box::new(wexpr));
             wrap = Expr::TyLam(v.clone(), kd.clone(), Box::new(wrap));
@@ -222,8 +236,8 @@ pub fn io_arity(p: &mut Program, next: &mut u32) -> usize {
 }
 
 /// A local function split by [`io_arity`]: its worker, parameter types,
-/// result type and IO result.
-type Split = (Id, Vec<Type>, Type, Type);
+/// result type, state type and IO result.
+type Split = (Id, Vec<Type>, Type, Type, Type);
 
 /// Splits the IO-returning functions of the local `letrec`s in `e`.
 fn local(p: &Program, e: Expr, next: &mut u32, n: &mut usize) -> Expr {
@@ -244,11 +258,13 @@ fn local(p: &Program, e: Expr, next: &mut u32, n: &mut usize) -> Expr {
         let Some(r) = result_after(&b.ty, xs.len()) else {
             continue;
         };
-        let Some(a) = io_result(p, r) else { continue };
+        let Some((st, a)) = io_result(p, r) else {
+            continue;
+        };
         *next += 1;
         let w = Id::new(format!("{}$io", b.id.name), *next);
         let ps = xs.iter().map(|x| x.ty.clone()).collect();
-        splits.insert(b.id.id, (w, ps, r.clone(), a));
+        splits.insert(b.id.id, (w, ps, r.clone(), st, a));
     }
     if splits.is_empty() {
         return Expr::Let(Bind::Rec(bs), body);
@@ -257,18 +273,18 @@ fn local(p: &Program, e: Expr, next: &mut u32, n: &mut usize) -> Expr {
     let mut out = Vec::new();
     for (b, rhs) in bs {
         let rhs = calls(rhs, &splits, next);
-        let Some((w, _, r, a)) = splits.get(&b.id.id) else {
+        let Some((w, _, r, st, a)) = splits.get(&b.id.id) else {
             out.push((b, rhs));
             continue;
         };
         let (_, xs, body) = split_fun(&rhs);
         let xs = xs.clone();
-        let wexpr = worker_body(p, &xs, body.clone(), a, next);
-        let mut wty = Type::Fun(Mult::Many, Box::new(Type::unit()), Box::new(a.clone()));
+        let wexpr = worker_body(p, &xs, body.clone(), st, a, next);
+        let mut wty = Type::Fun(Mult::Many, Box::new(st.clone()), Box::new(a.clone()));
         for x in xs.iter().rev() {
             wty = Type::Fun(x.mult, Box::new(x.ty.clone()), Box::new(wty));
         }
-        let wrap = wrapper(Expr::var(w), &xs, r, next);
+        let wrap = wrapper(Expr::var(w), &xs, st, r, next);
         out.push((Binder::new(w.clone(), Mult::Many, wty), wexpr));
         out.push((b, wrap));
     }
@@ -289,7 +305,7 @@ fn calls(e: Expr, splits: &HashMap<u32, Split>, next: &mut u32) -> Expr {
         args.reverse();
         let args: Vec<Expr> = args.into_iter().map(|a| calls(a, splits, next)).collect();
         if let Expr::Var(f) = &h
-            && let Some((w, ps, r, _)) = splits.get(&f.id)
+            && let Some((w, ps, r, st, _)) = splits.get(&f.id)
             && args.len() == ps.len()
         {
             let mut lets = Vec::new();
@@ -303,7 +319,7 @@ fn calls(e: Expr, splits: &HashMap<u32, Split>, next: &mut u32) -> Expr {
                     lets.push((x, a));
                 }
             }
-            let wv = fresh("w", Type::unit(), next);
+            let wv = fresh("w", st.clone(), next);
             let call = Expr::app(Expr::var(w), atoms.into_iter().chain([Expr::var(&wv.id)]));
             let mut e = Expr::Cast(Box::new(Expr::Lam(wv, Box::new(call))), r.clone());
             for (x, a) in lets.into_iter().rev() {

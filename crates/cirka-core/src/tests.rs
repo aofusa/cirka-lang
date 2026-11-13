@@ -807,6 +807,51 @@ fn opt_gives_io_functions_the_state_token() {
     assert!(m.contains("(loop$io 3 unit)"), "{m}");
 }
 
+#[test]
+fn opt_gives_state_functions_the_state() {
+    // `loop` returns a newtype over a state function `Int -> P Int Int`
+    // (CirkaLang's `Borrow`, FEAT-0220): like an IO action, it gets a
+    // worker `loop$io` taking the state, and running `loop 3` becomes a
+    // direct call; CPR then sees through the cast of the tail call.
+    let src = format!(
+        "{PRELUDE}(data P (a b) (MkP a b))
+         (data St (s a) :newtype (St# (-> s (P s a))))
+         (def done (-> Int (St Int Int))
+           (lam ((x Int)) (cast (lam ((w Int)) (con MkP (Int Int) w x)) (St Int Int))))
+         (def loop (-> Int# (St Int Int))
+           (lam ((n Int#))
+             (case n (k Int#) (St Int Int)
+               (0 (done (con I# () 7)))
+               (_ (loop (prim sub n 1))))))
+         (def main Int#
+           (case ((cast (loop 3) (-> Int (P Int Int))) (con I# () 1)) (r (P Int Int)) Int#
+             ((MkP a b) (case b (q Int) Int# ((I# v) v)))))"
+    );
+    let mut p = parse_program(FileId(0), &src).unwrap();
+    assert!(lint::lint_program(&p).is_empty());
+    let st = opt::optimize_with_stats(&mut p).unwrap();
+    let all = print_program(&p);
+    assert!(lint::lint_program(&p).is_empty(), "{all}");
+    assert!(st.io_arity >= 1, "{st:?}");
+    let m = print::print_expr(&p.bind("main").unwrap().expr);
+    assert!(m.contains("loop$io"), "{m}");
+    assert!(!m.contains("(con MkP"), "{all}");
+}
+
+#[test]
+fn state_token_needs_a_newtype_for_other_states() {
+    // A function returning a plain function type is not split: only
+    // `Unit# -> a` or a newtype says the result is run once.
+    let src = format!(
+        "{PRELUDE}(def f (-> Int# (-> Int Int))
+           (lam ((n Int#)) (let ((t Int (con I# () n))) (lam ((x Int)) t))))
+         (def main Int# (case ((f 3) (con I# () 1)) (r Int) Int# ((I# v) v)))"
+    );
+    let mut p = parse_program(FileId(0), &src).unwrap();
+    let st = opt::optimize_with_stats(&mut p).unwrap();
+    assert_eq!(st.io_arity, 0, "{st:?}");
+}
+
 // ---- FEAT-0123: evaluated scrutinees, value fields, let! of a case ----
 
 /// A comparison bound by a strict `let` and then scrutinized (CirkaLang's
