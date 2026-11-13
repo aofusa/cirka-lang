@@ -104,6 +104,8 @@ Rust は安全性の一部を実行時の検査で担保し、最適化はクレ
 | Core | 評価済みの引数の判定で、unboxed 型の仮引数とフィールドを値として数える: `Double#` で計算する遅延の引数を先に評価でき、通常の Haskell のループ引数も unboxing される | 済 (FEAT-0078) |
 | Core / MIR | 文字列処理の箱の除去: 多相関数の静的引数の特殊化 (型引数ごとの写し)、積型の引数の worker/wrapper (分解するだけの引数をフィールドに分ける)、箱型の `let!` の case の末尾の unboxing、呼び出しを対象とする単一選択肢の case への `let!` の移動、線形な束縛子を通す case-of-case、`switch` の腕をまたぐ再利用トークン (FBIP) | 済 (FEAT-0079) |
 | Core / MIR | 結合点 (join point): case の後に続く計算を腕から箱なしで呼べる局所関数にし、腕ごとの構築子の再構築と `force` をなくす | FEAT-0080 |
+| Core | 状態トークンの worker を newtype が包む任意の状態の関数 (CirkaLang の借用) に一般化し、bind のクロージャをなくす | 済 (FEAT-0220) |
+| Core | 箱入りの評価済みの値 1 つだけを返す積の結果の分解 (結果が `()` の借用の計算の組をなくす) | FEAT-0081 |
 | MIR / LLVM | 一意性・再利用トークンの型を MIR に持たせ、引数に `nonnull`・`noalias`・`readonly` を付ける | FEAT-0062 |
 | LLVM | ランタイムの高速経路のインライン化 (ランタイムを bitcode でも出力し LTO) | FEAT-0060 |
 | ランタイム | アロケータの改善 | FEAT-0051 |
