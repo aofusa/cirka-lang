@@ -84,20 +84,23 @@ fn cirkalang_spec_for_current_version() {
     let text = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
     assert!(text.contains(&format!("CirkaLang v{v}")));
     // A later version may be written as the differences from an earlier
-    // specification, which it links (spec-v0.0.2.md); that one is then
-    // checked for the full sections.
-    let full = match text.find("からの差分") {
-        Some(_) => {
-            let base = text
-                .split("](spec-v")
-                .nth(1)
-                .and_then(|r| r.split(".md)").next())
-                .unwrap_or_else(|| panic!("{}: no link to the base spec", p.display()));
-            let bp = root().join(format!("docs/design/cirkalang/spec-v{base}.md"));
-            std::fs::read_to_string(&bp).unwrap_or_else(|e| panic!("{}: {e}", bp.display()))
+    // specification, which it links (spec-v0.0.2.md); the chain is followed
+    // to the full one, which is checked for the sections.
+    let mut full = text.clone();
+    let mut cur = p.clone();
+    for _ in 0..16 {
+        if !full.contains("からの差分") {
+            break;
         }
-        None => text.clone(),
-    };
+        let base = full
+            .split("](spec-v")
+            .nth(1)
+            .and_then(|r| r.split(".md)").next())
+            .unwrap_or_else(|| panic!("{}: no link to the base spec", cur.display()))
+            .to_string();
+        cur = root().join(format!("docs/design/cirkalang/spec-v{base}.md"));
+        full = std::fs::read_to_string(&cur).unwrap_or_else(|e| panic!("{}: {e}", cur.display()));
+    }
     for section in [
         "## 3. 構文 (EBNF)",
         "## 4. 型システム",
