@@ -1,0 +1,2 @@
+(module Main)
+(def f () (do (_ <- g) ((tuple a b) <- h) ((Just x) <- (k a) | Nothing => (pure 0) | (Just _) => (pure 1)) (y <- m) (pure (ops x + y))))

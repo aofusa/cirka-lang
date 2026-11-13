@@ -1495,8 +1495,49 @@ impl<'s> Resolver<'s> {
             ast::ExprKind::Do(stmts) => {
                 let base = self.locals.len();
                 let mut out = Vec::new();
-                for s in stmts {
+                for (i, s) in stmts.iter().enumerate() {
                     match s {
+                        // `p <- e; rest` = `x <- e; case x of p => do rest`.
+                        ast::Stmt::BindPat(p, e, others) => {
+                            let x = self.fresh_name("bind");
+                            let re = self.expr(e);
+                            out.push(Stmt::Bind(x.clone(), p.span, re));
+                            let rest = &stmts[i + 1..];
+                            let span = e.span;
+                            let body = if rest.is_empty() {
+                                self.errs.push(
+                                    Diagnostic::error(
+                                        "the last statement of a `do` block cannot bind a pattern",
+                                    )
+                                    .with_code("E1002")
+                                    .with_label(p.span, "nothing uses this pattern"),
+                                );
+                                break;
+                            } else {
+                                ast::Expr {
+                                    kind: ast::ExprKind::Do(rest.to_vec()),
+                                    span,
+                                }
+                            };
+                            let case = ast::Expr {
+                                kind: ast::ExprKind::Case(
+                                    Box::new(ast::Expr {
+                                        kind: ast::ExprKind::Var(ast::QName::simple(x.clone())),
+                                        span,
+                                    }),
+                                    std::iter::once(ast::Alt {
+                                        pat: p.clone(),
+                                        rhs: body,
+                                    })
+                                    .chain(others.iter().cloned())
+                                    .collect(),
+                                ),
+                                span,
+                            };
+                            self.locals.push(x);
+                            out.push(Stmt::Expr(self.expr(&case)));
+                            break;
+                        }
                         ast::Stmt::Bind(x, sp, e) => {
                             let e = self.expr(e);
                             self.locals.push(x.clone());

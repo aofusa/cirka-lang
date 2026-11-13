@@ -1,0 +1,35 @@
+-- Patterns in `do` (spec-v0.0.3.md §5): `_ <- e` discards a result,
+-- `(a, b) <- e` takes it apart, also for linear results (a `File`).
+import Std.Fs as Fs
+import Std.Process as P
+
+pairUp : Int -> IO (Int, Int)
+pairUp n = pure (n, n + 1)
+
+-- Writes, reads back the first bytes and closes, without nested `case`s.
+roundTrip : String -> IO ()
+roundTrip path = do
+  Ok f <- Fs.create path
+    | Err e => print e
+  (f, w) <- Fs.write f "hello\n"
+  c <- Fs.close f
+  Ok g <- Fs.openRead path
+    | Err e => print e
+  (g, r) <- Fs.read g 5
+  _ <- Fs.close g
+  print (isOk w && isOk c)
+  print r
+
+main : IO ()
+main = do
+  _ <- pairUp 1
+  (a, b) <- pairUp 3
+  let c = case a of
+        3 => 10
+        _ => 20
+  print (a + b + c)
+  pid <- P.processId
+  let path = "/tmp/cirka-do-patterns-" ++ show pid ++ ".txt"
+  roundTrip path
+  _ <- Fs.removeFile path
+  print "done"

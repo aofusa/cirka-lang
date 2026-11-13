@@ -1,0 +1,9 @@
+-- A refutable pattern in `do` needs alternatives for the other cases
+-- (spec-v0.0.3.md §5).
+choose : Int -> IO (Maybe Int)
+choose n = pure (if n > 0 then Just n else Nothing)
+
+main : IO ()
+main = do
+  Just x <- choose 3
+  print x

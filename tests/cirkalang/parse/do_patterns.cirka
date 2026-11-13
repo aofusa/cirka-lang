@@ -1,0 +1,11 @@
+-- Patterns in `do` (spec-v0.0.3.md §5).
+module Main
+
+f = do
+  _ <- g
+  (a, b) <- h
+  Just x <- k a
+    | Nothing => pure 0
+    | Just _ => pure 1
+  y <- m
+  pure (x + y)

@@ -219,6 +219,14 @@ pub fn expr(e: &Expr) -> String {
                     Stmt::Expr(e) => expr(e),
                     Stmt::Try(Some((x, _)), e, _) => format!("({x} <- {}?)", expr(e)),
                     Stmt::Try(None, e, _) => format!("({}?)", expr(e)),
+                    Stmt::BindPat(p, e, alts) => {
+                        let mut s = format!("({} <- {}", pat(p), expr(e));
+                        for a in alts {
+                            let _ = write!(s, " | {} => {}", pat(&a.pat), expr(&a.rhs));
+                        }
+                        s.push(')');
+                        s
+                    }
                 })
                 .collect();
             format!("(do {})", s.join(" "))

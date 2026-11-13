@@ -1,0 +1,7 @@
+error[E1230]: patterns are not exhaustive
+ --> tests/cirkalang/fail/type/do_pattern_missing.cirka:8:13
+  |
+8 |   Just x <- choose 3
+  |             ^^^^^^^^
+  = note: missing case: `Nothing`
+  = help: add a clause for the missing case (use `panic` for impossible cases)

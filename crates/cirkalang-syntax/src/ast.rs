@@ -263,6 +263,11 @@ pub enum Stmt {
     /// `x <- e?` / `e?`: run `e` and return its error early
     /// (spec-v0.0.2.md §6.2). The span is that of the `?`.
     Try(Option<(String, Span)>, Expr, Span),
+    /// `p <- e | q => h | ...` with a pattern other than a variable (`_`,
+    /// `(a, b)`, `Ok x`): the rest of the block runs in the alternative
+    /// for `p` of a `case` of the result, the other alternatives end the
+    /// block (spec-v0.0.3.md §5).
+    BindPat(Pat, Expr, Vec<Alt>),
 }
 
 /// An operator occurrence in an operator sequence.

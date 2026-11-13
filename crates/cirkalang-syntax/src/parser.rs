@@ -1798,6 +1798,26 @@ impl Parser {
             }
             return Ok(Stmt::Bind(n, sp, e));
         }
+        // `p <- e` with a pattern: tried, and undone when no `<-` follows.
+        if self.starts_apat() {
+            let save = (self.pos, self.errs.len());
+            if let Ok(p) = self.pat()
+                && self.at(&Tok::LArrow)
+            {
+                self.bump();
+                let e = self.expr()?;
+                let mut alts = Vec::new();
+                while self.eat(&Tok::Bar) {
+                    let q = self.pat()?;
+                    self.expect(&Tok::FatArrow, "`=>`")?;
+                    let rhs = self.expr()?;
+                    alts.push(Alt { pat: q, rhs });
+                }
+                return Ok(Stmt::BindPat(p, e, alts));
+            }
+            self.pos = save.0;
+            self.errs.truncate(save.1);
+        }
         if self.at_kw(Kw::Let) {
             let start = self.span();
             self.bump();
