@@ -30,6 +30,9 @@ v0.0.2 の目的は、**CLI ツールがこの言語だけで書ける** よう�
 | §7.2 | `Data.Array` (箱入り配列、`Unique` で一意な更新) と `Data.Vec` (伸長する配列) | FEAT-0211 |
 | §7.3 | `Data.Array.Unboxed` (箱なし配列) とトレイト `Unbox` | FEAT-0211 |
 | §7.4 | `Data.String` (バイト列のビュー `Str`、分割・検索、`Builder`) | FEAT-0211 |
+| §8.1 | `extern "C"` / `extern "cirka"` ブロック (文脈キーワード `extern` `link`) | FEAT-0213 |
+| §8.2 | 境界を越えられる型、`Foreign` (C の型・`Ptr`・C 文字列) | FEAT-0213 |
+| §8.3 | 標準ライブラリ `Std.IO` `Std.Fs` `Std.Env` `Std.Process` `Std.Time`。Prelude に `print` `isJust` `isNothing` | FEAT-0213 |
 
 ## 2. 字句
 
@@ -445,3 +448,70 @@ data Builder : LType where
 - 低水準の操作 (`String` の範囲の複製・バイトの検索・範囲の比較・一意な文字列への書き込み) はモジュール内の `private prim` であり、利用者には見せない。
 
 `bench/string-split` (100 万行を行・単語に分けて数え、`Builder` で出力する) は Rust の約 1.6 倍の時間である (確保は 1 行あたり 2 回)。残りの差は結合点 (join point) がないことによる箱の再構築で、共通基盤の FEAT-0080 で扱う。
+
+## 8. C FFI と標準ライブラリ
+
+### 8.1 `extern` ブロック
+
+```
+extern "C" where
+  labs : Int -> Int
+  getpid : IO CInt
+  strlen : Ptr CChar -> IO CSize
+
+private extern "cirka" where            -- 標準ライブラリ用 (ランタイムの規約)
+  cirka_fd_write : Int -> String -> IO Int
+```
+
+- `extern "規約" [link "ライブラリ"] where` に続くブロックに `名前 : 型` を並べる。名前がそのまま関数の記号名になる。
+  `extern` と `link` は文脈キーワードで、`extern` の直後に文字列が来たときだけ働く。`private` を付けるとブロックのすべての名前が非公開になる。
+- 規約は `"C"` (プラットフォームの C ABI。x86_64 System V) と `"cirka"` (ランタイムの規約。`String` をランタイムの文字列オブジェクトとして借用で渡す) だけ (それ以外は E1007)。
+  `"cirka"` は標準ライブラリがランタイムの関数を呼ぶためのもので、利用者のプログラムは `"C"` を使う。
+- `link` に書けるのは、プログラムが常にリンクする `"c"` `"m"` `"pthread"` だけ (それ以外は E1007)。他のライブラリのリンクは FEAT-0047 で扱う。
+- 結果が `IO t` (`IO1 t`) の関数はアクションで、実行するたびに呼ばれる。`IO` のない関数は **純粋と宣言したもの** として扱われ、評価の順序や回数は保証されない (宣言者の責任)。
+- 同じ記号を、モジュールをまたいで (またはコンパイラ自身の使い方と) 異なる値の渡し方で宣言すると E1271。
+
+### 8.2 境界を越えられる型
+
+引数と結果は **1 つのスカラー** として渡される。
+
+| 型 | C の型 (`"C"`) |
+|----|----------------|
+| `Int` / `UInt` / `Float` / `Char` / `Bool` | `int64_t` / `uint64_t` / `double` / `uint32_t` / `int` (偽は 0) |
+| `Foreign` の C の型 | `CChar` `CUChar` `CShort` `CUShort` `CInt` `CUInt` `CLong` `CULong` `CSize` `CSSize` `CFloat` `CDouble` は名前どおり |
+| `Ptr a` / `OwnedPtr a` | `void *` |
+| 構成子が 1 つで実行時のフィールドが 1 つのデータ型 (`data Pid = MkPid CInt`) | フィールドの型 |
+| `String` | `"cirka"` 規約のみ (ランタイムの文字列オブジェクト) |
+| `()` (結果のみ) | `void` |
+
+- それ以外の型 (リスト、フィールドが 2 つ以上のデータ型、関数など) は E1270。構造体の値渡し・コールバック・可変長引数は FEAT-0047。
+- C の型は `Int` / `Float` を包むデータ型である (`MkCInt 3`、`fromCInt`)。C へ渡すときに下位のビットに切り詰め、C からの結果は 64 ビットに符号拡張 (符号なしの型はゼロ拡張) する。
+- `OwnedPtr a` は線形 (`LType`) で、解放の責任を表す。解放する関数は型から分からないので、`Release` を持つ利用者の型で包む (08-ffi.md §8)。
+
+`Foreign` (core) の関数: `nullPtr` `isNull` `plusPtr` `castPtr` `ptrAddress`、`mallocBytes` / `freeBytes`、
+`withCString : String -> (Ptr CChar -> IO b) -> IO b` (NUL 終端の複製を渡し、後で解放する)、`peekCString` `peekCStringLen`、
+`peekByte` `pokeByte` `peekInt32` `pokeInt32` `peekInt64` `pokeInt64` (添字は要素単位)。ポインタを通した読み書きは検査しない (C と同じ)。
+
+### 8.3 標準ライブラリ (`lib/cirkalang/std`)
+
+失敗しうる操作は `Result IOError a` を返し、プログラムを終わらせない。`IOError` は OS のエラー番号 (`errno`) を持つ。
+ライブラリの探索パスは `core` と `std` の 2 つである。
+
+| モジュール | 内容 |
+|------------|------|
+| `Std.IO` | `IOError` (`errorCode` `message`、`Show` は `No such file or directory (os error 2)`)、`getLine : IO (Maybe String)` (行末の `\n` と `\r\n` を除く)、`getContents` (標準入力の残り)、`ePutStr` `ePutStrLn` (標準エラー出力)、`flush` |
+| `Std.Fs` | `readFile` `writeFile` `appendFile` `removeFile`。開いたファイル `File` (線形。`Release` で閉じる): `openRead` `create` `openAppend : String -> IO1 (Result IOError File)`、`read` (最大 n バイト) `readAll` `write : (1 f : File) -> … -> IO1 (File, Result IOError …)`、`close` (誤りを返す) |
+| `Std.Env` | `args : IO (List String)` (プログラム名を除く)、`getEnv : String -> IO (Maybe String)` |
+| `Std.Process` | `exitWith` `exitSuccess` `exitFailure` (終了処理は実行されない)、`processId` |
+| `Std.Time` | `now` (Unix 時刻のナノ秒)、`monotonic` (単調時計のナノ秒) |
+
+- 標準入力は `readInt` と同じバッファを通して読む。標準エラー出力・ファイル記述子 1 への書き込みは、先に標準出力のバッファを書き出す (出力の順序を保つ)。
+- 実装はランタイムの関数 (`cirka-runtime` の `stdio.rs`) を `extern "cirka"` で、libc を `extern "C"` で呼ぶ。失敗は `-errno` (または空の文字列と `errno`) で返し、ライブラリが `Result` にする。
+
+### 8.4 診断
+
+| コード | 内容 |
+|--------|------|
+| E1007 | 未知の呼び出し規約、リンクできないライブラリ |
+| E1270 | 境界を越えられない型を `extern` 関数の引数・結果に書いた |
+| E1271 | 同じ記号を異なる値の渡し方で宣言した |

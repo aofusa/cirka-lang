@@ -102,6 +102,12 @@ int    main(int argc, char** argv);              // ランタイムが提供。c
 - ファイルは H2 では丸ごとの読み書きだけ (`cirka_file_read` / `cirka_file_write`: `readFile`・`writeFile`・`appendFile`)。
   失敗すると GHC の未捕捉 `IOError` と同じ形式 (`prog: PATH: openFile: does not exist (No such file or directory)`) で終了コード 1。
   任意のハンドル (`openFile`・`hGetLine` …) は例外 (FEAT-0040) の後で扱う。
+- CirkaLang の標準ライブラリ (FEAT-0213、`stdio.rs`) は終了しない関数を使う: `cirka_fs_open(path, mode)` / `cirka_fd_close` / `cirka_fs_remove` は
+  記述子か 0、失敗は `-errno`。`cirka_fd_read(fd, max)` (`max < 0` で最後まで。記述子 0 は標準入力のバッファを通す) は文字列を返し、
+  失敗は空の文字列と `errno` (`cirka_errno` で読む。成功時は 0)。`cirka_fd_write(fd, s)` は記述子 1・2 への書き込みの前に標準出力を書き出す。
+  ほかに `cirka_strerror` (ロケールに依存しない固定の文言)、`cirka_stdin_eof` / `cirka_read_line`、`cirka_getenv` / `cirka_env_has`、
+  `cirka_clock_ns` (0 は実時間、1 は単調時計)、`cirka_cstring_new` / `cirka_cstring_peek` (`withCString` / `peekCString`)。
+  MIR インタプリタは同じ関数を自前で (ファイルは自身の記述子の表で) 実装する。
 - `IORef` は `MUTVAR` オブジェクト (1 ワードの RC 管理フィールド)。`cirka_mutvar_new` / `read` (dup して返す) / `write`
   (新しい値を dup し、古い値を drop)。外部関数のポインタ引数は借用なので、所有権の受け渡しはランタイム側で数える。
 - システムコールは libc 経由(`read`/`write`/`open` …)。

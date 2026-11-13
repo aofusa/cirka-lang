@@ -150,6 +150,10 @@ impl Release File where
 ```
 
 - 型の対応・所有権の考え方 (§2〜§5) は aCHC と同じ。`OwnedPtr` は `LType`。
+- **v0.0.2 で実装した範囲** (FEAT-0213、[spec-v0.0.2.md](cirkalang/spec-v0.0.2.md) §8): スカラーの引数と結果、`Foreign` の C の型 (`Int` / `Float` を包むデータ型)、
+  `Ptr` / `OwnedPtr`、構成子とフィールドが 1 つの利用者の型、`withCString` / `peekCString`。フロントエンドは引数の箱を開けて結果を箱に入れる Core のラッパと、
+  C シグネチャ付きの `extern` 宣言 (§7.1 と同じ共通基盤) を生成する。ブロック内の `type`・`struct`・`free with`・`BorrowedPtr`・`link` の任意のライブラリは
+  FEAT-0047 / 0048 で加える。不透明型は構成子のないデータ型か `Ptr` の型引数で表す。
 - CirkaLang ではエラーは `Result` で返すラッパを標準とし、`errno` は `Result IOError a` に変換する (std.os、FEAT-0242)。
 - 部分集合型を FFI 宣言に付けられる (例: `{n : CSize | n <= length buf}`)。宣言の述語は信頼される仮定として扱い、`--report` に列挙する (13 §1 P5)。
 
