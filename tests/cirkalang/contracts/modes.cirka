@@ -1,0 +1,22 @@
+module Main
+
+-- `--contracts=off|check|verify` (spec-v0.0.4.md §4.3).
+data Range : Type where
+  MkRange : (lo : Int) -> (hi : Int) -> Range
+  invariant lo <= hi
+
+clamp : (lo : Int) -> (hi : Int) -> (x : Int) -> Int
+  requires lo <= hi
+  ensures \r => lo <= r && r <= hi
+clamp lo hi x = if x < lo then lo else if x > hi then hi else x
+
+total
+width : Range -> Int
+  ensures \w => w >= 0
+width (MkRange lo hi) = hi - lo
+
+main : IO ()
+main = do
+  n <- readInt
+  printInt (clamp 10 n 5)
+  printInt (width (MkRange 10 n))

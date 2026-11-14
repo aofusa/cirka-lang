@@ -483,6 +483,7 @@ impl Parser {
                 }
                 self.expect(&Tok::Colon, "`:`")?;
                 let ty = self.expr()?;
+                let ty = self.contracts(ty)?;
                 DeclKind::Sig {
                     names,
                     ty,
@@ -549,6 +550,7 @@ impl Parser {
                     }
                     self.expect(&Tok::Colon, "`:`")?;
                     let ty = self.expr()?;
+                    let ty = self.contracts(ty)?;
                     DeclKind::Sig {
                         names,
                         ty,
@@ -1027,9 +1029,20 @@ impl Parser {
         }
         self.bump();
         let mut deriving = Vec::new();
+        // `invariant p` after a constructor refines its last field
+        // (spec-v0.0.4.md §4).
+        let mut ncons = 0usize;
+        let mut invariants: Vec<(usize, Expr, Span)> = Vec::new();
         let groups = self.block(|p| {
             if p.at_kw(Kw::Deriving) {
                 deriving.extend(p.deriving()?);
+                return Ok(Vec::new());
+            }
+            if p.at_kw(Kw::Invariant) {
+                let sp = p.span();
+                p.bump();
+                let e = p.expr()?;
+                invariants.push((ncons, e, sp));
                 return Ok(Vec::new());
             }
             let mut names = vec![p.con_name()?];
@@ -1037,7 +1050,16 @@ impl Parser {
                 names.push(p.con_name()?);
             }
             p.expect(&Tok::Colon, "`:`")?;
-            let ty = p.expr()?;
+            let mut ty = p.expr()?;
+            while p.at_kw(Kw::Invariant) {
+                let sp = p.span();
+                p.bump();
+                let e = p.expr()?;
+                if !refine_last_param(&mut ty, e) {
+                    p.contract_error(sp, "`invariant` needs a field to refine");
+                }
+            }
+            ncons += names.len();
             Ok(names
                 .into_iter()
                 .map(|(n, sp)| ConDecl {
@@ -1050,15 +1072,56 @@ impl Parser {
         if self.at_kw(Kw::Deriving) {
             deriving.extend(self.deriving()?);
         }
+        let mut cons: Vec<ConDecl> = groups.into_iter().flatten().collect();
+        for (n, e, sp) in invariants {
+            let ok = n > 0
+                && match &mut cons[n - 1].body {
+                    ConBody::Sig(ty) => refine_last_param(ty, e),
+                    _ => false,
+                };
+            if !ok {
+                self.contract_error(sp, "`invariant` must follow a constructor with fields");
+            }
+        }
         Ok(DataDecl {
             name,
             name_span,
             params,
             sig,
-            cons: groups.into_iter().flatten().collect(),
+            cons,
             short: false,
             deriving,
         })
+    }
+
+    fn contract_error(&mut self, sp: Span, msg: &str) {
+        self.errs.push(
+            Diagnostic::error(msg.to_string())
+                .with_code("E1008")
+                .with_label(sp, "see spec-v0.0.4.md §4"),
+        );
+    }
+
+    /// `requires p` / `ensures q` after a type signature (spec-v0.0.4.md
+    /// §4): `requires` refines the last explicit parameter, `ensures` (a
+    /// function of the result) refines the result.
+    fn contracts(&mut self, mut ty: Expr) -> R<Expr> {
+        loop {
+            let sp = self.span();
+            if self.at_kw(Kw::Requires) {
+                self.bump();
+                let p = self.expr()?;
+                if !refine_last_param(&mut ty, p) {
+                    self.contract_error(sp, "`requires` needs a parameter");
+                }
+            } else if self.at_kw(Kw::Ensures) {
+                self.bump();
+                let q = self.expr()?;
+                refine_result(&mut ty, q);
+            } else {
+                return Ok(ty);
+            }
+        }
     }
 
     fn con_name(&mut self) -> R<(String, Span)> {
@@ -1339,7 +1402,7 @@ impl Parser {
                     if mult.is_some() || names.len() != 1 {
                         self.errs.push(
                             Diagnostic::error("a refinement type binds one variable")
-                                .with_code("E1001")
+                                .with_code("E1008")
                                 .with_label(bar, "write `{x : A | p}`"),
                         );
                     }
@@ -2130,5 +2193,92 @@ impl Parser {
             kind,
             span: self.from(start),
         })
+    }
+}
+
+/// Wraps the domain of the last explicit parameter of the function type
+/// `ty` in `{x : A | p}` (`x` is the parameter's name). Returns `false`
+/// when there is no explicit parameter.
+fn refine_last_param(ty: &mut Expr, pred: Expr) -> bool {
+    let ExprKind::Pi {
+        mult,
+        implicit,
+        names,
+        dom,
+        cod,
+    } = &mut ty.kind
+    else {
+        return false;
+    };
+    if matches!(cod.kind, ExprKind::Pi { .. }) && refine_last_param(cod, pred.clone()) {
+        return true;
+    }
+    if *implicit {
+        return false;
+    }
+    let span = dom.span;
+    let wrap = |x: String, xs: Span, d: Expr| Expr {
+        kind: ExprKind::Subset(x, xs, Box::new(d), Box::new(pred.clone())),
+        span,
+    };
+    match names.len() {
+        0 => {
+            let d = std::mem::replace(dom.as_mut(), wild(span));
+            **dom = wrap("requires$".into(), span, d);
+        }
+        1 => {
+            let (x, xs) = names[0].clone();
+            let d = std::mem::replace(dom.as_mut(), wild(span));
+            **dom = wrap(x, xs, d);
+        }
+        _ => {
+            // `(x, y : A) -> B`: `(x : A) -> (y : {y : A | p}) -> B`.
+            let (x, xs) = names.pop().unwrap_or_default();
+            let inner_cod = std::mem::replace(cod.as_mut(), wild(span));
+            let inner = Expr {
+                kind: ExprKind::Pi {
+                    mult: *mult,
+                    implicit: false,
+                    names: vec![(x.clone(), xs)],
+                    dom: Box::new(wrap(x, xs, (**dom).clone())),
+                    cod: Box::new(inner_cod),
+                },
+                span: ty.span,
+            };
+            **cod = inner;
+        }
+    }
+    true
+}
+
+/// Wraps the result of the function type `ty` in `{r : R | q r}`.
+fn refine_result(ty: &mut Expr, q: Expr) {
+    if let ExprKind::Pi { cod, .. } = &mut ty.kind {
+        return refine_result(cod, q);
+    }
+    let span = ty.span;
+    let r = "result$".to_string();
+    let var = Expr {
+        kind: ExprKind::Var(QName {
+            module: Vec::new(),
+            name: r.clone(),
+        }),
+        span: q.span,
+    };
+    let app = Expr {
+        kind: ExprKind::App(Box::new(q.clone()), Box::new(var)),
+        span: q.span,
+    };
+    let base = std::mem::replace(ty, wild(span));
+    *ty = Expr {
+        kind: ExprKind::Subset(r, span, Box::new(base), Box::new(app)),
+        span,
+    };
+}
+
+fn wild(span: Span) -> Expr {
+    Expr {
+        kind: ExprKind::Wildcard,
+        span,
     }
 }

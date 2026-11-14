@@ -1,0 +1,21 @@
+module Main
+
+-- Contracts that do not hold: E0501 at the call, the result and the
+-- constructor.
+data Range : Type where
+  MkRange : (lo : Int) -> (hi : Int) -> Range
+  invariant lo <= hi
+
+clamp : (lo : Int) -> (hi : Int) -> (x : Int) -> Int
+  requires lo <= hi
+  ensures \r => lo <= r && r <= hi
+clamp lo hi x = if x < lo then lo else x
+
+useClamp : Int -> Int
+useClamp n = clamp n 0 n
+
+mkRange : Int -> Int -> Range
+mkRange a b = MkRange a b
+
+main : IO ()
+main = printInt (clamp 0 10 5)

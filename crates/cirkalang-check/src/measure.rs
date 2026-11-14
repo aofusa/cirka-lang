@@ -98,7 +98,12 @@ impl<'a> Tr<'a> {
     }
 
     pub fn opaque(&mut self, v: &Val, s: cirka_smt::Sort) -> Expr {
-        let key = format!("{:?}{:?}", s, self.ev.quote(100_000, v));
+        let refine = self.prog.builtins.refine;
+        let key = format!(
+            "{:?}{:?}",
+            s,
+            strip_refine(&self.ev.quote(100_000, v), refine)
+        );
         let n = self.opaque.len();
         let name = self
             .opaque
@@ -160,15 +165,20 @@ impl<'a> Tr<'a> {
                 }
                 // A call of a function with a refined result: opaque, with
                 // the refinement as a hypothesis (spec-v0.0.4.md §3).
-                if depth < 24
-                    && let Some(p) = crate::walk::result_refinement(self.prog, self.ev, *g, sp)
-                {
+                let ps = if depth < 24 {
+                    crate::walk::result_refinements(self.prog, self.ev, *g, sp)
+                } else {
+                    Vec::new()
+                };
+                if !ps.is_empty() {
                     let before = self.opaque.len();
                     let e = self.opaque(&v, want);
                     if self.opaque.len() > before {
-                        let holds = self.ev.apply(p, v.clone(), Icit::Expl);
-                        let h = self.boolean(&holds, depth + 1);
-                        self.extra.push(h);
+                        for p in ps {
+                            let holds = self.ev.apply(p, v.clone(), Icit::Expl);
+                            let h = self.boolean(&holds, depth + 1);
+                            self.extra.push(h);
+                        }
                     }
                     return e;
                 }
@@ -396,4 +406,39 @@ pub fn check(ev: &Ev, solver: &Solver, facts: &Facts, m: &Measure) -> Result<(),
         }
     }
     Ok(())
+}
+
+/// The term without its refinement marks (`primRefine {a} p site e` is
+/// `e`), so that the same value checked at different places is the same
+/// SMT term.
+pub(crate) fn strip_refine(t: &Term, refine: Option<GName>) -> Term {
+    let go = |t: &Term| std::rc::Rc::new(strip_refine(t, refine));
+    match t {
+        Term::App(f, a, i) => {
+            if let Term::App(f2, _, _) = f.as_ref()
+                && let Term::App(f3, _, _) = f2.as_ref()
+                && let Term::App(h, _, _) = f3.as_ref()
+                && matches!(h.as_ref(), Term::Global(g) if Some(*g) == refine)
+            {
+                return strip_refine(a, refine);
+            }
+            Term::App(go(f), go(a), *i)
+        }
+        Term::Lam(x, m, i, ty, b) => Term::Lam(x.clone(), *m, *i, ty.clone(), go(b)),
+        Term::Let(x, m, ty, v, b) => Term::Let(x.clone(), *m, ty.clone(), go(v), go(b)),
+        Term::Case(c) => {
+            let mut c2 = c.as_ref().clone();
+            c2.scrut = strip_refine(&c.scrut, refine);
+            for a in &mut c2.alts {
+                match a {
+                    Alt::Con { body, .. } | Alt::Lit { body, .. } => {
+                        *body = strip_refine(body, refine)
+                    }
+                }
+            }
+            c2.default = c.default.as_ref().map(|d| strip_refine(d, refine));
+            Term::Case(std::rc::Rc::new(c2))
+        }
+        _ => t.clone(),
+    }
 }

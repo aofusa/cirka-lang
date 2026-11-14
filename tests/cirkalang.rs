@@ -99,18 +99,20 @@ fn cirkalang_modules() {
 
 /// Compiles a CirkaLang program to Core with the frontend of `cirka`.
 fn compile_cirka(path: &std::path::Path) -> Result<(cirka_core::Program, String), String> {
-    compile_cirka_with(path, cirka_driver::pipeline::SourceTests::Strip)
+    compile_cirka_with(path, cirka_driver::pipeline::SourceTests::Strip, &[])
 }
 
 fn compile_cirka_with(
     path: &std::path::Path,
     tests: cirka_driver::pipeline::SourceTests,
+    flags: &[&str],
 ) -> Result<(cirka_core::Program, String), String> {
     let mut sm = SourceMap::new();
     let mut roots = vec![path.parent().unwrap().to_path_buf()];
     roots.extend(cirka::lib_roots());
     let mut opts = cirka_driver::pipeline::Options::new("test");
     opts.tests = tests;
+    opts.frontend_flags = flags.iter().map(|f| f.to_string()).collect();
     let name = path.file_stem().unwrap().to_string_lossy().to_string();
     opts.build_dir = cirka_testkit::work_dir("cirkalang-compile", &name);
     let render_diags = |sm: &SourceMap, ds: &[cirka_diagnostics::Diagnostic]| {
@@ -229,7 +231,7 @@ fn cirkalang_type_errors() {
         } else {
             cirka_driver::pipeline::SourceTests::Strip
         };
-        let out = match compile_cirka_with(&c.path, tests) {
+        let out = match compile_cirka_with(&c.path, tests, &[]) {
             Ok(_) => return Outcome::Fail("the program was accepted".into()),
             Err(e) => e,
         };
@@ -261,6 +263,53 @@ fn cirkalang_proofs_are_erased() {
         with == without,
         "the proofs left code behind:\n{with}\n----\n{without}"
     );
+}
+
+/// `--contracts` (FEAT-0233): `off` generates the same code as the
+/// program without contracts; `check` turns what is not proved into run
+/// time checks that panic with the contract (without Z3, all of them).
+#[test]
+fn cirkalang_contracts_modes() {
+    let root = repo_root().join("tests/cirkalang/contracts");
+    let mir = |name: &str, flags: &[&str]| {
+        let (core, _) = compile_cirka_with(
+            &root.join(format!("{name}.cirka")),
+            cirka_driver::pipeline::SourceTests::Strip,
+            flags,
+        )
+        .unwrap_or_else(|e| panic!("{name}: {e}"));
+        let mut opts = cirka_driver::pipeline::Options::new("same");
+        opts.opt_level = 2;
+        opts.build_dir = cirka_testkit::work_dir("cirkalang-contracts", name);
+        cirka_driver::pipeline::compile_core(core, "same", &opts, false)
+            .unwrap_or_else(|_| panic!("{name} does not compile"))
+            .mir
+    };
+    let print = cirka_mir::print::print_module;
+    let off = print(&mir("modes", &["--contracts=off"]));
+    let none = print(&mir("modes_none", &[]));
+    assert!(
+        off == none,
+        "--contracts=off left code behind:\n{off}\n----\n{none}"
+    );
+    let checked = mir("modes", &["--contracts=check"]);
+    let ok = cirka_mir::interp::run(&checked, b"30\n", u64::MAX).unwrap();
+    assert_eq!(ok.stdout, "10\n20\n");
+    let bad = cirka_mir::interp::run(&checked, b"3\n", u64::MAX).unwrap();
+    assert_ne!(bad.exit_code, 0);
+    assert!(
+        bad.stderr
+            .contains("contract violated in `Main.main`: 10 <= n"),
+        "{}",
+        bad.stderr
+    );
+    let err = compile_cirka_with(
+        &root.join("modes.cirka"),
+        cirka_driver::pipeline::SourceTests::Strip,
+        &["--contracts=maybe"],
+    )
+    .unwrap_err();
+    assert!(err.contains("unknown contracts mode"), "{err}");
 }
 
 /// Termination by measures, decided by Z3 (FEAT-0230): the programs under

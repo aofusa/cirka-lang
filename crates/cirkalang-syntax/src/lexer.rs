@@ -75,6 +75,9 @@ pub enum Kw {
     Deriving,
     Decreasing,
     Rewrite,
+    Requires,
+    Ensures,
+    Invariant,
     With,
 }
 
@@ -108,6 +111,9 @@ impl Kw {
             "deriving" => Deriving,
             "decreasing" => Decreasing,
             "rewrite" => Rewrite,
+            "requires" => Requires,
+            "ensures" => Ensures,
+            "invariant" => Invariant,
             "with" => With,
             _ => return None,
         })
@@ -142,6 +148,9 @@ impl Kw {
             Deriving => "deriving",
             Decreasing => "decreasing",
             Rewrite => "rewrite",
+            Requires => "requires",
+            Ensures => "ensures",
+            Invariant => "invariant",
             With => "with",
         }
     }

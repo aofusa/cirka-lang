@@ -1,0 +1,4 @@
+(module Main)
+(data Range : Type
+  (MkRange : (-> (lo : Int) (-> (hi : (subset hi Int (ops lo <= hi))) Range))))
+(sig (clamp) (-> (lo : Int) (-> (hi : Int) (-> (subset requires$ Int (ops lo <= hi)) (subset result$ Int ((\ (r) (ops r >= lo)) result$))))))

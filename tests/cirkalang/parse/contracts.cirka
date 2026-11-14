@@ -1,0 +1,9 @@
+module Main
+
+data Range : Type where
+  MkRange : (lo, hi : Int) -> Range
+  invariant lo <= hi
+
+clamp : (lo : Int) -> (hi : Int) -> Int -> Int
+  requires lo <= hi
+  ensures \r => r >= lo

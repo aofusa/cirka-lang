@@ -93,22 +93,29 @@ pub struct Facts {
     pub obligations: Vec<Obligation>,
 }
 
-/// The refinement of the result of `g args`, if its type is refined.
-pub fn result_refinement(prog: &Program, ev: &Ev, g: GName, sp: &[Elim]) -> Option<Val> {
+/// The refinements of the result of `g args` (several when nested).
+pub fn result_refinements(prog: &Program, ev: &Ev, g: GName, sp: &[Elim]) -> Vec<Val> {
     let ty = match prog.get(g) {
         Global::Def { ty, .. } | Global::Con { ty, .. } | Global::Extern { ty, .. } => ty,
-        _ => return None,
+        _ => return Vec::new(),
     };
     let mut t = ev.eval(&Vec::new(), ty);
     for e in sp {
-        let Elim::App(a, _) = e else { return None };
+        let Elim::App(a, _) = e else {
+            return Vec::new();
+        };
         ev.fuel.set(10_000);
         match ev.whnf(t) {
             Val::Pi(_, _, _, _, c) => t = ev.inst(&c, a.clone()),
-            _ => return None,
+            _ => return Vec::new(),
         }
     }
-    subset_parts(prog, ev, &t).map(|(_, p)| p)
+    let mut out = Vec::new();
+    while let Some((a, q)) = subset_parts(prog, ev, &t) {
+        out.push(q);
+        t = a;
+    }
+    out
 }
 
 /// `subsetOf a p` (not reduced): `(a, p)`.
@@ -233,9 +240,12 @@ impl<'a> Walker<'a> {
         self.next += 1;
         self.facts.names.insert(l, name.to_string());
         let tv = self.ev.eval(&self.env, ty);
-        if let Some((_, p)) = subset_parts(self.prog, self.ev, &tv) {
+        // `{x : {x : A | p} | q}` (several contracts): both hold.
+        let mut t = tv.clone();
+        while let Some((a, p)) = subset_parts(self.prog, self.ev, &t) {
             let holds = self.ev.apply(p, Val::var(l), Icit::Expl);
             self.assumed.push(Assume::Holds(holds));
+            t = a;
         }
         let tv = self.whnf(tv);
         self.fact(&tv);
@@ -333,15 +343,18 @@ impl<'a> Walker<'a> {
                 let tv = self.eval(ty);
                 // A refined value: by its type, or as the result of a
                 // function with a refined result.
-                let refined = subset_parts(self.prog, self.ev, &tv)
-                    .map(|(_, p)| p)
-                    .or_else(|| match &vv {
-                        Val::Neutral(Head::Global(g), sp) => {
-                            result_refinement(self.prog, self.ev, *g, sp)
-                        }
-                        _ => None,
-                    });
-                if let Some(p) = refined {
+                let mut refined = Vec::new();
+                let mut t = tv.clone();
+                while let Some((a, p)) = subset_parts(self.prog, self.ev, &t) {
+                    refined.push(p);
+                    t = a;
+                }
+                if refined.is_empty()
+                    && let Val::Neutral(Head::Global(g), sp) = &vv
+                {
+                    refined = result_refinements(self.prog, self.ev, *g, sp);
+                }
+                for p in refined {
                     let holds = self.ev.apply(p, vv.clone(), Icit::Expl);
                     self.assumed.push(Assume::Holds(holds));
                 }

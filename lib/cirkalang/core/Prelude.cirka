@@ -748,3 +748,8 @@ absurd v = case v of {}
 total
 soTrue : So b -> b = True
 soTrue Oh = Refl
+
+-- `--contracts=check` (spec-v0.0.4.md §4.3): a refinement that could not be
+-- proved is checked at run time.
+checkContract : (p : a -> Bool) -> String -> a -> a
+checkContract p msg x = if p x then x else panic msg

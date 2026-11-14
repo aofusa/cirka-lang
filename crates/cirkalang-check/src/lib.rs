@@ -40,9 +40,76 @@ enum Why {
     NonPositive(GName),
 }
 
-/// Checks totality. Returns diagnostics (errors). Decided SMT queries are
-/// remembered in `cache` (a directory) when given.
+/// What to do with refinements and contracts (`--contracts`,
+/// spec-v0.0.4.md §4.3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Contracts {
+    /// Prove them; what cannot be proved is an error.
+    #[default]
+    Verify,
+    /// Prove them; what cannot be proved is checked at run time.
+    Check,
+    /// Ignore them.
+    Off,
+}
+
+impl Contracts {
+    pub fn parse(s: &str) -> Option<Contracts> {
+        Some(match s {
+            "verify" => Contracts::Verify,
+            "check" => Contracts::Check,
+            "off" => Contracts::Off,
+            _ => return None,
+        })
+    }
+}
+
+/// The result of the checks.
+#[derive(Debug, Default)]
+pub struct Checked {
+    /// Errors and warnings.
+    pub diags: Vec<Diagnostic>,
+    /// Refinement sites that were not proved (`--contracts=check`), with the
+    /// message to panic with when they fail at run time.
+    pub unproved: Vec<(usize, String)>,
+}
+
+/// Checks totality and refinements (`--contracts=verify`). Returns
+/// diagnostics. Decided SMT queries are remembered in `cache` (a
+/// directory) when given.
 pub fn check(rp: &rast::Program, prog: &Program, cache: Option<PathBuf>) -> Vec<Diagnostic> {
+    check_with(rp, prog, cache, Contracts::Verify).diags
+}
+
+/// Replaces the refinement marks of `sites` by run-time checks:
+/// `primRefine {a} p site e` becomes `checkContract {a} p msg e`
+/// (`--contracts=check`).
+pub fn insert_checks(prog: &mut Program, sites: &[(usize, String)]) {
+    let (Some(refine), Some(bool_ty), Some(chk)) = (
+        prog.builtins.refine,
+        prog.builtins.bool_,
+        prog.names
+            .iter()
+            .position(|n| n == "Prelude.checkContract")
+            .map(|i| GName(i as u32)),
+    ) else {
+        return;
+    };
+    let msgs: HashMap<usize, String> = sites.iter().cloned().collect();
+    for g in prog.globals.iter_mut() {
+        if let Global::Def { body: Some(b), .. } = g {
+            *b = refine::insert(b, refine, chk, bool_ty, &msgs);
+        }
+    }
+}
+
+/// Checks totality and refinements.
+pub fn check_with(
+    rp: &rast::Program,
+    prog: &Program,
+    cache: Option<PathBuf>,
+    contracts: Contracts,
+) -> Checked {
     let mut wanted: Vec<GName> = prog
         .totality
         .iter()
@@ -52,9 +119,9 @@ pub fn check(rp: &rast::Program, prog: &Program, cache: Option<PathBuf>) -> Vec<
     wanted.sort();
     let in_types = used_in_types(prog);
     let proofs = proofs(prog);
-    let refined = !prog.refine_sites.is_empty();
+    let refined = !prog.refine_sites.is_empty() && contracts != Contracts::Off;
     if wanted.is_empty() && in_types.is_empty() && proofs.is_empty() && !refined {
-        return Vec::new();
+        return Checked::default();
     }
     let metas = Metas::default();
     let fuel = Cell::new(10_000);
@@ -74,8 +141,9 @@ pub fn check(rp: &rast::Program, prog: &Program, cache: Option<PathBuf>) -> Vec<
         }),
     };
     let mut diags = Vec::new();
+    let mut unproved = Vec::new();
     if refined {
-        t.refinements(&mut diags);
+        t.refinements(contracts, &mut diags, &mut unproved);
     }
     let roots: Vec<GName> = wanted
         .iter()
@@ -126,7 +194,7 @@ pub fn check(rp: &rast::Program, prog: &Program, cache: Option<PathBuf>) -> Vec<
             );
         }
     }
-    diags
+    Checked { diags, unproved }
 }
 
 /// Definitions whose result is a proof: an equality or `Void`.
@@ -218,7 +286,12 @@ impl Totality_<'_> {
     /// Walks the definitions reachable from `roots`.
     /// Checks the refinement obligations of every definition that has
     /// some (spec-v0.0.4.md §3).
-    fn refinements(&mut self, diags: &mut Vec<Diagnostic>) {
+    fn refinements(
+        &mut self,
+        mode: Contracts,
+        diags: &mut Vec<Diagnostic>,
+        unproved: &mut Vec<(usize, String)>,
+    ) {
         let Some(refine) = self.prog.builtins.refine else {
             return;
         };
@@ -231,7 +304,15 @@ impl Totality_<'_> {
             }
             let mut w = Walker::new(self.ev, &self.sels, &self.dict_cons, g);
             w.run(b);
-            refine::check(self.ev, self.solver.as_ref(), self.prog, &w.facts, diags);
+            refine::check(
+                self.ev,
+                self.solver.as_ref(),
+                self.prog,
+                &w.facts,
+                mode,
+                diags,
+                unproved,
+            );
         }
     }
 

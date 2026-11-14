@@ -112,6 +112,29 @@ pub fn compile_package(
     compile_resolved(rp, opts, &w.root.name)
 }
 
+/// `--contracts=off|check|verify` (spec-v0.0.4.md §4.3); other frontend
+/// options are unknown.
+fn contracts_mode(opts: &Options) -> Result<cirkalang_check::Contracts, Diagnostic> {
+    let mut mode = cirkalang_check::Contracts::default();
+    for f in &opts.frontend_flags {
+        let parsed = f
+            .strip_prefix("--contracts=")
+            .and_then(cirkalang_check::Contracts::parse);
+        match parsed {
+            Some(m) => mode = m,
+            None if f.starts_with("--contracts=") => {
+                return Err(
+                    Diagnostic::error(format!("unknown contracts mode in `{f}`")).with_help(
+                        "use `--contracts=verify`, `--contracts=check` or `--contracts=off`",
+                    ),
+                );
+            }
+            None => return Err(Diagnostic::error(format!("unknown option `{f}`"))),
+        }
+    }
+    Ok(mode)
+}
+
 fn compile_resolved(
     rp: cirkalang_resolve::rast::Program,
     opts: &Options,
@@ -127,7 +150,7 @@ fn compile_resolved(
     let el = cirkalang_elab::elaborate(&rp);
     let (errors, warnings): (Vec<Diagnostic>, Vec<Diagnostic>) =
         el.diags.into_iter().partition(|d| d.is_error());
-    let Some(tt) = el.program else {
+    let Some(mut tt) = el.program else {
         let mut all = errors;
         all.extend(warnings);
         return Err(all);
@@ -139,12 +162,20 @@ fn compile_resolved(
         "tt",
         &cirkalang_elab::tt::print_program(&tt),
     )?;
-    // Totality (spec-v0.0.4.md §1).
-    let errors = cirkalang_check::check(&rp, &tt, Some(opts.build_dir.join("verify")));
+    // Totality and refinements (spec-v0.0.4.md §1, §3, §4).
+    let mode = contracts_mode(opts).map_err(|d| vec![d])?;
+    let checked = cirkalang_check::check_with(&rp, &tt, Some(opts.build_dir.join("verify")), mode);
+    let (errors, more): (Vec<Diagnostic>, Vec<Diagnostic>) =
+        checked.diags.into_iter().partition(|d| d.is_error());
+    let mut warnings = warnings;
+    warnings.extend(more);
     if !errors.is_empty() {
         let mut all = errors;
         all.extend(warnings);
         return Err(all);
+    }
+    if !checked.unproved.is_empty() {
+        cirkalang_check::insert_checks(&mut tt, &checked.unproved);
     }
     // A library (no `main`) can be checked: its Core is still linted.
     if tt.main.is_none() && opts.tests != SourceTests::Check {
@@ -179,10 +210,8 @@ pub fn frontend(
             DUMPS.join(", ")
         ))]));
     }
-    if let Some(f) = opts.frontend_flags.first() {
-        return Some(Err(vec![Diagnostic::error(format!(
-            "unknown option `{f}`"
-        ))]));
+    if let Err(d) = contracts_mode(opts) {
+        return Some(Err(vec![d]));
     }
     let compiled = if path.is_dir() || path.file_name().is_some_and(|f| f == "cirka.toml") {
         compile_package(sm, path, opts)

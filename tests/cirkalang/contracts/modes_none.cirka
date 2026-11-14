@@ -1,0 +1,17 @@
+module Main
+
+-- modes.cirka without its contracts.
+data Range : Type where
+  MkRange : (lo : Int) -> (hi : Int) -> Range
+
+clamp : (lo : Int) -> (hi : Int) -> (x : Int) -> Int
+clamp lo hi x = if x < lo then lo else if x > hi then hi else x
+
+width : Range -> Int
+width (MkRange lo hi) = hi - lo
+
+main : IO ()
+main = do
+  n <- readInt
+  printInt (clamp 10 n 5)
+  printInt (width (MkRange 10 n))

@@ -6,12 +6,15 @@
 //! refinements of the binders in scope and of the results of the
 //! functions it calls.
 
+use crate::Contracts;
 use crate::measure::{Tr, smt_names};
 use crate::walk::{Assume, Facts, Obligation};
 use cirka_diagnostics::Diagnostic;
 use cirka_smt::{Expr, Outcome, Query, Solver};
 use cirkalang_elab::eval::Ev;
 use cirkalang_elab::tt::*;
+use std::collections::HashMap;
+use std::rc::Rc;
 
 /// Does the term mark a value checked against a refinement?
 pub fn mentions_refine(t: &Term, refine: GName) -> bool {
@@ -33,22 +36,99 @@ pub fn mentions_refine(t: &Term, refine: GName) -> bool {
     }
 }
 
-/// Checks the obligations of one definition.
+/// Checks the obligations of one definition. With `--contracts=check`,
+/// those that are not proved (but not known to be false) are checked at
+/// run time instead: they are added to `unproved` with a warning.
 pub fn check(
     ev: &Ev,
     solver: Option<&Solver>,
     prog: &Program,
     facts: &Facts,
+    mode: Contracts,
     diags: &mut Vec<Diagnostic>,
+    unproved: &mut Vec<(usize, String)>,
 ) {
     let names = smt_names(facts);
     for ob in &facts.obligations {
         let Some(site) = prog.refine_sites.get(ob.site) else {
             continue;
         };
-        if let Some(d) = obligation(ev, solver, prog, facts, &names, ob) {
-            diags.push(d.with_label(site.span, format!("in `{}`", site.def)));
+        let Some(d) = obligation(ev, solver, prog, facts, &names, ob) else {
+            continue;
+        };
+        let refuted = d.message.contains("does not hold");
+        if mode == Contracts::Check && !refuted {
+            let what = d.message.clone();
+            let shown = show(
+                ev,
+                facts,
+                &ev.apply(ob.pred.clone(), ob.val.clone(), Icit::Expl),
+            );
+            unproved.push((
+                ob.site,
+                format!("contract violated in `{}`: {shown}", site.def),
+            ));
+            diags.push(
+                Diagnostic::warning(format!("checked at run time: {what}"))
+                    .with_code("W0507")
+                    .with_label(site.span, format!("in `{}`", site.def)),
+            );
+            continue;
         }
+        diags.push(d.with_label(site.span, format!("in `{}`", site.def)));
+    }
+}
+
+/// Replaces `primRefine {a} p site e` for the given sites by
+/// `checkContract {a} p msg e`.
+pub fn insert(
+    t: &Term,
+    refine: GName,
+    chk: GName,
+    bool_ty: GName,
+    msgs: &HashMap<usize, String>,
+) -> Term {
+    let go = |t: &Term| insert(t, refine, chk, bool_ty, msgs);
+    match t {
+        Term::App(f, a, i) => {
+            // `primRefine {a} p site e` (heads first).
+            if let Term::App(f2, site, _) = f.as_ref()
+                && let Term::App(f3, _, _) = f2.as_ref()
+                && let Term::App(h, _, _) = f3.as_ref()
+                && matches!(h.as_ref(), Term::Global(g) if *g == refine)
+                && let Term::Lit(Lit::Int(k)) = site.as_ref()
+                && let Some(m) = msgs.get(&(*k as usize))
+            {
+                let Term::App(f3, p, pi) = f2.as_ref() else {
+                    unreachable!()
+                };
+                let Term::App(_, ty, ti) = f3.as_ref() else {
+                    unreachable!()
+                };
+                let app = |f: Term, x: Term, i: Icit| Term::App(Rc::new(f), Rc::new(x), i);
+                let h = app(Term::Global(chk), ty.as_ref().clone(), *ti);
+                let h = app(h, bind_scruts(&go(p), bool_ty), *pi);
+                let h = app(h, Term::Lit(Lit::Str(Rc::from(m.as_str()))), Icit::Expl);
+                return app(h, go(a), *i);
+            }
+            Term::App(Rc::new(go(f)), Rc::new(go(a)), *i)
+        }
+        Term::Lam(x, m, i, ty, b) => Term::Lam(x.clone(), *m, *i, ty.clone(), Rc::new(go(b))),
+        Term::Let(x, m, ty, v, b) => {
+            Term::Let(x.clone(), *m, ty.clone(), Rc::new(go(v)), Rc::new(go(b)))
+        }
+        Term::Case(c) => {
+            let mut c2 = c.as_ref().clone();
+            c2.scrut = go(&c.scrut);
+            for a in &mut c2.alts {
+                match a {
+                    Alt::Con { body, .. } | Alt::Lit { body, .. } => *body = go(body),
+                }
+            }
+            c2.default = c.default.as_ref().map(go);
+            Term::Case(Rc::new(c2))
+        }
+        _ => t.clone(),
     }
 }
 
@@ -84,6 +164,13 @@ fn obligation(
     };
     let mut tr = Tr::new(ev, &facts.sorts, names);
     let goal = tr.boolean(&holds, 0);
+    // What the refined results of the calls in the value tell.
+    let mut calls = Vec::new();
+    refined_calls(ev, prog, &ob.val, &mut calls, 0);
+    for h in calls {
+        let e = tr.boolean(&h, 0);
+        tr.extra.push(e);
+    }
     let mut hyps: Vec<Expr> = ob.conds.iter().filter_map(|c| tr.cond(c)).collect();
     for a in &ob.assumed {
         match a {
@@ -259,4 +346,74 @@ fn bool_case(prog: &Program, names: &mut Vec<Name>, c: &Case, nested: bool) -> O
         )
     };
     Some(if nested { format!("({out})") } else { out })
+}
+
+/// A predicate taken from a type may match on an expression (`a && b`
+/// is a match on `a`); lowering matches on variables: `case e of alts`
+/// becomes `let c : Bool = e in case c of alts` (for booleans).
+fn bind_scruts(t: &Term, bool_ty: GName) -> Term {
+    let go = |t: &Term| Rc::new(bind_scruts(t, bool_ty));
+    match t {
+        Term::App(f, a, i) => Term::App(go(f), go(a), *i),
+        Term::Lam(x, m, i, ty, b) => Term::Lam(x.clone(), *m, *i, ty.clone(), go(b)),
+        Term::Let(x, m, ty, v, b) => Term::Let(x.clone(), *m, ty.clone(), go(v), go(b)),
+        Term::Case(c) => {
+            let mut c2 = c.as_ref().clone();
+            c2.scrut = bind_scruts(&c.scrut, bool_ty);
+            for a in &mut c2.alts {
+                match a {
+                    Alt::Con { body, .. } | Alt::Lit { body, .. } => {
+                        *body = bind_scruts(body, bool_ty)
+                    }
+                }
+            }
+            c2.default = c.default.as_ref().map(|d| bind_scruts(d, bool_ty));
+            if matches!(c2.scrut, Term::Var(_)) {
+                return Term::Case(Rc::new(c2));
+            }
+            let scrut = std::mem::replace(&mut c2.scrut, Term::Var(0));
+            let Term::Case(shifted) = shift(&Term::Case(Rc::new(c2)), 0, 1) else {
+                unreachable!()
+            };
+            let mut c3 = shifted.as_ref().clone();
+            c3.scrut = Term::Var(0);
+            Term::Let(
+                Name::from("c"),
+                Mult::Many,
+                Rc::new(Term::Global(bool_ty)),
+                Rc::new(scrut),
+                Rc::new(Term::Case(Rc::new(c3))),
+            )
+        }
+        _ => t.clone(),
+    }
+}
+
+/// `q (f a)` for each call `f a` in `v` whose result is refined by `q`.
+fn refined_calls(ev: &Ev, prog: &Program, v: &Val, out: &mut Vec<Val>, depth: u32) {
+    if depth > 8 {
+        return;
+    }
+    match ev.force(v.clone()) {
+        Val::Neutral(h, sp) => {
+            if let Head::Global(g) = h
+                && sp.iter().all(|e| matches!(e, Elim::App(..)))
+            {
+                for q in crate::walk::result_refinements(prog, ev, g, &sp) {
+                    out.push(ev.apply(q, v.clone(), Icit::Expl));
+                }
+            }
+            for e in &sp {
+                if let Elim::App(a, _) = e {
+                    refined_calls(ev, prog, a, out, depth + 1);
+                }
+            }
+        }
+        Val::Con(_, args) => {
+            for a in &args {
+                refined_calls(ev, prog, a, out, depth + 1);
+            }
+        }
+        _ => {}
+    }
 }

@@ -1,0 +1,21 @@
+error[E0501]: cannot prove the refinement `(lo <= x) && (x <= hi)`
+  --> tests/cirkalang/verify/fail/contracts.cirka:12:40
+   |
+12 | clamp lo hi x = if x < lo then lo else x
+   |                                        ^ in `Main.clamp`
+   = note: counterexample: hi = -1, lo = -1, x = 0
+   = help: check the value, add a condition (`if`), or refine the type of what it is computed from
+error[E0501]: cannot prove the refinement `n <= 0`
+  --> tests/cirkalang/verify/fail/contracts.cirka:15:24
+   |
+15 | useClamp n = clamp n 0 n
+   |                        ^ in `Main.useClamp`
+   = note: counterexample: n = 1
+   = help: check the value, add a condition (`if`), or refine the type of what it is computed from
+error[E0501]: cannot prove the refinement `a <= b`
+  --> tests/cirkalang/verify/fail/contracts.cirka:18:25
+   |
+18 | mkRange a b = MkRange a b
+   |                         ^ in `Main.mkRange`
+   = note: counterexample: a = 1, b = 0
+   = help: check the value, add a condition (`if`), or refine the type of what it is computed from

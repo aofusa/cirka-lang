@@ -3663,6 +3663,13 @@ impl<'r> Elab<'r> {
                 self.def_sig(d);
             }
         }
+        // Constructors with invariants (refined fields, spec-v0.0.4.md §4):
+        // their predicates use functions and traits, known only now.
+        for it in &items {
+            if let rast::Item::Data(d) = it {
+                self.refined_cons(d);
+            }
+        }
         // 4. Bodies.
         for it in &items {
             match it {
@@ -4061,6 +4068,50 @@ impl<'r> Elab<'r> {
         };
         if let Global::Data { univ: u, .. } = &mut self.prog.globals[d.name.0 as usize] {
             *u = univ;
+        }
+    }
+
+    /// Elaborates again the types of the constructors of `d` that have
+    /// refined fields, once functions and traits are known.
+    fn refined_cons(&mut self, d: &rast::Data) {
+        let Some(sub) = self.prog.builtins.subset_of else {
+            return;
+        };
+        let Global::Data { ty: dty, .. } = self.prog.get(d.name).clone() else {
+            return;
+        };
+        for c in &d.cons {
+            let rast::ConBody::Sig(t) = &c.body else {
+                continue;
+            };
+            let refined = match self.prog.get(c.name) {
+                Global::Con { ty, .. } => mentions_global(ty, sub),
+                _ => false,
+            };
+            if !refined {
+                continue;
+            }
+            self.begin(self.prog.name(c.name).to_string());
+            let mut cx = Cxt::default();
+            let mut ps = Vec::new();
+            let mut dt = self.ev().eval(&Vec::new(), &dty);
+            for p in &d.params {
+                let Val::Pi(x, _, _, a, clo) = self.whnf(&dt) else {
+                    break;
+                };
+                let l = self.push(&mut cx, &x, Mult::Zero, &a, None, p.span, Some(&p.name));
+                ps.push((x, self.ev().quote(l, &a)));
+                dt = self.ev().inst(&clo, Val::var(l));
+            }
+            let sig = self.check_type(&mut cx, t);
+            self.solve_pending(true);
+            let mut ty = self.zonk(cx.lvl(), &sig);
+            for (x, a) in ps.into_iter().rev() {
+                ty = Term::Pi(x, Mult::Zero, Icit::Impl, Rc::new(a), Rc::new(ty));
+            }
+            if let Global::Con { ty: old, .. } = &mut self.prog.globals[c.name.0 as usize] {
+                *old = ty;
+            }
         }
     }
 
@@ -4762,5 +4813,27 @@ fn nat_pat(b: &Builtins, q: &mut rast::Pat) {
             }
         }
         _ => {}
+    }
+}
+
+/// Does `t` mention the global `g`?
+fn mentions_global(t: &Term, g: GName) -> bool {
+    match t {
+        Term::Global(h) => *h == g,
+        Term::Pi(_, _, _, a, b) | Term::Lam(_, _, _, a, b) => {
+            mentions_global(a, g) || mentions_global(b, g)
+        }
+        Term::App(f, a, _) => mentions_global(f, g) || mentions_global(a, g),
+        Term::Let(_, _, a, v, b) => {
+            mentions_global(a, g) || mentions_global(v, g) || mentions_global(b, g)
+        }
+        Term::Case(c) => {
+            mentions_global(&c.scrut, g)
+                || c.alts.iter().any(|a| match a {
+                    Alt::Con { body, .. } | Alt::Lit { body, .. } => mentions_global(body, g),
+                })
+                || c.default.as_ref().is_some_and(|d| mentions_global(d, g))
+        }
+        _ => false,
     }
 }
