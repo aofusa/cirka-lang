@@ -1731,3 +1731,103 @@ fn opt_floats_strict_binding_into_single_alternative_of_call() {
     let (m, _) = opt_main(&src);
     assert!(!m.contains("con P"), "{m}");
 }
+
+/// The pairs step of n-body (FEAT-0083): `mag` is floating-point
+/// arithmetic and `sqrt` on evaluated values, and so are the new bodies,
+/// passed to the recursive call and stored in a lazy field.
+const SPECULATED_PAIRS: &str = "(data D () (D# (! Double#)))
+     (data B () (B (! Double#) (! Double#)))
+     (data L () (N) (C B L))
+     (extern sqrt (Double#) Double#)
+     (def go (-> Double# B L L)
+       (lam ((dt Double#) (b B) (l L))
+         (case l (s L) L
+           ((N) (con C () b (con N ())))
+           ((C c r) (case b (sb B) L
+             ((B x m) (case c (sc B) L
+               ((B x2 m2)
+                 (let! (d Double# (prim fsub x x2))
+                   (let ((mag D (let! (q Double# (extern sqrt d)) (con D# () (prim fdiv dt q)))))
+                     (con C ()
+                       (case mag (t D) B ((D# g) (con B () x (prim fmul m2 g))))
+                       (go dt (case mag (t2 D) B ((D# g2) (con B () x2 (prim fmul m g2)))) r))))))))))))
+     (def main Int#
+       (case (go 0.5 (con B () 1.0 2.0) (con C () (con B () 3.0 4.0) (con N ()))) (s L) Int#
+         ((N) 0)
+         ((C h t) 1)))";
+
+#[test]
+fn speculate_evaluates_cheap_bindings_arguments_and_fields() {
+    let mut p = parse_program(FileId(0), SPECULATED_PAIRS).unwrap();
+    let mut next = p.max_id() + 1;
+    // `mag`, the field of `C` and the argument of `go`.
+    assert_eq!(strict::speculate(&mut p, &mut next), 3);
+    assert!(lint::lint_program(&p).is_empty(), "{}", print_program(&p));
+    let go = print::print_expr(&p.bind("go").unwrap().expr);
+    assert!(go.contains("(let! (mag D"), "{go}");
+    // The field is bound before the constructor, the argument before the
+    // call (inside the thunk of the lazy tail).
+    assert!(go.contains("(let! (sp~"), "{go}");
+    assert!(go.contains("(con C () sp~"), "{go}");
+    assert!(go.contains("(go dt sp~"), "{go}");
+    // The whole pipeline speculates them too.
+    let mut p = parse_program(FileId(0), SPECULATED_PAIRS).unwrap();
+    let st = opt::optimize_with_stats(&mut p).unwrap();
+    assert!(lint::lint_program(&p).is_empty(), "{}", print_program(&p));
+    assert!(st.speculated >= 3, "{st:?}");
+}
+
+/// `main` with a lazy binding `t = rhs` that it then uses.
+fn speculated_let(decls: &str, ty: &str, rhs: &str) -> usize {
+    let src = format!(
+        "{STRICT_INT}(data D () (D# (! Double#)))
+         (extern arg () Int#)
+         {decls}
+         (def f (-> Int Int) (lam ((x Int)) x))
+         (def main Int#
+           (let! (a Int# (extern arg))
+             (let! (b Int# (extern arg))
+               (let ((u Int (f (con I# () a))))
+                 (let ((t {ty} {rhs}))
+                   (case (f u) (s Int) Int# ((I# v) (prim add v (extern arg)))))))))"
+    );
+    let mut p = parse_program(FileId(0), &src).unwrap();
+    assert!(lint::lint_program(&p).is_empty(), "{src}");
+    let mut next = p.max_id() + 1;
+    let n = strict::speculate(&mut p, &mut next);
+    assert!(lint::lint_program(&p).is_empty(), "{}", print_program(&p));
+    n
+}
+
+#[test]
+fn speculate_keeps_what_may_fail_or_cost() {
+    // Cheap and safe: arithmetic (floating-point division too) on
+    // evaluated values, a pure C function.
+    assert_eq!(speculated_let("", "Int", "(con I# () (prim mul a b))"), 1);
+    let fdiv = "(con D# () (prim fdiv (prim int_to_double a) (prim int_to_double b)))";
+    assert_eq!(speculated_let("", "D", fdiv), 1);
+    let sqrt = "(extern sqrt (Double#) Double#)";
+    let root = "(con D# () (extern sqrt (prim int_to_double a)))";
+    assert_eq!(speculated_let(sqrt, "D", root), 1);
+    // Integer division may fail.
+    assert_eq!(speculated_let("", "Int", "(con I# () (prim quot a b))"), 0);
+    // A call may not terminate.
+    assert_eq!(speculated_let("", "Int", "(f (con I# () a))"), 0);
+    // `u` is a thunk: evaluating it may run anything.
+    let of_thunk = "(case u (s Int) Int ((I# y) (con I# () (prim add y 1))))";
+    assert_eq!(speculated_let("", "Int", of_thunk), 0);
+    // An effectful C function, and a foreign `sqrt` of another signature.
+    let effect = "(con I# () (extern arg))";
+    assert_eq!(speculated_let("", "Int", effect), 0);
+    let foreign = "(extern sqrt (Int#) Int#)";
+    assert_eq!(
+        speculated_let(foreign, "Int", "(con I# () (extern sqrt a))"),
+        0
+    );
+    // Too much work for a value that may go unused.
+    let mut big = "a".to_string();
+    for _ in 0..24 {
+        big = format!("(prim add {big} b)");
+    }
+    assert_eq!(speculated_let("", "Int", &format!("(con I# () {big})")), 0);
+}

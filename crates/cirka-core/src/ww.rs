@@ -261,50 +261,237 @@ pub fn total_prim(op: PrimOp) -> bool {
     )
 }
 
-/// Size bound of an argument evaluated early (it may be work the callee
-/// does not need).
+/// C functions without effects that cannot fail (FEAT-0083), with their
+/// parameter and result types (`d` = `Double#`, `i` = `Int#`): libm on
+/// doubles (a domain error gives NaN, and `errno` is not observable) and
+/// the runtime's bit conversions.
+const PURE_EXTERNS: &[(&str, &str, char)] = &[
+    ("sqrt", "d", 'd'),
+    ("fabs", "d", 'd'),
+    ("floor", "d", 'd'),
+    ("ceil", "d", 'd'),
+    ("trunc", "d", 'd'),
+    ("exp", "d", 'd'),
+    ("log", "d", 'd'),
+    ("sin", "d", 'd'),
+    ("cos", "d", 'd'),
+    ("tan", "d", 'd'),
+    ("asin", "d", 'd'),
+    ("acos", "d", 'd'),
+    ("atan", "d", 'd'),
+    ("sinh", "d", 'd'),
+    ("cosh", "d", 'd'),
+    ("tanh", "d", 'd'),
+    ("atan2", "dd", 'd'),
+    ("pow", "dd", 'd'),
+    ("cirka_f32_round", "d", 'd'),
+    ("cirka_f64_bits", "d", 'i'),
+    ("cirka_f64_from_bits", "i", 'd'),
+];
+
+/// Whether the C function `f` of `p` is pure and total: one of
+/// [`PURE_EXTERNS`] declared with its signature in the runtime's
+/// convention (not a foreign function of the same name and another type).
+pub fn pure_extern(p: &Program, f: &str) -> bool {
+    let ty = |c: char| {
+        if c == 'd' {
+            Type::double()
+        } else {
+            Type::int()
+        }
+    };
+    let Some((_, params, ret)) = PURE_EXTERNS.iter().find(|(n, _, _)| *n == f) else {
+        return false;
+    };
+    p.extern_decl(f).is_some_and(|d| {
+        d.c_sig.is_none()
+            && d.ret == ty(*ret)
+            && d.params.len() == params.len()
+            && d.params
+                .iter()
+                .zip(params.chars())
+                .all(|(t, c)| *t == ty(c))
+    })
+}
+
+/// Size bound of an argument evaluated early by a wrapper (it may be work
+/// the callee does not need).
 const SPEC_SIZE: usize = 24;
 
-/// Whether evaluating `e` (to WHNF) now is cheap and certainly terminates
-/// without effects or failure, given the variables `ev` already evaluated.
-fn speculatable(e: &Expr, ev: &HashSet<u32>, size: &mut usize) -> bool {
-    *size += 1;
-    if *size > SPEC_SIZE {
-        return false;
+/// Size bound of what speculation evaluates instead of building a thunk
+/// (FEAT-0083): about a dozen arithmetic operations and a constructor.
+pub(crate) const SPEC_THUNK_SIZE: usize = 48;
+
+/// What deciding speculation needs to know of the program.
+pub(crate) struct Spec<'a> {
+    pub(crate) p: &'a Program,
+    /// Top-level functions: their value is a closure, never a thunk.
+    funs: HashSet<&'a str>,
+}
+
+impl<'a> Spec<'a> {
+    pub(crate) fn new(p: &'a Program) -> Spec<'a> {
+        let funs = p
+            .binds
+            .iter()
+            .filter(|b| !split_fun(&b.expr).1.is_empty())
+            .map(|b| b.name.as_str())
+            .collect();
+        Spec { p, funs }
     }
-    match e {
-        Expr::Lit(_) | Expr::Lam(..) | Expr::TyLam(..) | Expr::Con(..) => true,
-        Expr::Var(x) => ev.contains(&x.id),
-        Expr::Cast(e, _) => speculatable(e, ev, size),
-        Expr::Prim(op, _, args) => {
-            total_prim(*op) && args.iter().all(|a| speculatable(a, ev, size))
+
+    /// Whether evaluating `e` (to WHNF) now is cheap and certainly
+    /// terminates without effects or failure (GHC's
+    /// `exprOkForSpeculation`, bounded by `limit` Core nodes), given the
+    /// variables `ev` already evaluated. The right-hand side of a strict
+    /// binding in `done` was checked when the binding was made and is not
+    /// counted again.
+    pub(crate) fn ok(
+        &self,
+        e: &Expr,
+        ev: &HashSet<u32>,
+        done: &HashSet<u32>,
+        limit: usize,
+    ) -> bool {
+        let mut w = SpecWalk {
+            s: self,
+            ev,
+            done,
+            local: Vec::new(),
+            size: 0,
+            limit,
+        };
+        w.ok(e)
+    }
+
+    /// The fields of constructor `c` at type arguments `ts` that its
+    /// construction evaluates: strict fields and fields of an unboxed type
+    /// (`None` for an unknown or linear data type or a newtype).
+    pub(crate) fn evaluated_fields(&self, c: &str, ts: &[Type]) -> Option<Vec<bool>> {
+        let (d, i) = self.p.ctor(c)?;
+        if d.linear || d.newtype || d.params.len() != ts.len() {
+            return None;
         }
-        Expr::LetStrict(b, rhs, body) => {
-            if !speculatable(rhs, ev, size) {
-                return false;
-            }
-            let mut ev = ev.clone();
-            ev.insert(b.id.id);
-            speculatable(body, &ev, size)
-        }
-        Expr::Let(Bind::NonRec(_, rhs), body) => rhs.is_value() && speculatable(body, ev, size),
-        Expr::Case(scrut, b, _, alts) => {
-            if !speculatable(scrut, ev, size) {
-                return false;
-            }
-            let mut ev = ev.clone();
-            ev.insert(b.id.id);
-            alts.iter().all(|a| {
-                // A field of an unboxed type cannot be a thunk.
-                let mut ev = ev.clone();
-                if let AltCon::Con(_, fs) = &a.con {
-                    let values = fs.iter().filter(|f| f.ty.is_unboxed());
-                    ev.extend(values.map(|f| f.id.id));
-                }
-                speculatable(&a.rhs, &ev, size)
+        let k = &d.ctors[i];
+        let s: Vec<(TyVar, Type)> = d
+            .params
+            .iter()
+            .map(|(v, _)| v.clone())
+            .zip(ts.iter().cloned())
+            .collect();
+        Some(
+            k.fields
+                .iter()
+                .enumerate()
+                .map(|(j, t)| {
+                    k.strict.get(j).copied().unwrap_or(true) || t.subst_all(&s).is_unboxed()
+                })
+                .collect(),
+        )
+    }
+
+    /// The binders of an alternative of constructor `c` whose values are
+    /// evaluated: the fields of strict or unboxed type, and the field of a
+    /// newtype (the evaluated scrutinee itself).
+    pub(crate) fn evaluated_binders<'b>(&self, c: &str, fs: &'b [Binder]) -> Vec<&'b Binder> {
+        let Some((d, i)) = self.p.ctor(c) else {
+            return Vec::new();
+        };
+        let k = &d.ctors[i];
+        fs.iter()
+            .enumerate()
+            .filter(|(j, f)| {
+                d.newtype || f.ty.is_unboxed() || k.strict.get(*j).copied().unwrap_or(false)
             })
+            .map(|(_, f)| f)
+            .collect()
+    }
+}
+
+struct SpecWalk<'a, 'p> {
+    s: &'a Spec<'p>,
+    ev: &'a HashSet<u32>,
+    done: &'a HashSet<u32>,
+    /// Variables bound inside the expression and evaluated (binders are
+    /// unique, so no scoping is needed).
+    local: Vec<u32>,
+    size: usize,
+    limit: usize,
+}
+
+impl SpecWalk<'_, '_> {
+    fn evaluated(&self, x: u32) -> bool {
+        self.ev.contains(&x) || self.local.contains(&x)
+    }
+
+    fn ok(&mut self, e: &Expr) -> bool {
+        self.size += 1;
+        if self.size > self.limit {
+            return false;
         }
-        _ => false,
+        match e {
+            Expr::Lit(_) | Expr::Lam(..) => true,
+            Expr::Var(x) => self.evaluated(x.id),
+            Expr::Global(g) => self.s.funs.contains(g.as_str()),
+            // Types are erased: `Λa. e` evaluates `e`.
+            Expr::Cast(x, _) | Expr::TyApp(x, _) | Expr::TyLam(_, _, x) => self.ok(x),
+            Expr::Prim(op, _, args) => total_prim(*op) && args.iter().all(|a| self.ok(a)),
+            Expr::Extern(f, args) => {
+                // A call costs more than an instruction.
+                self.size += 3;
+                pure_extern(self.s.p, f) && args.iter().all(|a| self.ok(a))
+            }
+            Expr::Con(c, ts, args) => {
+                if self.s.p.ctor(c).is_some_and(|(d, _)| d.newtype) {
+                    return args.first().is_some_and(|a| self.ok(a));
+                }
+                let Some(evaluated) = self.s.evaluated_fields(c, ts) else {
+                    return false;
+                };
+                // A lazy field becomes a thunk if it is not an atom: no
+                // evaluation, so no failure (one more allocation).
+                args.iter().zip(evaluated).all(|(a, ev)| {
+                    if ev {
+                        self.ok(a)
+                    } else {
+                        self.size += usize::from(!a.is_atom());
+                        self.size <= self.limit
+                    }
+                })
+            }
+            Expr::LetStrict(b, rhs, body) => {
+                if !self.done.contains(&b.id.id) && !self.ok(rhs) {
+                    return false;
+                }
+                self.local.push(b.id.id);
+                self.ok(body)
+            }
+            // A value bound lazily is built now (a thunk if a strict field
+            // waits for an unevaluated variable).
+            Expr::Let(Bind::NonRec(b, rhs), body) => {
+                if !rhs.is_value() {
+                    return false;
+                }
+                if self.ok(rhs) {
+                    self.local.push(b.id.id);
+                }
+                self.ok(body)
+            }
+            Expr::Case(scrut, b, _, alts) => {
+                if !self.ok(scrut) {
+                    return false;
+                }
+                self.local.push(b.id.id);
+                alts.iter().all(|a| {
+                    if let AltCon::Con(c, fs) = &a.con {
+                        let values = self.s.evaluated_binders(c, fs);
+                        self.local.extend(values.into_iter().map(|f| f.id.id));
+                    }
+                    self.ok(&a.rhs)
+                })
+            }
+            _ => false,
+        }
     }
 }
 
@@ -325,6 +512,8 @@ pub fn whnf_params(p: &Program) -> HashMap<String, Vec<bool>> {
 }
 
 fn params_at_calls(p: &Program, values: bool) -> HashMap<String, Vec<bool>> {
+    let spec = Spec::new(p);
+    let none = HashSet::new();
     let mut arity: HashMap<&str, usize> = HashMap::new();
     for b in &p.binds {
         let (_, xs, _) = split_fun(&b.expr);
@@ -351,6 +540,8 @@ fn params_at_calls(p: &Program, values: bool) -> HashMap<String, Vec<bool>> {
             }
             let mut w = CallWalk {
                 p,
+                spec: &spec,
+                none: &none,
                 arity: &arity,
                 ev: &mut ev,
                 changed: false,
@@ -367,6 +558,8 @@ fn params_at_calls(p: &Program, values: bool) -> HashMap<String, Vec<bool>> {
 
 struct CallWalk<'a> {
     p: &'a Program,
+    spec: &'a Spec<'a>,
+    none: &'a HashSet<u32>,
     arity: &'a HashMap<&'a str, usize>,
     ev: &'a mut HashMap<String, Vec<bool>>,
     changed: bool,
@@ -376,16 +569,33 @@ struct CallWalk<'a> {
 
 impl CallWalk<'_> {
     /// A literal, lambda or constructor: built as a value, not a thunk (a
-    /// newtype constructor is its field).
+    /// newtype constructor is its field). A constructor is built in a lazy
+    /// position only when its strict fields are safe to compute now
+    /// (BUG-0014, the code generator's `builds_now`): values, or
+    /// operations that cannot fail on values.
     fn is_value(&self, e: &Expr, env: &HashSet<u32>) -> bool {
         match e {
             Expr::Lit(_) | Expr::Lam(..) => true,
             Expr::Var(x) => env.contains(&x.id),
-            Expr::Con(c, _, args) => {
-                !self.p.ctor(c).is_some_and(|(d, _)| d.newtype)
-                    || args.first().is_some_and(|a| self.is_value(a, env))
-            }
+            Expr::Con(c, _, args) => match self.p.ctor(c) {
+                Some((d, _)) if d.newtype => args.first().is_some_and(|a| self.is_value(a, env)),
+                Some((d, i)) => args
+                    .iter()
+                    .zip(&d.ctors[i].strict)
+                    .all(|(a, st)| !*st || self.safe(a, env)),
+                None => false,
+            },
             _ => false,
+        }
+    }
+
+    /// Computing `e` now cannot fail: a value, or a primitive operation
+    /// that cannot fail on such operands.
+    fn safe(&self, e: &Expr, env: &HashSet<u32>) -> bool {
+        match e {
+            Expr::Prim(op, _, args) => total_prim(*op) && args.iter().all(|a| self.safe(a, env)),
+            Expr::Cast(x, _) => self.safe(x, env),
+            _ => self.is_value(e, env),
         }
     }
 
@@ -418,7 +628,7 @@ impl CallWalk<'_> {
                             let ok = match a {
                                 Expr::Var(x) => env.contains(&x.id),
                                 _ if self.values => self.is_value(a, env),
-                                _ => speculatable(a, env, &mut 0),
+                                _ => self.spec.ok(a, env, self.none, SPEC_SIZE),
                             };
                             if !ok
                                 && let Some(v) = self.ev.get_mut(g.as_str())
@@ -436,6 +646,12 @@ impl CallWalk<'_> {
                 }
             }
             Expr::TyApp(f, _) | Expr::Cast(f, _) | Expr::TyLam(_, _, f) => self.expr(f, env),
+            // A value of an unboxed type cannot be a thunk.
+            Expr::Lam(x, b) if x.ty.is_unboxed() => {
+                let mut env = env.clone();
+                env.insert(x.id.id);
+                self.expr(b, &env);
+            }
             Expr::Lam(_, b) => self.expr(b, env),
             Expr::Con(_, _, args) | Expr::Prim(_, _, args) | Expr::Extern(_, args) => {
                 for a in args {
@@ -445,8 +661,11 @@ impl CallWalk<'_> {
             Expr::Let(bind, body) => match bind {
                 Bind::NonRec(b, rhs) => {
                     self.expr(rhs, env);
-                    // A constructor or literal bound lazily is no thunk.
-                    if self.is_value(rhs, env) && !matches!(&**rhs, Expr::Lam(..)) {
+                    // A constructor or literal bound lazily is no thunk,
+                    // and an unboxed value is computed right away.
+                    if (self.is_value(rhs, env) && !matches!(&**rhs, Expr::Lam(..)))
+                        || b.ty.is_unboxed()
+                    {
                         let mut env = env.clone();
                         env.insert(b.id.id);
                         self.expr(body, &env);
@@ -472,13 +691,13 @@ impl CallWalk<'_> {
                 let mut env = env.clone();
                 env.insert(b.id.id);
                 for a in alts {
-                    // The field of a newtype is the evaluated scrutinee, and
+                    // The field of a newtype is the evaluated scrutinee, a
+                    // strict field was evaluated before construction, and
                     // a value of an unboxed type cannot be a thunk.
                     let mut env = env.clone();
                     if let AltCon::Con(c, fs) = &a.con {
-                        let newtype = self.p.ctor(c).is_some_and(|(d, _)| d.newtype);
-                        let values = fs.iter().filter(|f| newtype || f.ty.is_unboxed());
-                        env.extend(values.map(|f| f.id.id));
+                        let values = self.spec.evaluated_binders(c, fs);
+                        env.extend(values.into_iter().map(|f| f.id.id));
                     }
                     self.expr(&a.rhs, &env);
                 }

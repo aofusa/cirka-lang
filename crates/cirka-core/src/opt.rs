@@ -70,6 +70,8 @@ pub struct Stats {
     pub unique_checks: usize,
     /// Lazy bindings moved into the only `case` alternative using them.
     pub floated_in: usize,
+    /// Thunks replaced by evaluating cheap expressions now (`speculate`).
+    pub speculated: usize,
     /// Bindings restored because Lint rejected them (release builds only).
     pub reverted: usize,
 }
@@ -181,6 +183,14 @@ pub fn optimize_with_stats(p: &mut Program) -> Result<Stats, Diagnostic> {
         }
         st.floated_in += n;
         lint_all(p, "float-in")?;
+        simplify_rounds(p, &mut st, &mut next)?;
+    }
+    // Cheap bindings, arguments and fields that cannot fail are evaluated
+    // now instead of becoming thunks (FEAT-0083); after float-in, so that
+    // only the paths using them pay.
+    st.speculated = crate::strict::speculate(p, &mut next);
+    if st.speculated > 0 {
+        lint_all(p, "speculate")?;
         simplify_rounds(p, &mut st, &mut next)?;
     }
     // The passes above evaluate lazily bound arguments early, which makes

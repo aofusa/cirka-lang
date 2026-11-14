@@ -667,6 +667,233 @@ fn no_forall(t: &Type) -> bool {
     !matches!(t, Type::Forall(..))
 }
 
+// ---- speculation ----
+
+/// Evaluates now what is cheap and cannot fail (FEAT-0083, GHC's
+/// `exprOkForSpeculation`): a lazy `let` becomes `let!`, and a non-atomic
+/// argument in a lazy position of a call or a constructor is bound by
+/// `let!` before it ([`crate::ww::Spec::ok`]). The value is the same and
+/// nothing can fail, so only the cost changes: a little work that may go
+/// unused instead of a thunk to build, force and free. Runs after
+/// float-in, so that a binding that only some paths use is evaluated on
+/// those paths only. Returns the number of thunks avoided.
+pub fn speculate(p: &mut Program, next: &mut u32) -> usize {
+    let spec = crate::ww::Spec::new(p);
+    let whnf = crate::ww::whnf_params(p);
+    let mut out = Vec::new();
+    let mut n = 0;
+    for b in &p.binds {
+        // A top-level constructor stays one (a static value).
+        let mut top = &b.expr;
+        while let Expr::TyLam(_, _, x) = top {
+            top = x;
+        }
+        if matches!(top, Expr::Con(..)) {
+            out.push(None);
+            continue;
+        }
+        let mut s = Speculator {
+            spec: &spec,
+            tys: binder_types(&b.expr),
+            ev: HashSet::new(),
+            done: HashSet::new(),
+            next: *next,
+            count: 0,
+        };
+        // Parameters that every call passes evaluated (FEAT-0066).
+        let (_, xs, _) = split_fun(&b.expr);
+        if let Some(w) = whnf.get(&b.name) {
+            for (x, ok) in xs.iter().zip(w) {
+                if *ok {
+                    s.evaluated(x);
+                }
+            }
+        }
+        let e = s.expr(b.expr.clone());
+        *next = s.next;
+        n += s.count;
+        out.push((s.count > 0).then_some(e));
+    }
+    for (b, e) in p.binds.iter_mut().zip(out) {
+        if let Some(e) = e {
+            b.expr = e;
+        }
+    }
+    n
+}
+
+struct Speculator<'a, 'p> {
+    spec: &'a crate::ww::Spec<'p>,
+    tys: HashMap<u32, Binder>,
+    /// Unrestricted variables known to be evaluated (binders are unique).
+    ev: HashSet<u32>,
+    /// Strict bindings made by this pass (their right-hand side was
+    /// checked).
+    done: HashSet<u32>,
+    next: u32,
+    count: usize,
+}
+
+impl Speculator<'_, '_> {
+    /// Records that `b` is bound to an evaluated value. A linear variable
+    /// is left out: a speculated expression never uses one, so that it
+    /// can be bound to an unrestricted variable.
+    fn evaluated(&mut self, b: &Binder) {
+        if b.mult == Mult::Many {
+            self.ev.insert(b.id.id);
+        }
+    }
+
+    /// Whether evaluating `e` now is cheap and cannot fail.
+    fn cheap(&self, e: &Expr) -> bool {
+        self.spec
+            .ok(e, &self.ev, &self.done, crate::ww::SPEC_THUNK_SIZE)
+    }
+
+    /// A constructor whose strict fields are atoms: the code generator
+    /// builds it right away in a lazy position anyway (its lazy fields
+    /// become thunks either way), so binding it strictly gains nothing.
+    fn built_anyway(&self, e: &Expr) -> bool {
+        let Expr::Con(c, ts, args) = e else {
+            return false;
+        };
+        self.spec
+            .evaluated_fields(c, ts)
+            .is_some_and(|ev| args.iter().zip(ev).all(|(a, ev)| !ev || a.is_atom()))
+    }
+
+    fn expr(&mut self, e: Expr) -> Expr {
+        match e {
+            Expr::Lam(b, body) => {
+                if b.ty.is_unboxed() {
+                    self.evaluated(&b);
+                }
+                Expr::Lam(b, Box::new(self.expr(*body)))
+            }
+            Expr::Let(Bind::NonRec(b, r), body) => {
+                let r = self.expr(*r);
+                let cheap = b.mult == Mult::Many && self.cheap(&r);
+                // A value bound lazily is built now, and an unboxed value
+                // is computed now.
+                if cheap || b.ty.is_unboxed() {
+                    self.evaluated(&b);
+                }
+                let strict = cheap && !r.is_value() && !self.built_anyway(&r) && !b.ty.is_unboxed();
+                if strict {
+                    self.count += 1;
+                    self.done.insert(b.id.id);
+                }
+                let body = self.expr(*body);
+                if strict {
+                    Expr::LetStrict(b, Box::new(r), Box::new(body))
+                } else {
+                    Expr::Let(Bind::NonRec(b, Box::new(r)), Box::new(body))
+                }
+            }
+            Expr::LetStrict(b, r, body) => {
+                let r = self.expr(*r);
+                self.evaluated(&b);
+                Expr::LetStrict(b, Box::new(r), Box::new(self.expr(*body)))
+            }
+            Expr::Case(s, b, t, alts) => {
+                let s = self.expr(*s);
+                self.evaluated(&b);
+                let alts = alts
+                    .into_iter()
+                    .map(|a| {
+                        if let AltCon::Con(c, fs) = &a.con {
+                            for f in self.spec.evaluated_binders(c, fs) {
+                                self.evaluated(f);
+                            }
+                        }
+                        Alt {
+                            con: a.con,
+                            rhs: self.expr(a.rhs),
+                        }
+                    })
+                    .collect();
+                Expr::Case(Box::new(s), b, t, alts)
+            }
+            Expr::App(..) => self.app(e),
+            Expr::Con(c, ts, args) => self.con(c, ts, args),
+            e => map_children(e, &mut |c| self.expr(c)),
+        }
+    }
+
+    /// A call: cheap arguments are evaluated before it, in the parameter
+    /// positions that take an unrestricted value.
+    fn app(&mut self, e: Expr) -> Expr {
+        let (h, args) = e.collect_args();
+        let h = self.expr(h.clone());
+        let args: Vec<Expr> = args.into_iter().cloned().collect();
+        let params = type_of(self.spec.p, &self.tys, &h)
+            .map(|t| t.split_fun().0)
+            .unwrap_or_default();
+        let mut binds = Vec::new();
+        let mut call = h;
+        for (i, a) in args.into_iter().enumerate() {
+            let mut a = self.expr(a);
+            if matches!(params.get(i), Some((Mult::Many, _))) {
+                a = self.bind_cheap(a, &mut binds);
+            }
+            call = Expr::App(Box::new(call), Box::new(a));
+        }
+        wrap_strict(binds, call)
+    }
+
+    /// A constructor: cheap arguments of its lazy fields are evaluated
+    /// before it (its strict fields are evaluated anyway).
+    fn con(&mut self, c: String, ts: Vec<Type>, args: Vec<Expr>) -> Expr {
+        let args: Vec<Expr> = args.into_iter().map(|a| self.expr(a)).collect();
+        let Some(evaluated) = self.spec.evaluated_fields(&c, &ts) else {
+            return Expr::Con(c, ts, args);
+        };
+        let mut binds = Vec::new();
+        let args = args
+            .into_iter()
+            .zip(evaluated)
+            .map(|(a, ev)| {
+                if ev {
+                    a
+                } else {
+                    self.bind_cheap(a, &mut binds)
+                }
+            })
+            .collect();
+        wrap_strict(binds, Expr::Con(c, ts, args))
+    }
+
+    /// `a` in a lazy position: a fresh variable bound to it in `binds`
+    /// when it would be a thunk and is cheap.
+    fn bind_cheap(&mut self, a: Expr, binds: &mut Vec<(Binder, Expr)>) -> Expr {
+        if a.is_atom() || a.is_value() || self.built_anyway(&a) || !self.cheap(&a) {
+            return a;
+        }
+        let Some(t) = type_of(self.spec.p, &self.tys, &a) else {
+            return a;
+        };
+        if t.is_unboxed() || !no_forall(&t) {
+            return a;
+        }
+        let x = Binder::new(Id::new("sp", self.next), Mult::Many, t);
+        self.next += 1;
+        self.tys.insert(x.id.id, x.clone());
+        self.ev.insert(x.id.id);
+        self.done.insert(x.id.id);
+        self.count += 1;
+        let v = Expr::Var(x.id.clone());
+        binds.push((x, a));
+        v
+    }
+}
+
+/// `let! x₁ = e₁ in … let! xₙ = eₙ in body`.
+fn wrap_strict(binds: Vec<(Binder, Expr)>, body: Expr) -> Expr {
+    binds.into_iter().rev().fold(body, |body, (x, a)| {
+        Expr::LetStrict(x, Box::new(a), Box::new(body))
+    })
+}
+
 // ---- float-in ----
 
 /// Moves lazy `let`s down past `let!`s and into the only `case`
