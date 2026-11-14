@@ -23,6 +23,11 @@ services:
     # Generous stack limit: compiled Haskell programs may recurse deeply.
     ulimits:
       stack: -1
+    # Docker's default seccomp profile plus one rule allowing
+    # personality(ADDR_NO_RANDOMIZE), with which ThreadSanitizer re-executes
+    # itself with ASLR disabled (docker/README.md, FEAT-0084).
+    security_opt:
+      - seccomp=docker/seccomp.json
 
 volumes:
   cargo-registry:
