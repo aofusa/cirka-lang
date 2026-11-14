@@ -246,7 +246,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | ID | タイトル | 状態 | 優先度 | 依存 |
 |---|---|---|---|---|
 | [FEAT-0230](features/FEAT-0230-cl-totality.md) | 全域性・終了性の検査 | done | P0 | 0223 |
-| [FEAT-0231](features/FEAT-0231-cl-proofs-stdlib.md) | 等式・証明と証明付き標準型 | todo | P0 | 0230 |
+| [FEAT-0231](features/FEAT-0231-cl-proofs-stdlib.md) | 等式・証明と証明付き標準型 | done | P0 | 0230 |
 | [FEAT-0232](features/FEAT-0232-cl-refinement-smt.md) | 洗練型 (部分集合型) と SMT による自動証明 | todo | P0 | 0231, 0050 |
 | [FEAT-0233](features/FEAT-0233-cl-contracts.md) | 契約 (requires / ensures / invariant) | todo | P1 | 0232 |
 | [FEAT-0234](features/FEAT-0234-cl-check-elim.md) | 証明に基づく実行時検査の除去 | todo | P1 | 0232, 0211 |
