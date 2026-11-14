@@ -741,6 +741,14 @@ fn is_alias(e: &Expr) -> bool {
 
 /// Top-level functions that may be inlined at call sites: non-recursive
 /// lambdas (possibly under `Λ`s) that are small or called exactly once.
+///
+/// The simplifier simplifies an inlined body again and inlines the
+/// candidates in it, so a call inside an inlined function is copied to
+/// each of that function's call sites: a worker called once, by its
+/// wrapper, is inlined into every caller of the wrapper, and with it the
+/// workers that worker calls, which is code exponential in the depth of
+/// the calls (BUG-0021). A function called once is therefore inlined only
+/// while its copies stay within [`COPY_BUDGET`].
 fn inline_candidates(p: &Program) -> HashMap<String, Expr> {
     let refs: HashMap<&str, Vec<String>> = p
         .binds
@@ -751,12 +759,6 @@ fn inline_candidates(p: &Program) -> HashMap<String, Expr> {
             (b.name.as_str(), v)
         })
         .collect();
-    let mut uses: HashMap<&str, usize> = HashMap::new();
-    for v in refs.values() {
-        for g in v {
-            *uses.entry(g.as_str()).or_default() += 1;
-        }
-    }
     let names: HashSet<&str> = p.binds.iter().map(|b| b.name.as_str()).collect();
     let is_wrapper = |b: &TopBind| {
         let mut body = &b.expr;
@@ -774,7 +776,17 @@ fn inline_candidates(p: &Program) -> HashMap<String, Expr> {
         .map(|b| b.name.as_str())
         .collect();
     let breakers = loop_breakers(p, &refs, &wrappers);
-    let mut out = HashMap::new();
+    let mut copies = Copies {
+        callers: HashMap::new(),
+        kinds: HashMap::new(),
+        memo: HashMap::new(),
+        visiting: Vec::new(),
+    };
+    for (b, v) in &refs {
+        for g in v {
+            copies.callers.entry(g.as_str()).or_default().push(b);
+        }
+    }
     for b in &p.binds {
         let mut body = &b.expr;
         while let Expr::TyLam(_, _, x) = body {
@@ -786,8 +798,6 @@ fn inline_candidates(p: &Program) -> HashMap<String, Expr> {
         if b.name == "main" || !(matches!(body, Expr::Lam(..)) || alias) {
             continue;
         }
-        let small = size(&b.expr) <= INLINE_SIZE;
-        let once = uses.get(b.name.as_str()) == Some(&1);
         // A wrapper of the worker/wrapper split only calls its worker: it
         // is always inlined, even though the worker may call it back.
         let wrapper = wrappers.contains(b.name.as_str());
@@ -797,11 +807,91 @@ fn inline_candidates(p: &Program) -> HashMap<String, Expr> {
         if crate::cpr::returns_utup(&b.ty) && !wrapper {
             continue;
         }
-        if wrapper || ((small || once) && !breakers.contains(&b.name)) {
-            out.insert(b.name.clone(), b.expr.clone());
+        let size = size(&b.expr);
+        let once = copies.callers.get(b.name.as_str()).map(Vec::len) == Some(1);
+        let kind = if wrapper || (size <= INLINE_SIZE && !breakers.contains(&b.name)) {
+            Inline::Always
+        } else if once && !breakers.contains(&b.name) {
+            Inline::Once(size)
+        } else {
+            continue;
+        };
+        copies.kinds.insert(&b.name, kind);
+    }
+    p.binds
+        .iter()
+        .filter(|b| copies.inlined(&b.name))
+        .map(|b| (b.name.clone(), b.expr.clone()))
+        .collect()
+}
+
+/// The extra expression nodes that inlining a function called once may
+/// make when its call is copied: its size times the copies beyond the
+/// first. Small enough that the copies of copies stop after a few levels,
+/// big enough for the loop bodies and string appends that benefit
+/// (BUG-0021).
+pub const COPY_BUDGET: usize = 500;
+
+/// How a candidate for inlining is inlined.
+#[derive(Clone, Copy)]
+enum Inline {
+    /// At every call site (wrappers and small functions).
+    Always,
+    /// Called once: inlined while its copies stay within [`COPY_BUDGET`]
+    /// (its size).
+    Once(usize),
+}
+
+/// The copies of the calls of each global after inlining (see
+/// [`inline_candidates`]).
+struct Copies<'a> {
+    /// The bindings each global occurs in, once per occurrence.
+    callers: HashMap<&'a str, Vec<&'a str>>,
+    kinds: HashMap<&'a str, Inline>,
+    memo: HashMap<&'a str, usize>,
+    visiting: Vec<&'a str>,
+}
+
+impl<'a> Copies<'a> {
+    fn inlined(&mut self, g: &str) -> bool {
+        match self.kinds.get(g) {
+            None => false,
+            Some(Inline::Always) => true,
+            Some(&Inline::Once(size)) => {
+                let Some((&g, _)) = self.kinds.get_key_value(g) else {
+                    return false;
+                };
+                let n = self.copies(g);
+                n.saturating_sub(1).saturating_mul(size) <= COPY_BUDGET
+            }
         }
     }
-    out
+
+    /// The number of copies of the occurrences of `g`: an occurrence in an
+    /// inlined function counts once per copy of that function.
+    fn copies(&mut self, g: &'a str) -> usize {
+        if let Some(&n) = self.memo.get(g) {
+            return n;
+        }
+        if self.visiting.contains(&g) {
+            // A wrapper and its worker calling each other.
+            return 1;
+        }
+        self.visiting.push(g);
+        let callers = self.callers.get(g).cloned().unwrap_or_default();
+        let mut n = 0usize;
+        for b in callers {
+            let k = if b != g && self.inlined(b) {
+                self.copies(b)
+            } else {
+                1
+            };
+            n = n.saturating_add(k);
+        }
+        self.visiting.pop();
+        self.memo.insert(g, n);
+        n
+    }
 }
 
 /// The top-level bindings that stay calls so that inlining terminates (as

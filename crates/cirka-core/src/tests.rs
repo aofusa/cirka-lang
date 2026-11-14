@@ -1645,6 +1645,66 @@ fn opt_keeps_the_largest_mutually_recursive_function() {
     assert!(big.contains("(big "), "{big}");
 }
 
+/// `g0 … g{n-1}`, each big and calling the small `f{k+1}` twice; `f{k}`
+/// only calls `g{k}`.
+fn chain_of_calls(n: usize) -> String {
+    let mut src = String::from("(extern arg () Int#)\n(extern h (Int#) Int#)\n");
+    for k in 0..n {
+        let next = if k + 1 < n {
+            format!("f{}", k + 1)
+        } else {
+            "h".into()
+        };
+        let call = |a: &str| {
+            if k + 1 < n {
+                format!("({next} {a})")
+            } else {
+                format!("(extern h {a})")
+            }
+        };
+        let mut alts = format!(
+            "(0 (prim add {} {}))",
+            call("(prim add n 1)"),
+            call("(prim mul n 2)")
+        );
+        for i in 1..8 {
+            alts += &format!(
+                " ({i} (prim sub (extern h (prim add n {i})) (extern h (prim mul n {i}))))"
+            );
+        }
+        src += &format!(
+            "(def g{k} (-> Int# Int#) (lam ((n Int#)) (case (extern h n) (c Int#) Int# {alts} (_ 0))))\n"
+        );
+        if k > 0 {
+            src += &format!("(def f{k} (-> Int# Int#) (lam ((n Int#)) (g{k} n)))\n");
+        }
+    }
+    src + "(def main Int# (g0 (extern arg)))"
+}
+
+#[test]
+fn opt_bounds_the_copies_made_by_inlining() {
+    // `g{k}` is called once, from `f{k}`, but `f{k}` is small and inlined
+    // at both its calls: inlining `g{k}` as called once would copy it
+    // 2^k times (BUG-0021). Each function adds at most `COPY_BUDGET` nodes,
+    // after which the deeper ones stay calls.
+    let n = 10;
+    let src = chain_of_calls(n);
+    let before = parse_program(FileId(0), &src).unwrap();
+    assert!(opt::size(&before.bind("g1").unwrap().expr) > opt::INLINE_SIZE);
+    let p = optimized(&src);
+    let total: usize = p.binds.iter().map(|b| opt::size(&b.expr)).sum();
+    let start: usize = before.binds.iter().map(|b| opt::size(&b.expr)).sum();
+    assert!(
+        total <= start + n * opt::COPY_BUDGET,
+        "{total} nodes from {start}"
+    );
+    let kept = (1..n)
+        .filter(|k| p.bind(&format!("g{k}")).is_some())
+        .count();
+    assert!(kept >= 2, "{}", print_program(&p));
+}
+
 #[test]
 fn opt_does_not_inline_self_recursive_functions() {
     let src = "(extern arg () Int#)
