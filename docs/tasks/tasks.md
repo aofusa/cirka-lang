@@ -260,7 +260,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | ID | タイトル | 状態 | 優先度 | 依存 |
 |---|---|---|---|---|
 | [FEAT-0240](features/FEAT-0240-cl-threads.md) | スレッドと共有 | done | P0 | 0235, 0045 |
-| [FEAT-0241](features/FEAT-0241-cl-net-async.md) | ネットワークと非同期 I/O | todo | P0 | 0240, 0046 |
+| [FEAT-0241](features/FEAT-0241-cl-net-async.md) | ネットワークと非同期 I/O | done | P0 | 0240, 0046 |
 | [FEAT-0242](features/FEAT-0242-cl-os-syscall.md) | OS 層 (syscall・シグナル・プロセス) | todo | P1 | 0213 |
 | [FEAT-0244](features/FEAT-0244-cl-core-size-contracts.md) | core の配列・文字列の関数に大きさの契約を付ける | todo | P2 | 0235 |
 | [FEAT-0243](features/FEAT-0243-cl-release-v005.md) | CirkaLang v0.0.5 リリース | todo | P0 | 0241, 0242 |
