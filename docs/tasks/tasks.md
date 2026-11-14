@@ -16,7 +16,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | 共通基盤 | M1 バックエンド基盤 | 7 / 7 |
 | 共通基盤 | M2 Perceus | 3 / 3 |
 | 共通基盤 | M3 共通 Core と Core→MIR | 4 / 4 |
-| 共通基盤 | SX 共通基盤の拡張 (各トラックの必要に応じて) | 24 / 43 |
+| 共通基盤 | SX 共通基盤の拡張 (各トラックの必要に応じて) | 25 / 44 |
 | aCHC | H1 Haskell 最小フロントエンド | 6 / 6 |
 | aCHC | H2 Haskell 実用化 (スコープ縮小版) | 10 / 10 |
 | aCHC | H3 所有権拡張 (.chs) | 9 / 9 |
@@ -100,7 +100,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0058](features/FEAT-0058-llvm-optimization-hints.md) | 最適化のヒントを LLVM の属性・メタデータまで運ぶ | done | P1 | 0014, 0021, 0022 |
 | [FEAT-0059](features/FEAT-0059-array-element-specialization.md) | 配列要素の単相化 (UElem の特殊化) | done | P1 | 0041, 0056 |
 | [FEAT-0060](features/FEAT-0060-runtime-lto.md) | ランタイムの高速経路のインライン化 (bitcode と LTO) | todo | P2 | 0014, 0051 |
-| [FEAT-0061](features/FEAT-0061-core-cse-specconstr.md) | 共通部分式除去・ループ不変式の移動・SpecConstr とゼロコストの回帰テスト | in-progress | P1 | 0041 |
+| [FEAT-0061](features/FEAT-0061-core-cse-specconstr.md) | 共通部分式除去・ループ不変式の移動・SpecConstr とゼロコストの回帰テスト | done | P1 | 0041 |
 | [FEAT-0062](features/FEAT-0062-mir-uniqueness-attrs.md) | 一意性と再利用トークンを MIR の型で区別し引数に nonnull / noalias / readonly を付ける | todo | P2 | 0058 |
 | [FEAT-0063](features/FEAT-0063-numeric-loop-codegen.md) | 数値ループの生成コード (libm の組み込み関数・一意性検査のインライン化・要素の TBAA・冗長な一意性検査の除去) | done | P1 | 0058 |
 | [FEAT-0064](features/FEAT-0064-fannkuch-unique-arrays.md) | fannkuch-redux の一意な配列版と、読み出しの組・累積引数の箱の除去 | done | P1 | 0041, 0123 |
@@ -122,6 +122,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0080](features/FEAT-0080-join-points.md) | Core の結合点 (join point) | todo | P2 | 0079 |
 | [FEAT-0081](features/FEAT-0081-cpr-single-boxed-result.md) | 箱入りの値 1 つだけを返す積の結果の分解 | todo | P2 | 0065, 0220 |
 | [FEAT-0082](features/FEAT-0082-cl-cli-grep-line-allocs.md) | 行ごとの畳み込みの確保の除去 (cli-grep) | todo | P2 | 0223 |
+| [FEAT-0083](features/FEAT-0083-cheap-speculation-of-lazy-bindings.md) | 安価で失敗しない遅延束縛の先行評価 (サンクの除去) | todo | P1 | 0056, 0061 |
 
 
 ## aCHC
