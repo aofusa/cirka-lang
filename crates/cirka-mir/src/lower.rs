@@ -100,8 +100,9 @@ struct Lowerer<'p> {
 struct Pending {
     name: String,
     env: Env,
-    /// Leading captured variables (Core ids) with their MIR types.
-    fvs: Vec<(Id, Type)>,
+    /// Leading captured variables (Core ids) with their MIR types and
+    /// whether they were evaluated where they were captured.
+    fvs: Vec<(Id, Type, bool)>,
     params: Vec<core::Binder>,
     body: Expr,
     /// Closure convention: pointer parameters and result.
@@ -115,8 +116,6 @@ struct Fb {
     f: Function,
     cur: usize,
     nlabels: u32,
-    /// Variables bound here to thunks built by this function.
-    thunks: HashSet<Var>,
 }
 
 impl Fb {
@@ -132,7 +131,6 @@ impl Fb {
             f,
             cur: 0,
             nlabels: 0,
-            thunks: HashSet::new(),
         }
     }
 
@@ -157,9 +155,6 @@ impl Fb {
 
     fn let_(&mut self, hint: &str, ty: Ty, rhs: Rhs) -> Var {
         let v = self.f.fresh_var(hint, ty);
-        if matches!(rhs, Rhs::MkThunk { .. }) {
-            self.thunks.insert(v);
-        }
         self.emit(Instr::Let { var: Some(v), rhs });
         v
     }
@@ -478,7 +473,7 @@ impl<'p> Lowerer<'p> {
             fb.f.rets = rs.clone();
         }
         let mut env = job.env;
-        for (id, ty) in &job.fvs {
+        for (id, ty, whnf) in &job.fvs {
             let r = self.rep(ty);
             let v = fb.f.new_var(id.name.clone(), r);
             fb.f.params.push(ir::Param {
@@ -490,7 +485,8 @@ impl<'p> Lowerer<'p> {
                 Bound::Val {
                     op: Operand::Var(v),
                     ty: ty.clone(),
-                    whnf: !r.is_ptr(),
+                    // A captured value stays evaluated (BUG-0020).
+                    whnf: !r.is_ptr() || *whnf,
                 },
             );
         }
@@ -726,7 +722,8 @@ impl<'p> Lowerer<'p> {
 
     /// Environment and captured variables for a function lifted out of
     /// `env` with free variables `fvs`.
-    fn lifted_env(&self, env: &Env, fvs: &[Id]) -> (Env, Vec<(Id, Type)>, Vec<Operand>) {
+    #[allow(clippy::type_complexity)]
+    fn lifted_env(&self, env: &Env, fvs: &[Id]) -> (Env, Vec<(Id, Type, bool)>, Vec<Operand>) {
         let mut new_env = Env::new();
         // Known functions stay known (their own free variables are among `fvs`).
         for (k, b) in env {
@@ -752,8 +749,8 @@ impl<'p> Lowerer<'p> {
                         },
                     );
                 }
-                Some(Bound::Val { op, ty, .. }) => {
-                    caps.push((f.clone(), ty.clone()));
+                Some(Bound::Val { op, ty, whnf }) => {
+                    caps.push((f.clone(), ty.clone(), *whnf));
                     ops.push(op.clone());
                 }
                 _ => {}
@@ -955,17 +952,17 @@ impl<'p> Lowerer<'p> {
     }
 
     /// Whether computing `e` now can neither fail nor run long. A variable
-    /// counts unless it is a thunk built in this function: a parameter is
-    /// almost always a value already, and forcing one costs a test.
+    /// counts when it is known to be evaluated (BUG-0020): a parameter or a
+    /// captured variable may be a thunk that nothing has demanded yet.
     fn safe_now(&self, fb: &Fb, env: &Env, e: &Expr) -> bool {
         match e {
             Expr::Lit(_) | Expr::Lam(..) => true,
             Expr::Var(i) => match env.get(&i.id) {
                 Some(Bound::Val {
-                    op: Operand::Var(v),
+                    op: Operand::Var(_),
                     whnf: false,
                     ..
-                }) => !fb.thunks.contains(v),
+                }) => false,
                 Some(_) => true,
                 None => false,
             },
@@ -990,7 +987,7 @@ impl<'p> Lowerer<'p> {
         let fvs = self.free_vars(env, e);
         let (new_env, caps, ops) = self.lifted_env(env, &fvs);
         let name = self.fresh_name(&fb.f.name.clone(), "thk");
-        let params: Vec<Ty> = caps.iter().map(|(_, t)| self.rep(t)).collect();
+        let params: Vec<Ty> = caps.iter().map(|(_, t, _)| self.rep(t)).collect();
         self.sigs.insert(
             name.clone(),
             Sig {
@@ -1305,9 +1302,9 @@ impl<'p> Lowerer<'p> {
             names.push(name);
         }
         let (new_env, caps, _) = self.lifted_env(env, &fvs);
-        let fv_tys: Vec<Ty> = caps.iter().map(|(_, t)| self.rep(t)).collect();
+        let fv_tys: Vec<Ty> = caps.iter().map(|(_, t, _)| self.rep(t)).collect();
         // Known entries must only capture what is passed.
-        let cap_ids: Vec<Id> = caps.iter().map(|(i, _)| i.clone()).collect();
+        let cap_ids: Vec<Id> = caps.iter().map(|(i, _, _)| i.clone()).collect();
         for (b, _) in bs {
             if let Some(Bound::Known { fvs, .. }) = env.get_mut(&b.id.id) {
                 *fvs = cap_ids.clone();
@@ -1384,7 +1381,7 @@ impl<'p> Lowerer<'p> {
                 }
             }
             let name = self.fresh_name(&base, &b.id.name);
-            let params: Vec<Ty> = caps.iter().map(|(_, t)| self.rep(t)).collect();
+            let params: Vec<Ty> = caps.iter().map(|(_, t, _)| self.rep(t)).collect();
             self.sigs.insert(
                 name.clone(),
                 Sig {
@@ -1457,7 +1454,7 @@ impl<'p> Lowerer<'p> {
         let fvs = self.free_vars(env, e);
         let (new_env, caps, ops) = self.lifted_env(env, &fvs);
         let name = self.fresh_name(&fb.f.name.clone(), "lam");
-        let mut ps: Vec<Ty> = caps.iter().map(|(_, t)| self.rep(t)).collect();
+        let mut ps: Vec<Ty> = caps.iter().map(|(_, t, _)| self.rep(t)).collect();
         ps.extend(params.iter().map(|_| Ty::Ptr));
         self.sigs.insert(
             name.clone(),

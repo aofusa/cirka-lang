@@ -3169,6 +3169,50 @@ fn lazy_constructors_wait_only_for_unsafe_strict_fields() {
     assert!(lazy_con_makes_thunk("(prim quot 7 n)"));
 }
 
+// ---- BUG-0020: unevaluated variables in strict fields ----
+
+/// Lowers `pick`, whose body `body` binds `(con W () …)` lazily (a strict
+/// field of a boxed type) and uses it in one branch only, with `main`
+/// passing `pick` an unevaluated argument `x`; tells whether a function of
+/// `pick` builds a thunk.
+fn lazy_wrap_makes_thunk(body: &str) -> bool {
+    let src = format!(
+        "(data Box () (B Int#))
+         (data W () (W (! Box)))
+         (def mk (-> Int# Box) (lam ((i Int#)) (con B () i)))
+         (def use (-> W Int#)
+           (lam ((a W)) (case a (s W) Int# ((W y) (case y (t Box) Int# ((B v) v))))))
+         (def pick (-> Box (-> Int# Int#)) (lam ((x Box) (n Int#)) {body}))
+         (def main Int# (pick (mk 4) 0))"
+    );
+    let core = cirka_core::parse_program(FileId(0), &src).unwrap();
+    let m = lower::lower_program(&core).unwrap();
+    m.funcs
+        .iter()
+        .filter(|f| f.name.starts_with("pick"))
+        .any(|f| crate::print::print_function(&m, f).contains("mkthunk"))
+}
+
+#[test]
+fn lazy_constructors_wait_for_unevaluated_variables() {
+    let wrap =
+        |v: &str| format!("(let ((a W (con W () {v}))) (case n (k Int#) Int# (0 3) (_ (use a))))");
+    // A parameter may be a thunk: building `W x` would force it before
+    // anything demands it.
+    assert!(lazy_wrap_makes_thunk(&wrap("x")));
+    // After a `case`, the scrutinee is a value.
+    assert!(!lazy_wrap_makes_thunk(&format!(
+        "(case x (xe Box) Int# ((B _) {}))",
+        wrap("xe")
+    )));
+    // A captured value stays evaluated in the function that captures it.
+    assert!(!lazy_wrap_makes_thunk(&format!(
+        "(case x (xe Box) Int# ((B _)
+           (let ((h (-> Int# Int#) (lam ((m Int#)) {}))) (h n))))",
+        wrap("xe").replace("case n", "case m")
+    )));
+}
+
 /// A drop before a `switch` passes its reuse token to the arms (through
 /// nested switches): an arm that allocates a cell of the same size reuses
 /// it, the others free it (FEAT-0079).
