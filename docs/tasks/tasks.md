@@ -16,7 +16,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | 共通基盤 | M1 バックエンド基盤 | 7 / 7 |
 | 共通基盤 | M2 Perceus | 3 / 3 |
 | 共通基盤 | M3 共通 Core と Core→MIR | 4 / 4 |
-| 共通基盤 | SX 共通基盤の拡張 (各トラックの必要に応じて) | 28 / 46 |
+| 共通基盤 | SX 共通基盤の拡張 (各トラックの必要に応じて) | 29 / 46 |
 | aCHC | H1 Haskell 最小フロントエンド | 6 / 6 |
 | aCHC | H2 Haskell 実用化 (スコープ縮小版) | 10 / 10 |
 | aCHC | H3 所有権拡張 (.chs) | 9 / 9 |
@@ -85,7 +85,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0043](features/FEAT-0043-benchmarks.md) | ベンチマーク集と性能レポート | done | P1 | 0016 |
 | [FEAT-0044](features/FEAT-0044-debug-info.md) | DWARF デバッグ情報 | todo | P2 | 0032 |
 | [FEAT-0045](features/FEAT-0045-concurrency-runtime.md) | 並行性ランタイム (スレッド・アトミック RC) | done | P1 | 0031 |
-| [FEAT-0046](features/FEAT-0046-async-io-runtime.md) | 非同期 I/O ランタイム (epoll) | todo | P1 | 0045 |
+| [FEAT-0046](features/FEAT-0046-async-io-runtime.md) | 非同期 I/O ランタイム (epoll) | done | P1 | 0045 |
 | [FEAT-0047](features/FEAT-0047-ffi-abi.md) | FFI ABI の完成 (構造体・共用体・可変長引数・コールバック) | todo | P1 | 0031 |
 | [FEAT-0048](features/FEAT-0048-bindgen.md) | bindgen (libclang による C ヘッダ取り込み) | todo | P1 | 0047 |
 | [FEAT-0049](features/FEAT-0049-region-arena.md) | リージョン用アリーナのランタイム | done | P2 | 0031 |
