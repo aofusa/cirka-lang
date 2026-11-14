@@ -139,6 +139,13 @@ fn compile_resolved(
         "tt",
         &cirkalang_elab::tt::print_program(&tt),
     )?;
+    // Totality (spec-v0.0.4.md §1).
+    let errors = cirkalang_check::check(&rp, &tt, Some(opts.build_dir.join("verify")));
+    if !errors.is_empty() {
+        let mut all = errors;
+        all.extend(warnings);
+        return Err(all);
+    }
     // A library (no `main`) can be checked: its Core is still linted.
     if tt.main.is_none() && opts.tests != SourceTests::Check {
         let root = rp

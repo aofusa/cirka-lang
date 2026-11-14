@@ -53,12 +53,32 @@ fn decl(d: &Decl) -> String {
             };
             format!("({p}{a} {prec} {})", names(ops))
         }
-        DeclKind::Sig { names: ns, ty } => format!("({p}sig ({}) {})", names(ns), expr(ty)),
+        DeclKind::Sig {
+            names: ns,
+            ty,
+            totality,
+        } => {
+            let t = match totality {
+                Some((crate::ast::Totality::Total, _)) => "total ",
+                Some((crate::ast::Totality::Covering, _)) => "covering ",
+                Some((crate::ast::Totality::Partial, _)) => "partial ",
+                None => "",
+            };
+            format!("({p}{t}sig ({}) {})", names(ns), expr(ty))
+        }
         DeclKind::Clause {
-            name, pats, rhs, ..
+            name,
+            pats,
+            rhs,
+            measure,
+            ..
         } => {
             let ps: Vec<String> = pats.iter().map(pat).collect();
-            format!("({p}def {name} ({}) {})", ps.join(" "), expr(rhs))
+            let m = match measure {
+                Some(m) => format!(" (decreasing {})", expr(m)),
+                None => String::new(),
+            };
+            format!("({p}def {name} ({}) {}{m})", ps.join(" "), expr(rhs))
         }
         DeclKind::Prim { name, ty, .. } => format!("({p}prim {name} {})", expr(ty)),
         DeclKind::Test { name, body, .. } => format!("({p}test {name:?} {})", expr(body)),

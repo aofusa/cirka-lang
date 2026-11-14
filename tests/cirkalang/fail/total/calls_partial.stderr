@@ -1,0 +1,14 @@
+error[E0504]: `twoLess` is declared `total` but is not total
+ --> tests/cirkalang/fail/total/calls_partial.cirka:8:1
+  |
+8 | twoLess : Nat -> Nat
+  | ^^^^^^^ declared `total`
+  = note: `twoLess` uses `pred`, which is declared `partial`
+  = help: remove what is not total, or declare it `covering`
+error[E0504]: `shout` is declared `total` but is not total
+  --> tests/cirkalang/fail/total/calls_partial.cirka:12:1
+   |
+12 | shout : String -> String
+   | ^^^^^ declared `total`
+   = note: `shout` may call `panic`
+   = help: remove what is not total, or declare it `covering`

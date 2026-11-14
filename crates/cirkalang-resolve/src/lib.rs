@@ -563,8 +563,10 @@ impl<'s> Resolver<'s> {
                 pats: Vec::new(),
                 rhs: body,
                 span: sp,
+                measure: None,
             }],
             span: sp,
+            totality: None,
         };
         if let Some(m) = prog.modules.iter_mut().find(|m| m.name == root) {
             m.items.push(Item::Def(def));
@@ -928,7 +930,11 @@ impl<'s> Resolver<'s> {
         let decls = loaded.ast.decls.clone();
         for d in &decls {
             match &d.kind {
-                ast::DeclKind::Sig { names, ty } => {
+                ast::DeclKind::Sig {
+                    names,
+                    ty,
+                    totality,
+                } => {
                     let sig = self.signature(ty);
                     for (n, sp) in names {
                         let g = self.tables[name].own[n];
@@ -941,13 +947,18 @@ impl<'s> Resolver<'s> {
                             sig: sig.clone(),
                             clauses: Vec::new(),
                             span: *sp,
+                            totality: *totality,
                         });
                     }
                 }
                 ast::DeclKind::Clause {
-                    name: n, pats, rhs, ..
+                    name: n,
+                    pats,
+                    rhs,
+                    measure,
+                    ..
                 } => {
-                    let c = self.clause(pats, rhs, d.span);
+                    let c = self.clause(pats, rhs, measure.as_ref(), d.span);
                     match def_index.get(n) {
                         Some(&i) => defs[i].clauses.push(c),
                         None => {
@@ -962,6 +973,7 @@ impl<'s> Resolver<'s> {
                                 },
                                 clauses: vec![c],
                                 span: d.span,
+                                totality: None,
                             });
                         }
                     }
@@ -1112,7 +1124,7 @@ impl<'s> Resolver<'s> {
         }
         let mut methods: Vec<TraitMethod> = Vec::new();
         for it in &t.items {
-            if let ast::DeclKind::Sig { names, ty } = &it.kind {
+            if let ast::DeclKind::Sig { names, ty, .. } = &it.kind {
                 let sig = self.signature(ty);
                 for (n, sp) in names {
                     fields.push(sig.clone());
@@ -1126,17 +1138,22 @@ impl<'s> Resolver<'s> {
         }
         for it in &t.items {
             let ast::DeclKind::Clause {
-                name: n, pats, rhs, ..
+                name: n,
+                pats,
+                rhs,
+                measure,
+                ..
             } = &it.kind
             else {
                 continue;
             };
+            self.no_measure(measure.as_ref());
             let g = self.tables[&self.cur].own.get(n).copied();
             let Some(m) = methods.iter_mut().find(|m| Some(m.name) == g) else {
                 continue; // reported by `declare_trait`
             };
             let dm = self.tables[&self.cur].own[&format!("{}$dm${n}", t.name)];
-            let c = self.clause(pats, rhs, it.span);
+            let c = self.clause(pats, rhs, None, it.span);
             m.default.get_or_insert((dm, Vec::new())).1.push(c);
         }
         self.locals.truncate(base);
@@ -1238,13 +1255,15 @@ impl<'s> Resolver<'s> {
                 name_span,
                 pats,
                 rhs,
+                measure,
             } = &it.kind
             else {
                 continue;
             };
+            self.no_measure(measure.as_ref());
             match trait_methods.iter().position(|(m, _)| m == n) {
                 Some(j) => {
-                    let c = self.clause(pats, rhs, it.span);
+                    let c = self.clause(pats, rhs, None, it.span);
                     methods[j].clauses.push(c);
                 }
                 None => self.errs.push(
@@ -1267,14 +1286,37 @@ impl<'s> Resolver<'s> {
         })
     }
 
-    fn clause(&mut self, pats: &[ast::Pat], rhs: &ast::Expr, span: Span) -> Clause {
+    fn clause(
+        &mut self,
+        pats: &[ast::Pat],
+        rhs: &ast::Expr,
+        measure: Option<&ast::Expr>,
+        span: Span,
+    ) -> Clause {
         let base = self.locals.len();
         let mut bound = Vec::new();
         let pats: Vec<Pat> = pats.iter().map(|p| self.pat(p, &mut bound)).collect();
         self.locals.extend(bound);
         let rhs = self.expr(rhs);
+        let measure = measure.map(|m| self.expr(m));
         self.locals.truncate(base);
-        Clause { pats, rhs, span }
+        Clause {
+            pats,
+            rhs,
+            span,
+            measure,
+        }
+    }
+
+    /// Measures are only given to top-level functions.
+    fn no_measure(&mut self, m: Option<&ast::Expr>) {
+        if let Some(m) = m {
+            self.errs.push(
+                Diagnostic::error("`decreasing` is only supported on top-level functions")
+                    .with_code("E1004")
+                    .with_label(m.span, "methods cannot have a measure in this version"),
+            );
+        }
     }
 
     // ---- patterns ----

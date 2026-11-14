@@ -73,6 +73,7 @@ pub enum Kw {
     Impl,
     Mutual,
     Deriving,
+    Decreasing,
 }
 
 impl Kw {
@@ -103,6 +104,7 @@ impl Kw {
             "impl" => Impl,
             "mutual" => Mutual,
             "deriving" => Deriving,
+            "decreasing" => Decreasing,
             _ => return None,
         })
     }
@@ -134,6 +136,7 @@ impl Kw {
             Impl => "impl",
             Mutual => "mutual",
             Deriving => "deriving",
+            Decreasing => "decreasing",
         }
     }
 }

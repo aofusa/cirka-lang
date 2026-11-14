@@ -1,0 +1,13 @@
+module Main
+
+data Color = Red | Green
+
+-- Neither `==` nor `/=` is given: the defaults call each other.
+impl Eq Color
+
+total
+same : Color -> Bool
+same c = c == Red
+
+main : IO ()
+main = pure ()

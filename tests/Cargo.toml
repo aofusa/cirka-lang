@@ -19,6 +19,7 @@ cirkalang-resolve.workspace = true
 cirka-testkit.workspace = true
 cirka-diagnostics.workspace = true
 cirka-mir.workspace = true
+cirka-smt.workspace = true
 cirka-driver.workspace = true
 cirka-codegen-llvm.workspace = true
 cirka.workspace = true

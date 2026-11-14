@@ -1,0 +1,25 @@
+module Main
+
+-- Termination by measures (spec-v0.0.4.md §1.3), decided by Z3.
+
+-- `b` alone may be negative: its absolute value decreases.
+total
+gcd : Int -> Int -> Int
+gcd a 0 = abs a
+gcd a b = gcd b (a % b) decreasing abs b
+
+-- A decreasing `Int` parameter is found without a measure.
+total
+countdown : Int -> List Int -> List Int
+countdown n acc = if n <= 0 then acc else countdown (n - 1) (n :: acc)
+
+-- Two indices that meet in the middle.
+total
+pairs : Int -> Int -> Int -> Int
+pairs lo hi acc = if lo >= hi then acc else pairs (lo + 1) (hi - 1) (acc + 1) decreasing hi - lo
+
+main : IO ()
+main = do
+  printInt (gcd 84 (-36))
+  printInt (length (countdown 5 []))
+  printInt (pairs 0 10 0)

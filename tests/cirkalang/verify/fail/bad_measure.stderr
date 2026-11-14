@@ -1,0 +1,14 @@
+error[E0502]: cannot show that `gcd` terminates
+ --> tests/cirkalang/verify/fail/bad_measure.cirka:5:1
+  |
+5 | gcd : Int -> Int -> Int
+  | ^^^ declared `total`
+  = note: the measure does not decrease (or is negative) at a recursive call when a = 0, b = -1
+  = help: give a measure that decreases: `decreasing e` after a clause (spec-v0.0.4.md §1.3)
+error[E0502]: cannot show that `grow` terminates
+  --> tests/cirkalang/verify/fail/bad_measure.cirka:11:1
+   |
+11 | grow : Int -> Int
+   | ^^^^ declared `total`
+   = note: no argument becomes structurally smaller along its recursive calls
+   = help: give a measure that decreases: `decreasing e` after a clause (spec-v0.0.4.md §1.3)

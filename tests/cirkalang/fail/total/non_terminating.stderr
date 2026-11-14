@@ -1,0 +1,7 @@
+error[E0502]: cannot show that `collatz` terminates
+ --> tests/cirkalang/fail/total/non_terminating.cirka:4:1
+  |
+4 | collatz : Nat -> Nat
+  | ^^^^^^^ declared `total`
+  = note: no argument becomes structurally smaller along its recursive calls
+  = help: give a measure that decreases: `decreasing e` after a clause (spec-v0.0.4.md §1.3)

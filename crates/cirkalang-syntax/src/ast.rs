@@ -95,6 +95,9 @@ pub enum DeclKind {
     Sig {
         names: Vec<(String, Span)>,
         ty: Expr,
+        /// `total` / `covering` / `partial` before the signature
+        /// (spec-v0.0.4.md §1).
+        totality: Option<(Totality, Span)>,
     },
     Clause {
         name: String,
@@ -102,6 +105,9 @@ pub enum DeclKind {
         /// Explicit argument patterns.
         pats: Vec<Pat>,
         rhs: Expr,
+        /// `decreasing e` after the right-hand side: a termination measure
+        /// (spec-v0.0.4.md §1.3).
+        measure: Option<Expr>,
     },
     Data(DataDecl),
     Prim {
@@ -124,6 +130,17 @@ pub enum DeclKind {
     Trait(TraitDecl),
     /// `impl [ctx =>] Trait args [where { clauses }]`.
     Impl(ImplDecl),
+}
+
+/// What a function promises about its evaluation (spec-v0.0.4.md §1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Totality {
+    /// Terminates on every argument without failing.
+    Total,
+    /// Its patterns are exhaustive (the default).
+    Covering,
+    /// May have missing cases (they panic).
+    Partial,
 }
 
 /// The calling convention of an `extern` block.

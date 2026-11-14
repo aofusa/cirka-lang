@@ -11,3 +11,5 @@ workspace = true
 cirka-diagnostics.workspace = true
 cirkalang-elab.workspace = true
 cirka-smt.workspace = true
+cirkalang-resolve.workspace = true
+

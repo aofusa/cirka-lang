@@ -121,6 +121,7 @@ dependencies = [
  "cirka-diagnostics",
  "cirka-driver",
  "cirka-mir",
+ "cirka-smt",
  "cirka-testkit",
  "cirkalang-resolve",
  "cirkalang-syntax",
@@ -160,6 +161,7 @@ dependencies = [
  "cirka-diagnostics",
  "cirka-smt",
  "cirkalang-elab",
+ "cirkalang-resolve",
 ]
 
 [[package]]

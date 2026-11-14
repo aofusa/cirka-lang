@@ -1,0 +1,15 @@
+module Main
+
+-- `b` may be negative, so it is not a measure.
+total
+gcd : Int -> Int -> Int
+gcd a 0 = a
+gcd a b = gcd b (a % b) decreasing b
+
+-- Nothing decreases.
+total
+grow : Int -> Int
+grow n = if n >= 100 then n else grow (n - 1)
+
+main : IO ()
+main = pure ()

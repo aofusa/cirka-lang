@@ -1,0 +1,10 @@
+module Main
+
+total
+collatz : Nat -> Nat
+collatz Z = Z
+collatz (S Z) = S Z
+collatz (S (S n)) = collatz (S (S (S n)))
+
+main : IO ()
+main = pure ()

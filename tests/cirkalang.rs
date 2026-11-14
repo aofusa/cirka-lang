@@ -112,6 +112,7 @@ fn compile_cirka_with(
     let mut opts = cirka_driver::pipeline::Options::new("test");
     opts.tests = tests;
     let name = path.file_stem().unwrap().to_string_lossy().to_string();
+    opts.build_dir = cirka_testkit::work_dir("cirkalang-compile", &name);
     let render_diags = |sm: &SourceMap, ds: &[cirka_diagnostics::Diagnostic]| {
         let root = repo_root().display().to_string() + "/";
         ds.iter()
@@ -209,13 +210,13 @@ fn cirkalang_run() {
     });
 }
 
-/// Ill-typed programs under tests/cirkalang/fail/{type,own,test}/ report
+/// Ill-typed programs under tests/cirkalang/fail/{type,own,test,total}/ report
 /// the diagnostics in `.stderr` (`test/` is checked with its tests kept, as
 /// by `cirka check`).
 #[test]
 fn cirkalang_type_errors() {
     let mut cases = Vec::new();
-    for d in ["type", "own", "test"] {
+    for d in ["type", "own", "test", "total"] {
         cases.extend(discover(
             &repo_root().join("tests/cirkalang/fail").join(d),
             &["cirka"],
@@ -229,6 +230,57 @@ fn cirkalang_type_errors() {
             cirka_driver::pipeline::SourceTests::Strip
         };
         let out = match compile_cirka_with(&c.path, tests) {
+            Ok(_) => return Outcome::Fail("the program was accepted".into()),
+            Err(e) => e,
+        };
+        match check_expect(&c.sibling("stderr"), &out) {
+            Ok(()) => Outcome::Pass,
+            Err(e) => Outcome::Fail(e),
+        }
+    });
+}
+
+/// Termination by measures, decided by Z3 (FEAT-0230): the programs under
+/// tests/cirkalang/verify/pass/ are accepted and print `.stdout`; those
+/// under verify/fail/ report the diagnostics in `.stderr`. Skipped when Z3
+/// is not installed (it is in the Docker image).
+#[test]
+fn cirkalang_verify() {
+    if cirka_smt::Solver::from_env().is_none() {
+        eprintln!("z3 not found (CIRKA_Z3): skipped");
+        return;
+    }
+    let root = repo_root().join("tests/cirkalang/verify");
+    let pass = discover(&root.join("pass"), &["cirka"]);
+    assert!(!pass.is_empty());
+    run_suite("cirkalang-verify-pass", &pass, |c| {
+        let (core, _) = match compile_cirka(&c.path) {
+            Ok(x) => x,
+            Err(e) => return Outcome::Fail(e),
+        };
+        let mut opts = cirka_driver::pipeline::Options::new(&c.name);
+        opts.build_dir = cirka_testkit::work_dir("cirkalang-verify", &c.name);
+        let out = match cirka_driver::pipeline::compile_core(core, &c.name, &opts, false) {
+            Ok(o) => o,
+            Err(ds) => {
+                return Outcome::Fail(format!(
+                    "{:?}",
+                    ds.iter().map(|d| &d.message).collect::<Vec<_>>()
+                ));
+            }
+        };
+        match cirka_mir::interp::run(&out.mir, &[], u64::MAX) {
+            Ok(r) => match check_expect(&c.sibling("stdout"), &r.stdout) {
+                Ok(()) => Outcome::Pass,
+                Err(e) => Outcome::Fail(e),
+            },
+            Err(e) => Outcome::Fail(e.to_string()),
+        }
+    });
+    let fail = discover(&root.join("fail"), &["cirka"]);
+    assert!(!fail.is_empty());
+    run_suite("cirkalang-verify-fail", &fail, |c| {
+        let out = match compile_cirka(&c.path) {
             Ok(_) => return Outcome::Fail("the program was accepted".into()),
             Err(e) => e,
         };

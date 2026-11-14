@@ -118,6 +118,7 @@ fn test(out: &mut Expanded, seen: &mut HashMap<String, Span>, decls: &mut Vec<De
         kind: DeclKind::Sig {
             names: vec![(def.clone(), name_span)],
             ty: io_unit,
+            totality: None,
         },
         span: sp,
     });
@@ -128,6 +129,7 @@ fn test(out: &mut Expanded, seen: &mut HashMap<String, Span>, decls: &mut Vec<De
             name_span,
             pats: Vec::new(),
             rhs: body,
+            measure: None,
         },
         span: sp,
     });

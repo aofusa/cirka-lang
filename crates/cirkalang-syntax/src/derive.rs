@@ -225,6 +225,7 @@ fn clause(name: &str, pats: Vec<Pat>, rhs: Expr, span: Span) -> Decl {
             name_span: span,
             pats,
             rhs,
+            measure: None,
         },
     }
 }

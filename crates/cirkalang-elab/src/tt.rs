@@ -2,8 +2,10 @@
 //! §4.1), its values (for normalization by evaluation) and the elaborated
 //! program.
 
+use cirka_diagnostics::Span;
 pub use cirkalang_resolve::rast::Abi;
 pub use cirkalang_resolve::rast::GName;
+pub use cirkalang_resolve::rast::Totality;
 use std::collections::HashMap;
 use std::fmt::Write;
 use std::rc::Rc;
@@ -551,6 +553,23 @@ pub struct Program {
     pub traits: HashMap<GName, TraitInfo>,
     /// Implementations of each trait.
     pub impls: HashMap<GName, Vec<ImplInfo>>,
+    /// Declared totality of definitions (spec-v0.0.4.md §1); absent is
+    /// `covering`.
+    pub totality: HashMap<GName, (Totality, Span)>,
+    /// `decreasing` measures of definitions.
+    pub measures: HashMap<GName, Measure>,
+}
+
+/// A termination measure (spec-v0.0.4.md §1.3): a term of type `Int` or
+/// `Nat` in the context of the first `nparams` parameters of the
+/// definition (its leading lambdas).
+#[derive(Clone, Debug)]
+pub struct Measure {
+    pub term: Term,
+    pub nparams: usize,
+    /// `Nat` (non-negative by construction) rather than `Int`.
+    pub nat: bool,
+    pub span: Span,
 }
 
 /// A trait: its dictionary type is the `Global::Data` of the same name,

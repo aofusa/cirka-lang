@@ -1,0 +1,56 @@
+module Main
+
+-- Totality (spec-v0.0.4.md §1): structural recursion, the size-change
+-- principle, mutual recursion, trait methods and `partial` functions.
+
+total
+ack : Nat -> Nat -> Nat
+ack Z n = S n
+ack (S m) Z = ack m (S Z)
+ack (S m) (S n) = ack m (ack (S m) n)
+
+total
+toInt : Nat -> Int
+toInt Z = 0
+toInt (S n) = 1 + toInt n
+
+-- The arguments are swapped at each call, yet one of them decreases
+-- every two calls.
+total
+swapDown : Nat -> Nat -> Nat
+swapDown Z y = y
+swapDown (S x) y = swapDown y x
+
+total
+isEven : Nat -> Bool
+isEven Z = True
+isEven (S n) = isOdd n
+
+total
+isOdd : Nat -> Bool
+isOdd Z = False
+isOdd (S n) = isEven n
+
+total
+sumList : List Int -> Int
+sumList [] = 0
+sumList (x :: xs) = x + sumList xs
+
+-- Through the `Eq` instance of lists.
+total
+sameLists : List Int -> List Int -> Bool
+sameLists xs ys = xs == ys
+
+-- Missing cases panic.
+partial
+first : List a -> a
+first (x :: _) = x
+
+main : IO ()
+main = do
+  printInt (toInt (ack (S (S Z)) (S (S (S Z)))))
+  printInt (toInt (swapDown (S (S (S Z))) (S Z)))
+  putStrLn (if isEven (S (S (S (S Z)))) then "even" else "odd")
+  printInt (sumList [1, 2, 3, 4])
+  putStrLn (if sameLists [1, 2] [1, 2] then "same" else "different")
+  printInt (first [7, 8])

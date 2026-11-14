@@ -1,0 +1,9 @@
+module Main
+
+-- Without `partial`, missing cases are still an error.
+total
+pred : Nat -> Nat
+pred (S n) = n
+
+main : IO ()
+main = pure ()

@@ -1,0 +1,7 @@
+error[E0504]: `same` is declared `total` but is not total
+ --> tests/cirkalang/fail/total/default_loop.cirka:9:1
+  |
+9 | same : Color -> Bool
+  | ^^^^ declared `total`
+  = note: `same` uses `==` of an `Eq` instance, which may not terminate
+  = help: remove what is not total, or declare it `covering`

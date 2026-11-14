@@ -1,0 +1,15 @@
+module Main
+
+total
+len : List a -> Int
+len [] = 0
+len (_ :: xs) = 1 + len xs
+
+partial hd : List a -> a
+hd (x :: _) = x
+
+covering
+gcd : Int -> Int -> Int
+gcd a 0 = a
+gcd a b = gcd b (a % b)
+  decreasing abs b

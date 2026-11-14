@@ -1,0 +1,12 @@
+module Main
+
+data Tag (n : Nat) = MkTag
+
+spin : Nat -> Nat
+spin n = spin (S n)
+
+useTag : Tag (spin Z) -> Int
+useTag _ = 0
+
+main : IO ()
+main = pure ()

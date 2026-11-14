@@ -448,7 +448,42 @@ impl Parser {
                 }
                 DeclKind::Impl(self.impl_decl()?)
             }
-            Tok::Kw(k @ (Kw::Total | Kw::Partial | Kw::Covering | Kw::Mutual)) => {
+            Tok::Kw(k @ (Kw::Total | Kw::Partial | Kw::Covering)) => {
+                // `total` (on its own line or before the signature) applies
+                // to the signature that follows (spec-v0.0.4.md §1).
+                let sp = self.bump().span;
+                let t = match k {
+                    Kw::Total => Totality::Total,
+                    Kw::Partial => Totality::Partial,
+                    _ => Totality::Covering,
+                };
+                while matches!(self.peek(), Tok::VSemi | Tok::Semi) {
+                    self.bump();
+                }
+                if !self.is_sig_start() {
+                    self.errs.push(
+                        Diagnostic::error(format!(
+                            "`{}` must be followed by a type signature",
+                            k.name()
+                        ))
+                        .with_code("E1005")
+                        .with_label(sp, "write `name : type` after it"),
+                    );
+                    return Err(());
+                }
+                let mut names = vec![self.def_name()?];
+                while self.eat(&Tok::Comma) {
+                    names.push(self.def_name()?);
+                }
+                self.expect(&Tok::Colon, "`:`")?;
+                let ty = self.expr()?;
+                DeclKind::Sig {
+                    names,
+                    ty,
+                    totality: Some((t, sp)),
+                }
+            }
+            Tok::Kw(k @ Kw::Mutual) => {
                 let sp = self.span();
                 self.errs.push(
                     Diagnostic::error(format!(
@@ -508,7 +543,11 @@ impl Parser {
                     }
                     self.expect(&Tok::Colon, "`:`")?;
                     let ty = self.expr()?;
-                    DeclKind::Sig { names, ty }
+                    DeclKind::Sig {
+                        names,
+                        ty,
+                        totality: None,
+                    }
                 } else {
                     self.clause()?
                 }
@@ -685,6 +724,11 @@ impl Parser {
         let lhs_span = self.from(start);
         self.expect(&Tok::Equals, "`=`")?;
         let rhs = self.expr()?;
+        let measure = if self.eat(&Tok::Kw(Kw::Decreasing)) {
+            Some(self.expr()?)
+        } else {
+            None
+        };
         let var_ops: Vec<&(usize, OpRef)> = ops.iter().filter(|(_, o)| !o.name.is_con()).collect();
         match var_ops.as_slice() {
             [] => {
@@ -706,6 +750,7 @@ impl Parser {
                         name_span: span,
                         pats: it.collect(),
                         rhs,
+                        measure,
                     }),
                     _ => {
                         self.errs.push(
@@ -756,6 +801,7 @@ impl Parser {
                         name_span: op.span,
                         pats: vec![l, r],
                         rhs,
+                        measure,
                     }),
                     _ => {
                         self.errs.push(

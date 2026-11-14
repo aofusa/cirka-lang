@@ -144,6 +144,8 @@ pub struct Elab<'r> {
     pub diags: RefCell<Vec<Diagnostic>>,
     /// Name of the definition being elaborated (for messages).
     current: RefCell<String>,
+    /// The definition being elaborated is `partial`: missing cases panic.
+    partial: Cell<bool>,
     /// Constraints to solve when more types are known.
     pending: RefCell<Vec<Pending>>,
     /// Sort metas checked against `LType` become `LType` (the variables of
@@ -190,6 +192,8 @@ impl<'r> Elab<'r> {
             builtins: Builtins::default(),
             traits: HashMap::new(),
             impls: HashMap::new(),
+            totality: HashMap::new(),
+            measures: HashMap::new(),
         };
         let f = |n: &str| rp.find("Prelude", n);
         prog.builtins = Builtins {
@@ -254,6 +258,7 @@ impl<'r> Elab<'r> {
             fuel_span: Cell::new(None),
             diags: RefCell::new(Vec::new()),
             current: RefCell::new(String::new()),
+            partial: Cell::new(false),
             pending: RefCell::new(Vec::new()),
             ltype_vars: Cell::new(false),
             shareable: RefCell::new(Vec::new()),
@@ -2632,12 +2637,18 @@ impl<'r> Elab<'r> {
                     let mut bname: Name = x.clone();
                     let mut bspan = span;
                     if i == Icit::Expl {
-                        let p = &clauses[0].pats[cols.len()];
+                        let k = cols.len();
+                        let p = &clauses[0].pats[k];
                         bspan = p.span;
-                        bname = match &p.kind {
-                            PatKind::Var(v) => v.as_str().into(),
-                            _ if x.as_ref() == "_" => format!("x{}", cols.len()).into(),
-                            _ => x.clone(),
+                        // The name of the first clause that names it.
+                        let named = clauses.iter().find_map(|c| match &c.pats[k].kind {
+                            PatKind::Var(v) => Some(v.as_str()),
+                            _ => None,
+                        });
+                        bname = match named {
+                            Some(v) => v.into(),
+                            None if x.as_ref() == "_" => format!("x{k}").into(),
+                            None => x.clone(),
                         };
                         self.check_ubind(cx, m, &a, bspan, "parameter");
                     }
@@ -2752,12 +2763,32 @@ impl<'r> Elab<'r> {
                 }
             }
             let ex = self.example(cx, ci);
+            if self.partial.get()
+                && ci.what != "case"
+                && let Some(p) = self.panic_prim()
+            {
+                // A `partial` function (spec-v0.0.4.md §1.1).
+                let msg = format!("{}: missing case `{ex}`", self.current.borrow());
+                return Term::App(
+                    Rc::new(Term::App(
+                        Rc::new(Term::Global(p)),
+                        Rc::new(goal.clone()),
+                        Icit::Impl,
+                    )),
+                    Rc::new(Term::Lit(Lit::Str(msg.into()))),
+                    Icit::Expl,
+                );
+            }
+            let help = if ci.what == "case" {
+                "add a clause for the missing case (use `panic` for impossible cases)"
+            } else {
+                "add a clause for the missing case (use `panic` for impossible cases), \
+                 or declare the function `partial`"
+            };
             self.report(
                 self.error("E1230", ci.span, "patterns are not exhaustive")
                     .with_note(format!("missing case: `{ex}`"))
-                    .with_help(
-                        "add a clause for the missing case (use `panic` for impossible cases)",
-                    ),
+                    .with_help(help),
             );
             return Term::Error;
         }
@@ -4187,10 +4218,17 @@ impl<'r> Elab<'r> {
         let Global::Def { ty, .. } = self.prog.get(d.name).clone() else {
             return;
         };
+        if let Some(t) = d.totality {
+            self.prog.totality.insert(d.name, t);
+        }
         let before = self.error_count();
         let tv = self.ev().eval(&Vec::new(), &ty);
         let mut cx = Cxt::default();
+        self.partial
+            .set(matches!(d.totality, Some((rast::Totality::Partial, _))));
         let body = self.elab_clauses(&mut cx, &name, &d.clauses, &tv, d.span);
+        self.partial.set(false);
+        self.def_measure(d, &tv);
         let body = self.finish(&cx, &body);
         let body = self.share_top(&mut cx, &ty, body);
         let body = if self.error_count() == before {
@@ -4204,6 +4242,103 @@ impl<'r> Elab<'r> {
             body: if after == before { Some(body) } else { None },
         };
         self.prog.order.push(d.name);
+    }
+}
+
+impl Elab<'_> {
+    /// The `panic` primitive (for the missing cases of `partial`
+    /// functions).
+    fn panic_prim(&self) -> Option<GName> {
+        self.prog
+            .globals
+            .iter()
+            .position(|g| {
+                matches!(
+                    g,
+                    Global::Prim {
+                        prim: Prim::Panic,
+                        ..
+                    }
+                )
+            })
+            .map(|i| GName(i as u32))
+    }
+
+    /// Elaborates the `decreasing` measure of a definition (spec-v0.0.4.md
+    /// §1.3) in the context of its parameters: the variables of the clause
+    /// that are bound directly to a parameter are in scope.
+    fn def_measure(&mut self, d: &rast::Def, ty: &Val) {
+        let mut ms = d
+            .clauses
+            .iter()
+            .filter_map(|c| c.measure.as_ref().map(|m| (c, m)));
+        let Some((clause, m)) = ms.next() else {
+            return;
+        };
+        for (_, m2) in ms {
+            self.report(
+                self.error(
+                    "E1005",
+                    sp(m2),
+                    "a function has at most one `decreasing` measure",
+                )
+                .with_help("give one measure for the whole function"),
+            );
+        }
+        let n = clause.pats.len();
+        let mut cx = Cxt::default();
+        let mut t = ty.clone();
+        let mut col = 0;
+        let mut nparams = 0;
+        while col < n {
+            let Val::Pi(x, mult, i, a, c) = self.whnf(&t) else {
+                return;
+            };
+            let src = if i == Icit::Expl {
+                let p = &clause.pats[col];
+                col += 1;
+                match &p.kind {
+                    PatKind::Var(v) => Some(v.clone()),
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            let l = self.push(&mut cx, &x, mult, &a, None, sp(m), src.as_deref());
+            t = self.ev().inst(&c, Val::var(l));
+            nparams += 1;
+        }
+        let before = self.error_count();
+        let (tm, mty) = self.infer(&mut cx, m, Mult::Zero);
+        let tm = self.finish(&cx, &tm);
+        if self.error_count() != before {
+            return;
+        }
+        let nat = match self.whnf(&mty) {
+            Val::Neutral(Head::Global(g), sp)
+                if sp.is_empty() && Some(g) == self.prog.builtins.int =>
+            {
+                false
+            }
+            Val::Data(g, ps) if ps.is_empty() && Some(g) == self.prog.builtins.nat => true,
+            other => {
+                let cx0 = cx.clone();
+                self.report(
+                    self.error("E0502", sp(m), "a measure must be an `Int` or a `Nat`")
+                        .with_note(format!("its type is `{}`", self.show(&cx0, &other))),
+                );
+                return;
+            }
+        };
+        self.prog.measures.insert(
+            d.name,
+            Measure {
+                term: tm,
+                nparams,
+                nat,
+                span: sp(m),
+            },
+        );
     }
 }
 

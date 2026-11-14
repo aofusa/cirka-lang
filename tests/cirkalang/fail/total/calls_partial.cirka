@@ -1,0 +1,16 @@
+module Main
+
+partial
+pred : Nat -> Nat
+pred (S n) = n
+
+total
+twoLess : Nat -> Nat
+twoLess n = pred (pred n)
+
+total
+shout : String -> String
+shout s = if s == "" then panic "empty" else s ++ "!"
+
+main : IO ()
+main = pure ()

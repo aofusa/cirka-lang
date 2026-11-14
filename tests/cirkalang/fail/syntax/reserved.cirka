@@ -1,2 +1,2 @@
-total f : Int -> Int
-covering g : Int -> Int
+mutual
+  f : Int -> Int

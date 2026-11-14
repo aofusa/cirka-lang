@@ -4,7 +4,7 @@
 
 use cirka_diagnostics::{FileId, Span};
 pub use cirkalang_syntax::ast::Abi;
-pub use cirkalang_syntax::ast::{Lit, Mult};
+pub use cirkalang_syntax::ast::{Lit, Mult, Totality};
 
 /// A global: index into [`Program::globals`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -152,6 +152,9 @@ pub struct Def {
     pub sig: Expr,
     pub clauses: Vec<Clause>,
     pub span: Span,
+    /// `total` / `covering` / `partial` (spec-v0.0.4.md §1); `None` is
+    /// `covering`.
+    pub totality: Option<(Totality, Span)>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -159,6 +162,8 @@ pub struct Clause {
     pub pats: Vec<Pat>,
     pub rhs: Expr,
     pub span: Span,
+    /// `decreasing e`, in the scope of the clause's patterns.
+    pub measure: Option<Expr>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
