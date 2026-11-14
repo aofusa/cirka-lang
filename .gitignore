@@ -2,10 +2,10 @@
 /target/
 **/*.rs.bk
 
-# aCHC build output (compiled test programs, LLVM IR, objects)
-/_build/
-# (the integration tests run with tests/ as the working directory)
-/tests/_build/
+# Build output of achc / cirka (compiled programs, LLVM IR, objects), in
+# whichever directory the compiler ran (the integration tests run with
+# tests/ as the working directory)
+_build/
 *.ll.tmp
 *.o
 
