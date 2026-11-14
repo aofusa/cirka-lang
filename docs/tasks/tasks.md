@@ -250,7 +250,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0232](features/FEAT-0232-cl-refinement-smt.md) | 洗練型 (部分集合型) と SMT による自動証明 | done | P0 | 0231, 0050 |
 | [FEAT-0233](features/FEAT-0233-cl-contracts.md) | 契約 (requires / ensures / invariant) | done | P1 | 0232 |
 | [FEAT-0234](features/FEAT-0234-cl-check-elim.md) | 証明に基づく実行時検査の除去 | done | P1 | 0232, 0211 |
-| [FEAT-0235](features/FEAT-0235-cl-release-v004.md) | CirkaLang v0.0.4 リリース | todo | P0 | 0233, 0234 |
+| [FEAT-0235](features/FEAT-0235-cl-release-v004.md) | CirkaLang v0.0.4 リリース | in-progress | P0 | 0233, 0234 |
 
 ### CirkaLang v0.0.5 並行性・サーバ・syscall
 
@@ -316,5 +316,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [BUG-0015](bugs/BUG-0015-cl-linear-instantiation.md) | CirkaLang で線形型の値が Type の型変数や IO の結果を通じて複製できる | done | critical | FEAT-0212 |
 | [BUG-0016](bugs/BUG-0016-opt-stale-known-after-beta.md) | β 簡約の後に既知の構築子の表が古い引数を指す | done | major | FEAT-0220 |
 | [BUG-0017](bugs/BUG-0017-cl-invariant-trait-method.md) | トレイトのメソッドを使う不変条件が check で ICE になり、W1231 が誤って出る | done | major | FEAT-0235 |
+| [BUG-0018](bugs/BUG-0018-cl-smt-int-wraps.md) | 検証が Int を数学の整数として扱い、ラップする演算で偽の証明が通る | done | critical | FEAT-0235 |
+| [BUG-0019](bugs/BUG-0019-cl-meta-table-index.md) | 単一化が作るメタ変数で、メタ変数の位置の表がずれて ICE になる | done | major | FEAT-0235 |
 
 新しいチケットは `features/_TEMPLATE.md` / `bugs/_TEMPLATE.md` をコピーして作成する。
