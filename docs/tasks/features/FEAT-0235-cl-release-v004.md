@@ -15,7 +15,7 @@
 
 - [x] 検証済みサンプル (ソート・境界安全な配列処理・パーサ): `tests/cirkalang/verify/pass/sample_sort.cirka` / `sample_array.cirka` / `sample_parser.cirka`
 - [x] CHANGELOG
-- [ ] タグ `cirkalang-v0.0.4` (利用者の確認を得てから打つ。AGENTS.md)
+- [x] タグ `cirkalang-v0.0.4` (2026-11-14、利用者の確認を得てリリースのコミット `d1a1151` に注釈付きタグを打ち、push した)
 
 ## 受け入れ条件
 

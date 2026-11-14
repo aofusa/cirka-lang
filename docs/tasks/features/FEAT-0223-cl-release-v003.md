@@ -15,7 +15,7 @@
 
 - [x] 全ベンチの CirkaLang 版と Rust の比較 (bench-report.md の「CirkaLang v0.0.3」)
 - [x] CHANGELOG
-- [ ] タグ `cirkalang-v0.0.3` (利用者の確認を得てから打つ。AGENTS.md)
+- [x] タグ `cirkalang-v0.0.3` (2026-11-14、利用者の確認を得てリリースのコミット `c24b545` に注釈付きタグを打ち、push した)
 
 ## 受け入れ条件
 

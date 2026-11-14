@@ -15,7 +15,7 @@ CUI 用途の評価とリリース。
 
 - [x] サンプル CUI ツール (wc / grep 風) と Rust 版の比較 (`bench/cli-grep`)
 - [x] CHANGELOG
-- [ ] タグ `cirkalang-v0.0.2` (AGENTS.md に従い、タグとリリースの公開は利用者の確認待ち)
+- [x] タグ `cirkalang-v0.0.2` (2026-11-14、利用者の確認を得てリリースのコミット `4445c25` に注釈付きタグを打ち、push した)
 
 ## 受け入れ条件
 
@@ -28,5 +28,5 @@ CUI 用途の評価とリリース。
   `tests/bench.rs` が引数 1000 で Rust 版と同じ出力・リーク 0 を確認する。
 - 全ベンチの結果は bench-report.md に記録 (array-sort・mandelbrot・spectral-norm は Rust と同等、binary-trees 0.49 倍、文字列処理 1.6〜2.0 倍、n-body 10.3 倍)。
 - 版: ワークスペースの版と `cirka` の `EDITION` を `0.0.2` にした (`cirka --version` は `CirkaLang v0.0.2`)。テストのパッケージの `edition` も更新。
-- タグ `cirkalang-v0.0.2` (と未作成の `cirkalang-v0.0.1`) は、利用者の確認を得てから打つ。
+- タグ `cirkalang-v0.0.2` は、このリリースのコミット `4445c25` に 2026-11-14 に打った (利用者の確認済み)。
 
