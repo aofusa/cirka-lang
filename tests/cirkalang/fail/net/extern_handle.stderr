@@ -1,0 +1,18 @@
+error[E1270]: `Handle` cannot be passed to or from C
+ --> tests/cirkalang/fail/net/extern_handle.cirka:9:3
+  |
+9 |   bad_handle : Handle -> IO Int
+  |   ^^^^^^^^^^
+  = note: extern functions take and return `Int`, `UInt`, `Float`, `Char`, `Bool`, the C types of `Foreign` and types wrapping one of them (and `()` as a result)
+error[E1270]: `IO Unit` cannot be passed to or from C
+  --> tests/cirkalang/fail/net/extern_handle.cirka:10:3
+   |
+10 |   bad_callback : Int -> (1 k : IO ()) -> IO Int
+   |   ^^^^^^^^^^^^
+   = note: extern functions take and return `Int`, `UInt`, `Float`, `Char`, `Bool`, the C types of `Foreign` and types wrapping one of them (and `()` as a result)
+error[E1270]: `List Int` cannot be passed to or from the runtime
+  --> tests/cirkalang/fail/net/extern_handle.cirka:13:3
+   |
+13 |   cirka_bad_list : List Int -> IO Int
+   |   ^^^^^^^^^^^^^^
+   = note: runtime functions take and return `Int`, `UInt`, `Float`, `Char`, `Bool`, `String`, `Handle`, the C types of `Foreign` and types wrapping one of them (and `()` as a result), and take functions and actions

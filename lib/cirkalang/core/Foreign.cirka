@@ -40,6 +40,12 @@ data Ptr (a : Type) = MkPtr Int deriving (Eq, Ord, Show)
 data OwnedPtr (a : Type) : LType where
   MkOwnedPtr : Int -> OwnedPtr a
 
+-- An object of the runtime (a socket, a remote of an event loop) that
+-- `extern "cirka"` functions take and return (spec-v0.0.5.md §2.1): the
+-- libraries wrap it in their own types. It is counted like any value and
+-- freed with its last use.
+prim Handle : Type
+
 nullPtr : Ptr a
 nullPtr = MkPtr 0
 

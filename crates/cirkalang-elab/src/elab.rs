@@ -1062,9 +1062,13 @@ impl<'r> Elab<'r> {
                 *blocked = true;
                 false
             }
+            // A `Handle` holds runtime state only, never a CirkaLang
+            // value (spec-v0.0.5.md §2.1).
             Val::Neutral(Head::Global(g), sp) if sp.is_empty() => matches!(
                 self.prog.prim_of(g),
-                Some(Prim::Int | Prim::UInt | Prim::Float | Prim::Char | Prim::String)
+                Some(
+                    Prim::Int | Prim::UInt | Prim::Float | Prim::Char | Prim::String | Prim::Handle
+                )
             ),
             // Unboxed arrays hold words; boxed ones hold their elements
             // (spec-v0.0.2.md §7).
@@ -4265,7 +4269,9 @@ impl<'r> Elab<'r> {
                         l += 1;
                     }
                     Val::Pi(_, _, Icit::Expl, a, clo) => {
-                        if !self.extern_scalar(&a, abi, 0) {
+                        if !self.extern_scalar(&a, abi, 0)
+                            && !(abi == Abi::Cirka && self.extern_callback(&a))
+                        {
                             bad = Some(self.show_val(l, &a));
                             break;
                         }
@@ -4302,23 +4308,28 @@ impl<'r> Elab<'r> {
                         span,
                         format!("`{t}` cannot be passed to or from {what}"),
                     )
-                    .with_note(
+                    .with_note(if abi == Abi::C {
                         "extern functions take and return `Int`, `UInt`, `Float`, `Char`, `Bool`, \
-                         the C types of `Foreign` and types wrapping one of them (and `()` as a result)",
-                    ),
+                         the C types of `Foreign` and types wrapping one of them (and `()` as a result)"
+                    } else {
+                        "runtime functions take and return `Int`, `UInt`, `Float`, `Char`, `Bool`, \
+                         `String`, `Handle`, the C types of `Foreign` and types wrapping one of them \
+                         (and `()` as a result), and take functions and actions"
+                    }),
                 );
             }
         }
     }
 
     /// Whether a value of type `ty` is passed as one scalar: a number, a
-    /// character, `Bool`, a `String` (runtime convention only), or a data
-    /// type with one constructor and one run-time field of such a type.
+    /// character, `Bool`, a `String` or a `Handle` (runtime convention
+    /// only), or a data type with one constructor and one run-time field of
+    /// such a type.
     fn extern_scalar(&self, ty: &Val, abi: Abi, depth: u32) -> bool {
         match self.whnf(ty) {
             Val::Neutral(Head::Global(g), sp) if sp.is_empty() => match self.prog.prim_of(g) {
                 Some(Prim::Int | Prim::UInt | Prim::Float | Prim::Char) => true,
-                Some(Prim::String) => abi == Abi::Cirka,
+                Some(Prim::String | Prim::Handle) => abi == Abi::Cirka,
                 _ => false,
             },
             Val::Data(d, args) => {
@@ -4351,6 +4362,20 @@ impl<'r> Elab<'r> {
                     l += 1;
                 }
                 fields.len() == 1 && self.extern_scalar(&fields[0], abi, depth + 1)
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether a parameter of type `ty` is a callback that the runtime
+    /// convention passes as its closure (spec-v0.0.5.md §2.1): a function
+    /// or an action.
+    fn extern_callback(&self, ty: &Val) -> bool {
+        match self.whnf(ty) {
+            Val::Pi(_, _, Icit::Expl, _, _) => true,
+            Val::Neutral(Head::Global(h), sp) => {
+                sp.len() == 1
+                    && (Some(h) == self.prog.builtins.io || Some(h) == self.prog.builtins.io1)
             }
             _ => false,
         }

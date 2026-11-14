@@ -388,6 +388,8 @@ pub enum Prim {
     Thread,
     MVar,
     Chan,
+    /// A runtime object of `extern "cirka"` functions (`Foreign.Handle`).
+    Handle,
     ThreadSpawn,
     ThreadJoin,
     MVarNew,
@@ -544,6 +546,7 @@ impl Prim {
         ("Thread", Prim::Thread),
         ("MVar", Prim::MVar),
         ("Chan", Prim::Chan),
+        ("Handle", Prim::Handle),
         ("primSpawn", Prim::ThreadSpawn),
         ("primJoin", Prim::ThreadJoin),
         ("primNewMVar", Prim::MVarNew),
@@ -599,6 +602,7 @@ impl Prim {
                 | Prim::Thread
                 | Prim::MVar
                 | Prim::Chan
+                | Prim::Handle
         )
     }
 }

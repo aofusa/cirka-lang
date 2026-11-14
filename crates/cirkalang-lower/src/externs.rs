@@ -2,10 +2,14 @@
 //! unboxes the arguments, calls the function and boxes the result.
 //!
 //! A value crosses the boundary as one scalar: `Int` / `UInt` / `Char` /
-//! `Bool` as an integer, `Float` as a double, `String` (runtime convention
-//! only) as the string object, and a data type with one constructor and
-//! one run-time field as that field. The C types of `Foreign` give the C
-//! type; the backend converts at the call (07-backend.md, 08-ffi.md §7.1).
+//! `Bool` as an integer, `Float` as a double, `String` and `Handle`
+//! (runtime convention only) as the object, and a data type with one
+//! constructor and one run-time field as that field. The C types of
+//! `Foreign` give the C type; the backend converts at the call
+//! (07-backend.md, 08-ffi.md §7.1). The runtime convention also takes
+//! functions and actions as their closures (callbacks, spec-v0.0.5.md
+//! §2.1). Objects are borrowed by the call; an object result is a new
+//! reference.
 
 use super::*;
 
@@ -18,6 +22,8 @@ enum Base {
     Char,
     Bool,
     Str,
+    /// A runtime object: a `Handle`, or the closure of a callback.
+    Obj,
 }
 
 /// How a value of a type crosses the boundary.
@@ -90,6 +96,7 @@ impl Lower<'_> {
                 Prim::Float => base(Base::Float, c::CTy::F64),
                 Prim::Char => base(Base::Char, c::CTy::U32),
                 Prim::String => base(Base::Str, c::CTy::Ptr),
+                Prim::Handle => base(Base::Obj, c::CTy::Ptr),
                 _ => None,
             },
             Val::Data(d, args) => {
@@ -133,11 +140,29 @@ impl Lower<'_> {
         }
     }
 
+    /// How a callback parameter (a function or an action) crosses to the
+    /// runtime: as its closure.
+    fn callback_pass(&self, v: &Val) -> Option<Pass> {
+        let closure = match self.whnf(v) {
+            Val::Pi(_, _, Icit::Expl, _, _) => true,
+            Val::Neutral(Head::Global(h), sp) => {
+                sp.len() == 1 && matches!(self.p.prim_of(h), Some(Prim::IO | Prim::IO1))
+            }
+            _ => false,
+        };
+        closure.then(|| Pass {
+            wraps: Vec::new(),
+            base: Base::Obj,
+            cty: c::CTy::Ptr,
+        })
+    }
+
     /// The Core type of the scalar.
     fn base_ty(b: Base) -> c::Type {
         match b {
             Base::Float => c::Type::double(),
             Base::Str => c::Type::bytes(),
+            Base::Obj => c::Type::Any,
             _ => c::Type::int(),
         }
     }
@@ -149,7 +174,7 @@ impl Lower<'_> {
             Base::UInt => c::Type::con("UInt"),
             Base::Float => c::Type::con("Float"),
             Base::Char => c::Type::con("Char"),
-            Base::Bool | Base::Str => c::Type::Any,
+            Base::Bool | Base::Str | Base::Obj => c::Type::Any,
         }
     }
 
@@ -187,6 +212,7 @@ impl Lower<'_> {
             Base::Float => ("F#", "Float"),
             Base::Char => ("C#", "Char"),
             Base::Str => return k(e),
+            Base::Obj => return k(c::Expr::Cast(Box::new(e), c::Type::Any)),
             Base::Bool => {
                 let (Some(t), Some(f)) = (self.p.builtins.true_, self.p.builtins.false_) else {
                     return c::Expr::Panic("no Bool".into(), res);
@@ -225,7 +251,7 @@ impl Lower<'_> {
             Base::Float => c::Expr::Con("F#".into(), Vec::new(), vec![x]),
             Base::Char => c::Expr::Con("C#".into(), Vec::new(), vec![x]),
             Base::Bool => self.bool_of(x),
-            Base::Str => x,
+            Base::Str | Base::Obj => x,
         };
         for (con, ty) in p.wraps.iter().rev() {
             let targs = match ty {
@@ -260,7 +286,12 @@ impl Lower<'_> {
                     l += 1;
                 }
                 Val::Pi(_, _, Icit::Expl, a, clo) => {
-                    params.push(self.extern_pass(&a, 0)?);
+                    let p = match self.extern_pass(&a, 0) {
+                        Some(p) => p,
+                        None if abi == Abi::Cirka => self.callback_pass(&a)?,
+                        None => return None,
+                    };
+                    params.push(p);
                     v = self.ev().inst(&clo, Val::var(l));
                     l += 1;
                 }

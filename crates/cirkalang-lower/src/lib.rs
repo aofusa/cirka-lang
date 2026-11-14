@@ -334,7 +334,9 @@ impl<'a> Lower<'a> {
                     // Threads (spec-v0.0.5.md §1.5): the mark is a token,
                     // handles and channels are the runtime's objects.
                     (Some(Prim::ThreadBound), _) => self.unit_ty(),
-                    (Some(Prim::Thread | Prim::MVar | Prim::Chan), _) => c::Type::Any,
+                    (Some(Prim::Thread | Prim::MVar | Prim::Chan | Prim::Handle), _) => {
+                        c::Type::Any
+                    }
                     (Some(Prim::In | Prim::RefIn), _) => int_ty(),
                     (Some(Prim::RIO), [_]) => c::Type::Con("IO".into(), Vec::new()),
                     (Some(Prim::RIO), [_, a]) => {
@@ -1430,6 +1432,7 @@ impl<'a> Lower<'a> {
             | Prim::Thread
             | Prim::MVar
             | Prim::Chan
+            | Prim::Handle
             | Prim::Subset => return None,
             // Threads and synchronization (spec-v0.0.5.md §1.5): calls of
             // the runtime, whose pointer arguments are borrowed and whose

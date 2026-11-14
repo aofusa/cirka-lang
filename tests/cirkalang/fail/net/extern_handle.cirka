@@ -1,0 +1,17 @@
+-- A `Handle` and a callback are passed only to runtime functions
+-- (`extern "cirka"`), never to C; the runtime takes no other data
+-- (spec-v0.0.5.md §2.1, E1270).
+module Main
+
+import Foreign (Handle)
+
+extern "C" where
+  bad_handle : Handle -> IO Int
+  bad_callback : Int -> (1 k : IO ()) -> IO Int
+
+extern "cirka" where
+  cirka_bad_list : List Int -> IO Int
+  cirka_watch : Handle -> Int -> (1 k : IO ()) -> IO Int
+
+main : IO ()
+main = pure ()
