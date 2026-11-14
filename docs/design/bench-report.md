@@ -552,3 +552,53 @@ BUG-0014 のコストは spectral-norm `plain.hs` に出た。リストの要素
   読み書きのたびの添字の計算 (Rust は構造体のフィールド)。
 - G3 (Rust の 1.5 倍以内) は 7 題材中 5 つで達成。文字列処理の 2 つが未達で、どちらも 1 行あたり約 2 回の確保が残る
   (string-split は case の後の計算が結果を箱で受け取ること: FEAT-0080。cli-grep は `foldLines` の行のビュー `Str` と累積値のレコード: FEAT-0082)。
+
+## CirkaLang v0.0.4 (FEAT-0235)
+
+計測: `bench/run.sh` (Docker コンテナ内、hyperfine、2026-11-14)。この日のホストは負荷の変動が大きく、同じバイナリでも 2 割ほどばらついた
+(下の「v0.0.3 との比較」)。array-sort と binary-search は 10 回、ほかは 3 回の平均。
+
+| ベンチ | CirkaLang v0.0.4 | Rust | 比 (Rust=1) |
+|--------|-----------------:|-----:|------------:|
+| array-sort | 0.095 s | 0.090 s | 1.05 |
+| binary-search (新規) | 0.349 s | 0.237 s | 1.47 |
+| binary-trees (深さ 21) | 12.33 s | 31.50 s (± 7.2 s) | 0.39 |
+| cli-grep | 0.603 s | 0.302 s | 2.00 |
+| mandelbrot | 0.105 s | 0.100 s | 1.06 |
+| n-body (500 万ステップ) | 0.599 s | 0.394 s | 1.52 |
+| spectral-norm | 0.182 s | 0.175 s | 1.04 |
+| string-split | 0.282 s | 0.178 s | 1.59 |
+
+### v0.0.3 との比較: 証明を使わないプログラムの生成コードは同じ
+
+v0.0.3 のコンパイラ (コミット `c24b545` の worktree) と v0.0.4 で、証明を使わない 7 題材をビルドして LLVM IR を比べた。
+
+- array-sort / cli-grep / mandelbrot / n-body / spectral-norm / string-split は **バイト単位で同じ**。
+- binary-trees は静的な定数の名前 (`@con.24.0` → `@con.28.0`、Prelude に構成子が増えたため) だけが違う。
+
+したがって v0.0.3 の表の性能はそのまま v0.0.4 に当てはまり、上の表の v0.0.3 との差 (n-body 1.46 → 1.52 など) は計測のばらつきである
+(同じコードの 2 つのバイナリを続けて測っても n-body で 0.70 s と 0.87 s の差が出た)。G3 の達成状況は v0.0.3 のまま (7 題材中 5 つ)。
+
+### 証明による検査の除去 (bench/binary-search)
+
+n = 1000 の配列に 400 万回の二分探索 (`search` に `requires 0 <= lo && hi <= A.size arr`)。
+
+| ビルド | 時間 | `search` の境界検査 |
+|--------|-----:|------------------:|
+| 既定 (`verify`。境界を Z3 が示す) | 343.9 ± 7.4 ms | なし |
+| `--contracts=off` (義務を調べない) | 364.1 ± 11.2 ms | 1 箇所 |
+
+- 検査を除いた版が 6% 速い (FEAT-0234 の計測では 3.8%)。LLVM IR の `index out of bounds` の分岐は 7 箇所から 6 箇所になり、残りはライブラリの関数 (配列の作成など)。
+- Rust (境界検査あり) との差には、多相な `Array` の要素が箱で格納され、読み込みが 2 段になることが含まれる (箱なしで格納するのは `UArray`: FEAT-0059)。
+
+### 検証の時間
+
+`cirka check` (Z3 の答えの記録 `_build/<name>/verify/` を消してから)。
+
+| サンプル | 検証あり | `--contracts=off` |
+|----------|---------:|------------------:|
+| `tests/cirkalang/verify/pass/sample_sort.cirka` | 0.41 s | 0.22 s |
+| `tests/cirkalang/verify/pass/sample_array.cirka` | 0.69 s | 0.21 s |
+| `tests/cirkalang/verify/pass/sample_parser.cirka` | 1.03 s | 0.25 s |
+
+- `Int` を 64 ビットのラップする整数として扱うようにした後 (BUG-0018) も、検証の時間はほぼ変わらない。
