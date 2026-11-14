@@ -323,5 +323,6 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [BUG-0018](bugs/BUG-0018-cl-smt-int-wraps.md) | 検証が Int を数学の整数として扱い、ラップする演算で偽の証明が通る | done | critical | FEAT-0235 |
 | [BUG-0019](bugs/BUG-0019-cl-meta-table-index.md) | 単一化が作るメタ変数で、メタ変数の位置の表がずれて ICE になる | done | major | FEAT-0235 |
 | [BUG-0020](bugs/BUG-0020-lazy-con-captured-thunk.md) | 遅延位置の構築子の正格フィールドに入れた捕捉変数・仮引数が要求前に評価される | done | major | BUG-0014, FEAT-0083 |
+| [BUG-0021](bugs/BUG-0021-opt-inline-once-copies.md) | インライン化で、常にインライン化される関数を経由して 1 回だけ呼ばれる関数が指数的に複製される | done | major | FEAT-0241 |
 
 新しいチケットは `features/_TEMPLATE.md` / `bugs/_TEMPLATE.md` をコピーして作成する。
