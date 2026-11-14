@@ -417,6 +417,7 @@ fn run_programs(suite: &str, sub: &str, default_levels: &[u8]) {
                 .collect(),
             None => default_levels.to_vec(),
         };
+        let last_level = levels.last().copied();
         for level in levels {
             let mut opts = cirka_driver::pipeline::Options::new(&c.name);
             opts.opt_level = level;
@@ -467,6 +468,27 @@ fn run_programs(suite: &str, sub: &str, default_levels: &[u8]) {
             reference = Some((out.mir, r));
         }
         let (m, r) = reference.unwrap();
+        // `-- same-cost-as: hand.hs` (FEAT-0061), compared at -O2.
+        if c.header.get("same-cost-as").is_some() {
+            if last_level != Some(2) {
+                return Outcome::Fail("`same-cost-as` needs -O2 among the levels".into());
+            }
+            let hand = |p: &std::path::Path| {
+                let mut sm = SourceMap::new();
+                let roots = vec![p.parent().unwrap().to_path_buf(), achc::lib_dir()];
+                let opts = cirka_driver::pipeline::Options::new("hand");
+                let compiled = achc::compile(&mut sm, p, &roots, &opts, "test").map_err(|ds| {
+                    ds.iter()
+                        .map(|d| render(d, &sm, Style::Plain))
+                        .collect::<String>()
+                })?;
+                cirka_integration::cost_at_o2(compiled.core, &c.name, &stdin)
+            };
+            let mine = cirka_integration::Cost::of(&m, &r);
+            if let Err(e) = cirka_integration::check_same_cost(c, mine, hand) {
+                return Outcome::Fail(e);
+            }
+        }
         cirka_integration::check_native_with(
             &cfg,
             c,

@@ -132,3 +132,92 @@ pub fn check_native_with(
     }
     Outcome::Pass
 }
+
+/// What a program costs at -O2, for the zero-cost tests (FEAT-0061).
+#[derive(Clone, Copy, Debug)]
+pub struct Cost {
+    pub allocs: u64,
+    pub rc_ops: u64,
+    /// Executed MIR instructions and terminators.
+    pub steps: u64,
+    /// Instructions and terminators of the optimized MIR.
+    pub size: u64,
+}
+
+impl Cost {
+    pub fn of(m: &cirka_mir::Module, r: &cirka_mir::interp::RunResult) -> Cost {
+        Cost {
+            allocs: r.stats.allocs,
+            rc_ops: r.stats.rc_ops,
+            steps: r.stats.steps,
+            size: m
+                .funcs
+                .iter()
+                .flat_map(|f| &f.blocks)
+                .map(|b| b.instrs.len() as u64 + 1)
+                .sum(),
+        }
+    }
+}
+
+/// Compiles `core` at -O2 and returns its cost on `stdin` (the hand-written
+/// side of `same-cost-as`).
+pub fn cost_at_o2(core: cirka_core::Program, case: &str, stdin: &[u8]) -> Result<Cost, String> {
+    let mut opts = cirka_driver::pipeline::Options::new("hand");
+    opts.opt_level = 2;
+    opts.build_dir = cirka_testkit::work_dir("same-cost", case);
+    let out = cirka_driver::pipeline::compile_core(core, "hand", &opts, false).map_err(|ds| {
+        ds.iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+            .join("\n")
+    })?;
+    let r = cirka_mir::interp::run(&out.mir, stdin, u64::MAX)?;
+    Ok(Cost::of(&out.mir, &r))
+}
+
+/// `-- same-cost-as: FILE [+N]` (FEAT-0061): the program, which uses an
+/// abstraction (a newtype, a type class, a higher-order function, a
+/// borrow), costs no more at -O2 than FILE, the same program written by
+/// hand in the same directory: it allocates no more, executes no more
+/// instructions and reference-count operations, and its optimized MIR is
+/// no larger (each up to `N`, a constant cost such as entering a borrow).
+/// `hand` compiles and runs FILE at -O2.
+pub fn check_same_cost(
+    c: &Case,
+    mine: Cost,
+    hand: impl FnOnce(&std::path::Path) -> Result<Cost, String>,
+) -> Result<(), String> {
+    let Some(h) = c.header.get("same-cost-as") else {
+        return Ok(());
+    };
+    let mut words = h.split_whitespace();
+    let file = words.next().ok_or("`same-cost-as` needs a file")?;
+    let slack: u64 = match words.next() {
+        Some(w) => w
+            .strip_prefix('+')
+            .and_then(|n| n.parse().ok())
+            .ok_or("bad slack in `same-cost-as` (expected `+N`)")?,
+        None => 0,
+    };
+    let path = c.path.parent().unwrap().join(file);
+    let other = hand(&path).map_err(|e| format!("same-cost-as {file}: {e}"))?;
+    let worse: Vec<&str> = [
+        ("allocs", mine.allocs, other.allocs),
+        ("rc_ops", mine.rc_ops, other.rc_ops),
+        ("steps", mine.steps, other.steps),
+        ("size", mine.size, other.size),
+    ]
+    .into_iter()
+    .filter(|(_, a, b)| *a > b + slack)
+    .map(|(k, _, _)| k)
+    .collect();
+    if worse.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "costs more than {file} ({}):\n  this: {mine:?}\n  hand: {other:?}",
+            worse.join(", ")
+        ))
+    }
+}

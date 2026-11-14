@@ -1,6 +1,7 @@
--- Insertion sort through a borrow (spec-v0.0.3.md §2.5): compared with
--- owned_loop.cirka by cirkalang_borrow_costs_nothing (no more allocations
--- or reference-count operations than threading the array by hand).
+-- same-cost-as: owned_loop.cirka
+-- Insertion sort through a borrow (spec-v0.0.3.md §2.5): it costs no more
+-- than threading the array by hand (owned_loop.cirka): no more
+-- allocations, instructions or reference-count operations (FEAT-0061).
 import Data.Array.Unboxed as U
 import Data.Borrow
 

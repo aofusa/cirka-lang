@@ -199,6 +199,16 @@ fn cirkalang_run() {
             reference = Some((out.mir, r));
         }
         let (m, r) = reference.unwrap();
+        // `-- same-cost-as: hand.cirka` (FEAT-0061), compared at -O2.
+        let hand = |p: &std::path::Path| {
+            let (core, _) = compile_cirka(p)?;
+            cirka_integration::cost_at_o2(core, &c.name, &stdin)
+        };
+        if let Err(e) =
+            cirka_integration::check_same_cost(c, cirka_integration::Cost::of(&m, &r), hand)
+        {
+            return Outcome::Fail(e);
+        }
         cirka_integration::check_native_with(
             &cfg,
             c,
@@ -482,34 +492,6 @@ fn cirkalang_traits_specialize_away() {
             }
         }
     }
-}
-
-/// A borrow costs nothing at run time (FEAT-0220, spec-v0.0.3.md §2.5):
-/// insertion sort through `Borrow` makes no more allocations or
-/// reference-count operations than the same loop threading the array by
-/// hand (up to a constant for entering the borrow).
-#[test]
-fn cirkalang_borrow_costs_nothing() {
-    let root = repo_root().join("tests/cirkalang/run/v003");
-    let stats = |name: &str| {
-        let (core, _) = compile_cirka(&root.join(format!("{name}.cirka"))).unwrap();
-        let mut opts = cirka_driver::pipeline::Options::new(name);
-        opts.opt_level = 2;
-        opts.build_dir = cirka_testkit::work_dir("cirkalang-borrow", name);
-        let out = cirka_driver::pipeline::compile_core(core, name, &opts, false)
-            .unwrap_or_else(|_| panic!("{name} does not compile"));
-        let r = cirka_mir::interp::run(&out.mir, &[], u64::MAX).unwrap();
-        assert_eq!(r.leaked, 0, "{name}");
-        r.stats
-    };
-    let b = stats("borrow_loop");
-    let o = stats("owned_loop");
-    // Entering the borrow may cost a constant few; the loop (22629 swaps)
-    // nothing.
-    assert!(
-        b.allocs <= o.allocs + 4 && b.rc_ops <= o.rc_ops + 4,
-        "borrowed: {b:?}\nowned: {o:?}"
-    );
 }
 
 /// Projects of several packages under tests/cirkalang/packages/<case>/
