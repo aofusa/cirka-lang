@@ -60,6 +60,9 @@ gcd a b = gcd b (a `mod` b)  decreasing b
 - 関数は `total` (網羅的かつ停止) / `covering` (網羅的) / `partial` を区別する。既定は `covering`。
 - **型の中で使う関数・証明として使う関数は `total` 必須**。`partial` な関数の結果は証明に使えない。
 - 停止性は構造的再帰と size-change 原理で自動判定し、判定できなければ `decreasing` で尺度を示す (E0502)。
+- 確定した規則は [spec-v0.0.4.md](cirkalang/spec-v0.0.4.md) §1。全域性は推論され、`total` は検査の要求である。
+  判定は型検査の後の TT に対して `cirkalang-check` が行い、必要な関数 (`total` と宣言した関数・型の中の関数) から辿れる関数だけを調べる。
+  トレイトのメソッドは既知のインスタンスまで辿り、尺度の証明義務は Z3 で決める (`Int` / `Nat` の引数は尺度として自動で試す)。
 
 ### 3.2 等式と証明
 
