@@ -67,6 +67,9 @@ pub struct Stats {
     pub reuses: u64,
     /// Executed dup/drop operations (on pointers).
     pub rc_ops: u64,
+    /// Executed instructions (a machine-independent measure of the work
+    /// done, compared by the zero-cost tests of FEAT-0061).
+    pub steps: u64,
 }
 
 /// Result of running a program.
@@ -494,6 +497,7 @@ impl<'m> Interp<'m> {
                     return Err(Exit::Panic("interpreter fuel exhausted".into()));
                 }
                 self.fuel -= 1;
+                self.stats.steps += 1;
                 // `let (r1, ..) = call g(..); ret (r1, ..)` is a tail call.
                 if ii + 1 == n
                     && let (Instr::LetMulti { vars, func, args }, Terminator::RetMulti(os)) =
@@ -552,6 +556,7 @@ impl<'m> Interp<'m> {
                 bb = 0;
                 continue;
             }
+            self.stats.steps += 1;
             match &block.term {
                 Terminator::Ret(o) => return Ok(Rets::One(self.operand(&frame, o))),
                 Terminator::RetMulti(os) => return Ok(Rets::Many(self.operands(&frame, os))),

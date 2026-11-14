@@ -332,6 +332,30 @@ fn interp_reports_leaks_and_stats() {
 }
 
 #[test]
+fn interp_counts_executed_instructions() {
+    // Every executed instruction and terminator is a step (FEAT-0061): the
+    // loop runs its block (2 instructions and a switch) 3 times, then the
+    // exit block's `ret`; `entry` jumps once.
+    let r = interp(
+        "fn main() -> i64 {
+entry:
+  jump body(3)
+body(n: i64):
+  let m = prim sub(n, 1)
+  let z = prim eq(m, 0)
+  switch z { 0 => again, default => out }
+again:
+  jump body(m)
+out:
+  ret 0
+}",
+    )
+    .unwrap();
+    // entry: 1; body: 3 × 3; again: 2 × 1; out: 1.
+    assert_eq!(r.stats.steps, 1 + 9 + 2 + 1, "{:?}", r.stats);
+}
+
+#[test]
 fn interp_reuse_map_has_no_new_allocations() {
     let src = format!(
         "{MAP_EXAMPLE}\nextern fn cirka_write_i64(i64) -> void
