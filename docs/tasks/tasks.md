@@ -16,7 +16,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | 共通基盤 | M1 バックエンド基盤 | 7 / 7 |
 | 共通基盤 | M2 Perceus | 3 / 3 |
 | 共通基盤 | M3 共通 Core と Core→MIR | 4 / 4 |
-| 共通基盤 | SX 共通基盤の拡張 (各トラックの必要に応じて) | 25 / 44 |
+| 共通基盤 | SX 共通基盤の拡張 (各トラックの必要に応じて) | 26 / 44 |
 | aCHC | H1 Haskell 最小フロントエンド | 6 / 6 |
 | aCHC | H2 Haskell 実用化 (スコープ縮小版) | 10 / 10 |
 | aCHC | H3 所有権拡張 (.chs) | 9 / 9 |
@@ -122,7 +122,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0080](features/FEAT-0080-join-points.md) | Core の結合点 (join point) | todo | P2 | 0079 |
 | [FEAT-0081](features/FEAT-0081-cpr-single-boxed-result.md) | 箱入りの値 1 つだけを返す積の結果の分解 | todo | P2 | 0065, 0220 |
 | [FEAT-0082](features/FEAT-0082-cl-cli-grep-line-allocs.md) | 行ごとの畳み込みの確保の除去 (cli-grep) | todo | P2 | 0223 |
-| [FEAT-0083](features/FEAT-0083-cheap-speculation-of-lazy-bindings.md) | 安価で失敗しない遅延束縛の先行評価 (サンクの除去) | todo | P1 | 0056, 0061 |
+| [FEAT-0083](features/FEAT-0083-cheap-speculation-of-lazy-bindings.md) | 安価で失敗しない遅延束縛の先行評価 (サンクの除去) | done | P1 | 0056, 0061 |
 
 
 ## aCHC
@@ -320,5 +320,6 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [BUG-0017](bugs/BUG-0017-cl-invariant-trait-method.md) | トレイトのメソッドを使う不変条件が check で ICE になり、W1231 が誤って出る | done | major | FEAT-0235 |
 | [BUG-0018](bugs/BUG-0018-cl-smt-int-wraps.md) | 検証が Int を数学の整数として扱い、ラップする演算で偽の証明が通る | done | critical | FEAT-0235 |
 | [BUG-0019](bugs/BUG-0019-cl-meta-table-index.md) | 単一化が作るメタ変数で、メタ変数の位置の表がずれて ICE になる | done | major | FEAT-0235 |
+| [BUG-0020](bugs/BUG-0020-lazy-con-captured-thunk.md) | 遅延位置の構築子の正格フィールドに入れた捕捉変数・仮引数が要求前に評価される | todo | major | BUG-0014, FEAT-0083 |
 
 新しいチケットは `features/_TEMPLATE.md` / `bugs/_TEMPLATE.md` をコピーして作成する。
