@@ -4,6 +4,8 @@
 
 # aCHC build output (compiled test programs, LLVM IR, objects)
 /_build/
+# (the integration tests run with tests/ as the working directory)
+/tests/_build/
 *.ll.tmp
 *.o
 
