@@ -117,6 +117,8 @@ data Range : Type where
 ```
 
 - `requires` は引数の部分集合型、`ensures` は結果の部分集合型、`invariant` は構築子の引数の部分集合型に脱糖する。
+- 確定した規則は [spec-v0.0.4.md](cirkalang/spec-v0.0.4.md) §4。脱糖は構文解析で行い、`requires` は最後の明示的な引数、`invariant` は最後のフィールドを絞る。
+  `check` は示せなかった義務の印 `primRefine` を `checkContract` (Prelude) に置き換えて実行時に検査する。
 - `--contracts`:
 
 | モード | 動作 | 実行時コスト |
