@@ -1,0 +1,14 @@
+module Main
+
+-- E1250: `rewrite` with something that is not an equality.
+total
+notEq : (n : Nat) -> plus n Z = n
+notEq n = rewrite n in Refl
+
+-- E1251: the left side does not occur in the goal.
+total
+nothing : (n : Nat) -> (m : Nat) -> plus n Z = n -> m = m
+nothing n m p = rewrite p in Refl
+
+main : IO ()
+main = pure ()

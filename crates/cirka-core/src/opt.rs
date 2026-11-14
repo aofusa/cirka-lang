@@ -1016,6 +1016,13 @@ impl Simp<'_> {
         {
             self.known.insert(x, (k.clone(), ts.clone(), a.clone()));
         }
+        // A cast that keeps the type of a known constructor (the identity
+        // of an erased proof: `primRewrite`).
+        if let Expr::Cast(y, t) = r
+            && let Some(con) = self.cast_known(y, t)
+        {
+            self.known.insert(x, con);
+        }
     }
 
     fn expr(&mut self, e: Expr) -> Expr {
@@ -1361,6 +1368,12 @@ impl Simp<'_> {
         // A lambda needs no evaluation, so its strict binding is a lazy one
         // and can be inlined at a single use (the steps of a `do` block).
         if is_lam(&r) {
+            return self.let_lazy(b, r, k);
+        }
+        // Neither does a cast of a known constructor to its own type.
+        if let Expr::Cast(y, t) = &r
+            && self.cast_known(y, t).is_some()
+        {
             return self.let_lazy(b, r, k);
         }
         if let Expr::Con(c, ts, args) = &r

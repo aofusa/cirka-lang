@@ -1763,6 +1763,8 @@ impl<'a> Lower<'a> {
                 )
             }),
             Prim::MkUnique | Prim::Freeze => id1(),
+            // Proofs are erased: rewriting is the identity (spec-v0.0.4.md §2.2).
+            Prim::Rewrite => id1(),
             // ---- arrays (spec-v0.0.2.md §7) ----
             Prim::ArrayNew => self.skeleton(ty, 2, |a, r| {
                 let elem = array_elem(&r);

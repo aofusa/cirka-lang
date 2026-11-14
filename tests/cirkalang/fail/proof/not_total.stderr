@@ -1,0 +1,14 @@
+error[E0506]: the proof `loop` is not total
+ --> tests/cirkalang/fail/proof/not_total.cirka:4:1
+  |
+4 | loop : (n : Nat) -> plus n Z = n
+  | ^^^^ a proof (its result is an equality or `Void`)
+  = note: `loop` may not terminate
+  = help: a proof must terminate on every argument (spec-v0.0.4.md §2.4)
+error[E0506]: the proof `half` is not total
+ --> tests/cirkalang/fail/proof/not_total.cirka:8:1
+  |
+8 | half : (n : Nat) -> plus n Z = n
+  | ^^^^ a proof (its result is an equality or `Void`)
+  = note: `half` is declared `partial`
+  = help: a proof must terminate on every argument (spec-v0.0.4.md §2.4)

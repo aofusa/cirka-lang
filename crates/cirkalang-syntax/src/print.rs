@@ -227,6 +227,15 @@ pub fn expr(e: &Expr) -> String {
             format!("(case {} {})", expr(s), a.join(" "))
         }
         ExprKind::If(c, t, f) => format!("(if {} {} {})", expr(c), expr(t), expr(f)),
+        ExprKind::Equal(a, b) => format!("(= {} {})", expr(a), expr(b)),
+        ExprKind::Rewrite(p, e) => format!("(rewrite {} {})", expr(p), expr(e)),
+        ExprKind::With(s, alts) => {
+            let a: Vec<String> = alts
+                .iter()
+                .map(|a| format!("({} => {})", pat(&a.pat), expr(&a.rhs)))
+                .collect();
+            format!("(with {} {})", expr(s), a.join(" "))
+        }
         ExprKind::Do(ss) => {
             let s: Vec<String> = ss
                 .iter()

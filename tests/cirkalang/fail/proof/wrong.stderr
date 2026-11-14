@@ -1,0 +1,14 @@
+error[E1200]: type mismatch
+ --> tests/cirkalang/fail/proof/wrong.cirka:6:14
+  |
+6 | plusZero n = Refl
+  |              ^^^^
+  = note: expected `Equal (plus n Z) n`
+  = note:    found `Equal (plus n Z) (plus n Z)`
+error[E1200]: type mismatch
+  --> tests/cirkalang/fail/proof/wrong.cirka:11:7
+   |
+11 | bad = Refl
+   |       ^^^^
+   = note: expected `Equal (plus (S Z) (S Z)) (S Z)`
+   = note:    found `Equal (plus (S Z) (S Z)) (plus (S Z) (S Z))`

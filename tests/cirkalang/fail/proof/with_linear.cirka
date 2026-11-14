@@ -1,0 +1,12 @@
+module Main
+
+data Token : LType where
+  MkToken : Token
+
+-- E1252: `with` on a linear value (use `case`).
+use : (1 t : Token) -> Int
+use t = with t of
+  MkToken => 1
+
+main : IO ()
+main = pure ()

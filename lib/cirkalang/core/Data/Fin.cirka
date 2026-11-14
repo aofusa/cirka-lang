@@ -1,0 +1,37 @@
+-- Numbers smaller than `n` (spec-v0.0.4.md §2.5): indices that cannot be
+-- out of bounds.
+module Data.Fin
+
+data Fin : (0 n : Nat) -> Type where
+  FZ : Fin (S n)
+  FS : Fin n -> Fin (S n)
+
+total
+finToNat : Fin n -> Nat
+finToNat FZ = Z
+finToNat (FS k) = S (finToNat k)
+
+total
+finToInt : Fin n -> Int
+finToInt FZ = 0
+finToInt (FS k) = 1 + finToInt k
+
+-- The largest element.
+total
+last : (n : Nat) -> Fin (S n)
+last Z = FZ
+last (S k) = FS (last k)
+
+-- `Fin Z` is empty.
+total
+finZAbsurd : Fin Z -> Void
+finZAbsurd i = case i of {}
+
+-- `i`, as an element of `Fin n` when `i < n`.
+total
+natToFin : Nat -> (n : Nat) -> Maybe (Fin n)
+natToFin Z (S _) = Just FZ
+natToFin (S k) (S m) = case natToFin k m of
+  Just f => Just (FS f)
+  Nothing => Nothing
+natToFin _ Z = Nothing

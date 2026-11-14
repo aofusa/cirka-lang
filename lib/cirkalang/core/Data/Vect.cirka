@@ -1,0 +1,109 @@
+-- Vectors whose length is in their type (spec-v0.0.4.md §2.5). Import
+-- the module with an alias (`import Data.Vect as V`).
+module Data.Vect
+
+import Data.Fin
+
+data Vect : (0 n : Nat) -> (a : Type) -> Type where
+  VNil : Vect Z a
+  VCons : a -> Vect n a -> Vect (S n) a
+
+total
+length : Vect n a -> Int
+length VNil = 0
+length (VCons _ xs) = 1 + length xs
+
+-- The length as a `Nat`, which is the index.
+total
+lengthNat : Vect n a -> Nat
+lengthNat VNil = Z
+lengthNat (VCons _ xs) = S (lengthNat xs)
+
+total
+lengthCorrect : (xs : Vect n a) -> lengthNat xs = n
+lengthCorrect VNil = Refl
+lengthCorrect (VCons _ xs) = cong S (lengthCorrect xs)
+
+-- No case for `VNil`: its length is not `S n`.
+total
+head : Vect (S n) a -> a
+head (VCons x _) = x
+
+total
+tail : Vect (S n) a -> Vect n a
+tail (VCons _ xs) = xs
+
+-- Indexing cannot be out of bounds.
+total
+index : Fin n -> Vect n a -> a
+index FZ (VCons x _) = x
+index (FS k) (VCons _ xs) = index k xs
+
+total
+replaceAt : Fin n -> a -> Vect n a -> Vect n a
+replaceAt FZ y (VCons _ xs) = VCons y xs
+replaceAt (FS k) y (VCons x xs) = VCons x (replaceAt k y xs)
+
+total
+append : Vect n a -> Vect m a -> Vect (plus n m) a
+append VNil ys = ys
+append (VCons x xs) ys = VCons x (append xs ys)
+
+total
+map : (a -> b) -> Vect n a -> Vect n b
+map f VNil = VNil
+map f (VCons x xs) = VCons (f x) (map f xs)
+
+total
+zipWith : (a -> b -> c) -> Vect n a -> Vect n b -> Vect n c
+zipWith f VNil VNil = VNil
+zipWith f (VCons x xs) (VCons y ys) = VCons (f x y) (zipWith f xs ys)
+
+total
+foldl : (b -> a -> b) -> b -> Vect n a -> b
+foldl f z VNil = z
+foldl f z (VCons x xs) = foldl f (f z x) xs
+
+total
+replicate : (n : Nat) -> a -> Vect n a
+replicate Z _ = VNil
+replicate (S k) x = VCons x (replicate k x)
+
+total
+toList : Vect n a -> List a
+toList VNil = []
+toList (VCons x xs) = x :: toList xs
+
+total
+listLength : List a -> Nat
+listLength [] = Z
+listLength (_ :: xs) = S (listLength xs)
+
+total
+fromList : (xs : List a) -> Vect (listLength xs) a
+fromList [] = VNil
+fromList (x :: xs) = VCons x (fromList xs)
+
+-- ---- reversing (the lengths are rewritten) ----
+
+-- `j + S k = S (j + k)`, by recursion on vectors of those lengths.
+total
+private plusSuccV : Vect j a -> Vect k b -> plus j (S k) = S (plus j k)
+plusSuccV VNil _ = Refl
+plusSuccV (VCons _ xs) ys = cong S (plusSuccV xs ys)
+
+total
+private plusZeroV : Vect n a -> plus n Z = n
+plusZeroV VNil = Refl
+plusZeroV (VCons _ xs) = cong S (plusZeroV xs)
+
+-- `xs` reversed onto `acc`.
+total
+private reverseOnto : Vect k a -> Vect m a -> Vect (plus m k) a
+reverseOnto acc VNil = acc
+reverseOnto acc (VCons x xs) =
+  rewrite sym (plusSuccV xs acc) in reverseOnto (VCons x acc) xs
+
+total
+reverse : Vect n a -> Vect n a
+reverse xs = rewrite sym (plusZeroV xs) in reverseOnto VNil xs

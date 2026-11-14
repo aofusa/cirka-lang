@@ -74,6 +74,8 @@ pub enum Kw {
     Mutual,
     Deriving,
     Decreasing,
+    Rewrite,
+    With,
 }
 
 impl Kw {
@@ -105,6 +107,8 @@ impl Kw {
             "mutual" => Mutual,
             "deriving" => Deriving,
             "decreasing" => Decreasing,
+            "rewrite" => Rewrite,
+            "with" => With,
             _ => return None,
         })
     }
@@ -137,6 +141,8 @@ impl Kw {
             Mutual => "mutual",
             Deriving => "deriving",
             Decreasing => "decreasing",
+            Rewrite => "rewrite",
+            With => "with",
         }
     }
 }

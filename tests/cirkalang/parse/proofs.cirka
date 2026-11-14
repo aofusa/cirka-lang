@@ -1,0 +1,13 @@
+module Main
+
+-- `=` binds looser than operators and tighter than `->`.
+plusZero : (n : Nat) -> plus n Z + 0 = n -> n = n
+plusZero n p = rewrite p in Refl
+
+f : (xs : List Int) -> Either (null xs = True) (null xs = False)
+f xs = with null xs of
+  True => Left Refl
+  False => Right Refl
+
+g : Int
+g = let x : Int = 1 in x

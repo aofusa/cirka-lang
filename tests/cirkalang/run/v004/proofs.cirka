@@ -1,0 +1,78 @@
+module Main
+
+-- Equality proofs (spec-v0.0.4.md §2): `=`, `Refl`, `rewrite`, `with`,
+-- `Dec`, and the proof-carrying types of the core library.
+import Data.Nat
+import Data.Fin
+import Data.Vect as V
+
+-- ---- lists ----
+
+total
+appendNilRight : (xs : List a) -> append xs [] = xs
+appendNilRight [] = Refl
+appendNilRight (x :: xs) = rewrite appendNilRight xs in Refl
+
+total
+appendAssoc : (xs : List a) -> (ys : List a) -> (zs : List a) -> append (append xs ys) zs = append xs (append ys zs)
+appendAssoc [] ys zs = Refl
+appendAssoc (x :: xs) ys zs = cong (\r => x :: r) (appendAssoc xs ys zs)
+
+total
+lengthAppend : (xs : List a) -> (ys : List a) -> V.listLength (append xs ys) = plus (V.listLength xs) (V.listLength ys)
+lengthAppend [] ys = Refl
+lengthAppend (x :: xs) ys = cong S (lengthAppend xs ys)
+
+total
+rev : List a -> List a
+rev [] = []
+rev (x :: xs) = append (rev xs) [x]
+
+total
+revAppend : (xs : List a) -> (ys : List a) -> rev (append xs ys) = append (rev ys) (rev xs)
+revAppend [] ys = sym (appendNilRight (rev ys))
+revAppend (x :: xs) ys =
+  rewrite revAppend xs ys in appendAssoc (rev ys) (rev xs) [x]
+
+total
+revRev : (xs : List a) -> rev (rev xs) = xs
+revRev [] = Refl
+revRev (x :: xs) = rewrite revAppend (rev xs) [x] in rewrite revRev xs in Refl
+
+-- ---- `with`: the goal learns the value of `isEmpty xs` ----
+
+total
+isEmpty : List a -> Bool
+isEmpty [] = True
+isEmpty (_ :: _) = False
+
+total
+emptyOrNot : (xs : List a) -> Either (isEmpty xs = True) (isEmpty xs = False)
+emptyOrNot xs = with isEmpty xs of
+  True => Left Refl
+  False => Right Refl
+
+-- ---- `Dec` ----
+
+showDec : Dec p -> String
+showDec (Yes _) = "yes"
+showDec (No _) = "no"
+
+-- A vector of `n` elements indexed by `Fin n`: never out of bounds.
+total
+sumAt : V.Vect n Int -> Fin n -> Fin n -> Int
+sumAt xs i j = V.index i xs + V.index j xs
+
+main : IO ()
+main = do
+  putStrLn (showDec (decEq (S (S Z)) (S (S Z))))
+  putStrLn (showDec (decEq (S Z) Z))
+  putStrLn (showDec (isLTE (S Z) (S (S Z))))
+  let v = V.fromList [10, 20, 30]
+  printInt (sumAt v FZ (FS (FS FZ)))
+  printInt (V.foldl (\a, b => a * 100 + b) 0 (V.reverse v))
+  printInt (natToInt (plus (S Z) (mult (S (S Z)) (S (S (S Z))))))
+  case emptyOrNot [1] of
+    Left _ => putStrLn "empty"
+    Right _ => putStrLn "not empty"
+  printInt (length (rev (append [1, 2] [3])))

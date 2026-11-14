@@ -210,13 +210,13 @@ fn cirkalang_run() {
     });
 }
 
-/// Ill-typed programs under tests/cirkalang/fail/{type,own,test,total}/ report
+/// Ill-typed programs under tests/cirkalang/fail/{type,own,test,total,proof}/ report
 /// the diagnostics in `.stderr` (`test/` is checked with its tests kept, as
 /// by `cirka check`).
 #[test]
 fn cirkalang_type_errors() {
     let mut cases = Vec::new();
-    for d in ["type", "own", "test", "total"] {
+    for d in ["type", "own", "test", "total", "proof"] {
         cases.extend(discover(
             &repo_root().join("tests/cirkalang/fail").join(d),
             &["cirka"],
@@ -238,6 +238,29 @@ fn cirkalang_type_errors() {
             Err(e) => Outcome::Fail(e),
         }
     });
+}
+
+/// Proofs cost nothing (FEAT-0231): a program with proofs (an erased
+/// `So` argument, a `rewrite`) compiles to the same MIR at -O2 as the same
+/// program without them.
+#[test]
+fn cirkalang_proofs_are_erased() {
+    let root = repo_root().join("tests/cirkalang/run/v004");
+    let mir = |name: &str| {
+        let (core, _) = compile_cirka(&root.join(format!("{name}.cirka"))).unwrap();
+        let mut opts = cirka_driver::pipeline::Options::new("same");
+        opts.opt_level = 2;
+        opts.build_dir = cirka_testkit::work_dir("cirkalang-erased", name);
+        let out = cirka_driver::pipeline::compile_core(core, "same", &opts, false)
+            .unwrap_or_else(|_| panic!("{name} does not compile"));
+        cirka_mir::print::print_module(&out.mir)
+    };
+    let with = mir("proof_erased");
+    let without = mir("proof_none");
+    assert!(
+        with == without,
+        "the proofs left code behind:\n{with}\n----\n{without}"
+    );
 }
 
 /// Termination by measures, decided by Z3 (FEAT-0230): the programs under

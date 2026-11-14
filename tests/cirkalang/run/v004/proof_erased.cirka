@@ -1,0 +1,29 @@
+module Main
+
+-- With proofs (spec-v0.0.4.md §2.4): the generated code is the same as
+-- proof_none.cirka, which has none.
+
+data Box : (0 n : Nat) -> Type where
+  MkBox : Int -> Box n
+
+total
+plusZ : (n : Nat) -> plus n Z = n
+plusZ Z = Refl
+plusZ (S k) = cong S (plusZ k)
+
+grow : (0 n : Nat) -> Box (plus n Z) -> Box n
+grow n b = rewrite sym (plusZ n) in b
+
+total
+nonZero : Int -> Bool
+nonZero d = not (primEqInt d 0)
+
+-- The divisor is not zero.
+safeDiv : Int -> (d : Int) -> (0 prf : So (nonZero d)) -> Int
+safeDiv n d prf = n / d
+
+unbox : Box n -> Int
+unbox (MkBox x) = x
+
+main : IO ()
+main = printInt (unbox (grow (S Z) (MkBox (safeDiv 84 2 Oh))))

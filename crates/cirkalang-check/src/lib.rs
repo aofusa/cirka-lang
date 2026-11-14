@@ -50,7 +50,8 @@ pub fn check(rp: &rast::Program, prog: &Program, cache: Option<PathBuf>) -> Vec<
         .collect();
     wanted.sort();
     let in_types = used_in_types(prog);
-    if wanted.is_empty() && in_types.is_empty() {
+    let proofs = proofs(prog);
+    if wanted.is_empty() && in_types.is_empty() && proofs.is_empty() {
         return Vec::new();
     }
     let metas = Metas::default();
@@ -74,6 +75,7 @@ pub fn check(rp: &rast::Program, prog: &Program, cache: Option<PathBuf>) -> Vec<
         .iter()
         .copied()
         .chain(in_types.iter().map(|(_, f)| *f))
+        .chain(proofs.iter().copied())
         .collect();
     t.explore(&roots);
     t.decide();
@@ -82,6 +84,20 @@ pub fn check(rp: &rast::Program, prog: &Program, cache: Option<PathBuf>) -> Vec<
     for f in &wanted {
         if let Some(why) = t.status.get(f).cloned().flatten() {
             diags.push(t.not_total(*f, &why, span(*f)));
+        }
+    }
+    for f in &proofs {
+        if wanted.contains(f) {
+            continue;
+        }
+        if let Some(why) = t.status.get(f).cloned().flatten() {
+            diags.push(
+                Diagnostic::error(format!("the proof `{}` is not total", prog.short_name(*f)))
+                    .with_code("E0506")
+                    .with_label(span(*f), "a proof (its result is an equality or `Void`)")
+                    .with_note(t.explain(*f, &why))
+                    .with_help("a proof must terminate on every argument (spec-v0.0.4.md §2.4)"),
+            );
         }
     }
     let mut seen = HashSet::new();
@@ -106,6 +122,30 @@ pub fn check(rp: &rast::Program, prog: &Program, cache: Option<PathBuf>) -> Vec<
         }
     }
     diags
+}
+
+/// Definitions whose result is a proof: an equality or `Void`.
+fn proofs(prog: &Program) -> Vec<GName> {
+    let b = &prog.builtins;
+    let mut out = Vec::new();
+    for (i, g) in prog.globals.iter().enumerate() {
+        let Global::Def { ty, body: Some(_) } = g else {
+            continue;
+        };
+        let mut t = ty;
+        while let Term::Pi(_, _, _, _, c) = t {
+            t = c;
+        }
+        while let Term::App(f, _, _) = t {
+            t = f;
+        }
+        if let Term::Global(h) = t
+            && (Some(*h) == b.equal || Some(*h) == b.void)
+        {
+            out.push(GName(i as u32));
+        }
+    }
+    out
 }
 
 /// (user, function): definitions used in the types of globals.

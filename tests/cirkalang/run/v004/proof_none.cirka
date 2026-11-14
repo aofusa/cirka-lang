@@ -1,0 +1,18 @@
+module Main
+
+-- proof_erased.cirka without its proofs.
+
+data Box : (0 n : Nat) -> Type where
+  MkBox : Int -> Box n
+
+grow : (0 n : Nat) -> Box n -> Box n
+grow n b = b
+
+safeDiv : Int -> Int -> Int
+safeDiv n d = n / d
+
+unbox : Box n -> Int
+unbox (MkBox x) = x
+
+main : IO ()
+main = printInt (unbox (grow (S Z) (MkBox (safeDiv 84 2))))

@@ -264,6 +264,10 @@ pub enum ExprKind {
     Ann(Box<Expr>, Box<Expr>),
     Tuple(Vec<Expr>),
     List(Vec<Expr>),
+    /// `rewrite p in e` (spec-v0.0.4.md §2.2).
+    Rewrite(Box<Expr>, Box<Expr>),
+    /// `with e of alts` (spec-v0.0.4.md §2.3).
+    With(Box<Expr>, Vec<Alt>),
 }
 
 #[derive(Clone, Debug, PartialEq)]

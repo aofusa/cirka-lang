@@ -1,0 +1,13 @@
+error[E1250]: `rewrite` needs a proof of an equality `x = y`
+ --> tests/cirkalang/fail/proof/rewrite.cirka:6:19
+  |
+6 | notEq n = rewrite n in Refl
+  |                   ^
+  = note: its type is `Nat`
+error[E1251]: nothing to rewrite
+  --> tests/cirkalang/fail/proof/rewrite.cirka:11:25
+   |
+11 | nothing n m p = rewrite p in Refl
+   |                         ^
+   = note: `plus n Z` does not occur in the goal `Equal m m`
+   = help: `rewrite p in e` with `p : x = y` replaces `x` by `y` in the goal

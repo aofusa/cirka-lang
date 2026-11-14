@@ -1,0 +1,89 @@
+-- Natural numbers: arithmetic and proofs about it (spec-v0.0.4.md §2.5).
+-- `plus` and `natToInt` are in the Prelude.
+module Data.Nat
+
+-- ---- arithmetic ----
+
+total
+mult : Nat -> Nat -> Nat
+mult Z m = Z
+mult (S k) m = plus m (mult k m)
+
+-- `n - m`, or `Z` when `m > n`.
+total
+minus : Nat -> Nat -> Nat
+minus Z _ = Z
+minus n Z = n
+minus (S n) (S m) = minus n m
+
+-- The natural number of a non-negative `Int` (`Z` for negative ones).
+-- (Total, but shown only with Z3: the library does not depend on it.)
+natFromInt : Int -> Nat
+natFromInt n = if n <= 0 then Z else S (natFromInt (n - 1))
+
+-- ---- equalities ----
+
+total
+plusZeroRight : (n : Nat) -> plus n Z = n
+plusZeroRight Z = Refl
+plusZeroRight (S k) = cong S (plusZeroRight k)
+
+total
+plusSuccRight : (n : Nat) -> (m : Nat) -> plus n (S m) = S (plus n m)
+plusSuccRight Z m = Refl
+plusSuccRight (S k) m = cong S (plusSuccRight k m)
+
+total
+plusComm : (n : Nat) -> (m : Nat) -> plus n m = plus m n
+plusComm Z m = sym (plusZeroRight m)
+plusComm (S k) m = rewrite plusSuccRight m k in cong S (plusComm k m)
+
+total
+plusAssoc : (n : Nat) -> (m : Nat) -> (p : Nat) -> plus (plus n m) p = plus n (plus m p)
+plusAssoc Z m p = Refl
+plusAssoc (S k) m p = cong S (plusAssoc k m p)
+
+total
+succInjective : {0 n : Nat} -> {0 m : Nat} -> S n = S m -> n = m
+succInjective Refl = Refl
+
+total
+zeroNotSucc : {0 n : Nat} -> Z = S n -> Void
+zeroNotSucc p = case p of {}
+
+-- ---- decisions ----
+
+total
+decEq : (n : Nat) -> (m : Nat) -> Dec (n = m)
+decEq Z Z = Yes Refl
+decEq Z (S m) = No zeroNotSucc
+decEq (S n) Z = No (\p => zeroNotSucc (sym p))
+decEq (S n) (S m) = case decEq n m of
+  Yes p => Yes (cong S p)
+  No c => No (\p => c (succInjective p))
+
+-- ---- order ----
+
+-- Evidence that `n <= m`.
+data LTE : (0 n : Nat) -> (0 m : Nat) -> Type where
+  LTEZero : LTE Z m
+  LTESucc : LTE n m -> LTE (S n) (S m)
+
+total
+lteRefl : (n : Nat) -> LTE n n
+lteRefl Z = LTEZero
+lteRefl (S k) = LTESucc (lteRefl k)
+
+total
+lteSucc : LTE n m -> LTE n (S m)
+lteSucc LTEZero = LTEZero
+lteSucc (LTESucc p) = LTESucc (lteSucc p)
+
+total
+isLTE : (n : Nat) -> (m : Nat) -> Dec (LTE n m)
+isLTE Z m = Yes LTEZero
+isLTE (S k) Z = No (\p => case p of {})
+isLTE (S k) (S j) = case isLTE k j of
+  Yes p => Yes (LTESucc p)
+  No c => No (\p => case p of
+    LTESucc q => c q)

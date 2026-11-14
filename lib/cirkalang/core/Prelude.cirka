@@ -41,6 +41,24 @@ data Result e a = Err e | Ok a deriving (Eq, Ord, Show)
 data Ur (a : Type) : Type where
   MkUr : (ω x : a) -> Ur a
 
+-- Propositional equality (spec-v0.0.4.md §2.1): `x = y` is `Equal x y`.
+-- Proofs are ordinary values; used with multiplicity 0 they are erased.
+data Equal : {a : Type} -> (0 x : a) -> (0 y : a) -> Type where
+  Refl : {0 x : a} -> Equal x x
+
+-- The empty type: there is no proof of `Void`.
+data Void : Type where
+
+-- A decided proposition: a proof of `p` or a refutation.
+data Dec (p : Type) = Yes p | No (p -> Void)
+
+-- A proof that a boolean is `True`.
+data So : Bool -> Type where
+  Oh : So True
+
+-- `rewrite` (spec-v0.0.4.md §2.2): the identity at run time.
+prim primRewrite : {a : Type} -> (0 p : a -> LType) -> (0 x : a) -> (0 y : a) -> (0 eq : x = y) -> (1 v : p y) -> p x
+
 -- Primitive operations (§5.6)
 prim primAddInt : Int -> Int -> Int
 prim primSubInt : Int -> Int -> Int
@@ -698,3 +716,27 @@ concatMap f xs = concat (map f xs)
 mapM_ : Monad m => (a -> m ()) -> List a -> m ()
 mapM_ f Nil = pure ()
 mapM_ f (x :: xs) = f x >>= \_ => mapM_ f xs
+
+-- ---- Proofs (spec-v0.0.4.md §2) ----
+
+total
+sym : {0 x : a} -> {0 y : a} -> x = y -> y = x
+sym Refl = Refl
+
+total
+trans : {0 x : a} -> {0 y : a} -> {0 z : a} -> x = y -> y = z -> x = z
+trans Refl Refl = Refl
+
+total
+cong : {0 x : a} -> {0 y : a} -> (0 f : a -> b) -> x = y -> f x = f y
+cong f Refl = Refl
+
+-- Anything follows from an impossible value.
+total
+absurd : Void -> a
+absurd v = case v of {}
+
+-- `So b` from `b = True`, and back.
+total
+soTrue : So b -> b = True
+soTrue Oh = Refl

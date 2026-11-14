@@ -1474,6 +1474,20 @@ impl<'s> Resolver<'s> {
 
     // ---- expressions ----
 
+    fn alts(&mut self, alts: &[ast::Alt]) -> Vec<Alt> {
+        alts.iter()
+            .map(|a| {
+                let base = self.locals.len();
+                let mut bound = Vec::new();
+                let pat = self.pat(&a.pat, &mut bound);
+                self.locals.extend(bound);
+                let rhs = self.expr(&a.rhs);
+                self.locals.truncate(base);
+                Alt { pat, rhs }
+            })
+            .collect()
+    }
+
     fn expr(&mut self, e: &ast::Expr) -> Expr {
         let span = e.span;
         let kind = match &e.kind {
@@ -1515,19 +1529,44 @@ impl<'s> Resolver<'s> {
             }
             ast::ExprKind::Case(s, alts) => {
                 let s = self.expr(s);
-                let alts = alts
-                    .iter()
-                    .map(|a| {
-                        let base = self.locals.len();
-                        let mut bound = Vec::new();
-                        let pat = self.pat(&a.pat, &mut bound);
-                        self.locals.extend(bound);
-                        let rhs = self.expr(&a.rhs);
-                        self.locals.truncate(base);
-                        Alt { pat, rhs }
-                    })
-                    .collect();
+                let alts = self.alts(alts);
                 ExprKind::Case(Box::new(s), alts)
+            }
+            ast::ExprKind::With(s, alts) => {
+                let s = self.expr(s);
+                let alts = self.alts(alts);
+                ExprKind::With(Box::new(s), alts)
+            }
+            ast::ExprKind::Rewrite(p, b) => {
+                ExprKind::Rewrite(Box::new(self.expr(p)), Box::new(self.expr(b)))
+            }
+            ast::ExprKind::Equal(a, b) => {
+                let eq = self
+                    .tables
+                    .get("Prelude")
+                    .and_then(|t| t.own.get("Equal"))
+                    .copied();
+                match eq {
+                    Some(g) => {
+                        let head = Expr {
+                            kind: ExprKind::Global(g),
+                            span,
+                        };
+                        let l = Expr {
+                            kind: ExprKind::App(Box::new(head), Box::new(self.expr(a))),
+                            span,
+                        };
+                        ExprKind::App(Box::new(l), Box::new(self.expr(b)))
+                    }
+                    None => {
+                        self.errs.push(
+                            Diagnostic::error("`=` needs the Prelude's `Equal`")
+                                .with_code("E1101")
+                                .with_label(span, "equality is not available here"),
+                        );
+                        ExprKind::Wildcard
+                    }
+                }
             }
             ast::ExprKind::If(c, t, f) => ExprKind::If(
                 Box::new(self.expr(c)),
@@ -1848,11 +1887,15 @@ fn global_uses(e: &Expr, out: &mut Vec<(GName, Span)>) {
             }
             go(b);
         }
-        ExprKind::Case(s, alts) => {
+        ExprKind::Case(s, alts) | ExprKind::With(s, alts) => {
             go(s);
             for a in alts {
                 go(&a.rhs);
             }
+        }
+        ExprKind::Rewrite(p, b) => {
+            go(p);
+            go(b);
         }
         ExprKind::If(c, t, f) => {
             go(c);

@@ -308,6 +308,8 @@ pub enum Prim {
     GetArg,
     Exit,
     Panic,
+    /// `primRewrite {a} p x y eq v : p x` for `v : p y` (spec-v0.0.4.md §2.2).
+    Rewrite,
     // Unique.
     MkUnique,
     Freeze,
@@ -446,6 +448,7 @@ impl Prim {
         ("getArg", Prim::GetArg),
         ("exit", Prim::Exit),
         ("panic", Prim::Panic),
+        ("primRewrite", Prim::Rewrite),
         ("unique", Prim::MkUnique),
         ("freeze", Prim::Freeze),
         ("dropFree", Prim::DropFree),
@@ -651,6 +654,11 @@ pub struct Builtins {
     // Short-circuit operators (spec-v0.0.3.md §4.3).
     pub and: Option<GName>,
     pub or: Option<GName>,
+    // Proofs (spec-v0.0.4.md §2).
+    pub equal: Option<GName>,
+    pub refl: Option<GName>,
+    pub void: Option<GName>,
+    pub rewrite: Option<GName>,
 }
 
 impl Program {

@@ -149,13 +149,19 @@ pub fn expr(p: &Program, e: &Expr) -> String {
             let b: Vec<String> = bs.iter().map(|b| let_bind(p, b)).collect();
             format!("(let ({}) {})", b.join(" "), expr(p, body))
         }
-        ExprKind::Case(s, alts) => {
+        ExprKind::Case(s, alts) | ExprKind::With(s, alts) => {
             let a: Vec<String> = alts
                 .iter()
                 .map(|a| format!("({} => {})", pat(p, &a.pat), expr(p, &a.rhs)))
                 .collect();
-            format!("(case {} {})", expr(p, s), a.join(" "))
+            let kw = if matches!(e.kind, ExprKind::With(..)) {
+                "with"
+            } else {
+                "case"
+            };
+            format!("({kw} {} {})", expr(p, s), a.join(" "))
         }
+        ExprKind::Rewrite(q, b) => format!("(rewrite {} {})", expr(p, q), expr(p, b)),
         ExprKind::If(c, t, f) => format!("(if {} {} {})", expr(p, c), expr(p, t), expr(p, f)),
         ExprKind::Do(ss) => {
             let s: Vec<String> = ss

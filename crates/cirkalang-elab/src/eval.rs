@@ -37,6 +37,14 @@ impl Metas {
     }
 }
 
+/// How `quote_with` unfolds definitions.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Unfold {
+    No,
+    Full,
+    Folded,
+}
+
 /// Default evaluation budget per definition (spec §4.1).
 pub const FUEL: u64 = 1_000_000;
 
@@ -184,7 +192,13 @@ impl<'a> Ev<'a> {
 
     /// Selects a case alternative, or gets stuck.
     pub fn case(&self, s: Val, env: &Env, c: &Rc<Case>) -> Val {
-        match self.force(s) {
+        // A scrutinee headed by a definition or a primitive may reduce
+        // (`not (primEqInt 2 0)`).
+        let s = match self.force(s) {
+            v @ Val::Neutral(Head::Global(_), _) => self.whnf(v),
+            v => v,
+        };
+        match s {
             Val::Con(k, args) => {
                 let nparams = match self.prog.get(k) {
                     Global::Con { nparams, .. } => *nparams,
@@ -302,6 +316,11 @@ impl<'a> Ev<'a> {
             (Prim::EqInt, 2) => b(int(0)? == int(1)?)?,
             (Prim::LtInt, 2) => b(int(0)? < int(1)?)?,
             (Prim::LeInt, 2) => b(int(0)? <= int(1)?)?,
+            // `rewrite` on `Refl` is the value itself.
+            (Prim::Rewrite, 6) => match &args[4] {
+                Val::Con(c, _) if Some(*c) == self.prog.builtins.refl => args[5].clone(),
+                _ => return None,
+            },
             _ => return None,
         };
         Some(r)
@@ -315,19 +334,45 @@ impl<'a> Ev<'a> {
 
     /// Reads back a value as a term at level `lvl` (no unfolding).
     pub fn quote(&self, lvl: u32, v: &Val) -> Term {
-        self.quote_with(lvl, v, false)
+        self.quote_with(lvl, v, Unfold::No)
     }
 
     /// Reads back with definitions unfolded (normal form).
     pub fn normalize(&self, lvl: u32, v: &Val) -> Term {
-        self.quote_with(lvl, v, true)
+        self.quote_with(lvl, v, Unfold::Full)
     }
 
-    fn quote_with(&self, lvl: u32, v: &Val, unfold: bool) -> Term {
-        let v = if unfold {
-            self.whnf(v.clone())
-        } else {
-            self.force(v.clone())
+    /// Reads back with the definitions unfolded that reduce to a value
+    /// with a head (a constructor, a literal, a type or a function), and
+    /// the others (stuck on a variable) kept folded: `plus (S k) m` becomes
+    /// `S (plus k m)` and `plus m k` stays. Used to find subterms of goals
+    /// (`rewrite`, `with`).
+    pub fn normalize_folded(&self, lvl: u32, v: &Val) -> Term {
+        self.quote_with(lvl, v, Unfold::Folded)
+    }
+
+    /// Unfolds definitions one at a time, stopping before an unfolding that
+    /// gets stuck on a `case` (so `rev (x :: xs)` becomes
+    /// `append (rev xs) [x]`, not a stuck match on `xs`).
+    fn whnf_folded(&self, v: Val) -> Val {
+        let mut v = self.force(v);
+        loop {
+            let Some(u) = self.unfold(&v) else {
+                return v;
+            };
+            let u = self.force(u);
+            if matches!(&u, Val::Neutral(_, sp) if sp.iter().any(|e| matches!(e, Elim::Case(..)))) {
+                return v;
+            }
+            v = u;
+        }
+    }
+
+    fn quote_with(&self, lvl: u32, v: &Val, unfold: Unfold) -> Term {
+        let v = match unfold {
+            Unfold::Full => self.whnf(v.clone()),
+            Unfold::Folded => self.whnf_folded(v.clone()),
+            Unfold::No => self.force(v.clone()),
         };
         match &v {
             Val::Neutral(h, sp) => {
@@ -396,7 +441,7 @@ impl<'a> Ev<'a> {
         }
     }
 
-    fn quote_case(&self, lvl: u32, scrut: Term, env: &Env, c: &Case, unfold: bool) -> Case {
+    fn quote_case(&self, lvl: u32, scrut: Term, env: &Env, c: &Case, unfold: Unfold) -> Case {
         let ret = self.quote_with(lvl, &self.eval(env, &c.ret), unfold);
         let alts = c
             .alts
@@ -562,8 +607,8 @@ impl<'a> Ev<'a> {
             match (x, y) {
                 (Elim::App(a, _), Elim::App(b, _)) => self.unify(lvl, a, b)?,
                 (Elim::Case(e1, c1), Elim::Case(e2, c2)) => {
-                    let t1 = self.quote_case(lvl, Term::Error, e1, c1, false);
-                    let t2 = self.quote_case(lvl, Term::Error, e2, c2, false);
+                    let t1 = self.quote_case(lvl, Term::Error, e1, c1, Unfold::No);
+                    let t2 = self.quote_case(lvl, Term::Error, e2, c2, Unfold::No);
                     if !case_eq(&t1, &t2) {
                         return Err(UnifyError::Mismatch);
                     }

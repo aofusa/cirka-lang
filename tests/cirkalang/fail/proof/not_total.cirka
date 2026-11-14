@@ -1,0 +1,12 @@
+module Main
+
+-- E0506: a proof must be total (it is erased, so it must really exist).
+loop : (n : Nat) -> plus n Z = n
+loop n = loop n
+
+partial
+half : (n : Nat) -> plus n Z = n
+half Z = Refl
+
+main : IO ()
+main = pure ()

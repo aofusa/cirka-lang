@@ -1,0 +1,7 @@
+(module Main)
+(sig (plusZero) (-> (n : Nat) (-> (= (ops (plus n Z) + 0) n) (= n n))))
+(def plusZero (n p) (rewrite p Refl))
+(sig (f) (-> (xs : (List Int)) (Either (= (null xs) True) (= (null xs) False))))
+(def f (xs) (with (null xs) (True => (Left Refl)) (False => (Right Refl))))
+(sig (g) Int)
+(def g () (let ((x : Int = 1)) x))

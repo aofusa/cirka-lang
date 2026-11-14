@@ -146,6 +146,9 @@ pub struct Elab<'r> {
     current: RefCell<String>,
     /// The definition being elaborated is `partial`: missing cases panic.
     partial: Cell<bool>,
+    /// The expected type of the application being inferred (see
+    /// `infer_app`).
+    app_expect: RefCell<Option<Val>>,
     /// Constraints to solve when more types are known.
     pending: RefCell<Vec<Pending>>,
     /// Sort metas checked against `LType` become `LType` (the variables of
@@ -246,6 +249,10 @@ impl<'r> Elab<'r> {
             result: f("Result"),
             ok: f("Ok"),
             err: f("Err"),
+            equal: f("Equal"),
+            refl: f("Refl"),
+            void: f("Void"),
+            rewrite: f("primRewrite"),
         };
         Elab {
             rp,
@@ -259,6 +266,7 @@ impl<'r> Elab<'r> {
             diags: RefCell::new(Vec::new()),
             current: RefCell::new(String::new()),
             partial: Cell::new(false),
+            app_expect: RefCell::new(None),
             pending: RefCell::new(Vec::new()),
             ltype_vars: Cell::new(false),
             shareable: RefCell::new(Vec::new()),
@@ -1226,6 +1234,8 @@ impl<'r> Elab<'r> {
             }
             ExprKind::Let(bs, body) => self.elab_let(cx, bs, body, Some(ty), rig).0,
             ExprKind::Case(s, alts) => self.elab_case(cx, s, alts, ty, rig, span),
+            ExprKind::Rewrite(p, b) => self.elab_rewrite(cx, p, b, ty, rig, span),
+            ExprKind::With(s, alts) => self.elab_with(cx, s, alts, ty, rig, span),
             ExprKind::If(c, t, f) => match self.desugar_if(c, t, f, span) {
                 Some(d) => self.check(cx, &d, ty, rig),
                 None => Term::Error,
@@ -1330,7 +1340,11 @@ impl<'r> Elab<'r> {
     }
 
     fn fallback(&self, cx: &mut Cxt, e: &rast::Expr, ty: &Val, rig: Mult) -> Term {
+        if let ExprKind::App(..) = e.kind {
+            *self.app_expect.borrow_mut() = Some(ty.clone());
+        }
         let (t, a) = self.infer(cx, e, rig);
+        self.app_expect.borrow_mut().take();
         let (t, a) = self.insert_implicits(cx, t, a, sp(e));
         if self.unify_or_err(cx, sp(e), ty, &a) {
             if self.type_valued(cx.lvl(), ty) {
@@ -1663,7 +1677,12 @@ impl<'r> Elab<'r> {
             }
             ExprKind::Lam(bs, body) => self.infer_lam(cx, bs, body, rig, span),
             ExprKind::Let(bs, body) => self.elab_let(cx, bs, body, None, rig),
-            ExprKind::Case(..) | ExprKind::If(..) | ExprKind::Do(..) | ExprKind::Hole(_) => {
+            ExprKind::Case(..)
+            | ExprKind::If(..)
+            | ExprKind::Do(..)
+            | ExprKind::Hole(_)
+            | ExprKind::Rewrite(..)
+            | ExprKind::With(..) => {
                 // An inferred match has a non-dependent type: it does not
                 // depend on the matched variable, which the branches refine.
                 let mut mask = cx.bound.clone();
@@ -1763,11 +1782,40 @@ impl<'r> Elab<'r> {
             h = f;
         }
         args.reverse();
+        let expect = self.app_expect.borrow_mut().take();
         let (mut t, mut ty) = self.infer(cx, h, rig);
         // Constructor fields are used as often as the constructed value
         // (`1·ω = 1`, spec §4.5).
         let is_con =
             matches!(h.kind, ExprKind::Global(g) if matches!(self.prog.get(g), Global::Con { .. }));
+        // A constructor checked against a known type: its result type
+        // (when it does not depend on the explicit fields) is unified
+        // first, so that the fields are checked against known types
+        // (`Yes (case p of Refl => Refl) : Dec (S n = S m)`).
+        if let Some(exp) = expect
+            && is_con
+        {
+            let (t2, ty2) = self.insert_implicits(cx, t, ty, sp(h));
+            t = t2;
+            ty = ty2;
+            let mut r = ty.clone();
+            let mut ok = true;
+            for _ in 0..args.len() {
+                match self.whnf(&r) {
+                    Val::Pi(_, _, Icit::Expl, _, c) => r = self.ev().inst(&c, Val::Error),
+                    _ => {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+            if ok && !matches!(self.whnf(&r), Val::Pi(..)) {
+                let rt = self.ev().quote(cx.lvl(), &r);
+                if !mentions_error(&rt) {
+                    let _ = self.ev().unify(cx.lvl(), &exp, &r);
+                }
+            }
+        }
         // Explicit fields declared `ω` keep their multiplicity (§5.6).
         let con_shared: Vec<bool> = match &h.kind {
             ExprKind::Global(g) => match self.prog.get(*g) {
@@ -4264,6 +4312,142 @@ impl Elab<'_> {
             .map(|i| GName(i as u32))
     }
 
+    /// `rewrite p in e` (spec-v0.0.4.md §2.2): with `p : l = r`, the
+    /// occurrences of `l` in the (normalized) goal are replaced by `r`, `e`
+    /// is checked against the result, and `primRewrite` (erased: the
+    /// identity) transports it back.
+    fn elab_rewrite(
+        &self,
+        cx: &mut Cxt,
+        p: &rast::Expr,
+        body: &rast::Expr,
+        ty: &Val,
+        rig: Mult,
+        span: Span,
+    ) -> Term {
+        let (Some(eq), Some(prim)) = (self.prog.builtins.equal, self.prog.builtins.rewrite) else {
+            self.report(self.error("E1250", span, "`rewrite` needs the Prelude's `Equal`"));
+            return Term::Error;
+        };
+        let (pt, pty) = self.infer(cx, p, Mult::Zero);
+        let (pt, pty) = self.insert_implicits(cx, pt, pty, sp(p));
+        let (a, l, r) = match self.whnf(&pty) {
+            Val::Data(g, args) if g == eq && args.len() == 3 => {
+                (args[0].0.clone(), args[1].0.clone(), args[2].0.clone())
+            }
+            Val::Error => return Term::Error,
+            other => {
+                self.report(
+                    self.error(
+                        "E1250",
+                        sp(p),
+                        "`rewrite` needs a proof of an equality `x = y`",
+                    )
+                    .with_note(format!("its type is `{}`", self.show(cx, &other))),
+                );
+                return Term::Error;
+            }
+        };
+        let lvl = cx.lvl();
+        let goal = self.ev().normalize_folded(lvl, ty);
+        let lhs = self.ev().normalize_folded(lvl, &l);
+        let (motive, found) = abstract_term(&goal, &lhs, 0);
+        if !found {
+            self.report(
+                self.error("E1251", sp(p), "nothing to rewrite")
+                    .with_note(format!(
+                        "`{}` does not occur in the goal `{}`",
+                        self.show(cx, &l),
+                        self.show(cx, ty)
+                    ))
+                    .with_help("`rewrite p in e` with `p : x = y` replaces `x` by `y` in the goal"),
+            );
+            return Term::Error;
+        }
+        let mut env = cx.env.clone();
+        env.push(r.clone());
+        let goal2 = self.ev().eval(&env, &motive);
+        let bt = self.check(cx, body, &goal2, rig);
+        let at = self.quote(cx, &a);
+        let lt = self.quote(cx, &l);
+        let rt = self.quote(cx, &r);
+        let pl = Term::Lam(
+            "z".into(),
+            Mult::Many,
+            Icit::Expl,
+            Rc::new(at.clone()),
+            Rc::new(motive),
+        );
+        let app = |f: Term, x: Term, i: Icit| Term::App(Rc::new(f), Rc::new(x), i);
+        let mut t = app(Term::Global(prim), at, Icit::Impl);
+        for x in [pl, lt, rt, pt, bt] {
+            t = app(t, x, Icit::Expl);
+        }
+        t
+    }
+
+    /// `with e of alts` (spec-v0.0.4.md §2.3): a match on `e` whose
+    /// occurrences in the goal are abstracted, so that each alternative's
+    /// goal mentions its pattern. Elaborated as `(\z => case z of alts) e`.
+    fn elab_with(
+        &self,
+        cx: &mut Cxt,
+        s: &rast::Expr,
+        alts: &[rast::Alt],
+        ty: &Val,
+        rig: Mult,
+        span: Span,
+    ) -> Term {
+        let (st, sty) = self.infer(cx, s, rig.times(Mult::Many));
+        let (st, sty) = self.insert_implicits(cx, st, sty, sp(s));
+        if self.univ_of(cx, &sty) == Univ::LType {
+            self.report(
+                self.error("E1252", sp(s), "`with` needs a shareable value")
+                    .with_note(format!("its type `{}` is linear", self.show(cx, &sty)))
+                    .with_help("use `case` for linear values"),
+            );
+            return Term::Error;
+        }
+        let lvl = cx.lvl();
+        let goal = self.ev().normalize_folded(lvl, ty);
+        let sv = self.eval(cx, &st);
+        let scrut = self.ev().normalize_folded(lvl, &sv);
+        let (motive, _) = abstract_term(&goal, &scrut, 0);
+        let at = self.quote(cx, &sty);
+        let l = self.push(cx, "with$", Mult::Many, &sty, None, sp(s), None);
+        let mut ci = ClauseInfo {
+            what: "case".into(),
+            used: vec![false; alts.len()],
+            spans: alts.iter().map(|a| a.pat.span).collect(),
+            top: vec![l],
+            span,
+        };
+        let rows = alts
+            .iter()
+            .enumerate()
+            .map(|(i, a)| Row {
+                pats: vec![(l, self.desugar_pat(&a.pat))],
+                binds: Vec::new(),
+                rhs: Rc::new(a.rhs.clone()),
+                clause: i,
+            })
+            .collect();
+        let body = self.compile(cx, rows, &motive, rig, &mut ci);
+        self.warn_unused(&ci);
+        self.pop(cx, false);
+        Term::App(
+            Rc::new(Term::Lam(
+                "with$".into(),
+                Mult::Many,
+                Icit::Expl,
+                Rc::new(at),
+                Rc::new(body),
+            )),
+            Rc::new(st),
+            Icit::Expl,
+        )
+    }
+
     /// Elaborates the `decreasing` measure of a definition (spec-v0.0.4.md
     /// §1.3) in the context of its parameters: the variables of the clause
     /// that are bound directly to a parameter are in scope.
@@ -4340,6 +4524,126 @@ impl Elab<'_> {
             },
         );
     }
+}
+
+/// Whether a term contains `Error`.
+fn mentions_error(t: &Term) -> bool {
+    match t {
+        Term::Error => true,
+        Term::Pi(_, _, _, a, b) | Term::Lam(_, _, _, a, b) | Term::App(a, b, _) => {
+            mentions_error(a) || mentions_error(b)
+        }
+        Term::Let(_, _, a, b, c) => mentions_error(a) || mentions_error(b) || mentions_error(c),
+        Term::Case(c) => {
+            mentions_error(&c.scrut)
+                || c.alts.iter().any(|a| match a {
+                    Alt::Con { body, .. } | Alt::Lit { body, .. } => mentions_error(body),
+                })
+                || c.default.as_ref().is_some_and(mentions_error)
+        }
+        _ => false,
+    }
+}
+
+/// `t` (in a context Γ, under `depth` more binders) with the occurrences of
+/// `e` (in Γ) replaced by a new variable `z` bound after Γ; the other
+/// variables of Γ are shifted. Returns whether `e` occurred.
+fn abstract_term(t: &Term, e: &Term, depth: u32) -> (Term, bool) {
+    if term_eq(t, &shift(e, 0, depth)) {
+        return (Term::Var(depth), true);
+    }
+    let rc = |x: &Rc<Term>, d: u32, f: &mut bool| {
+        let (y, g) = abstract_term(x, e, d);
+        *f |= g;
+        Rc::new(y)
+    };
+    let mut found = false;
+    let out = match t {
+        Term::Var(i) if *i >= depth => Term::Var(i + 1),
+        Term::Pi(x, m, i, a, b) => Term::Pi(
+            x.clone(),
+            *m,
+            *i,
+            rc(a, depth, &mut found),
+            rc(b, depth + 1, &mut found),
+        ),
+        Term::Lam(x, m, i, a, b) => Term::Lam(
+            x.clone(),
+            *m,
+            *i,
+            rc(a, depth, &mut found),
+            rc(b, depth + 1, &mut found),
+        ),
+        Term::App(f, a, i) => Term::App(rc(f, depth, &mut found), rc(a, depth, &mut found), *i),
+        Term::Let(x, m, a, v, b) => Term::Let(
+            x.clone(),
+            *m,
+            rc(a, depth, &mut found),
+            rc(v, depth, &mut found),
+            rc(b, depth + 1, &mut found),
+        ),
+        Term::Case(c) => {
+            let (scrut, f1) = abstract_term(&c.scrut, e, depth);
+            let (ret, f2) = abstract_term(&c.ret, e, depth);
+            found |= f1 | f2;
+            let alts = c
+                .alts
+                .iter()
+                .map(|a| match a {
+                    Alt::Con {
+                        con,
+                        fields,
+                        refine,
+                        body,
+                    } => {
+                        let mut fs = Vec::new();
+                        for (k, (x, m, ty)) in fields.iter().enumerate() {
+                            let (ty, f) = abstract_term(ty, e, depth + k as u32);
+                            found |= f;
+                            fs.push((x.clone(), *m, ty));
+                        }
+                        let d = depth + fields.len() as u32;
+                        let (body, f) = abstract_term(body, e, d);
+                        found |= f;
+                        let refine = refine
+                            .iter()
+                            .map(|(v, t)| {
+                                let v = if *v >= d { v + 1 } else { *v };
+                                (v, abstract_term(t, e, d).0)
+                            })
+                            .collect();
+                        Alt::Con {
+                            con: *con,
+                            fields: fs,
+                            refine,
+                            body,
+                        }
+                    }
+                    Alt::Lit { lit, body } => {
+                        let (body, f) = abstract_term(body, e, depth);
+                        found |= f;
+                        Alt::Lit {
+                            lit: lit.clone(),
+                            body,
+                        }
+                    }
+                })
+                .collect();
+            let default = c.default.as_ref().map(|d| {
+                let (d, f) = abstract_term(d, e, depth);
+                found |= f;
+                d
+            });
+            Term::Case(Rc::new(Case {
+                scrut,
+                ret,
+                alts,
+                default,
+            }))
+        }
+        other => other.clone(),
+    };
+    (out, found)
 }
 
 /// Whether the leading lambdas of `t` take a runtime argument (an erased

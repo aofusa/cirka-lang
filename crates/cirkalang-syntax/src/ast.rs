@@ -332,6 +332,13 @@ pub enum ExprKind {
     LeftSection(Box<Expr>, OpRef),
     /// `(op e)`.
     RightSection(OpRef, Box<Expr>),
+    /// `x = y`: propositional equality (spec-v0.0.4.md §2.1).
+    Equal(Box<Expr>, Box<Expr>),
+    /// `rewrite p in e` (spec-v0.0.4.md §2.2).
+    Rewrite(Box<Expr>, Box<Expr>),
+    /// `with e of alts`: a match that abstracts `e` in the goal
+    /// (spec-v0.0.4.md §2.3).
+    With(Box<Expr>, Vec<Alt>),
 }
 
 #[derive(Clone, Debug, PartialEq)]

@@ -10,6 +10,9 @@ pub struct Parser {
     toks: Vec<Token>,
     pos: usize,
     pub errs: Vec<Diagnostic>,
+    /// `=` ends the expression (a `let` type annotation) instead of
+    /// meaning equality.
+    no_eq: bool,
 }
 
 /// Parses a module from layout-processed tokens.
@@ -18,6 +21,7 @@ pub fn parse_module(toks: Vec<Token>) -> (Module, Vec<Diagnostic>) {
         toks,
         pos: 0,
         errs: Vec::new(),
+        no_eq: false,
     };
     let m = p.module();
     (m, p.errs)
@@ -29,6 +33,7 @@ pub fn parse_expr_tokens(toks: Vec<Token>) -> (Option<Expr>, Vec<Diagnostic>) {
         toks,
         pos: 0,
         errs: Vec::new(),
+        no_eq: false,
     };
     while p.at(&Tok::VSemi) {
         p.bump();
@@ -367,7 +372,7 @@ impl Parser {
 
     fn decl(&mut self) -> R<Decl> {
         let start = self.span();
-        let private = self.eat(&Tok::Kw(Kw::Private));
+        let mut private = self.eat(&Tok::Kw(Kw::Private));
         let kind = match self.peek().clone() {
             Tok::Kw(Kw::Data) => DeclKind::Data(self.data()?),
             Tok::Kw(k @ (Kw::Infix | Kw::Infixl | Kw::Infixr)) => {
@@ -460,6 +465,7 @@ impl Parser {
                 while matches!(self.peek(), Tok::VSemi | Tok::Semi) {
                     self.bump();
                 }
+                private |= self.eat(&Tok::Kw(Kw::Private));
                 if !self.is_sig_start() {
                     self.errs.push(
                         Diagnostic::error(format!(
@@ -1246,6 +1252,39 @@ impl Parser {
                     span: self.from(start),
                 })
             }
+            Tok::Kw(Kw::Rewrite) => {
+                self.bump();
+                let p = self.expr()?;
+                if !self.at_kw(Kw::In) {
+                    self.error_here("`in`");
+                    return Err(());
+                }
+                self.bump();
+                let e = self.expr()?;
+                Ok(Expr {
+                    kind: ExprKind::Rewrite(Box::new(p), Box::new(e)),
+                    span: self.from(start),
+                })
+            }
+            Tok::Kw(Kw::With) => {
+                self.bump();
+                let scrut = self.expr()?;
+                if !self.at_kw(Kw::Of) {
+                    self.error_here("`of`");
+                    return Err(());
+                }
+                self.bump();
+                let alts = self.block(|p| {
+                    let pat = p.pat()?;
+                    p.expect(&Tok::FatArrow, "`=>`")?;
+                    let rhs = p.expr()?;
+                    Ok(Alt { pat, rhs })
+                })?;
+                Ok(Expr {
+                    kind: ExprKind::With(Box::new(scrut), alts),
+                    span: self.from(start),
+                })
+            }
             Tok::Kw(Kw::If) => {
                 self.bump();
                 let c = self.expr()?;
@@ -1363,7 +1402,14 @@ impl Parser {
     }
 
     fn arrow_expr(&mut self, start: Span) -> R<Expr> {
-        let lhs = self.opseq()?;
+        let mut lhs = self.opseq()?;
+        if !self.no_eq && self.eat(&Tok::Equals) {
+            let rhs = self.opseq()?;
+            lhs = Expr {
+                kind: ExprKind::Equal(Box::new(lhs), Box::new(rhs)),
+                span: self.from(start),
+            };
+        }
         if self.eat(&Tok::Arrow) {
             let cod = self.expr()?;
             return Ok(Expr {
@@ -1640,6 +1686,13 @@ impl Parser {
     }
 
     fn paren(&mut self) -> R<Expr> {
+        let saved = std::mem::replace(&mut self.no_eq, false);
+        let r = self.paren_inner();
+        self.no_eq = saved;
+        r
+    }
+
+    fn paren_inner(&mut self) -> R<Expr> {
         let start = self.bump().span; // (
         if self.eat(&Tok::RParen) {
             return Ok(Expr {
@@ -1809,7 +1862,10 @@ impl Parser {
             }
         };
         let ty = if self.eat(&Tok::Colon) {
-            Some(self.expr()?)
+            let saved = std::mem::replace(&mut self.no_eq, true);
+            let t = self.expr();
+            self.no_eq = saved;
+            Some(t?)
         } else {
             None
         };

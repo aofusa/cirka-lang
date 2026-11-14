@@ -1,0 +1,13 @@
+error[E1252]: `with` needs a shareable value
+ --> tests/cirkalang/fail/proof/with_linear.cirka:8:14
+  |
+8 | use t = with t of
+  |              ^
+  = note: its type `Token` is linear
+  = help: use `case` for linear values
+error[E0303]: linear variable `t` is used more than once
+ --> tests/cirkalang/fail/proof/with_linear.cirka:8:14
+  |
+8 | use t = with t of
+  |              ^
+  = help: use it only once, or make it shareable with `freeze`

@@ -1,0 +1,14 @@
+module Main
+
+-- A wrong proof: `Refl` does not prove `plus n Z = n` for a variable `n`.
+total
+plusZero : (n : Nat) -> plus n Z = n
+plusZero n = Refl
+
+-- A wrong claim.
+total
+bad : plus (S Z) (S Z) = S Z
+bad = Refl
+
+main : IO ()
+main = pure ()
