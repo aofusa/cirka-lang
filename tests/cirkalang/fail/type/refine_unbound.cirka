@@ -1,0 +1,11 @@
+module Main
+
+-- BUG-0019: an unknown name in a refinement is an implicit variable that
+-- cannot be inferred: E1210 (it was an internal error when unification
+-- had made metas of its own).
+
+succPos : {n : Int | n < 1000000} -> {r : Int | r > m}
+succPos n = n + 1
+
+main : IO ()
+main = printInt (succPos 41)

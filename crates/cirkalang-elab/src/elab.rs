@@ -326,17 +326,28 @@ impl<'r> Elab<'r> {
     }
 
     fn fresh_meta(&self, cx: &Cxt, span: Span) -> Term {
-        let m = self.metas.fresh();
-        self.meta_spans.borrow_mut().push(span);
-        self.meta_reported.borrow_mut().push(false);
+        let m = self.new_meta(span);
         Term::InsertedMeta(m, Rc::new(cx.bound.clone()))
     }
 
     fn fresh_meta_masked(&self, mask: &[bool], span: Span) -> Term {
-        let m = self.metas.fresh();
-        self.meta_spans.borrow_mut().push(span);
-        self.meta_reported.borrow_mut().push(false);
+        let m = self.new_meta(span);
         Term::InsertedMeta(m, Rc::new(mask.to_vec()))
+    }
+
+    /// A meta with its source position, indexed by its id. Unification
+    /// also makes metas (pruning): they have no position of their own (they
+    /// are reported as the meta they come from), so the tables are padded.
+    fn new_meta(&self, span: Span) -> MetaId {
+        let m = self.metas.fresh();
+        let n = m as usize;
+        let mut spans = self.meta_spans.borrow_mut();
+        let mut reported = self.meta_reported.borrow_mut();
+        spans.resize(n, span);
+        reported.resize(n, false);
+        spans.push(span);
+        reported.push(false);
+        m
     }
 
     fn check_fuel(&self, span: Span) {

@@ -1,0 +1,6 @@
+error[E1210]: cannot infer this implicit argument or `_`
+  --> tests/cirkalang/fail/type/refine_unbound.cirka:11:18
+   |
+11 | main = printInt (succPos 41)
+   |                  ^^^^^^^
+   = help: add a type annotation
