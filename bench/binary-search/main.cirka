@@ -1,0 +1,37 @@
+module Main
+
+-- Binary search over a sorted array (FEAT-0234): the index of every
+-- access is proved in bounds by the contract of `search`, so `A.index`
+-- has no bounds check (spec-v0.0.4.md §5). The same algorithm and input as
+-- rust/main.rs.
+
+import Data.Array as A
+
+search : (arr : A.Array Int) -> (key : Int) -> (lo : Int) -> (hi : Int) -> Int
+  requires 0 <= lo && hi <= A.size arr
+search arr key lo hi =
+  if lo >= hi then -1
+  else
+    let mid = lo + (hi - lo) / 2
+        x = A.index arr mid
+    in if x == key then mid
+       else if x < key then search arr key (mid + 1) hi
+       else search arr key lo mid
+
+-- `m` pseudo-random keys (LCG); sums the positions found. The array is
+-- small (in cache), so the time goes to the search itself.
+queries : A.Array Int -> Int -> Int -> Int -> Int -> Int
+queries arr m s i acc =
+  if i >= m then acc
+  else
+    let s2 = (s * 1103515245 + 12345) % 2147483648
+        r = search arr (s2 % (3 * A.size arr)) 0 (A.size arr)
+    in queries arr m s2 (i + 1) ((acc + r + 1) % 1000000007)
+
+main : IO ()
+main = do
+  argc <- argCount
+  arg <- if argc > 0 then getArg 0 else pure "1000"
+  let n = parseInt arg
+  let arr = A.generate n (\i => 3 * i + 1)
+  printInt (queries arr (4000 * n) 12345 0 0)

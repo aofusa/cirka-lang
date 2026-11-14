@@ -1516,6 +1516,33 @@ impl<'a> Lower<'a> {
             Prim::SubInt => int2(O::Sub, "I#", "Int"),
             Prim::MulInt => int2(O::Mul, "I#", "Int"),
             Prim::DivInt => int2(O::Quot, "I#", "Int"),
+            // Proved safe (spec-v0.0.4.md §5): no check when the proofs are
+            // trusted.
+            Prim::DivProved if self.p.proofs_trusted => int2(O::QuotNz, "I#", "Int"),
+            Prim::DivProved => int2(O::Quot, "I#", "Int"),
+            Prim::ModProved if self.p.proofs_trusted => int2(O::RemNz, "I#", "Int"),
+            Prim::ModProved => int2(O::Rem, "I#", "Int"),
+            Prim::Unreachable => {
+                let msg = if self.p.proofs_trusted {
+                    cirka_core::expr::UNREACHABLE
+                } else {
+                    "reached a branch proved unreachable"
+                };
+                self.skeleton(ty, 1, |_, r| c::Expr::Panic(msg.into(), r))
+            }
+            Prim::ArrayIndexProved => {
+                let op = if self.p.proofs_trusted {
+                    O::ArrayGetUnchecked
+                } else {
+                    O::ArrayGet
+                };
+                self.skeleton(ty, 2, |a, r| {
+                    let elem = r.clone();
+                    self.unbox(a[1].clone(), "I#", "Int", c::Type::int(), r, |k| {
+                        c::Expr::Prim(op, vec![elem], vec![a[0].clone(), k])
+                    })
+                })
+            }
             Prim::ModInt => int2(O::Rem, "I#", "Int"),
             Prim::AndInt => int2(O::And, "I#", "Int"),
             Prim::OrInt => int2(O::Or, "I#", "Int"),

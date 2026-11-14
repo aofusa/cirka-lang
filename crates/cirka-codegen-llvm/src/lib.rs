@@ -1072,6 +1072,7 @@ impl<'m> Gen<'m> {
         // Unchecked accesses are emitted as their checked ones, without the
         // check (`bounds`).
         let access = p;
+        let nz = matches!(p, DivNz | RemNz);
         let p = p.checked();
         let a: Vec<String> = args.iter().map(|o| self.operand(o)).collect();
         let bin = |c: &mut FnCtx<'_>, op: &str, ty: &str| {
@@ -1087,9 +1088,18 @@ impl<'m> Gen<'m> {
             Sub => bin(c, "sub", "i64"),
             Mul => bin(c, "mul", "i64"),
             Div | Rem => {
-                let z = c.t();
-                c.line(&format!("{z} = icmp eq i64 {}, 0", a[1]));
-                self.check(c, &z, "divide by zero");
+                // A divisor proved non-zero (FEAT-0234) is checked only with
+                // the debug runtime, as a compiler bug.
+                if !nz || self.opts.debug_rt {
+                    let z = c.t();
+                    c.line(&format!("{z} = icmp eq i64 {}, 0", a[1]));
+                    let msg = if nz {
+                        "internal error: proved divisor is zero"
+                    } else {
+                        "divide by zero"
+                    };
+                    self.check(c, &z, msg);
+                }
                 // x / -1 overflows for i64::MIN; follow wrapping semantics.
                 let m1 = c.t();
                 c.line(&format!("{m1} = icmp eq i64 {}, -1", a[1]));
@@ -1265,7 +1275,9 @@ impl<'m> Gen<'m> {
             | BytesSetF64Unchecked
             | ArraySetSharedUnchecked
             | BytesSetI64SharedUnchecked
-            | BytesSetF64SharedUnchecked => unreachable!("normalized by checked()"),
+            | BytesSetF64SharedUnchecked
+            | DivNz
+            | RemNz => unreachable!("normalized by checked()"),
             ArrayGet | ArraySet | ArraySetShared => {
                 self.bounds(c, access, &a[0], 0, &a[1]);
                 let base = Self::gep(c, &a[0], 16);

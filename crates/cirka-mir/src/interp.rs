@@ -1285,7 +1285,9 @@ impl<'m> Interp<'m> {
             | BytesSetF64Unchecked
             | ArraySetSharedUnchecked
             | BytesSetI64SharedUnchecked
-            | BytesSetF64SharedUnchecked => return fault("unchecked access not normalized"),
+            | BytesSetF64SharedUnchecked
+            | DivNz
+            | RemNz => return fault("unchecked access not normalized"),
         })
     }
 

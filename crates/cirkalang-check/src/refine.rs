@@ -57,7 +57,23 @@ pub fn check(
             continue;
         };
         let refuted = d.message.contains("does not hold");
-        if mode == Contracts::Check && !refuted {
+        // Undecided (W0503): checked at run time even with `verify`, so that
+        // what relies on the refinement stays safe.
+        let undecided = !d.is_error();
+        if (mode == Contracts::Check && !refuted) || undecided {
+            if undecided {
+                diags.push(d.with_label(site.span, format!("in `{}`", site.def)));
+                let shown = show(
+                    ev,
+                    facts,
+                    &ev.apply(ob.pred.clone(), ob.val.clone(), Icit::Expl),
+                );
+                unproved.push((
+                    ob.site,
+                    format!("contract violated in `{}`: {shown}", site.def),
+                ));
+                continue;
+            }
             let what = d.message.clone();
             let shown = show(
                 ev,

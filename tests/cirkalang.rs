@@ -312,6 +312,56 @@ fn cirkalang_contracts_modes() {
     assert!(err.contains("unknown contracts mode"), "{err}");
 }
 
+/// Checks removed by proofs (FEAT-0234): with the refinements proved or
+/// checked at run time, `A.index`, `divNZ` and `unreachable` compile to
+/// the operations without checks; with `--contracts=off`, to the checked
+/// ones.
+#[test]
+fn cirkalang_proofs_remove_checks() {
+    let path = repo_root().join("tests/cirkalang/contracts/proved.cirka");
+    let mir = |flags: &[&str]| {
+        let (core, _) =
+            compile_cirka_with(&path, cirka_driver::pipeline::SourceTests::Strip, flags)
+                .unwrap_or_else(|e| panic!("{e}"));
+        let mut opts = cirka_driver::pipeline::Options::new("proved");
+        opts.opt_level = 2;
+        opts.build_dir = cirka_testkit::work_dir("cirkalang-proved", &flags.join(""));
+        cirka_driver::pipeline::compile_core(core, "proved", &opts, false)
+            .unwrap_or_else(|_| panic!("does not compile"))
+            .mir
+    };
+    // Without Z3, `check` checks the refinements at run time; with Z3,
+    // `verify` proves them.
+    let trusted = if cirka_smt::Solver::from_env().is_some() {
+        mir(&[])
+    } else {
+        mir(&["--contracts=check"])
+    };
+    // The accesses of `search` (which the loop analysis of FEAT-0069 cannot
+    // prove) and the division of `avg` (`""` is the whole module).
+    let func = |m: &cirka_mir::Module, name: &str| -> String {
+        let text = cirka_mir::print::print_module(m);
+        text.split("\nfn ")
+            .filter(|f| f.starts_with(name))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let search = func(&trusted, "Main.search");
+    assert!(search.contains("prim array_get_unchecked("), "{search}");
+    assert!(!search.contains("prim array_get("), "{search}");
+    // `avg` may be inlined: nothing else divides by a proved divisor.
+    assert!(func(&trusted, "").contains("prim div_nz("));
+    let r = cirka_mir::interp::run(&trusted, b"", u64::MAX).unwrap();
+    assert_eq!(r.stdout, "3\n3\n-1\n");
+    let off = mir(&["--contracts=off"]);
+    let search = func(&off, "Main.search");
+    assert!(
+        search.contains("prim array_get(") && !search.contains("_unchecked("),
+        "{search}"
+    );
+    assert!(!func(&off, "").contains("div_nz("));
+}
+
 /// Termination by measures, decided by Z3 (FEAT-0230): the programs under
 /// tests/cirkalang/verify/pass/ are accepted and print `.stdout`; those
 /// under verify/fail/ report the diagnostics in `.stderr`. Skipped when Z3

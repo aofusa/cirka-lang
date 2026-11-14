@@ -45,6 +45,7 @@ fn in_place(op: &PrimOp) -> bool {
             | BytesSetF
             | ArrayLen
             | ArrayGet
+            | ArrayGetUnchecked
             | ArraySet
     )
 }

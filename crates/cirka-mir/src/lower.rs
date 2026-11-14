@@ -776,6 +776,7 @@ impl<'p> Lowerer<'p> {
                 self.case(fb, env, s, b, res, alts, Mode::Tail(boxed));
             }
             Expr::Cast(x, _) | Expr::TyLam(_, _, x) => self.tail(fb, env, x, boxed),
+            Expr::Panic(m, _) if m == core::expr::UNREACHABLE => fb.term(Terminator::Unreachable),
             Expr::Panic(m, _) => fb.term(Terminator::Panic(m.clone())),
             // The fields of an unboxed tuple are the function's results
             // (lazy like constructor fields).
@@ -1131,7 +1132,11 @@ impl<'p> Lowerer<'p> {
                 }
             }
             Expr::Panic(m, _) => {
-                fb.term(Terminator::Panic(m.clone()));
+                fb.term(if m == core::expr::UNREACHABLE {
+                    Terminator::Unreachable
+                } else {
+                    Terminator::Panic(m.clone())
+                });
                 None
             }
         }
@@ -1145,6 +1150,9 @@ impl<'p> Lowerer<'p> {
             PrimOp::Mul => P::Mul,
             PrimOp::Quot => P::Div,
             PrimOp::Rem => P::Rem,
+            PrimOp::QuotNz => P::DivNz,
+            PrimOp::RemNz => P::RemNz,
+            PrimOp::ArrayGetUnchecked => P::ArrayGetUnchecked,
             PrimOp::Neg => P::Neg,
             PrimOp::And => P::And,
             PrimOp::Or => P::Or,
@@ -1201,7 +1209,7 @@ impl<'p> Lowerer<'p> {
         }
         let r = mp.signature().1;
         let v = fb.let_("p", r, Rhs::Prim(mp, ops));
-        if op == PrimOp::ArrayGet {
+        if matches!(op, PrimOp::ArrayGet | PrimOp::ArrayGetUnchecked) {
             // Elements may be thunks.
             return Some(self.force(fb, Operand::Var(v)));
         }

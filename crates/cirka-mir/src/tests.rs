@@ -1461,7 +1461,7 @@ fn unchecked_accesses_round_trip_and_fault_out_of_bounds() {
         .copied()
         .filter(|p| p.is_unchecked())
         .collect();
-    assert_eq!(unchecked.len(), 11);
+    assert_eq!(unchecked.len(), 13);
     for p in unchecked {
         assert_eq!(p.checked().unchecked(), Some(p));
         assert_eq!(Prim::from_name(p.name()), Some(p));
@@ -1487,6 +1487,30 @@ entry:
     let e = interp(&src.replace("IDX", "4")).unwrap_err();
     assert!(
         e.contains("bytes_get_i64_unchecked: unchecked access failed: index out of bounds"),
+        "{e}"
+    );
+}
+
+#[test]
+fn division_by_a_proved_divisor() {
+    // `div_nz` / `rem_nz` (FEAT-0234): like `div` / `rem` without the zero
+    // check; a zero divisor is a compiler bug.
+    let src = "extern fn cirka_write_i64(i64) -> void
+fn main() -> i64 {
+entry:
+  let q = prim div_nz(-7, D)
+  let r = prim rem_nz(-7, D)
+  let _ = extern cirka_write_i64(q)
+  let _ = extern cirka_write_i64(r)
+  ret 0
+}";
+    let ok = src.replace('D', "2");
+    let m = parse(FileId(0), &ok).unwrap();
+    assert!(crate::verify::verify_module(&m).is_empty());
+    assert_eq!(interp(&ok).unwrap().stdout, "-3-1");
+    let e = interp(&src.replace('D', "0")).unwrap_err();
+    assert!(
+        e.contains("div_nz: unchecked access failed: divide by zero"),
         "{e}"
     );
 }

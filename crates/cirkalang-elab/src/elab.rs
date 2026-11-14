@@ -200,6 +200,7 @@ impl<'r> Elab<'r> {
             totality: HashMap::new(),
             measures: HashMap::new(),
             refine_sites: Vec::new(),
+            proofs_trusted: false,
         };
         let f = |n: &str| rp.find("Prelude", n);
         prog.builtins = Builtins {

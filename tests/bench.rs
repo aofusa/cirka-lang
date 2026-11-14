@@ -15,7 +15,10 @@ use std::path::{Path, PathBuf};
 /// An implementation compiled to Core, or the rendered errors.
 fn compile(path: &Path) -> Result<cirka_core::Program, String> {
     let mut sm = SourceMap::new();
-    let opts = cirka_driver::pipeline::Options::new("bench");
+    let mut opts = cirka_driver::pipeline::Options::new("bench");
+    // Without Z3, the contracts are checked at run time (W0507), which
+    // prints the same.
+    let no_z3 = cirka_smt::Solver::from_env().is_none();
     let root = repo_root().display().to_string() + "/";
     let render_diags = |sm: &SourceMap, ds: &[cirka_diagnostics::Diagnostic]| {
         ds.iter()
@@ -27,8 +30,17 @@ fn compile(path: &Path) -> Result<cirka_core::Program, String> {
     if path.extension().is_some_and(|e| e == "cirka") {
         let mut roots = vec![dir];
         roots.extend(cirka::lib_roots());
+        if no_z3 {
+            opts.frontend_flags.push("--contracts=check".into());
+        }
         match cirka::compile(&mut sm, path, &roots, &opts, "Main") {
-            Ok(c) if c.warnings.is_empty() => Ok(c.core),
+            Ok(c)
+                if c.warnings
+                    .iter()
+                    .all(|w| no_z3 && w.code.as_deref() == Some("W0507")) =>
+            {
+                Ok(c.core)
+            }
             Ok(c) => Err(format!("warnings\n{}", render_diags(&sm, &c.warnings))),
             Err(ds) => Err(render_diags(&sm, &ds)),
         }

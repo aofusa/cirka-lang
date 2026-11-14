@@ -17,6 +17,8 @@ private prim primArrayNew : {a : Type} -> Int -> a -> Unique (Array a)
 private prim primArrayEmpty : {a : Type} -> () -> Unique (Array a)
 private prim primArraySize : {a : Type} -> Array a -> Int
 private prim primArrayIndex : {a : Type} -> Array a -> Int -> a
+-- Without the bounds check (only `index`, whose index is proved in bounds).
+private prim primArrayIndexProved : {a : Type} -> Array a -> Int -> a
 private prim primArrayRead : {a : Type} -> (1 u : Unique (Array a)) -> Int -> Pair (Unique (Array a)) (Ur a)
 private prim primArrayLength : {a : Type} -> (1 u : Unique (Array a)) -> Pair (Unique (Array a)) Int
 private prim primArrayWrite : {a : Type} -> (1 u : Unique (Array a)) -> Int -> a -> Unique (Array a)
@@ -80,9 +82,10 @@ size arr = primArraySize arr
 (!) : Array a -> Int -> a
 arr ! i = primArrayIndex arr i
 
--- The element at an index proved in bounds (spec-v0.0.4.md §3).
+-- The element at an index proved in bounds (spec-v0.0.4.md §3, §5): no
+-- bounds check at run time.
 index : (arr : Array a) -> {i : Int | 0 <= i && i < size arr} -> a
-index arr i = primArrayIndex arr i
+index arr i = primArrayIndexProved arr i
 
 -- The element at index `i`, if there is one.
 get : Array a -> Int -> Maybe a

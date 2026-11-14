@@ -67,6 +67,12 @@ prim subsetOf : (a : Type) -> (a -> Bool) -> Type
 
 prim primRefine : {a : Type} -> (0 p : a -> Bool) -> (0 site : Int) -> a -> a
 
+-- Operations whose check a proof makes unnecessary (spec-v0.0.4.md §5),
+-- used only by `divNZ`, `modNZ` and `unreachable` below.
+private prim primDivProved : Int -> Int -> Int
+private prim primModProved : Int -> Int -> Int
+private prim primUnreachable : {a : LType} -> () -> a
+
 -- Primitive operations (§5.6)
 prim primAddInt : Int -> Int -> Int
 prim primSubInt : Int -> Int -> Int
@@ -753,3 +759,15 @@ soTrue Oh = Refl
 -- proved is checked at run time.
 checkContract : (p : a -> Bool) -> String -> a -> a
 checkContract p msg x = if p x then x else panic msg
+
+-- Division by a divisor proved non-zero: no zero check at run time
+-- (spec-v0.0.4.md §5).
+divNZ : Int -> {d : Int | d /= 0} -> Int
+divNZ n d = primDivProved n d
+
+modNZ : Int -> {d : Int | d /= 0} -> Int
+modNZ n d = primModProved n d
+
+-- A branch proved impossible (its path conditions contradict each other).
+unreachable : {u : () | False} -> a
+unreachable u = primUnreachable u

@@ -113,7 +113,18 @@ pub enum PrimOp {
     BytesSetFShared,
     /// Pointer equality of two boxed values (`Int#`).
     PtrEq,
+    /// Accesses known to be safe from proofs (FEAT-0234, ADR-019): `quot`
+    /// and `rem` by a divisor proved non-zero, `array_get` at an index
+    /// proved in bounds. They are not moved out of the branch that knows
+    /// it (effectful like the checked ones).
+    QuotNz,
+    RemNz,
+    ArrayGetUnchecked,
 }
+
+/// The message of a `panic` that cannot happen (a branch proved
+/// unreachable, FEAT-0234): lowered to MIR `unreachable`.
+pub const UNREACHABLE: &str = "<unreachable>";
 
 impl PrimOp {
     pub const ALL: &'static [PrimOp] = &[
@@ -162,6 +173,9 @@ impl PrimOp {
         PrimOp::BytesSet64Shared,
         PrimOp::BytesSetFShared,
         PrimOp::PtrEq,
+        PrimOp::QuotNz,
+        PrimOp::RemNz,
+        PrimOp::ArrayGetUnchecked,
     ];
 
     pub fn name(self) -> &'static str {
@@ -212,6 +226,9 @@ impl PrimOp {
             BytesSet64Shared => "bytes_set64_shared",
             BytesSetFShared => "bytes_setf_shared",
             PtrEq => "ptr_eq",
+            QuotNz => "quot_nz",
+            RemNz => "rem_nz",
+            ArrayGetUnchecked => "array_get_unchecked",
         }
     }
 
@@ -223,7 +240,8 @@ impl PrimOp {
     pub fn ty_arity(self) -> usize {
         use PrimOp::*;
         match self {
-            ArrayNew | ArrayLen | ArrayGet | ArraySet | ArrayUnique | ArraySetShared | PtrEq => 1,
+            ArrayNew | ArrayLen | ArrayGet | ArraySet | ArrayUnique | ArraySetShared | PtrEq
+            | ArrayGetUnchecked => 1,
             _ => 0,
         }
     }
@@ -237,7 +255,7 @@ impl PrimOp {
         let arr = Type::Con(ARRAY.into(), vec![elem.clone()]);
         match self {
             Add | Sub | Mul | Quot | Rem | And | Or | Xor | Shl | Shr | Eq | Ne | Lt | Le | Gt
-            | Ge => (vec![i(), i()], i()),
+            | Ge | QuotNz | RemNz => (vec![i(), i()], i()),
             Neg => (vec![i()], i()),
             FAdd | FSub | FMul | FDiv => (vec![d(), d()], d()),
             FNeg => (vec![d()], d()),
@@ -250,7 +268,7 @@ impl PrimOp {
             BytesSet => (vec![Type::bytes(), i(), i()], Type::unit()),
             ArrayNew => (vec![i(), elem.clone()], arr),
             ArrayLen => (vec![arr], i()),
-            ArrayGet => (vec![arr, i()], elem),
+            ArrayGet | ArrayGetUnchecked => (vec![arr, i()], elem),
             ArraySet | ArraySetShared => (vec![arr, i(), elem], Type::unit()),
             ArrayUnique => (vec![arr.clone()], arr),
             BytesGet64 => (vec![Type::bytes(), i()], i()),
@@ -269,6 +287,9 @@ impl PrimOp {
         matches!(
             self,
             Quot | Rem
+                | QuotNz
+                | RemNz
+                | ArrayGetUnchecked
                 | BytesNew
                 | BytesSet
                 | BytesGet

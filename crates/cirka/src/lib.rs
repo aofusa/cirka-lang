@@ -177,6 +177,9 @@ fn compile_resolved(
     if !checked.unproved.is_empty() {
         cirkalang_check::insert_checks(&mut tt, &checked.unproved);
     }
+    // Every refinement is now proved or checked at run time (spec-v0.0.4.md
+    // §5); with `off`, nothing is.
+    tt.proofs_trusted = mode != cirkalang_check::Contracts::Off;
     // A library (no `main`) can be checked: its Core is still linted.
     if tt.main.is_none() && opts.tests != SourceTests::Check {
         let root = rp

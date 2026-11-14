@@ -549,6 +549,10 @@ pub enum Prim {
     ArraySetSharedUnchecked,
     BytesSetI64SharedUnchecked,
     BytesSetF64SharedUnchecked,
+    /// `div` / `rem` by a divisor known to be non-zero (FEAT-0234): no
+    /// zero check (except with the debug runtime).
+    DivNz,
+    RemNz,
     /// `is_value(x)`: 1 when `force x` would return `x` itself (not a thunk,
     /// a thunk being evaluated or an indirection); `x` is borrowed. Tests
     /// whether the length of a lazy array parameter can be read (FEAT-0069).
@@ -627,6 +631,8 @@ impl Prim {
         Prim::ArraySetSharedUnchecked,
         Prim::BytesSetI64SharedUnchecked,
         Prim::BytesSetF64SharedUnchecked,
+        Prim::DivNz,
+        Prim::RemNz,
         Prim::IsValue,
     ];
 
@@ -703,6 +709,8 @@ impl Prim {
             ArraySetSharedUnchecked => "array_set_shared_unchecked",
             BytesSetI64SharedUnchecked => "bytes_set_i64_shared_unchecked",
             BytesSetF64SharedUnchecked => "bytes_set_f64_shared_unchecked",
+            DivNz => "div_nz",
+            RemNz => "rem_nz",
             IsValue => "is_value",
         }
     }
@@ -724,6 +732,8 @@ impl Prim {
             ArraySetSharedUnchecked => ArraySetShared,
             BytesSetI64SharedUnchecked => BytesSetI64Shared,
             BytesSetF64SharedUnchecked => BytesSetF64Shared,
+            DivNz => Div,
+            RemNz => Rem,
             p => p,
         }
     }
@@ -743,6 +753,8 @@ impl Prim {
             ArraySetShared => ArraySetSharedUnchecked,
             BytesSetI64Shared => BytesSetI64SharedUnchecked,
             BytesSetF64Shared => BytesSetF64SharedUnchecked,
+            Div => DivNz,
+            Rem => RemNz,
             _ => return None,
         })
     }
@@ -821,7 +833,9 @@ impl Prim {
             | BytesSetF64Unchecked
             | ArraySetSharedUnchecked
             | BytesSetI64SharedUnchecked
-            | BytesSetF64SharedUnchecked => unreachable!("checked() maps unchecked accesses"),
+            | BytesSetF64SharedUnchecked
+            | DivNz
+            | RemNz => unreachable!("checked() maps unchecked accesses"),
         }
     }
 

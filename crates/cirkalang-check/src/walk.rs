@@ -349,8 +349,11 @@ impl<'a> Walker<'a> {
                     refined.push(p);
                     t = a;
                 }
+                // Only from a total function: an unused `let` may be removed,
+                // and the fact must not come from a call that never returns.
                 if refined.is_empty()
                     && let Val::Neutral(Head::Global(g), sp) = &vv
+                    && matches!(self.prog.totality.get(g), Some((Totality::Total, _)))
                 {
                     refined = result_refinements(self.prog, self.ev, *g, sp);
                 }

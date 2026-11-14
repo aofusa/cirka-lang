@@ -315,6 +315,12 @@ pub enum Prim {
     Refine,
     /// `subsetOf a p = a`: the refinement type `{x : a | p x}`.
     Subset,
+    /// Operations whose check a proof makes unnecessary (spec-v0.0.4.md
+    /// §5): used only by library functions whose arguments are refined.
+    ArrayIndexProved,
+    DivProved,
+    ModProved,
+    Unreachable,
     // Unique.
     MkUnique,
     Freeze,
@@ -456,6 +462,10 @@ impl Prim {
         ("primRewrite", Prim::Rewrite),
         ("primRefine", Prim::Refine),
         ("subsetOf", Prim::Subset),
+        ("primArrayIndexProved", Prim::ArrayIndexProved),
+        ("primDivProved", Prim::DivProved),
+        ("primModProved", Prim::ModProved),
+        ("primUnreachable", Prim::Unreachable),
         ("unique", Prim::MkUnique),
         ("freeze", Prim::Freeze),
         ("dropFree", Prim::DropFree),
@@ -571,6 +581,11 @@ pub struct Program {
     /// Where values are checked against refinement types: the `site` of
     /// each `primRefine` (spec-v0.0.4.md §3).
     pub refine_sites: Vec<RefineSite>,
+    /// Every refinement was proved or is checked at run time
+    /// (`--contracts=verify|check`): the operations that rely on proofs
+    /// may drop their checks (spec-v0.0.4.md §5). `false` (the default)
+    /// keeps the checks.
+    pub proofs_trusted: bool,
 }
 
 /// A place where a value must satisfy a refinement.
