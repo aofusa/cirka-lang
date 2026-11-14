@@ -24,7 +24,7 @@
 | CirkaLang 検証 | `tests/cirkalang/verify/{pass,fail}/**/*.cirka` | CirkaLang (v0.0.4〜) | 証明が通る / 反例付きで失敗する (`CIRKA_Z3` 未設定ならスキップ) |
 | 契約の実行時検査 | `tests/cirkalang/run/contracts/` | CirkaLang | `--contracts=check` で違反時に期待どおり停止 |
 | メモリ | 実行テスト全体 | 全部 | `CIRKA_ALLOC=system` + valgrind でエラー 0 |
-| 並行性 | `tests/mir/run/` (`tsan: 1`)、`tests/mir/tsan/`、`tests/cirkalang/run/threads/` | 共通基盤 (FEAT-0045)、CirkaLang (v0.0.5〜) | ThreadSanitizer でエラーなし (TSan が動く環境で。下記) |
+| 並行性 | `tests/mir/run/` (`tsan: 1`)、`tests/mir/tsan/`、`tests/cirkalang/run/v005/` (`tsan: 1`)、`tests/cirkalang/fail/thread/` | 共通基盤 (FEAT-0045)、CirkaLang (v0.0.5〜、FEAT-0240) | ThreadSanitizer でエラーなし (TSan が動く環境で。下記)、`Send` の診断が一致 |
 | 非同期 I/O | `tests/mir/run/evloop.mir` (`tsan: 1`)・`tests/mir/run/echo_10k.mir`、ランタイムの単体テスト | 共通基盤 (FEAT-0046) | 1 つのループで 1 万の接続を同時に開いてエコーし、リーク 0。ループバックだけを使い、外の名前解決はしない (05-runtime.md §10.3) |
 | Vulkan compute | `tests/cirkalang/run/v0.0.6/vulkan/` | CirkaLang (v0.0.6〜) | lavapipe 上で CPU 計算と一致、検証レイヤーのエラー・警告 0 (Vulkan がなければスキップ) |
 | 遠隔 GUI (任意) | `scripts/remote.sh` で手動実行 | macOS / Windows | CI には含めない。結果は `docs/artifacts/remote/` に置き、結論をチケットに記録 (§7) |
@@ -39,6 +39,9 @@
   -- runtime-env: CIRKA_STACK_SIZE=64M
   -- expect-leak: 1          (循環の警告テストなど、意図的なリーク)
   -- skip-backend: llvm      (インタプリタのみで実行)
+  -- skip-backend: interp    (ネイティブのみで実行。スレッドを使うテスト。期待出力は `.stdout`。解放されずに残る
+                             オブジェクト (CAF が持つもの) の数はデバッグ用ランタイムの実行 (リーク検査つき) を基準にし、
+                             ほかの構成も同じ数にする。確保の数そのものはスレッドの進み方で変わってよい)
   -- opt-levels: 2           (aCHC の run テスト: 指定した最適化レベルだけで実行。既定は 0 と 2)
   -- max-allocs: 3001000     (ネイティブ実行の確保回数の上限。CIRKA_STATS の allocs)
   -- max-forced: 1001000     (ネイティブ実行で評価されたサンクの数の上限。CIRKA_STATS の forced)
