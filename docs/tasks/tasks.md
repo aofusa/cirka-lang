@@ -315,5 +315,6 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [BUG-0014](bugs/BUG-0014-lazy-con-strict-fields.md) | 遅延束縛の構築子の正格フィールドが束縛の時点で評価される | done | major | BUG-0008 |
 | [BUG-0015](bugs/BUG-0015-cl-linear-instantiation.md) | CirkaLang で線形型の値が Type の型変数や IO の結果を通じて複製できる | done | critical | FEAT-0212 |
 | [BUG-0016](bugs/BUG-0016-opt-stale-known-after-beta.md) | β 簡約の後に既知の構築子の表が古い引数を指す | done | major | FEAT-0220 |
+| [BUG-0017](bugs/BUG-0017-cl-invariant-trait-method.md) | トレイトのメソッドを使う不変条件が check で ICE になり、W1231 が誤って出る | done | major | FEAT-0235 |
 
 新しいチケットは `features/_TEMPLATE.md` / `bugs/_TEMPLATE.md` をコピーして作成する。
