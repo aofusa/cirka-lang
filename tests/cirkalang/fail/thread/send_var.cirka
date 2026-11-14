@@ -1,0 +1,13 @@
+module Main
+
+-- A type variable is `Send` only by a constraint (E1261, spec-v0.0.5.md
+-- §1.1).
+import Std.Thread
+
+box : a -> IO (MVar a)
+box x = newMVar x
+
+main : IO ()
+main = do
+  m <- box 1
+  pure ()

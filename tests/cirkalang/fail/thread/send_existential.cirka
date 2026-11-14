@@ -1,0 +1,13 @@
+module Main
+
+-- A field whose type the value chooses is not `Send`, unless it is erased
+-- (E1261, spec-v0.0.5.md §1.1).
+import Std.Thread
+
+data Dyn : Type where
+  MkDyn : (0 t : Type) -> (x : t) -> Dyn
+
+main : IO ()
+main = do
+  m <- newMVar (MkDyn Int 1)
+  pure ()

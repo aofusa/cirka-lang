@@ -1,0 +1,6 @@
+error[E1261]: `Dyn` cannot be sent to another thread (it is not `Send`)
+  --> tests/cirkalang/fail/thread/send_existential.cirka:12:8
+   |
+12 |   m <- newMVar (MkDyn Int 1)
+   |        ^^^^^^^
+   = note: the type of a field is not known from the type (an existential type): field 2 of `MkDyn`

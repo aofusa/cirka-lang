@@ -19,6 +19,21 @@
 (extern cirka_region_cell (Any Any) Int#)
 (extern cirka_region_get (Int#) Any)
 (extern cirka_region_set (Int# Any) Int#)
+; Threads and synchronization (spec-v0.0.5.md §1.5).
+(extern cirka_thread_spawn (Any) Any)
+(extern cirka_thread_join (Any) Any)
+(extern cirka_mvar_new (Any) Any)
+(extern cirka_mvar_new_empty () Any)
+(extern cirka_mvar_take (Any) Any)
+(extern cirka_mvar_read (Any) Any)
+(extern cirka_mvar_put (Any Any) Int#)
+(extern cirka_mvar_try_take (Any Any) Any)
+(extern cirka_mvar_try_put (Any Any) Int#)
+(extern cirka_chan_new () Any)
+(extern cirka_chan_send (Any Any) Int#)
+(extern cirka_chan_recv (Any) Any)
+(extern cirka_chan_try_recv (Any Any) Any)
+(extern cirka_chan_len (Any) Int#)
 
 ; Unsigned comparison through the sign bit.
 (def cirka$ult (-> Int# Int# Int#)

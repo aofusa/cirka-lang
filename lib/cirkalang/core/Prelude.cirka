@@ -325,6 +325,15 @@ impl (Release e, Release a) => Release (Result e a) where
   release (Err x) = release x
   release (Ok y) = release y
 
+-- Threads (spec-v0.0.5.md §1.1, §1.2). `Send a`: values of `a` can be
+-- given to another thread. It has no `impl`: the compiler derives it from
+-- the fields of the type. A type with a `ThreadBound` field (usually of
+-- multiplicity 0) is not `Send`: it wraps a resource of its thread.
+trait Send (a : LType)
+
+prim ThreadBound : Type
+prim threadBound : ThreadBound
+
 impl Eq Int where
   x == y = primEqInt x y
   x /= y = not (primEqInt x y)

@@ -2,6 +2,7 @@
 //! methods, implementations as dictionaries, instance resolution and the
 //! constraints that are solved after a definition has been elaborated.
 
+use super::send::SendNo;
 use super::*;
 use std::collections::HashSet;
 
@@ -135,14 +136,20 @@ impl<'r> Elab<'r> {
                 }
                 Search::Stuck => false,
                 Search::NotFound => {
-                    self.report(
-                        self.error(
-                            "E1253",
-                            p.span,
-                            format!("no instance for `{}`", self.show(&p.cx, goal)),
-                        )
-                        .with_help("add an `impl`, or a constraint to the signature"),
-                    );
+                    let send = self.prog.builtins.send_trait;
+                    match self.whnf(goal) {
+                        Val::Data(tr, args) if Some(tr) == send && args.len() == 1 => {
+                            self.report(self.send_error(&p.cx, &args[0].0, p.span));
+                        }
+                        _ => self.report(
+                            self.error(
+                                "E1253",
+                                p.span,
+                                format!("no instance for `{}`", self.show(&p.cx, goal)),
+                            )
+                            .with_help("add an `impl`, or a constraint to the signature"),
+                        ),
+                    }
                     self.assign(p, &Term::Error);
                     true
                 }
@@ -218,9 +225,21 @@ impl<'r> Elab<'r> {
                 Search::NotFound
             };
         };
+        let b = &self.prog.builtins;
+        // `Send` follows from the structure of the type (spec-v0.0.5.md
+        // §1.1): it has no implementations.
+        if Some(tr) == b.send_trait {
+            let Some((t, _)) = gargs.first() else {
+                return Search::NotFound;
+            };
+            return match self.send_check(cx, t) {
+                Ok(()) => Search::Found(self.send_dict(tr, &self.quote(cx, t))),
+                Err(SendNo::Stuck) => Search::Stuck,
+                Err(SendNo::No { .. }) => Search::NotFound,
+            };
+        }
         // `Drop` / `Release` of a value that holds only memory do nothing
         // (spec-v0.0.2.md §5.3), whatever the implementations are.
-        let b = &self.prog.builtins;
         let fin = if Some(tr) == b.drop_trait {
             Some((Fin::Drop, b.drop_free))
         } else if Some(tr) == b.release_trait {
@@ -306,7 +325,7 @@ impl<'r> Elab<'r> {
     }
 
     /// A dictionary in scope, or one of its supertraits.
-    fn local_candidate(
+    pub(super) fn local_candidate(
         &self,
         cx: &Cxt,
         term: &Term,
@@ -792,6 +811,18 @@ impl<'r> Elab<'r> {
                 )
                 .with_note("shared values are freed by reference counting and have no finalizer")
                 .with_help("declare the data type in `LType`"),
+            );
+        }
+        if Some(i.trait_) == b.send_trait {
+            self.report(
+                self.error("E1259", i.head.span, "`Send` cannot be implemented")
+                    .with_note(
+                        "whether values of a type can be sent to another thread follows \
+                         from the types of its fields",
+                    )
+                    .with_help(
+                        "to keep a type on its thread, give it a field of type `ThreadBound`",
+                    ),
             );
         }
         let mut ty = head;

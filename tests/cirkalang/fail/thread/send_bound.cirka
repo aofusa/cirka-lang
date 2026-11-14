@@ -1,0 +1,19 @@
+module Main
+
+-- A type with a `ThreadBound` field is not `Send` (spec-v0.0.5.md §1.2),
+-- nor is a type that holds it (E1261, with the fields that lead to it).
+import Std.Thread
+
+data Window : Type where
+  MkWindow : (0 _ : ThreadBound) -> Int -> Window
+
+data Frame = MkFrame String Window
+
+open : Int -> Window
+open n = MkWindow threadBound n
+
+main : IO ()
+main = do
+  m <- newMVar (open 1)
+  t <- spawn (pure (MkFrame "f" (open 2)))
+  pure ()

@@ -122,6 +122,16 @@ fn array_elem(t: &c::Type) -> c::Type {
 }
 
 /// `t` with `IO a` replaced by its representation `Unit# -> a`.
+/// A call of the runtime whose result (`Any`) is a value of type `r`.
+fn rt_call(r: c::Type, f: &str, args: Vec<c::Expr>) -> c::Expr {
+    c::Expr::Cast(Box::new(c::Expr::Extern(f.into(), args)), r)
+}
+
+/// A value passed to the runtime as an object.
+fn to_any(e: &c::Expr) -> c::Expr {
+    c::Expr::Cast(Box::new(e.clone()), c::Type::Any)
+}
+
 fn io_rep(t: &c::Type) -> c::Type {
     match t {
         c::Type::Con(n, args) if n == "IO" && args.len() == 1 => {
@@ -321,6 +331,10 @@ impl<'a> Lower<'a> {
                         c::Type::Con("Lazy".into(), vec![self.lower_ty(tvs, a)])
                     }
                     (Some(Prim::Arena), _) => c::Type::Any,
+                    // Threads (spec-v0.0.5.md §1.5): the mark is a token,
+                    // handles and channels are the runtime's objects.
+                    (Some(Prim::ThreadBound), _) => self.unit_ty(),
+                    (Some(Prim::Thread | Prim::MVar | Prim::Chan), _) => c::Type::Any,
                     (Some(Prim::In | Prim::RefIn), _) => int_ty(),
                     (Some(Prim::RIO), [_]) => c::Type::Con("IO".into(), Vec::new()),
                     (Some(Prim::RIO), [_, a]) => {
@@ -1412,7 +1426,64 @@ impl<'a> Lower<'a> {
             | Prim::In
             | Prim::RefIn
             | Prim::Lazy
+            | Prim::ThreadBound
+            | Prim::Thread
+            | Prim::MVar
+            | Prim::Chan
             | Prim::Subset => return None,
+            // Threads and synchronization (spec-v0.0.5.md §1.5): calls of
+            // the runtime, whose pointer arguments are borrowed and whose
+            // results are new references.
+            Prim::ThreadBoundVal => self.skeleton(ty, 0, |_, _| self.unit_val()),
+            Prim::ThreadSpawn => self.skeleton(ty, 2, |a, r| {
+                rt_call(r, "cirka_thread_spawn", vec![to_any(&a[0])])
+            }),
+            Prim::ThreadJoin => self.skeleton(ty, 2, |a, r| {
+                rt_call(r, "cirka_thread_join", vec![a[0].clone()])
+            }),
+            Prim::MVarNew => self.skeleton(ty, 2, |a, r| {
+                rt_call(r, "cirka_mvar_new", vec![to_any(&a[0])])
+            }),
+            Prim::MVarNewEmpty => {
+                self.skeleton(ty, 1, |_, r| rt_call(r, "cirka_mvar_new_empty", Vec::new()))
+            }
+            Prim::ChanNew => self.skeleton(ty, 1, |_, r| rt_call(r, "cirka_chan_new", Vec::new())),
+            Prim::MVarTake => self.skeleton(ty, 2, |a, r| {
+                rt_call(r, "cirka_mvar_take", vec![a[0].clone()])
+            }),
+            Prim::MVarRead => self.skeleton(ty, 2, |a, r| {
+                rt_call(r, "cirka_mvar_read", vec![a[0].clone()])
+            }),
+            Prim::ChanRecv => self.skeleton(ty, 2, |a, r| {
+                rt_call(r, "cirka_chan_recv", vec![a[0].clone()])
+            }),
+            Prim::MVarPut => self.skeleton(ty, 3, |a, _| {
+                self.seq_int(
+                    c::Expr::Extern("cirka_mvar_put".into(), vec![a[0].clone(), to_any(&a[1])]),
+                    self.unit_val(),
+                )
+            }),
+            Prim::ChanSend => self.skeleton(ty, 3, |a, _| {
+                self.seq_int(
+                    c::Expr::Extern("cirka_chan_send".into(), vec![a[0].clone(), to_any(&a[1])]),
+                    self.unit_val(),
+                )
+            }),
+            Prim::MVarTryPut => self.skeleton(ty, 3, |a, _| {
+                self.bool_of(c::Expr::Extern(
+                    "cirka_mvar_try_put".into(),
+                    vec![a[0].clone(), to_any(&a[1])],
+                ))
+            }),
+            Prim::MVarTryTake => self.try_take(ty, "cirka_mvar_try_take"),
+            Prim::ChanTryRecv => self.try_take(ty, "cirka_chan_try_recv"),
+            Prim::ChanLength => self.skeleton(ty, 2, |a, _| {
+                c::Expr::Con(
+                    "I#".into(),
+                    Vec::new(),
+                    vec![c::Expr::Extern("cirka_chan_len".into(), vec![a[0].clone()])],
+                )
+            }),
             // `delay f` = `let t = f () in Lazy# t`: the lazy `let` is a
             // thunk, evaluated once by `force`.
             Prim::Delay => self.skeleton(ty, 1, |a, r| {
@@ -1922,6 +1993,51 @@ impl<'a> Lower<'a> {
             Prim::UArrayWriteFloat => {
                 self.uarr_write(ty, O::BytesSetF, ("F#", "Float"), c::Type::double())
             }
+        })
+    }
+
+    /// `tryTakeMVar` / `tryRecv` (spec-v0.0.5.md §1.5): the runtime returns
+    /// the default it is given when there is no value. The default is the
+    /// `MVar` / channel itself, which is never a value of its contents.
+    fn try_take(&self, ty: &c::Type, f: &str) -> c::Expr {
+        self.skeleton(ty, 2, |a, r| {
+            let (Some(just), Some(nothing)) = (self.p.builtins.just, self.p.builtins.nothing)
+            else {
+                return c::Expr::Panic("no Maybe".into(), r);
+            };
+            let elem = match &r {
+                c::Type::Con(_, ts) if ts.len() == 1 => ts[0].clone(),
+                _ => c::Type::Any,
+            };
+            let x = self.id("x");
+            let m = a[0].clone();
+            c::Expr::LetStrict(
+                c::Binder::new(x.clone(), c::Mult::Many, c::Type::Any),
+                Box::new(c::Expr::Extern(f.into(), vec![m.clone(), m.clone()])),
+                Box::new(c::Expr::Case(
+                    Box::new(c::Expr::Prim(
+                        c::PrimOp::PtrEq,
+                        vec![c::Type::Any],
+                        vec![c::Expr::Var(x.clone()), m],
+                    )),
+                    c::Binder::new(self.id("e"), c::Mult::Many, c::Type::int()),
+                    r.clone(),
+                    vec![
+                        c::Alt {
+                            con: c::AltCon::Int(0),
+                            rhs: c::Expr::Con(
+                                self.gname(just),
+                                vec![elem.clone()],
+                                vec![c::Expr::Cast(Box::new(c::Expr::Var(x)), elem.clone())],
+                            ),
+                        },
+                        c::Alt {
+                            con: c::AltCon::Default,
+                            rhs: c::Expr::Con(self.gname(nothing), vec![elem], Vec::new()),
+                        },
+                    ],
+                )),
+            )
         })
     }
 

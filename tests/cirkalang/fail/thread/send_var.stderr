@@ -1,0 +1,7 @@
+error[E1261]: `a` cannot be sent to another thread (it is not `Send`)
+ --> tests/cirkalang/fail/thread/send_var.cirka:8:9
+  |
+8 | box x = newMVar x
+  |         ^^^^^^^
+  = note: the type variable `a` has no `Send` constraint
+  = help: add the constraint `Send a` to the signature

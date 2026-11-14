@@ -1,0 +1,71 @@
+-- `Send` follows from the fields of a type (spec-v0.0.5.md §1.1): data
+-- types with parameters, recursive types, an indexed family, functions,
+-- an erased field of a type the value chooses, `Send` from a constraint
+-- and from a supertrait. Values of these types go into `MVar`s.
+module Main
+
+import Std.Thread
+import Data.Vect as V
+
+data Tree a = Leaf | Node (Tree a) a (Tree a)
+
+total
+size : Tree a -> Int
+size Leaf = 0
+size (Node l _ r) = size l + 1 + size r
+
+-- Functions are `Send`.
+data Handler = MkHandler String (Int -> Int)
+
+-- The type of the erased field is chosen by the value: nothing of it is
+-- there at run time.
+data Tagged : Type where
+  MkTagged : (0 t : Type) -> (0 x : t) -> Int -> Tagged
+
+-- A type that refers to itself through an `MVar`.
+data Node2 = MkNode2 Int (Maybe (MVar Node2))
+
+trait Send a => Message a where
+  describe : a -> String
+
+impl Message Int where
+  describe n = "int " ++ show n
+
+-- `Send a` from the constraint.
+boxAll : Send a => List a -> IO (MVar (List (Tree a)))
+boxAll xs = newMVar (map (\x => Node Leaf x Leaf) xs)
+
+-- `Send a` from the supertrait of `Message a`.
+post : Message a => Chan a -> a -> IO String
+post c x = do
+  m <- newMVar x
+  y <- takeMVar m
+  send c y
+  pure (describe y)
+
+main : IO ()
+main = do
+  t <- newMVar (Node (Node Leaf 1 Leaf) 2 Leaf)
+  t' <- readMVar t
+  printInt (size t')
+  h <- newMVar (MkHandler "inc" (\n => n + 1))
+  MkHandler name f <- readMVar h
+  putStr (name ++ " " ++ show (f 41) ++ "\n")
+  v <- newMVar (V.VCons 1 (V.VCons 2 (V.VCons 3 V.VNil)))
+  v' <- takeMVar v
+  printInt (V.length v')
+  g <- newMVar (MkTagged String "erased" 5)
+  MkTagged _ _ k <- readMVar g
+  printInt k
+  inner <- newEmptyMVar
+  n <- newMVar (MkNode2 1 (Just inner))
+  MkNode2 i _ <- readMVar n
+  printInt i
+  bs <- boxAll [1, 2, 3]
+  ts <- readMVar bs
+  printInt (length ts)
+  c <- newChan
+  d <- post c 42
+  putStr (d ++ "\n")
+  r <- recv c
+  printInt r

@@ -381,6 +381,27 @@ pub enum Prim {
     Lazy,
     Delay,
     Force,
+    // Threads (spec-v0.0.5.md §1): the mark of values bound to their
+    // thread, and the runtime's thread handles, `MVar`s and channels.
+    ThreadBound,
+    ThreadBoundVal,
+    Thread,
+    MVar,
+    Chan,
+    ThreadSpawn,
+    ThreadJoin,
+    MVarNew,
+    MVarNewEmpty,
+    MVarTake,
+    MVarRead,
+    MVarPut,
+    MVarTryTake,
+    MVarTryPut,
+    ChanNew,
+    ChanSend,
+    ChanRecv,
+    ChanTryRecv,
+    ChanLength,
 }
 
 impl Prim {
@@ -518,6 +539,25 @@ impl Prim {
         ("Lazy", Prim::Lazy),
         ("primDelay", Prim::Delay),
         ("primForce", Prim::Force),
+        ("ThreadBound", Prim::ThreadBound),
+        ("threadBound", Prim::ThreadBoundVal),
+        ("Thread", Prim::Thread),
+        ("MVar", Prim::MVar),
+        ("Chan", Prim::Chan),
+        ("primSpawn", Prim::ThreadSpawn),
+        ("primJoin", Prim::ThreadJoin),
+        ("primNewMVar", Prim::MVarNew),
+        ("primNewEmptyMVar", Prim::MVarNewEmpty),
+        ("primTakeMVar", Prim::MVarTake),
+        ("primReadMVar", Prim::MVarRead),
+        ("primPutMVar", Prim::MVarPut),
+        ("primTryTakeMVar", Prim::MVarTryTake),
+        ("primTryPutMVar", Prim::MVarTryPut),
+        ("primNewChan", Prim::ChanNew),
+        ("primSend", Prim::ChanSend),
+        ("primRecv", Prim::ChanRecv),
+        ("primTryRecv", Prim::ChanTryRecv),
+        ("primChanLength", Prim::ChanLength),
     ];
 
     pub fn from_name(s: &str) -> Option<Prim> {
@@ -555,6 +595,10 @@ impl Prim {
                 | Prim::In
                 | Prim::RefIn
                 | Prim::Lazy
+                | Prim::ThreadBound
+                | Prim::Thread
+                | Prim::MVar
+                | Prim::Chan
         )
     }
 }
@@ -696,6 +740,11 @@ pub struct Builtins {
     pub subset_of: Option<GName>,
     /// `primRefine {a} p site x`: `x` checked against `{y : a | p y}`.
     pub refine: Option<GName>,
+    // Threads (spec-v0.0.5.md §1).
+    pub send_trait: Option<GName>,
+    pub maybe: Option<GName>,
+    pub nothing: Option<GName>,
+    pub just: Option<GName>,
 }
 
 impl Program {

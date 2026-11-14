@@ -1,0 +1,7 @@
+error[E1259]: `Send` cannot be implemented
+ --> tests/cirkalang/fail/thread/send_impl.cirka:7:6
+  |
+7 | impl Send Foo
+  |      ^^^^^^^^
+  = note: whether values of a type can be sent to another thread follows from the types of its fields
+  = help: to keep a type on its thread, give it a field of type `ThreadBound`

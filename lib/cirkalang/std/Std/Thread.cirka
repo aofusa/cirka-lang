@@ -1,0 +1,138 @@
+-- Threads and synchronization (spec-v0.0.5.md §1.3, §1.4).
+--
+-- `spawn` runs an action on a new OS thread; `join` waits for its result.
+-- Values go from a thread to another only as results of `join` and
+-- through `MVar`, `Chan` and `Mutex`, so their types must be `Send`
+-- (§1.1). Until the first `spawn` the process has one thread and pays for
+-- no atomic operation or lock.
+module Std.Thread
+
+-- A thread whose result is an `a`.
+prim Thread : Type -> Type
+-- A box that holds zero or one value (Haskell's `MVar`).
+prim MVar : Type -> Type
+-- An unbounded FIFO channel.
+prim Chan : Type -> Type
+
+private prim primSpawn : {a : Type} -> IO a -> IO (Thread a)
+private prim primJoin : {a : Type} -> Thread a -> IO a
+private prim primNewMVar : {a : Type} -> a -> IO (MVar a)
+private prim primNewEmptyMVar : {a : Type} -> IO (MVar a)
+private prim primTakeMVar : {a : Type} -> MVar a -> IO a
+private prim primReadMVar : {a : Type} -> MVar a -> IO a
+private prim primPutMVar : {a : Type} -> MVar a -> a -> IO ()
+private prim primTryTakeMVar : {a : Type} -> MVar a -> IO (Maybe a)
+private prim primTryPutMVar : {a : Type} -> MVar a -> a -> IO Bool
+private prim primNewChan : {a : Type} -> IO (Chan a)
+private prim primSend : {a : Type} -> Chan a -> a -> IO ()
+private prim primRecv : {a : Type} -> Chan a -> IO a
+private prim primTryRecv : {a : Type} -> Chan a -> IO (Maybe a)
+private prim primChanLength : {a : Type} -> Chan a -> IO Int
+
+private extern "cirka" where
+  cirka_thread_id : IO Int
+  cirka_thread_yield : IO Int
+  cirka_cpu_count : IO Int
+
+-- ---- threads ----
+
+-- Runs `act` on a new thread. The process ends when `main` ends, without
+-- waiting for the other threads: `join` the ones whose work must finish.
+spawn : Send a => IO a -> IO (Thread a)
+spawn act = primSpawn act
+
+-- Waits until the thread has finished and returns its result (the same
+-- value each time).
+join : Thread a -> IO a
+join t = primJoin t
+
+-- The number of the calling thread (1 for the thread running `main`).
+threadId : IO Int
+threadId = cirka_thread_id
+
+-- Lets the other threads run.
+yield : IO ()
+yield = do
+  _ <- cirka_thread_yield
+  pure ()
+
+-- The number of processors online.
+cpuCount : IO Int
+cpuCount = cirka_cpu_count
+
+-- ---- MVar ----
+
+newMVar : Send a => a -> IO (MVar a)
+newMVar x = primNewMVar x
+
+newEmptyMVar : Send a => IO (MVar a)
+newEmptyMVar = primNewEmptyMVar
+
+-- Takes the value out, waiting while there is none.
+takeMVar : MVar a -> IO a
+takeMVar m = primTakeMVar m
+
+-- Puts a value in, waiting while there is one.
+putMVar : MVar a -> a -> IO ()
+putMVar m x = primPutMVar m x
+
+-- The value, without taking it out (waits while there is none).
+readMVar : MVar a -> IO a
+readMVar m = primReadMVar m
+
+-- Takes the value out if there is one (never waits).
+tryTakeMVar : MVar a -> IO (Maybe a)
+tryTakeMVar m = primTryTakeMVar m
+
+-- Puts a value in if there is none; whether it did (never waits).
+tryPutMVar : MVar a -> a -> IO Bool
+tryPutMVar m x = primTryPutMVar m x
+
+-- Takes the value, runs `f` on it, puts back the first component of its
+-- result and returns the second. Other threads wait meanwhile.
+modifyMVar : MVar a -> (a -> IO (a, b)) -> IO b
+modifyMVar m f = do
+  x <- primTakeMVar m
+  (y, r) <- f x
+  primPutMVar m y
+  pure r
+
+-- ---- Chan ----
+
+newChan : Send a => IO (Chan a)
+newChan = primNewChan
+
+-- Appends a value (never waits).
+send : Chan a -> a -> IO ()
+send c x = primSend c x
+
+-- The oldest value, waiting while there is none.
+recv : Chan a -> IO a
+recv c = primRecv c
+
+-- The oldest value if there is one (never waits).
+tryRecv : Chan a -> IO (Maybe a)
+tryRecv c = primTryRecv c
+
+-- The number of values waiting.
+chanLength : Chan a -> IO Int
+chanLength c = primChanLength c
+
+-- ---- Mutex ----
+
+-- A value that one thread at a time uses.
+data Mutex (a : Type) = MkMutex (MVar a)
+
+newMutex : Send a => a -> IO (Mutex a)
+newMutex x = do
+  m <- primNewMVar x
+  pure (MkMutex m)
+
+-- Locks the mutex, runs `f` on the value, stores the first component of
+-- its result and unlocks; returns the second component.
+withMutex : Mutex a -> (a -> IO (a, b)) -> IO b
+withMutex (MkMutex m) f = modifyMVar m f
+
+-- The current value.
+readMutex : Mutex a -> IO a
+readMutex (MkMutex m) = primReadMVar m

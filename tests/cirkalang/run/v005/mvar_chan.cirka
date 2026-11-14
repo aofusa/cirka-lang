@@ -1,0 +1,65 @@
+-- `MVar`, `Chan` and `Mutex` on one thread (spec-v0.0.5.md §1.4): the
+-- operations that do not wait, the order of a channel, and the value a
+-- `modifyMVar` / `withMutex` returns. Runs in the interpreter too.
+module Main
+
+import Std.Thread
+
+showMaybe : Maybe Int -> String
+showMaybe Nothing = "none"
+showMaybe (Just x) = show x
+
+showBool : Bool -> String
+showBool b = if b then "yes" else "no"
+
+sendAll : Chan String -> List String -> IO ()
+sendAll c [] = pure ()
+sendAll c (x :: xs) = do
+  send c x
+  sendAll c xs
+
+drain : Chan String -> IO String
+drain c = do
+  r <- tryRecv c
+  case r of
+    Nothing => pure ""
+    Just x => do
+      rest <- drain c
+      pure (x ++ rest)
+
+main : IO ()
+main = do
+  m <- newMVar 1
+  v <- readMVar m
+  printInt v
+  x <- takeMVar m
+  e <- tryTakeMVar m
+  putStr (showMaybe e ++ "\n")
+  ok <- tryPutMVar m (x + 1)
+  full <- tryPutMVar m 100
+  putStr (showBool ok ++ " " ++ showBool full ++ "\n")
+  r <- modifyMVar m (\n => pure (n * 10, n + 5))
+  printInt r
+  y <- takeMVar m
+  printInt y
+  putMVar m 7
+  t <- tryTakeMVar m
+  putStr (showMaybe t ++ "\n")
+  c <- newChan
+  sendAll c ["a", "b", "c"]
+  k <- chanLength c
+  printInt k
+  first <- recv c
+  putStr (first ++ "\n")
+  rest <- drain c
+  putStr (rest ++ "\n")
+  k2 <- chanLength c
+  printInt k2
+  lock <- newMutex "x"
+  n <- withMutex lock (\s => pure (s ++ "y", 2))
+  printInt n
+  s <- readMutex lock
+  putStr (s ++ "\n")
+  yield
+  me <- threadId
+  printInt me

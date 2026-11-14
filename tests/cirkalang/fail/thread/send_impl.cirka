@@ -1,0 +1,10 @@
+module Main
+
+-- `Send` cannot be implemented: it follows from the fields (E1259,
+-- spec-v0.0.5.md §1.1).
+data Foo = MkFoo Int
+
+impl Send Foo
+
+main : IO ()
+main = pure ()

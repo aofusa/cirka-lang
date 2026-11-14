@@ -134,7 +134,9 @@ fn compile_cirka_with(
 /// CirkaLang programs under tests/cirkalang/run/v<version>/ (FEAT-0205):
 /// Core → MIR → Perceus at -O0 and -O2, the interpreter prints `.stdout`
 /// (exit code `.exitcode`, default 0) without leaks, and native code with
-/// the debug and release runtimes agrees.
+/// the debug and release runtimes agrees. Programs with threads, which the
+/// interpreter does not run, say `-- skip-backend: interp` (spec-v0.0.5.md
+/// §1.5): native code alone prints `.stdout`.
 #[test]
 fn cirkalang_run() {
     cirka_testkit::init();
@@ -161,6 +163,7 @@ fn cirkalang_run() {
         let want_code: i32 = std::fs::read_to_string(c.sibling("exitcode"))
             .map(|s| s.trim().parse().unwrap())
             .unwrap_or(0);
+        let interp_ok = c.header.get("skip-backend") != Some("interp");
         let mut reference = None;
         for level in [0u8, 2] {
             let mut opts = cirka_driver::pipeline::Options::new(&c.name);
@@ -178,6 +181,17 @@ fn cirkalang_run() {
                         );
                     }
                 };
+            if !interp_ok {
+                let r = cirka_mir::interp::RunResult {
+                    stdout: std::fs::read_to_string(c.sibling("stdout")).unwrap_or_default(),
+                    stderr: String::new(),
+                    exit_code: want_code,
+                    stats: Default::default(),
+                    leaked: 0,
+                };
+                reference = Some((out.mir, r));
+                continue;
+            }
             let r = match cirka_mir::interp::run(&out.mir, &stdin, u64::MAX) {
                 Ok(r) => r,
                 Err(e) => return Outcome::Fail(format!("-O{level}: {e}")),
@@ -204,8 +218,9 @@ fn cirkalang_run() {
             let (core, _) = compile_cirka(p)?;
             cirka_integration::cost_at_o2(core, &c.name, &stdin)
         };
-        if let Err(e) =
-            cirka_integration::check_same_cost(c, cirka_integration::Cost::of(&m, &r), hand)
+        if interp_ok
+            && let Err(e) =
+                cirka_integration::check_same_cost(c, cirka_integration::Cost::of(&m, &r), hand)
         {
             return Outcome::Fail(e);
         }
@@ -216,19 +231,19 @@ fn cirkalang_run() {
             &m,
             &stdin,
             &r,
-            true,
+            interp_ok,
             want_code == 0,
         )
     });
 }
 
-/// Ill-typed programs under tests/cirkalang/fail/{type,own,test,total,proof,refine}/ report
+/// Ill-typed programs under tests/cirkalang/fail/{type,own,test,total,proof,refine,thread}/ report
 /// the diagnostics in `.stderr` (`test/` is checked with its tests kept, as
 /// by `cirka check`).
 #[test]
 fn cirkalang_type_errors() {
     let mut cases = Vec::new();
-    for d in ["type", "own", "test", "total", "proof", "refine"] {
+    for d in ["type", "own", "test", "total", "proof", "refine", "thread"] {
         cases.extend(discover(
             &repo_root().join("tests/cirkalang/fail").join(d),
             &["cirka"],

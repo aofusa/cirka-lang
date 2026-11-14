@@ -1,0 +1,12 @@
+error[E1261]: `Window` cannot be sent to another thread (it is not `Send`)
+  --> tests/cirkalang/fail/thread/send_bound.cirka:17:8
+   |
+17 |   m <- newMVar (open 1)
+   |        ^^^^^^^
+   = note: `ThreadBound` marks a value that only its thread may use: field 1 of `MkWindow`
+error[E1261]: `Frame` cannot be sent to another thread (it is not `Send`)
+  --> tests/cirkalang/fail/thread/send_bound.cirka:18:8
+   |
+18 |   t <- spawn (pure (MkFrame "f" (open 2)))
+   |        ^^^^^
+   = note: `ThreadBound` marks a value that only its thread may use: field 1 of `MkWindow`, in field 2 of `MkFrame`

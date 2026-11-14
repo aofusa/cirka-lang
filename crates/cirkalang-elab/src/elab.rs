@@ -11,6 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 mod raii;
+mod send;
 mod traits;
 use traits::{Goal, Pending, Search};
 
@@ -259,6 +260,10 @@ impl<'r> Elab<'r> {
             rewrite: f("primRewrite"),
             subset_of: f("subsetOf"),
             refine: f("primRefine"),
+            send_trait: f("Send"),
+            maybe: f("Maybe"),
+            nothing: f("Nothing"),
+            just: f("Just"),
         };
         Elab {
             rp,

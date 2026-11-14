@@ -1,0 +1,90 @@
+-- skip-backend: interp
+-- tsan: 1
+-- Threads (spec-v0.0.5.md §1.3, §1.4): workers share a counter through a
+-- `Mutex`, send values built on their thread through a `Chan`, and return
+-- results to `join`; two threads hand a number back and forth through
+-- two `MVar`s, each waiting for the other.
+module Main
+
+import Std.Thread
+
+-- Adds 1 to the counter `n` times, one lock at a time.
+bump : Mutex Int -> Int -> IO ()
+bump m n = if n == 0 then pure () else do
+  withMutex m (\c => pure (c + 1, ()))
+  bump m (n - 1)
+
+-- [k, k - 1, ..., 1], built on the worker's thread.
+countdown : Int -> List Int
+countdown k = if k == 0 then [] else k :: countdown (k - 1)
+
+total
+sumList : List Int -> Int
+sumList [] = 0
+sumList (x :: xs) = x + sumList xs
+
+-- Bumps the counter, sends a list and returns a string and its thread.
+worker : Mutex Int -> Chan (List Int) -> Int -> IO (String, Int)
+worker m c k = do
+  bump m 1000
+  send c (countdown k)
+  me <- threadId
+  pure (show k ++ "!", me)
+
+spawnAll : Mutex Int -> Chan (List Int) -> Int -> IO (List (Thread (String, Int)))
+spawnAll m c k = if k == 0 then pure [] else do
+  t <- spawn (worker m c k)
+  ts <- spawnAll m c (k - 1)
+  pure (t :: ts)
+
+-- The workers' strings, and how many ran on a thread other than main's.
+joinAll : List (Thread (String, Int)) -> IO (String, Int)
+joinAll [] = pure ("", 0)
+joinAll (t :: ts) = do
+  (s, me) <- join t
+  (rest, n) <- joinAll ts
+  pure (s ++ rest, n + (if me /= 1 then 1 else 0))
+
+recvAll : Chan (List Int) -> Int -> Int -> IO Int
+recvAll c k acc = if k == 0 then pure acc else do
+  xs <- recv c
+  recvAll c (k - 1) (acc + sumList xs)
+
+-- Takes a number from `inbox` and puts the next one in `outbox`, `n` times.
+pingPong : MVar Int -> MVar Int -> Int -> IO ()
+pingPong inbox outbox n = if n == 0 then pure () else do
+  x <- takeMVar inbox
+  putMVar outbox (x + 1)
+  pingPong inbox outbox (n - 1)
+
+main : IO ()
+main = do
+  m <- newMutex 0
+  c <- newChan
+  ts <- spawnAll m c 8
+  (s, others) <- joinAll ts
+  count <- readMutex m
+  printInt count
+  putStr (s ++ "\n")
+  printInt others
+  -- The lists are all in the channel once the workers are joined.
+  n <- chanLength c
+  printInt n
+  sum <- recvAll c 8 0
+  printInt sum
+  -- Joining again gives the same result.
+  case ts of
+    t :: _ => do
+      (again, _) <- join t
+      putStr (again ++ "\n")
+    [] => pure ()
+  a <- newEmptyMVar
+  b <- newEmptyMVar
+  p <- spawn (pingPong a b 1000)
+  putMVar a 0
+  pingPong b a 999
+  last <- takeMVar b
+  join p
+  printInt last
+  cpus <- cpuCount
+  putStr (if cpus >= 1 then "cpus: ok\n" else "cpus: none\n")
