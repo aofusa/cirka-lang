@@ -33,7 +33,7 @@ unique:
   tailcall rev$u(a, lo, hi)
 }
 
-fn show(a: ptr @borrowed, i: i64) -> i64 {
+fn show(a: ptr @owned, i: i64) -> i64 {
 entry:
   let pre%5 = prim ge(i, 0)
   let len%6 = prim bytes_len(a)
@@ -42,6 +42,7 @@ entry:
   let pre%9 = prim and(pre%5, pre%8)
   switch pre%9 { 0 => checked, default => unchecked }
 done:
+  drop a
   ret 0
 body:
   let x = prim bytes_get_i64(a, i)
@@ -60,7 +61,6 @@ entry:
   let t = call mk()
   let (r, n) = call flips(t, 0)
   let _ = call show(r, 0)
-  drop r
   let _ = extern cirka_write_char(32)
   let _ = extern cirka_write_i64(n)
   let _ = extern cirka_write_char(10)
@@ -68,9 +68,7 @@ entry:
   dup s
   let (q, m) = call flips(s, 0)
   let _ = call show(q, 0)
-  drop q
   let o = call show(s, 0)
-  drop s
   let _ = extern cirka_write_char(32)
   let _ = extern cirka_write_i64(m)
   let _ = extern cirka_write_i64(o)
@@ -127,11 +125,12 @@ unique:
   tailcall flips$slow$u(p, f)
 }
 
-fn show$b(a: ptr @borrowed, i: i64) -> i64 {
+fn show$b(a: ptr @owned, i: i64) -> i64 {
 entry:
   let d = prim ge(i, 4)
   switch d { 0 => body, default => done }
 done:
+  drop a
   ret 0
 body:
   let x = prim bytes_get_i64_unchecked(a, i)

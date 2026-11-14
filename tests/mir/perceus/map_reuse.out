@@ -32,14 +32,17 @@ cons:
   ret r
 }
 
-fn sum(xs: ptr @borrowed, acc: i64) -> i64 {
+fn sum(xs: ptr @owned, acc: i64) -> i64 {
 entry:
   switch xs { List.Nil => nil, List.Cons => cons }
 nil:
+  drop xs
   ret acc
 cons:
   let h = proj xs List.Cons.head
   let t = proj xs List.Cons.tail
+  dup t
+  drop xs
   let acc2 = prim add(acc, h)
   tailcall sum(t, acc2)
 }
@@ -51,9 +54,7 @@ entry:
   dup ys
   let zs = call map_inc(ys)
   let a = call sum(ys, 0)
-  drop ys
   let b = call sum(zs, 0)
-  drop zs
   let _ = extern cirka_write_i64(a)
   let _ = extern cirka_write_char(32)
   let _ = extern cirka_write_i64(b)

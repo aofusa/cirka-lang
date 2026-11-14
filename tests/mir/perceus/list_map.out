@@ -36,15 +36,18 @@ cons:
   ret r
 }
 
-fn sum(xs: ptr @borrowed, acc: i64) -> i64 {
+fn sum(xs: ptr @owned, acc: i64) -> i64 {
 entry:
   switch xs { List.Nil => nil, List.Cons => cons }
 nil:
+  drop xs
   ret acc
 cons:
   let t = proj xs List.Cons.tail
   let h = proj xs List.Cons.head
   let v = proj h Int.I.v
+  dup t
+  drop xs
   let acc2 = prim add(acc, v)
   tailcall sum(t, acc2)
 }
@@ -55,9 +58,7 @@ entry:
   dup xs
   let ys = call double_all(xs)
   let a = call sum(xs, 0)
-  drop xs
   let b = call sum(ys, 0)
-  drop ys
   let unused = call range(1, 3)
   drop unused
   let _ = extern cirka_write_i64(a)

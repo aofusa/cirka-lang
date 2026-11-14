@@ -1,0 +1,95 @@
+// A parameter that every call gives up becomes owned (FEAT-0083): `check`
+// frees the tree as it reads it (its recursive calls pass the fields of its
+// own parameter), where a borrowed `check` would leave `main` to free the
+// tree in a second traversal. `size`'s argument is used after the call, so
+// it stays borrowed, and so does `width`'s, which one call passes a string
+// literal (a static object costs nothing borrowed). A thunk is evaluated
+// once: its function's parameter (the captured tree) is given up by the
+// evaluation.
+type Tree { Nil = 0 {}, Node = 1 { l: ptr, r: ptr } }
+type Int { I = 0 { v: i64 } }
+extern fn cirka_write_i64(i64) -> void
+extern fn cirka_write_char(i64) -> void
+
+fn make(d: i64) -> ptr {
+entry:
+  switch d { 0 => leaf, default => node }
+leaf:
+  let n = alloc Tree.Nil()
+  ret n
+node:
+  let d1 = prim sub(d, 1)
+  let l = call make(d1)
+  let r = call make(d1)
+  let t = alloc Tree.Node(l, r)
+  ret t
+}
+
+fn check(t: ptr) -> i64 {
+entry:
+  switch t { Tree.Nil => nil, Tree.Node => node }
+nil:
+  ret 0
+node:
+  let l = proj t Tree.Node.l
+  let r = proj t Tree.Node.r
+  let a = call check(l)
+  let b = call check(r)
+  let s = prim add(a, b)
+  let s1 = prim add(s, 1)
+  ret s1
+}
+
+fn size(t: ptr) -> i64 {
+entry:
+  switch t { Tree.Nil => nil, Tree.Node => node }
+nil:
+  ret 1
+node:
+  let l = proj t Tree.Node.l
+  let r = proj t Tree.Node.r
+  let a = call size(l)
+  let b = call size(r)
+  let s = prim add(a, b)
+  ret s
+}
+
+fn later(t: ptr) -> ptr {
+entry:
+  let n = call size(t)
+  let r = alloc Int.I(n)
+  ret r
+}
+
+fn width(s: ptr) -> i64 {
+entry:
+  let n = prim bytes_len(s)
+  ret n
+}
+
+fn say(n: i64) -> i64 {
+entry:
+  let _ = extern cirka_write_i64(n)
+  let _ = extern cirka_write_char(10)
+  ret 0
+}
+
+fn main() -> i64 {
+entry:
+  let t = call make(4)
+  let n = call size(t)
+  let c = call check(t)
+  let _ = call say(n)
+  let _ = call say(c)
+  let u = call make(3)
+  let k = mkthunk later(u)
+  let v = force k
+  let x = proj v Int.I.v
+  let _ = call say(x)
+  let w = call width("tree")
+  let b = prim bytes_new(3)
+  let w2 = call width(b)
+  let ws = prim add(w, w2)
+  let _ = call say(ws)
+  ret 0
+}
