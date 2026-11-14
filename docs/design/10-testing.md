@@ -24,7 +24,7 @@
 | CirkaLang 検証 | `tests/cirkalang/verify/{pass,fail}/**/*.cirka` | CirkaLang (v0.0.4〜) | 証明が通る / 反例付きで失敗する (`CIRKA_Z3` 未設定ならスキップ) |
 | 契約の実行時検査 | `tests/cirkalang/run/contracts/` | CirkaLang | `--contracts=check` で違反時に期待どおり停止 |
 | メモリ | 実行テスト全体 | 全部 | `CIRKA_ALLOC=system` + valgrind でエラー 0 |
-| 並行性 | `tests/cirkalang/run/threads/` | CirkaLang (v0.0.5〜) | ThreadSanitizer でエラーなし |
+| 並行性 | `tests/mir/run/` (`tsan: 1`)、`tests/mir/tsan/`、`tests/cirkalang/run/threads/` | 共通基盤 (FEAT-0045)、CirkaLang (v0.0.5〜) | ThreadSanitizer でエラーなし (TSan が動く環境で。下記) |
 | Vulkan compute | `tests/cirkalang/run/v0.0.6/vulkan/` | CirkaLang (v0.0.6〜) | lavapipe 上で CPU 計算と一致、検証レイヤーのエラー・警告 0 (Vulkan がなければスキップ) |
 | 遠隔 GUI (任意) | `scripts/remote.sh` で手動実行 | macOS / Windows | CI には含めない。結果は `docs/artifacts/remote/` に置き、結論をチケットに記録 (§7) |
 | 性能 | `bench/` | 全部 | hyperfine で比較し記録 |
@@ -42,6 +42,7 @@
   -- max-allocs: 3001000     (ネイティブ実行の確保回数の上限。CIRKA_STATS の allocs)
   -- max-forced: 1001000     (ネイティブ実行で評価されたサンクの数の上限。CIRKA_STATS の forced)
   -- max-array-copies: 0     (in-place 更新で共有配列をコピーした回数の上限。CIRKA_STATS の array_copies)
+  -- tsan: 1                 (ネイティブ実行を ThreadSanitizer 版でも行う。既定のアロケータと CIRKA_ALLOC=system の 2 通り)
   -- same-cost-as: x_hand.hs (ゼロコストの組。下記)
   ```
 - **ゼロコストの組** (`-- same-cost-as: FILE [+N]`、FEAT-0061。aCHC と CirkaLang の run テスト): 抽象 (newtype・型クラス・高階関数・借用) を使うプログラムと、
@@ -49,6 +50,14 @@
   のどれも手書き版を超えないことを確かめる (`+N` は入口の定数のコストなどの許容量)。命令数はインタプリタが数える
   (`interp::Stats::steps`、命令と終端命令。機械に依存しない)。MIR の大きさは全関数の命令と終端命令の数。
   手書き版も通常の run テストとして実行される。例: `tests/achc/run/zerocost/`、`tests/cirkalang/run/v003/borrow_loop.cirka`。
+- **ThreadSanitizer** (`tsan: 1`、FEAT-0045、05-runtime.md §9.7): TSan 版のランタイム (`target/rt-tsan`、`RUSTC_BOOTSTRAP=1` でビルド) と
+  `sanitize_thread` 付きの生成コードで実行し、`TSAN_OPTIONS=halt_on_error=1` で報告が出れば失敗にする。
+  検査が働いていることは、わざとデータ競合を入れた `tests/mir/tsan/race.mir` を TSan が報告することで確かめる
+  (`tests/mir.rs` の `tsan_reports_a_data_race`)。TSan は実行で起きた競合だけを報告するので、共有されたオブジェクトのアトミックな RC が
+  どの実行でも 2 つのアクセスを順序づけない形にしてある。
+  TSan (LLVM 18) は高エントロピーの ASLR のもとで `personality(2)` を使って自分を再実行するが、Docker の既定の seccomp プロファイルが
+  これを禁じるため、コンテナの中では TSan の構成を飛ばす (ハーネスが小さなプログラムで試し、`scripts/ci.sh` が警告を出す)。
+  TSan の検査はホスト (`clang` と `libclang-rt-18-dev` がある環境) で `cargo test --release -p cirka-integration --test mir` として行う。
 - `ACHC_BLESS=1` / `CIRKA_BLESS=1` で期待ファイルを更新。
 - 失敗時は生成した `.ll`・ダンプを `_build/test-failures/<name>/` に残す。
 - 並列実行 (`CIRKA_TEST_JOBS`)。
@@ -93,6 +102,10 @@ bench/binary-trees/
   CirkaLang の実用版の題材: CUI ツール (v0.0.2)、HTTP サーバ (v0.0.5)。
 - 目標 (00-overview G3): `main.cirka` と `own.chs` が Rust の 1.5 倍以内、`plain.hs` が GHC -O2 と同等。
 - 計測値 (時間・最大 RSS) はチケットと `docs/design/bench-report.md` に記録する。CirkaLang は版ごとの推移も記録する。
+- 時間の差が数 % のときは、コード配置の揺らぎを疑う。関数やループの 32 バイト境界に対する位置だけで ±8% 変わることがある
+  (FEAT-0045 の cli-grep。ランタイムの関数が増減すると、生成コードの番地がずれる)。命令数 (callgrind) と、
+  先頭に 0/16/32/48 バイトの詰め物を置いてリンクした 4 通りの平均で確かめる。valgrind の下では既定のアロケータの 64 GiB の予約が
+  失敗して `malloc` に切り替わるので、既定のアロケータの命令数は予約を小さくしたランタイムで数える。
 - 正しさ: `bench/<name>/check` (1 行目が小さい引数、続きが期待出力 = Rust 版の出力) に対し、`tests/bench.rs` が各実装を
   `-O2` の MIR インタプリタでリークなしに実行して比較する (`rust/main.rs` と、`CIRKA_GHC` があれば GHC の `plain.hs` も)。
   aCHC で作れない `plain.hs` (例: `Data.Array.ST` を使う GHC 専用の基準) は先頭に `-- achc: skip` と書く (FEAT-0043)。
