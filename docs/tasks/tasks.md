@@ -89,7 +89,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0047](features/FEAT-0047-ffi-abi.md) | FFI ABI の完成 (構造体・共用体・可変長引数・コールバック) | todo | P1 | 0031 |
 | [FEAT-0048](features/FEAT-0048-bindgen.md) | bindgen (libclang による C ヘッダ取り込み) | todo | P1 | 0047 |
 | [FEAT-0049](features/FEAT-0049-region-arena.md) | リージョン用アリーナのランタイム | done | P2 | 0031 |
-| [FEAT-0050](features/FEAT-0050-smt-infra.md) | SMT 連携基盤 (cirka-smt) | todo | P1 | 0005 |
+| [FEAT-0050](features/FEAT-0050-smt-infra.md) | SMT 連携基盤 (cirka-smt) | done | P1 | 0005 |
 | [FEAT-0051](features/FEAT-0051-allocator-tuning.md) | アロケータの改善 | todo | P2 | 0043 |
 | [FEAT-0052](features/FEAT-0052-remote-scripts.md) | 遠隔検証スクリプト (scripts/remote.sh) | todo | P2 | 0002 |
 | [FEAT-0053](features/FEAT-0053-target-macos.md) | macOS ターゲットへの移植 | todo | P2 | 0052, 0045 |
@@ -245,7 +245,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 
 | ID | タイトル | 状態 | 優先度 | 依存 |
 |---|---|---|---|---|
-| [FEAT-0230](features/FEAT-0230-cl-totality.md) | 全域性・終了性の検査 | todo | P0 | 0223 |
+| [FEAT-0230](features/FEAT-0230-cl-totality.md) | 全域性・終了性の検査 | done | P0 | 0223 |
 | [FEAT-0231](features/FEAT-0231-cl-proofs-stdlib.md) | 等式・証明と証明付き標準型 | todo | P0 | 0230 |
 | [FEAT-0232](features/FEAT-0232-cl-refinement-smt.md) | 洗練型 (部分集合型) と SMT による自動証明 | todo | P0 | 0231, 0050 |
 | [FEAT-0233](features/FEAT-0233-cl-contracts.md) | 契約 (requires / ensures / invariant) | todo | P1 | 0232 |
