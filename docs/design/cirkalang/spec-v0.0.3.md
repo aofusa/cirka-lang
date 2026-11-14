@@ -120,7 +120,9 @@ impl {a : LType} -> Monad (Borrow a r) where ...
 - `Borrow a r b` は「借りた値を受け取り、(値, `Ur b`) を返す関数」の newtype、`BorrowIO a r b` は「値を受け取り `IO (値, Ur b)` を返す関数」の newtype である。
   借りた値は線形に受け渡されるだけで、**複製も参照数の操作もない**。一意な配列の更新はその場で行われる。
 - 共通基盤の Core 最適化は、newtype に包まれた状態の関数を返す関数に、状態を引数に取るワーカーを作る (IO の状態トークンと同じ扱い、06-ir.md §1.6)。
-  これにより `do` の bind が作るクロージャが消え、借用越しのループは所有者を手で受け渡すループと同じコードになる (tests/cirkalang.rs の `cirkalang_borrow_costs_nothing`)。
+  これにより `do` の bind が作るクロージャが消え、借用越しのループは所有者を手で受け渡すループと同じコードになる
+  (ゼロコストの組 `tests/cirkalang/run/v003/borrow_loop.cirka` の `-- same-cost-as: owned_loop.cirka`、FEAT-0061)。
+  `Ref a r` の単位値は、ループの関数が自分の再帰呼び出しへ渡すだけの引数として worker/wrapper が取り除く (使われない引数の除去、FEAT-0061)。
 - 制限: 結果が `()` の借用の計算を末尾でない位置で呼ぶと、(値, `Ur ()`) の組が呼び出しごとに 1 つ確保される (構成した積の結果の最適化が、箱入りの値 1 つだけの結果を扱わないため。FEAT-0081)。
 
 ## 3. リージョン (FEAT-0221)

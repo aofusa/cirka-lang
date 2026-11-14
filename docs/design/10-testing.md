@@ -42,7 +42,13 @@
   -- max-allocs: 3001000     (ネイティブ実行の確保回数の上限。CIRKA_STATS の allocs)
   -- max-forced: 1001000     (ネイティブ実行で評価されたサンクの数の上限。CIRKA_STATS の forced)
   -- max-array-copies: 0     (in-place 更新で共有配列をコピーした回数の上限。CIRKA_STATS の array_copies)
+  -- same-cost-as: x_hand.hs (ゼロコストの組。下記)
   ```
+- **ゼロコストの組** (`-- same-cost-as: FILE [+N]`、FEAT-0061。aCHC と CirkaLang の run テスト): 抽象 (newtype・型クラス・高階関数・借用) を使うプログラムと、
+  同じディレクトリに置いた手書き版 `FILE` を -O2 で比べ、抽象版が **確保回数・実行した MIR の命令数・RC 操作の数・最適化後の MIR の大きさ**
+  のどれも手書き版を超えないことを確かめる (`+N` は入口の定数のコストなどの許容量)。命令数はインタプリタが数える
+  (`interp::Stats::steps`、命令と終端命令。機械に依存しない)。MIR の大きさは全関数の命令と終端命令の数。
+  手書き版も通常の run テストとして実行される。例: `tests/achc/run/zerocost/`、`tests/cirkalang/run/v003/borrow_loop.cirka`。
 - `ACHC_BLESS=1` / `CIRKA_BLESS=1` で期待ファイルを更新。
 - 失敗時は生成した `.ll`・ダンプを `_build/test-failures/<name>/` に残す。
 - 並列実行 (`CIRKA_TEST_JOBS`)。
