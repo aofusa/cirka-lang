@@ -98,13 +98,15 @@ pub fn check(
 /// Replaces `primRefine {a} p site e` for the given sites by
 /// `checkContract {a} p msg e`.
 pub fn insert(
+    prog: &Program,
     t: &Term,
     refine: GName,
     chk: GName,
     bool_ty: GName,
+    bool_cons: [GName; 2],
     msgs: &HashMap<usize, String>,
 ) -> Term {
-    let go = |t: &Term| insert(t, refine, chk, bool_ty, msgs);
+    let go = |t: &Term| insert(prog, t, refine, chk, bool_ty, bool_cons, msgs);
     match t {
         Term::App(f, a, i) => {
             // `primRefine {a} p site e` (heads first).
@@ -123,7 +125,7 @@ pub fn insert(
                 };
                 let app = |f: Term, x: Term, i: Icit| Term::App(Rc::new(f), Rc::new(x), i);
                 let h = app(Term::Global(chk), ty.as_ref().clone(), *ti);
-                let h = app(h, bind_scruts(&go(p), bool_ty), *pi);
+                let h = app(h, bind_scruts(prog, &go(p), bool_ty, bool_cons), *pi);
                 let h = app(h, Term::Lit(Lit::Str(Rc::from(m.as_str()))), Icit::Expl);
                 return app(h, go(a), *i);
             }
@@ -367,26 +369,42 @@ fn bool_case(prog: &Program, names: &mut Vec<Name>, c: &Case, nested: bool) -> O
 /// A predicate taken from a type may match on an expression (`a && b`
 /// is a match on `a`); lowering matches on variables: `case e of alts`
 /// becomes `let c : Bool = e in case c of alts` (for booleans).
-fn bind_scruts(t: &Term, bool_ty: GName) -> Term {
-    let go = |t: &Term| Rc::new(bind_scruts(t, bool_ty));
+/// A match on a global (a trait dictionary) is bound with the global's type.
+fn bind_scruts(prog: &Program, t: &Term, bool_ty: GName, bool_cons: [GName; 2]) -> Term {
+    let go = |t: &Term| Rc::new(bind_scruts(prog, t, bool_ty, bool_cons));
     match t {
         Term::App(f, a, i) => Term::App(go(f), go(a), *i),
         Term::Lam(x, m, i, ty, b) => Term::Lam(x.clone(), *m, *i, ty.clone(), go(b)),
         Term::Let(x, m, ty, v, b) => Term::Let(x.clone(), *m, ty.clone(), go(v), go(b)),
         Term::Case(c) => {
             let mut c2 = c.as_ref().clone();
-            c2.scrut = bind_scruts(&c.scrut, bool_ty);
+            c2.scrut = bind_scruts(prog, &c.scrut, bool_ty, bool_cons);
             for a in &mut c2.alts {
                 match a {
                     Alt::Con { body, .. } | Alt::Lit { body, .. } => {
-                        *body = bind_scruts(body, bool_ty)
+                        *body = bind_scruts(prog, body, bool_ty, bool_cons)
                     }
                 }
             }
-            c2.default = c.default.as_ref().map(|d| bind_scruts(d, bool_ty));
-            if matches!(c2.scrut, Term::Var(_)) {
+            c2.default = c
+                .default
+                .as_ref()
+                .map(|d| bind_scruts(prog, d, bool_ty, bool_cons));
+            let on_bool = !c2.alts.is_empty()
+                && c2
+                    .alts
+                    .iter()
+                    .all(|a| matches!(a, Alt::Con { con, .. } if bool_cons.contains(con)));
+            // A boolean, or a global (a trait dictionary) of a known type.
+            let ty = match &c2.scrut {
+                Term::Var(_) => None,
+                _ if on_bool => Some(Term::Global(bool_ty)),
+                Term::Global(g) => prog.type_of(*g).cloned(),
+                _ => None,
+            };
+            let Some(ty) = ty else {
                 return Term::Case(Rc::new(c2));
-            }
+            };
             let scrut = std::mem::replace(&mut c2.scrut, Term::Var(0));
             let Term::Case(shifted) = shift(&Term::Case(Rc::new(c2)), 0, 1) else {
                 unreachable!()
@@ -396,7 +414,7 @@ fn bind_scruts(t: &Term, bool_ty: GName) -> Term {
             Term::Let(
                 Name::from("c"),
                 Mult::Many,
-                Rc::new(Term::Global(bool_ty)),
+                Rc::new(ty),
                 Rc::new(scrut),
                 Rc::new(Term::Case(Rc::new(c3))),
             )

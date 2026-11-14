@@ -85,9 +85,11 @@ pub fn check(rp: &rast::Program, prog: &Program, cache: Option<PathBuf>) -> Vec<
 /// `primRefine {a} p site e` becomes `checkContract {a} p msg e`
 /// (`--contracts=check`).
 pub fn insert_checks(prog: &mut Program, sites: &[(usize, String)]) {
-    let (Some(refine), Some(bool_ty), Some(chk)) = (
+    let (Some(refine), Some(bool_ty), Some(t), Some(f), Some(chk)) = (
         prog.builtins.refine,
         prog.builtins.bool_,
+        prog.builtins.true_,
+        prog.builtins.false_,
         prog.names
             .iter()
             .position(|n| n == "Prelude.checkContract")
@@ -96,9 +98,12 @@ pub fn insert_checks(prog: &mut Program, sites: &[(usize, String)]) {
         return;
     };
     let msgs: HashMap<usize, String> = sites.iter().cloned().collect();
-    for g in prog.globals.iter_mut() {
-        if let Global::Def { body: Some(b), .. } = g {
-            *b = refine::insert(b, refine, chk, bool_ty, &msgs);
+    for i in 0..prog.globals.len() {
+        if let Global::Def { body: Some(b), .. } = &prog.globals[i] {
+            let b2 = refine::insert(prog, b, refine, chk, bool_ty, [t, f], &msgs);
+            if let Global::Def { body: Some(b), .. } = &mut prog.globals[i] {
+                *b = b2;
+            }
         }
     }
 }

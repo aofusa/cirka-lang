@@ -1,0 +1,17 @@
+module Main
+
+-- BUG-0017: an invariant comparing with a trait method (`<=` of `Ord`)
+-- and combining with `&&`, checked at run time.
+
+data Sorted3 : Type where
+  MkSorted3 : (a : Int) -> (b : Int) -> (c : Int) -> Sorted3
+  invariant a <= b && b <= c
+
+mk : Int -> Int -> Int -> Sorted3
+mk a b c = MkSorted3 a b c
+
+main : IO ()
+main = do
+  n <- readInt
+  case mk 1 n 3 of
+    MkSorted3 a b c => printInt (a + b + c)

@@ -268,6 +268,31 @@ fn cirkalang_proofs_are_erased() {
 /// `--contracts` (FEAT-0233): `off` generates the same code as the
 /// program without contracts; `check` turns what is not proved into run
 /// time checks that panic with the contract (without Z3, all of them).
+/// BUG-0017: a run-time checked invariant that compares with a trait
+/// method and `&&` compiles (no ICE) and has no coverage warning.
+#[test]
+fn cirkalang_invariant_with_trait_methods() {
+    let path = repo_root().join("tests/cirkalang/contracts/invariant_ord.cirka");
+    for mode in ["--contracts=off", "--contracts=check"] {
+        let (core, warnings) =
+            compile_cirka_with(&path, cirka_driver::pipeline::SourceTests::Strip, &[mode])
+                .unwrap_or_else(|e| panic!("{mode}: {e}"));
+        assert!(!warnings.contains("W1231"), "{mode}: {warnings}");
+        let mut opts = cirka_driver::pipeline::Options::new("inv");
+        opts.build_dir = cirka_testkit::work_dir("cirkalang-invariant", mode);
+        let mir = cirka_driver::pipeline::compile_core(core, "inv", &opts, false)
+            .unwrap_or_else(|_| panic!("{mode}: does not compile"))
+            .mir;
+        let ok = cirka_mir::interp::run(&mir, b"2\n", u64::MAX).unwrap();
+        assert_eq!(ok.stdout, "6\n", "{mode}");
+        if mode == "--contracts=check" {
+            let bad = cirka_mir::interp::run(&mir, b"5\n", u64::MAX).unwrap();
+            assert_ne!(bad.exit_code, 0, "{}", bad.stdout);
+            assert!(bad.stderr.contains("contract violated"), "{}", bad.stderr);
+        }
+    }
+}
+
 #[test]
 fn cirkalang_contracts_modes() {
     let root = repo_root().join("tests/cirkalang/contracts");

@@ -3957,7 +3957,24 @@ impl<'r> Elab<'r> {
                 }
             }
             let sig = match &c.body {
-                rast::ConBody::Sig(t) => self.check_type(&mut cx, t),
+                rast::ConBody::Sig(t) => {
+                    let before = self.diags.borrow().len();
+                    let sig = self.check_type(&mut cx, t);
+                    // A refined constructor is elaborated again once the
+                    // data type is complete (`refined_cons`): its predicate
+                    // is only checked for coverage there.
+                    if let Some(sub) = self.prog.builtins.subset_of
+                        && mentions_global(&sig, sub)
+                    {
+                        let mut ds = self.diags.borrow_mut();
+                        let mut k = 0;
+                        ds.retain(|d| {
+                            k += 1;
+                            k <= before || d.code.as_deref() != Some("W1231")
+                        });
+                    }
+                    sig
+                }
                 rast::ConBody::Fields(fs) => {
                     let mut ts = Vec::new();
                     for (k, f) in fs.iter().enumerate() {
