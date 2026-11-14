@@ -99,11 +99,13 @@ pub const EFD_NONBLOCK: c_int = 0o4000;
 pub const AF_INET: c_int = 2;
 pub const AF_INET6: c_int = 10;
 pub const SOCK_STREAM: c_int = 1;
+pub const SOCK_DGRAM: c_int = 2;
 pub const SOCK_NONBLOCK: c_int = 0o4000;
 pub const SOCK_CLOEXEC: c_int = 0o2000000;
 pub const SOL_SOCKET: c_int = 1;
 pub const SO_REUSEADDR: c_int = 2;
 pub const SO_ERROR: c_int = 4;
+pub const SO_REUSEPORT: c_int = 15;
 pub const IPPROTO_TCP: c_int = 6;
 pub const TCP_NODELAY: c_int = 1;
 pub const F_GETFL: c_int = 3;
@@ -235,6 +237,22 @@ unsafe extern "C" {
     pub fn getsockname(fd: c_int, addr: *mut sockaddr_storage, len: *mut u32) -> c_int;
     pub fn shutdown(fd: c_int, how: c_int) -> c_int;
     pub fn send(fd: c_int, buf: *const c_void, n: size_t, flags: c_int) -> ssize_t;
+    pub fn sendto(
+        fd: c_int,
+        buf: *const c_void,
+        n: size_t,
+        flags: c_int,
+        addr: *const sockaddr_storage,
+        len: u32,
+    ) -> ssize_t;
+    pub fn recvfrom(
+        fd: c_int,
+        buf: *mut c_void,
+        n: size_t,
+        flags: c_int,
+        addr: *mut sockaddr_storage,
+        len: *mut u32,
+    ) -> ssize_t;
     pub fn fcntl(fd: c_int, cmd: c_int, ...) -> c_int;
     pub fn getrlimit(res: c_int, rl: *mut rlimit) -> c_int;
     pub fn setrlimit(res: c_int, rl: *const rlimit) -> c_int;

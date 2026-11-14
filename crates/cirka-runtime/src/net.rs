@@ -2,18 +2,28 @@
 //! FEAT-0046).
 //!
 //! Sockets are non-blocking and close-on-exec. Failures return `-errno`
-//! (the convention of `stdio.rs`); descriptors are plain integers that the
-//! libraries own through linear values.
+//! (the convention of `stdio.rs`). Descriptors are plain integers, or
+//! descriptor objects (`cirka_fd_handle`) that close them when freed: the
+//! libraries hold those in linear values (spec-v0.0.5.md §2), and a
+//! continuation dropped with its loop still closes its socket.
 
-use crate::object::Obj;
+use crate::evloop::{budget_left, foreign, spend};
+use crate::object::{FOREIGN, Obj, word};
 use crate::{io, sys};
 use core::ffi::{c_char, c_int, c_void};
+use core::mem::MaybeUninit;
 
 const EINTR: i32 = 4;
 const ENOENT: i32 = 2;
+const EBADF: i32 = 9;
+const EAGAIN: i32 = 11;
 const EINVAL: i64 = 22;
 const EINPROGRESS: i32 = 115;
 const MSG_NOSIGNAL: c_int = 0x4000;
+
+/// The most bytes one `cirka_sock_recv` / `cirka_sock_recvfrom` reads
+/// (a datagram is at most 65507 bytes).
+const RECV_MAX: usize = 65536;
 
 fn errno() -> i32 {
     // SAFETY: the thread's errno location.
@@ -91,11 +101,16 @@ unsafe fn sockaddr(host: Obj, port: i64) -> Result<(sys::sockaddr_storage, u32),
 
 /// A new non-blocking, close-on-exec TCP socket of the address's family.
 fn tcp_socket(sa: &sys::sockaddr_storage) -> Result<c_int, i64> {
+    new_socket(sa, sys::SOCK_STREAM)
+}
+
+/// A new non-blocking, close-on-exec socket of the address's family.
+fn new_socket(sa: &sys::sockaddr_storage, ty: c_int) -> Result<c_int, i64> {
     // SAFETY: plain system call.
     let fd = unsafe {
         sys::socket(
             c_int::from(sa.family),
-            sys::SOCK_STREAM | sys::SOCK_NONBLOCK | sys::SOCK_CLOEXEC,
+            ty | sys::SOCK_NONBLOCK | sys::SOCK_CLOEXEC,
             0,
         )
     };
@@ -428,6 +443,305 @@ pub extern "C" fn cirka_fd_limit_raise() -> i64 {
     }
 }
 
+// ---- Descriptor objects and the operations of the libraries ----
+
+/// Word 0 of a descriptor object whose descriptor was closed.
+const CLOSED: usize = usize::MAX;
+
+/// The finalizer of a descriptor object: closes the descriptor, unless
+/// `cirka_handle_close` did.
+extern "C" fn handle_finalize(fd: usize) {
+    if fd != CLOSED {
+        // SAFETY: the object owned the descriptor.
+        unsafe { sys::close(fd as c_int) };
+    }
+}
+
+/// A descriptor object (kind `FOREIGN`) owning `fd` >= 0: the descriptor
+/// is closed when the object is freed.
+#[unsafe(no_mangle)]
+pub extern "C" fn cirka_fd_handle(fd: i64) -> Obj {
+    if fd < 0 {
+        io::fatal(b"cirka_fd_handle: not a descriptor", 2);
+    }
+    foreign(fd as usize as *mut c_void, handle_finalize)
+}
+
+/// The word holding the descriptor of the descriptor object `h`.
+///
+/// # Safety
+/// `h` must be a live object.
+unsafe fn handle_word(h: Obj) -> *mut usize {
+    // SAFETY: a FOREIGN object has its pointer in word 0 and its finalizer
+    // in word 1.
+    unsafe {
+        if (*h).kind != FOREIGN || *word(h, 1) != handle_finalize as extern "C" fn(usize) as usize {
+            io::fatal(b"not a descriptor object", 2);
+        }
+        word(h, 0)
+    }
+}
+
+/// The descriptor of the descriptor object `h`, or -1 once it is closed.
+///
+/// # Safety
+/// `h` must be a live object.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cirka_handle_fd(h: Obj) -> i64 {
+    // SAFETY: guaranteed by the caller.
+    let fd = unsafe { *handle_word(h) };
+    if fd == CLOSED { -1 } else { fd as i64 }
+}
+
+/// Closes the descriptor of `h` now (freeing `h` will not): 0, or
+/// `-errno` (`-EBADF` if it was closed already).
+///
+/// # Safety
+/// `h` must be a live object.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cirka_handle_close(h: Obj) -> i64 {
+    // SAFETY: guaranteed by the caller; the descriptor is closed once.
+    unsafe {
+        let w = handle_word(h);
+        let fd = *w;
+        if fd == CLOSED {
+            return -i64::from(EBADF);
+        }
+        *w = CLOSED;
+        if sys::close(fd as c_int) < 0 && errno() != EINTR {
+            return neg_errno();
+        }
+        0
+    }
+}
+
+/// Reads with `f` into a buffer of at most `max` bytes (1 to 64 KiB) and
+/// returns the bytes read, with `errno` 0; empty with `errno` 0 when `f`
+/// returns 0, and empty with the error (`EAGAIN` also when the budget of
+/// the running callback is spent).
+fn read_with(fd: i64, max: i64, mut f: impl FnMut(c_int, *mut c_void, usize) -> isize) -> Obj {
+    let mut buf = [const { MaybeUninit::<u8>::uninit() }; RECV_MAX];
+    let n = (max.max(1) as usize).min(RECV_MAX);
+    let mut err = 0;
+    let mut len = 0;
+    if fd < 0 {
+        err = EBADF;
+    } else if !budget_left() {
+        err = EAGAIN;
+    } else {
+        loop {
+            let r = f(fd as c_int, buf.as_mut_ptr() as *mut c_void, n);
+            if r >= 0 {
+                len = r as usize;
+                spend();
+                break;
+            }
+            if errno() != EINTR {
+                err = errno();
+                break;
+            }
+        }
+    }
+    set_errno(err);
+    // SAFETY: the first `len` bytes were written by the read.
+    unsafe { crate::cirka_bytes_from(buf.as_ptr() as *const u8, len) }
+}
+
+/// Reads at most `max` bytes from the socket of `h`: the bytes (with
+/// `errno` 0); empty with `errno` 0 at the end of the stream; empty with
+/// `EAGAIN` when nothing is there yet or the budget of the running
+/// callback is spent; empty with the error otherwise.
+///
+/// # Safety
+/// `h` must be a live descriptor object.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cirka_sock_recv(h: Obj, max: i64) -> Obj {
+    // SAFETY: guaranteed by the caller.
+    let fd = unsafe { cirka_handle_fd(h) };
+    // SAFETY: `buf` has room for `n` bytes.
+    read_with(fd, max, |fd, buf, n| unsafe { sys::read(fd, buf, n) })
+}
+
+/// `cirka_net_send` on the socket of `h`: `-EAGAIN` also when the budget
+/// of the running callback is spent.
+///
+/// # Safety
+/// `h` must be a live descriptor object, `data` a live BYTES object
+/// (both borrowed).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cirka_sock_send(h: Obj, data: Obj, off: i64) -> i64 {
+    // SAFETY: guaranteed by the caller.
+    unsafe {
+        let fd = cirka_handle_fd(h);
+        if fd < 0 {
+            return -i64::from(EBADF);
+        }
+        if !budget_left() {
+            return -i64::from(EAGAIN);
+        }
+        let r = cirka_net_send(fd, data, off);
+        if r >= 0 {
+            spend();
+        }
+        r
+    }
+}
+
+/// `cirka_net_accept` on the listening socket of `h`: `-EAGAIN` also when
+/// the budget of the running callback is spent.
+///
+/// # Safety
+/// `h` must be a live descriptor object.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cirka_sock_accept(h: Obj) -> i64 {
+    // SAFETY: guaranteed by the caller.
+    let fd = unsafe { cirka_handle_fd(h) };
+    if fd < 0 {
+        return -i64::from(EBADF);
+    }
+    if !budget_left() {
+        return -i64::from(EAGAIN);
+    }
+    let r = cirka_net_accept(fd);
+    if r >= 0 {
+        spend();
+    }
+    r
+}
+
+/// A UDP socket bound to `host` (numeric; empty = any IPv4 address) and
+/// `port` (0 = any free port): the descriptor, or `-errno`.
+///
+/// # Safety
+/// `host` must be a live BYTES object (borrowed).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cirka_net_udp_bind(host: Obj, port: i64) -> i64 {
+    // SAFETY: `host` is live; the socket calls get valid addresses.
+    unsafe {
+        let (sa, len) = match sockaddr(host, port) {
+            Ok(a) => a,
+            Err(e) => return e,
+        };
+        let fd = match new_socket(&sa, sys::SOCK_DGRAM) {
+            Ok(fd) => fd,
+            Err(e) => return e,
+        };
+        if sys::bind(fd, &sa, len) < 0 {
+            return close_failed(fd);
+        }
+        i64::from(fd)
+    }
+}
+
+/// Sends `data` as one datagram from the socket of `h` to `host`
+/// (numeric) and `port`: the number of bytes sent, or `-errno` (`-EAGAIN`
+/// also when the budget of the running callback is spent).
+///
+/// # Safety
+/// `h` must be a live descriptor object; `data` and `host` live BYTES
+/// objects (all borrowed).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cirka_sock_sendto(h: Obj, data: Obj, host: Obj, port: i64) -> i64 {
+    // SAFETY: guaranteed by the caller; valid address and buffer.
+    unsafe {
+        let fd = cirka_handle_fd(h);
+        if fd < 0 {
+            return -i64::from(EBADF);
+        }
+        let (sa, len) = match sockaddr(host, port) {
+            Ok(a) => a,
+            Err(e) => return e,
+        };
+        if !budget_left() {
+            return -i64::from(EAGAIN);
+        }
+        let d = io::bytes_of(data);
+        loop {
+            let n = sys::sendto(
+                fd as c_int,
+                d.as_ptr() as *const c_void,
+                d.len(),
+                MSG_NOSIGNAL,
+                &sa,
+                len,
+            );
+            if n >= 0 {
+                spend();
+                return n as i64;
+            }
+            if errno() != EINTR {
+                return neg_errno();
+            }
+        }
+    }
+}
+
+/// Receives one datagram (at most `max` bytes are kept) on the socket of
+/// `h`, as `cirka_sock_recv` (an empty datagram is empty with `errno` 0).
+/// The sender is kept for `cirka_net_peer_host` / `cirka_net_peer_port`.
+///
+/// # Safety
+/// `h` must be a live descriptor object.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cirka_sock_recvfrom(h: Obj, max: i64) -> Obj {
+    // SAFETY: guaranteed by the caller; the sender goes to this thread's
+    // block.
+    unsafe {
+        let fd = cirka_handle_fd(h);
+        let t = crate::tls::tls();
+        (*t).peer_len = 0;
+        read_with(fd, max, |fd, buf, n| {
+            let mut len = size_of::<sys::sockaddr_storage>() as u32;
+            let r = sys::recvfrom(fd, buf, n, 0, &raw mut (*t).peer, &mut len);
+            if r >= 0 {
+                (*t).peer_len = len;
+            }
+            r
+        })
+    }
+}
+
+/// The address of the sender of the last datagram this thread received,
+/// as text (empty if there is none).
+#[unsafe(no_mangle)]
+pub extern "C" fn cirka_net_peer_host() -> Obj {
+    let mut text = [0u8; 64];
+    // SAFETY: this thread's block; inet_ntop writes at most 64 bytes.
+    unsafe {
+        let t = crate::tls::tls();
+        let mut len = 0;
+        if (*t).peer_len > 0 {
+            let sa = &raw const (*t).peer;
+            let fam = c_int::from((*sa).family);
+            let src = if fam == sys::AF_INET {
+                (*(sa as *const sys::sockaddr_in)).sin_addr.as_ptr() as *const c_void
+            } else {
+                (*(sa as *const sys::sockaddr_in6)).sin6_addr.as_ptr() as *const c_void
+            };
+            if !sys::inet_ntop(fam, src, text.as_mut_ptr() as *mut c_char, 64).is_null() {
+                len = text.iter().position(|&c| c == 0).unwrap_or(0);
+            }
+        }
+        crate::cirka_bytes_from(text.as_ptr(), len)
+    }
+}
+
+/// The port of the sender of the last datagram this thread received (0
+/// if there is none).
+#[unsafe(no_mangle)]
+pub extern "C" fn cirka_net_peer_port() -> i64 {
+    // SAFETY: this thread's block; the port is at the same offset in IPv4
+    // and IPv6 addresses.
+    unsafe {
+        let t = crate::tls::tls();
+        if (*t).peer_len == 0 {
+            return 0;
+        }
+        let a = &raw const (*t).peer as *const sys::sockaddr_in;
+        i64::from(u16::from_be((*a).sin_port))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -650,5 +964,96 @@ mod tests {
         let n = cirka_fd_limit_raise();
         assert!(n >= 1024, "{n}");
         assert_eq!(cirka_fd_limit_raise(), n, "already raised");
+    }
+
+    #[test]
+    fn descriptor_objects_close_their_descriptor() {
+        let _g = LOCK.lock().unwrap();
+        // SAFETY: descriptor objects released below.
+        unsafe {
+            let lo = text("127.0.0.1");
+            let fd = cirka_net_listen(lo, 0, 0);
+            assert!(fd >= 0);
+            let h = cirka_fd_handle(fd);
+            assert_eq!(cirka_handle_fd(h), fd);
+            // No connection is pending; then freeing the object closes
+            // the descriptor.
+            assert_eq!(cirka_sock_accept(h), -11);
+            cirka_drop(h);
+            assert_eq!(cirka_fd_set_nonblocking(fd, 1), -9, "closed");
+            // Closed early: freeing the object does not close the number
+            // again (it may belong to another descriptor by then).
+            let fd = cirka_net_listen(lo, 0, 0);
+            let h = cirka_fd_handle(fd);
+            assert_eq!(cirka_handle_close(h), 0);
+            let again = cirka_net_listen(lo, 0, 0);
+            assert_eq!(again, fd, "the number is reused");
+            cirka_drop(h);
+            assert_eq!(cirka_fd_set_nonblocking(again, 1), 0, "still open");
+            crate::stdio::cirka_fd_close(again);
+            assert_eq!(cirka_sock_accept(h_closed()), -9);
+            cirka_drop(lo);
+        }
+    }
+
+    /// A descriptor object whose descriptor is closed.
+    fn h_closed() -> Obj {
+        let mut fds = [0i32; 2];
+        unsafe extern "C" {
+            fn pipe(fds: *mut i32) -> i32;
+        }
+        // SAFETY: valid out array; the object is leaked by the caller's
+        // use (a test).
+        unsafe {
+            assert_eq!(pipe(fds.as_mut_ptr()), 0);
+            crate::stdio::cirka_fd_close(i64::from(fds[1]));
+            let h = cirka_fd_handle(i64::from(fds[0]));
+            assert_eq!(cirka_handle_close(h), 0);
+            h
+        }
+    }
+
+    #[test]
+    fn datagrams_and_their_sender() {
+        let _g = LOCK.lock().unwrap();
+        // SAFETY: descriptor objects and strings released below.
+        unsafe {
+            let lo = text("127.0.0.1");
+            let a = cirka_fd_handle(cirka_net_udp_bind(lo, 0));
+            let b = cirka_fd_handle(cirka_net_udp_bind(lo, 0));
+            let pa = cirka_net_local_port(cirka_handle_fd(a));
+            let pb = cirka_net_local_port(cirka_handle_fd(b));
+            assert!(pa > 0 && pb > 0 && pa != pb);
+            let none = cirka_sock_recvfrom(b, 100);
+            assert!(io::bytes_of(none).is_empty());
+            assert_eq!(crate::stdio::cirka_errno(), 11, "nothing yet");
+            assert_eq!(cirka_net_peer_port(), 0);
+            cirka_drop(none);
+            let m = text("datagram");
+            assert_eq!(cirka_sock_sendto(a, m, lo, pb), 8);
+            let empty = text("");
+            assert_eq!(cirka_sock_sendto(a, empty, lo, pb), 0);
+            let bad = text("nowhere");
+            assert_eq!(cirka_sock_sendto(a, m, bad, pb), -EINVAL);
+            // Blocking reads would wait: the datagrams are there already
+            // on the loopback interface.
+            let d = cirka_sock_recvfrom(b, 100);
+            assert_eq!(io::bytes_of(d), b"datagram");
+            assert_eq!(crate::stdio::cirka_errno(), 0);
+            let host = cirka_net_peer_host();
+            assert_eq!(io::bytes_of(host), b"127.0.0.1");
+            assert_eq!(cirka_net_peer_port(), pa);
+            let e = cirka_sock_recvfrom(b, 100);
+            assert!(io::bytes_of(e).is_empty());
+            assert_eq!(crate::stdio::cirka_errno(), 0, "an empty datagram");
+            // Kept to `max` bytes.
+            assert_eq!(cirka_sock_sendto(a, m, lo, pb), 8);
+            let short = cirka_sock_recvfrom(b, 4);
+            assert_eq!(io::bytes_of(short), b"data");
+            for o in [d, host, e, short, m, empty, bad, a, b, lo] {
+                cirka_drop(o);
+            }
+            assert_eq!(cirka_net_udp_bind(text("x"), 0), -EINVAL);
+        }
     }
 }

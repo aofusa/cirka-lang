@@ -47,6 +47,12 @@ pub struct Tls {
     /// The event loop whose `cirka_loop_run` runs on this thread (the
     /// innermost; null if none): callbacks find it without capturing it.
     pub cur_loop: *mut crate::object::Header,
+    /// Operations of the running callback that completed at once
+    /// (`evloop::spend`).
+    pub io_spent: u32,
+    /// The sender of the last datagram received (`net.rs`).
+    pub peer_len: u32,
+    pub peer: crate::sys::sockaddr_storage,
 }
 
 const TLS_SIZE: usize = core::mem::size_of::<Tls>();

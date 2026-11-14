@@ -8,6 +8,12 @@
 //! queue and an eventfd), which is reference counted on its own. Blocking
 //! work runs on the runtime's thread pool and its result comes back
 //! through the inbox.
+//!
+//! The `cirka_async_*` functions act on the loop running on this thread
+//! (the libraries' continuation-passing API, spec-v0.0.5.md §2): a watch
+//! may have a timeout, and a watch that cannot be set up calls its
+//! callback in the next turn with the error, so that a one-shot
+//! continuation always runs exactly once.
 
 use crate::object::{FOREIGN, Obj, cirka_drop, cirka_dup, cirka_mark_shared, word};
 use crate::sync::Mutex;
@@ -20,6 +26,13 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 pub const EV_READ: i64 = 1;
 pub const EV_WRITE: i64 = 2;
 pub const EV_ERROR: i64 = 4;
+/// The timeout of a watch passed first.
+pub const EV_TIMEOUT: i64 = 8;
+
+/// Operations that complete at once in one callback before the next ones
+/// report `EAGAIN` and wait for the loop (`spend`): one connection whose
+/// data keeps coming cannot keep the others waiting.
+pub const BUDGET: u32 = 64;
 
 const EINTR: i32 = 4;
 const EBADF: i64 = 9;
@@ -121,14 +134,25 @@ struct Slot {
     registered: bool,
     /// The events watched for (`EV_READ` | `EV_WRITE`).
     want: u8,
+    /// The timer of the watch's timeout (`NO_TIMER` if it has none).
+    timer: u32,
 }
 
-/// A timer of the slab (free when `cb` is null).
+/// A timer of the slab.
 #[derive(Clone, Copy)]
 struct Timer {
+    /// The callback; null for the timeout of a watch (whose callback is
+    /// in the slot of `fd`).
     cb: Obj,
     epoch: u32,
     next_free: u32,
+    /// The descriptor whose watch this timer limits, or -1.
+    fd: i32,
+    /// The events the callback sees (0, or `-errno` for a watch that
+    /// could not be set up).
+    ev: i32,
+    /// Pending (not fired, cancelled or free).
+    used: bool,
 }
 
 /// An entry of the timer heap; stale when the slab entry has another
@@ -195,16 +219,35 @@ fn now_ns() -> u64 {
     ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64
 }
 
-/// Runs the IO action `cb` (consumed) and drops its result.
+/// Runs the IO action `cb` (consumed) and drops its result. Every
+/// callback starts with a new budget.
 ///
 /// # Safety
 /// `cb` must be an owned IO action.
 unsafe fn call_action(cb: Obj) {
-    // SAFETY: guaranteed by the caller.
+    // SAFETY: guaranteed by the caller; this thread's block.
     unsafe {
+        (*tls::tls()).io_spent = 0;
         let r = cirka_call_1(cb, io_token());
         cirka_drop(r);
     }
+}
+
+/// Whether an operation may still complete at once in the running
+/// callback: once its budget is spent, operations report `EAGAIN` and
+/// wait for the loop instead. Without a running loop there is no budget.
+pub(crate) fn budget_left() -> bool {
+    // SAFETY: this thread's block.
+    unsafe {
+        let t = tls::tls();
+        (*t).io_spent < BUDGET || (*t).cur_loop.is_null()
+    }
+}
+
+/// Counts an operation that completed at once.
+pub(crate) fn spend() {
+    // SAFETY: this thread's block.
+    unsafe { (*tls::tls()).io_spent += 1 }
 }
 
 /// Runs `cb arg` (both consumed), an IO action.
@@ -239,7 +282,7 @@ unsafe fn owned(o: Obj) -> *mut Loop {
 }
 
 /// A new FOREIGN object holding `p` with finalizer `fin`.
-fn foreign(p: *mut c_void, fin: extern "C" fn(usize)) -> Obj {
+pub(crate) fn foreign(p: *mut c_void, fin: extern "C" fn(usize)) -> Obj {
     // SAFETY: a fresh object of header + 2 words, no pointer fields.
     unsafe {
         let o = alloc::cirka_alloc(24) as Obj;
@@ -421,8 +464,18 @@ extern "C" fn loop_finalize(p: usize) {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn cirka_loop_watch(o: Obj, fd: i64, events: i64, cb: Obj) -> i64 {
     // SAFETY: the loop's own state, on its thread.
+    unsafe { watch(&mut *owned(o), fd, events, -1, cb) }
+}
+
+/// `cirka_loop_watch` with a timeout: if `fd` is not ready within `ms`
+/// milliseconds (`ms` >= 0), the watch ends and `cb` runs with the event
+/// `EV_TIMEOUT`.
+///
+/// # Safety
+/// As for `cirka_loop_watch`.
+unsafe fn watch(l: &mut Loop, fd: i64, events: i64, ms: i64, cb: Obj) -> i64 {
+    // SAFETY: the loop's own state, on its thread; `cb` is live.
     unsafe {
-        let l = &mut *owned(o);
         if !(0..=i64::from(i32::MAX)).contains(&fd) {
             return -EBADF;
         }
@@ -443,6 +496,7 @@ pub unsafe extern "C" fn cirka_loop_watch(o: Obj, fd: i64, events: i64, cb: Obj)
                 epoch: 0,
                 registered: false,
                 want: 0,
+                timer: NO_TIMER,
             });
         }
         let slot = l.slots.at(fd);
@@ -473,12 +527,21 @@ pub unsafe extern "C" fn cirka_loop_watch(o: Obj, fd: i64, events: i64, cb: Obj)
         slot.registered = true;
         slot.want = (events & (EV_READ | EV_WRITE)) as u8;
         let old = slot.cb;
+        let old_timer = slot.timer;
+        slot.timer = NO_TIMER;
         cirka_dup(cb);
         slot.cb = cb;
         if old.is_null() {
             l.watches += 1;
         } else {
             cirka_drop(old);
+        }
+        if old_timer != NO_TIMER {
+            free_timer(l, old_timer);
+        }
+        if ms >= 0 {
+            let idx = add_timer(l, ms, core::ptr::null_mut(), fd as i32, 0);
+            l.slots.at(fd).timer = idx;
         }
         0
     }
@@ -509,6 +572,11 @@ pub unsafe extern "C" fn cirka_loop_unwatch(o: Obj, fd: i64) -> i64 {
             return 0;
         }
         slot.cb = core::ptr::null_mut();
+        let timer = slot.timer;
+        slot.timer = NO_TIMER;
+        if timer != NO_TIMER {
+            free_timer(l, timer);
+        }
         l.watches -= 1;
         cirka_drop(cb);
         1
@@ -534,40 +602,60 @@ pub unsafe extern "C" fn cirka_loop_events(o: Obj) -> i64 {
 /// `o` must be a live loop of this thread, `cb` a live IO action.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn cirka_loop_timer(o: Obj, ms: i64, cb: Obj) -> i64 {
-    // SAFETY: the loop's own state, on its thread.
+    // SAFETY: the loop's own state, on its thread; `cb` is live.
     unsafe {
         let l = &mut *owned(o);
-        let deadline = now_ns().saturating_add((ms.max(0) as u64).saturating_mul(1_000_000));
-        let idx = if l.free_timer != NO_TIMER {
-            let i = l.free_timer;
-            l.free_timer = l.timers.get(i as usize).next_free;
-            i
-        } else {
-            l.timers.push(Timer {
-                cb: core::ptr::null_mut(),
-                epoch: 0,
-                next_free: NO_TIMER,
-            });
-            (l.timers.len - 1) as u32
-        };
-        let t = l.timers.at(idx as usize);
-        t.epoch = (t.epoch + 1) & 0x7fff_ffff;
         cirka_dup(cb);
-        t.cb = cb;
-        let epoch = t.epoch;
-        l.seq += 1;
-        heap_push(
-            &mut l.heap,
-            Entry {
-                deadline,
-                seq: l.seq,
-                idx,
-                epoch,
-            },
-        );
-        l.live_timers += 1;
-        (i64::from(epoch) << 32) | (i64::from(idx) + 1)
+        let idx = add_timer(l, ms, cb, -1, 0);
+        timer_id(l, idx)
     }
+}
+
+/// The number of timer `idx` for `cirka_loop_cancel`.
+fn timer_id(l: &Loop, idx: u32) -> i64 {
+    (i64::from(l.timers.get(idx as usize).epoch) << 32) | (i64::from(idx) + 1)
+}
+
+/// Adds a timer that fires after `ms` milliseconds: the callback `cb`
+/// (owned; null for the timeout of the watch of `fd`) runs with the
+/// events `ev`. Returns its slab entry.
+fn add_timer(l: &mut Loop, ms: i64, cb: Obj, fd: i32, ev: i32) -> u32 {
+    let deadline = now_ns().saturating_add((ms.max(0) as u64).saturating_mul(1_000_000));
+    let idx = if l.free_timer != NO_TIMER {
+        let i = l.free_timer;
+        l.free_timer = l.timers.get(i as usize).next_free;
+        i
+    } else {
+        l.timers.push(Timer {
+            cb: core::ptr::null_mut(),
+            epoch: 0,
+            next_free: NO_TIMER,
+            fd: -1,
+            ev: 0,
+            used: false,
+        });
+        (l.timers.len - 1) as u32
+    };
+    let t = l.timers.at(idx as usize);
+    t.epoch = (t.epoch + 1) & 0x7fff_ffff;
+    t.cb = cb;
+    t.fd = fd;
+    t.ev = ev;
+    t.used = true;
+    let epoch = t.epoch;
+    l.seq += 1;
+    let seq = l.seq;
+    heap_push(
+        &mut l.heap,
+        Entry {
+            deadline,
+            seq,
+            idx,
+            epoch,
+        },
+    );
+    l.live_timers += 1;
+    idx
 }
 
 /// Cancels a timer: 1 if it had not fired yet (its callback is dropped).
@@ -577,21 +665,27 @@ pub unsafe extern "C" fn cirka_loop_timer(o: Obj, ms: i64, cb: Obj) -> i64 {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn cirka_loop_cancel(o: Obj, id: i64) -> i64 {
     // SAFETY: the loop's own state, on its thread.
-    unsafe {
-        let l = &mut *owned(o);
-        let idx = (id & 0xffff_ffff) - 1;
-        let epoch = (id >> 32) as u32;
-        if idx < 0 || idx as usize >= l.timers.len {
-            return 0;
-        }
-        let t = l.timers.get(idx as usize);
-        if t.epoch != epoch || t.cb.is_null() {
-            return 0;
-        }
-        free_timer(l, idx as u32);
-        cirka_drop(t.cb);
-        1
+    unsafe { cancel(&mut *owned(o), id) }
+}
+
+/// Cancels the timer numbered `id` (not the timeout of a watch).
+///
+/// # Safety
+/// On the loop's thread.
+unsafe fn cancel(l: &mut Loop, id: i64) -> i64 {
+    let idx = (id & 0xffff_ffff) - 1;
+    let epoch = (id >> 32) as u32;
+    if idx < 0 || idx as usize >= l.timers.len {
+        return 0;
     }
+    let t = l.timers.get(idx as usize);
+    if !t.used || t.epoch != epoch || t.fd >= 0 {
+        return 0;
+    }
+    free_timer(l, idx as u32);
+    // SAFETY: the timer owned its callback.
+    unsafe { cirka_drop(t.cb) };
+    1
 }
 
 /// Frees slab entry `idx` (its callback was taken or dropped).
@@ -599,6 +693,8 @@ fn free_timer(l: &mut Loop, idx: u32) {
     let next = l.free_timer;
     let t = l.timers.at(idx as usize);
     t.cb = core::ptr::null_mut();
+    t.used = false;
+    t.fd = -1;
     t.next_free = next;
     l.free_timer = idx;
     l.live_timers -= 1;
@@ -652,26 +748,49 @@ fn heap_pop(h: &mut Buf<Entry>) -> Option<Entry> {
 /// Whether heap entry `e` still refers to a pending timer.
 fn live(l: &Loop, e: &Entry) -> bool {
     let t = l.timers.get(e.idx as usize);
-    t.epoch == e.epoch && !t.cb.is_null()
+    t.used && t.epoch == e.epoch
 }
 
 /// Runs the timers due at `now`; timers they add wait for the next turn.
+/// The timeout of a watch ends the watch and runs its callback with
+/// `EV_TIMEOUT`.
 ///
 /// # Safety
 /// On the loop's thread.
 unsafe fn run_timers(l: *mut Loop, now: u64) {
-    // SAFETY: the loop's own state; callbacks may change it between calls.
+    // SAFETY: the loop's own state; callbacks may change it between calls,
+    // so the callbacks are taken out of the slab and the slots first.
     unsafe {
-        let mut due: Buf<Obj> = Buf::new();
+        let mut due: Buf<(Obj, i64)> = Buf::new();
         while (*l).heap.len > 0 && (*l).heap.get(0).deadline <= now {
             let e = heap_pop(&mut (*l).heap).unwrap();
-            if live(&*l, &e) {
-                due.push((*l).timers.get(e.idx as usize).cb);
-                free_timer(&mut *l, e.idx);
+            if !live(&*l, &e) {
+                continue;
             }
+            let t = (*l).timers.get(e.idx as usize);
+            free_timer(&mut *l, e.idx);
+            if t.fd < 0 {
+                due.push((t.cb, i64::from(t.ev)));
+                continue;
+            }
+            let epfd = (*l).epfd;
+            let slot = (*l).slots.at(t.fd as usize);
+            slot.timer = NO_TIMER;
+            slot.epoch = slot.epoch.wrapping_add(1);
+            if slot.registered {
+                sys::epoll_ctl(epfd, sys::EPOLL_CTL_DEL, t.fd, core::ptr::null_mut());
+                slot.registered = false;
+            }
+            let cb = slot.cb;
+            slot.cb = core::ptr::null_mut();
+            (*l).watches -= 1;
+            due.push((cb, EV_TIMEOUT));
         }
         for i in 0..due.len {
-            call_action(due.get(i));
+            let (cb, ev) = due.get(i);
+            (*l).events = ev;
+            call_action(cb);
+            (*l).events = 0;
         }
         due.free();
     }
@@ -751,6 +870,12 @@ unsafe fn dispatch(l: *mut Loop, ev: sys::epoll_event) {
         }
         let cb = slot.cb;
         slot.cb = core::ptr::null_mut();
+        let timer = slot.timer;
+        slot.timer = NO_TIMER;
+        let want = i64::from(slot.want);
+        if timer != NO_TIMER {
+            free_timer(&mut *l, timer);
+        }
         (*l).watches -= 1;
         let e = ev.events;
         let mut got = 0;
@@ -763,7 +888,7 @@ unsafe fn dispatch(l: *mut Loop, ev: sys::epoll_event) {
         if e & (sys::EPOLLERR | sys::EPOLLHUP) != 0 {
             // The read or write the callback waits for now fails or sees
             // the end: report it as ready too.
-            got |= EV_ERROR | i64::from(slot.want);
+            got |= EV_ERROR | want;
         }
         (*l).events = got;
         call_action(cb);
@@ -907,6 +1032,131 @@ pub unsafe extern "C" fn cirka_remote_post(rm: Obj, cb: Obj) -> i64 {
             cirka_drop(cb);
             -EPIPE
         }
+    }
+}
+
+// ---- The loop running on this thread (spec-v0.0.5.md §2) ----
+
+/// The loop running on this thread (borrowed: alive while it runs).
+fn current() -> *mut Loop {
+    // SAFETY: this thread's block; the loop object is alive while its
+    // `cirka_loop_run` runs, and its state is in word 0.
+    unsafe {
+        let o = (*tls::tls()).cur_loop;
+        if o.is_null() {
+            io::fatal(
+                b"no event loop is running on this thread (run the program in Std.Async.runLoop)",
+                2,
+            );
+        }
+        *word(o, 0) as *mut Loop
+    }
+}
+
+/// Runs `cb` (borrowed) as the first callback of a new loop of this
+/// thread, then the loop until nothing is left to wait for (0) or it is
+/// stopped (1). The loop is freed afterwards, with what it still holds.
+///
+/// # Safety
+/// `cb` must be a live IO action.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cirka_async_run(cb: Obj) -> i64 {
+    // SAFETY: a new loop of this thread, released at the end.
+    unsafe {
+        let l = cirka_loop_new();
+        cirka_loop_timer(l, 0, cb);
+        let r = cirka_loop_run(l);
+        cirka_drop(l);
+        r
+    }
+}
+
+/// Watches the descriptor of `h` (a descriptor object of `net.rs`) for
+/// `events` on the running loop, with a timeout of `ms` milliseconds if
+/// `ms` >= 0. `cb` (borrowed) runs exactly once: when the descriptor is
+/// ready, when the timeout passes (`EV_TIMEOUT`), or, if the watch cannot
+/// be set up, in the next turn with `-errno` as its events.
+///
+/// # Safety
+/// `h` must be a live descriptor object, `cb` a live IO action.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cirka_async_watch(h: Obj, events: i64, ms: i64, cb: Obj) -> i64 {
+    // SAFETY: the running loop's state, on its thread.
+    unsafe {
+        let l = &mut *current();
+        let fd = crate::net::cirka_handle_fd(h);
+        let r = if fd < 0 {
+            -EBADF
+        } else {
+            watch(l, fd, events, ms, cb)
+        };
+        if r < 0 {
+            cirka_dup(cb);
+            add_timer(l, 0, cb, -1, r as i32);
+        }
+        r
+    }
+}
+
+/// The events of the running callback: 1 read, 2 write, 4 error or
+/// hang-up (with the events watched for), 8 timeout, `-errno` when a
+/// watch could not be set up; 0 for a timer.
+#[unsafe(no_mangle)]
+pub extern "C" fn cirka_async_events() -> i64 {
+    // SAFETY: the running loop's state, on its thread.
+    unsafe { (*current()).events }
+}
+
+/// `cirka_loop_timer` on the running loop.
+///
+/// # Safety
+/// `cb` must be a live IO action.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cirka_async_timer(ms: i64, cb: Obj) -> i64 {
+    // SAFETY: the running loop's state, on its thread; `cb` is live.
+    unsafe {
+        let l = &mut *current();
+        cirka_dup(cb);
+        let idx = add_timer(l, ms, cb, -1, 0);
+        timer_id(l, idx)
+    }
+}
+
+/// `cirka_loop_cancel` on the running loop.
+#[unsafe(no_mangle)]
+pub extern "C" fn cirka_async_cancel(id: i64) -> i64 {
+    // SAFETY: the running loop's state, on its thread.
+    unsafe { cancel(&mut *current(), id) }
+}
+
+/// `cirka_loop_stop` on the running loop.
+#[unsafe(no_mangle)]
+pub extern "C" fn cirka_async_stop() -> i64 {
+    // SAFETY: the running loop's state, on its thread.
+    unsafe { (*current()).stop = true };
+    0
+}
+
+/// `cirka_loop_remote` of the running loop.
+#[unsafe(no_mangle)]
+pub extern "C" fn cirka_async_remote() -> Obj {
+    // SAFETY: the running loop object, on its thread.
+    unsafe {
+        current();
+        cirka_loop_remote((*tls::tls()).cur_loop)
+    }
+}
+
+/// `cirka_loop_blocking` on the running loop.
+///
+/// # Safety
+/// As for `cirka_loop_blocking`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cirka_async_blocking(work: Obj, done: Obj) -> i64 {
+    // SAFETY: the running loop object, on its thread.
+    unsafe {
+        current();
+        cirka_loop_blocking((*tls::tls()).cur_loop, work, done)
     }
 }
 
@@ -1456,5 +1706,160 @@ mod tests {
             cirka_drop(c);
             cirka_drop(l);
         }
+    }
+
+    static EVENTS: StdMutex<Vec<i64>> = StdMutex::new(Vec::new());
+    static HANDLE: AtomicU64 = AtomicU64::new(0);
+
+    /// Records the events of the running callback.
+    extern "C" fn record(t: Obj) -> Obj {
+        EVENTS.lock().unwrap().push(cirka_async_events());
+        t
+    }
+
+    fn take_events() -> Vec<i64> {
+        core::mem::take(&mut *EVENTS.lock().unwrap())
+    }
+
+    /// Watches the pipe in `FD` (as a descriptor object) for reading with
+    /// a timeout of 20 ms, and the write end in `WFD` with none.
+    extern "C" fn watch_with_timeouts(t: Obj) -> Obj {
+        // SAFETY: descriptor objects and closures, released after the
+        // watches took their references.
+        unsafe {
+            let r = crate::net::cirka_fd_handle(FD.load(Ordering::Relaxed));
+            let w = crate::net::cirka_fd_handle(WFD.load(Ordering::Relaxed));
+            let cb = closure(record);
+            assert_eq!(cirka_async_watch(r, EV_READ, 20, cb), 0);
+            // Writable at once: the timeout of a minute must not keep the
+            // loop running.
+            assert_eq!(cirka_async_watch(w, EV_WRITE, 60_000, cb), 0);
+            cirka_drop(cb);
+            // The loop is done with the descriptors before they are
+            // closed by the test.
+            HANDLE.store(r as u64, Ordering::Relaxed);
+            WORKER.store(w as u64, Ordering::Relaxed);
+        }
+        t
+    }
+
+    #[test]
+    fn a_watch_with_a_timeout() {
+        let _g = LOCK.lock().unwrap();
+        let b0 = balance();
+        let (r, w) = pipe_fds();
+        FD.store(r, Ordering::Relaxed);
+        WFD.store(w, Ordering::Relaxed);
+        // SAFETY: a closure run as the first callback of a new loop.
+        unsafe {
+            let c = closure(watch_with_timeouts);
+            let start = now_ns();
+            assert_eq!(cirka_async_run(c), 0);
+            let took = now_ns() - start;
+            assert!(took >= 20_000_000, "the read timed out after 20 ms");
+            assert!(took < 10_000_000_000, "the other timeout did not wait");
+            assert_eq!(take_events(), vec![EV_WRITE, EV_TIMEOUT]);
+            cirka_drop(c);
+            // The descriptor objects close the pipe.
+            cirka_drop(HANDLE.load(Ordering::Relaxed) as Obj);
+            cirka_drop(WORKER.load(Ordering::Relaxed) as Obj);
+        }
+        assert_eq!(crate::net::cirka_fd_set_nonblocking(r, 1), -EBADF);
+        assert_eq!(balance(), b0);
+    }
+
+    /// Watches a closed descriptor object, then runs a timer: the watch
+    /// fails, and its callback still runs, in the next turn.
+    extern "C" fn watch_closed(t: Obj) -> Obj {
+        // SAFETY: a descriptor object and closures, released at the end.
+        unsafe {
+            let (r, w) = pipe_fds();
+            crate::stdio::cirka_fd_close(w);
+            let h = crate::net::cirka_fd_handle(r);
+            assert_eq!(crate::net::cirka_handle_close(h), 0);
+            assert_eq!(crate::net::cirka_handle_close(h), -EBADF, "closed once");
+            assert_eq!(crate::net::cirka_handle_fd(h), -1);
+            let cb = closure(record);
+            assert_eq!(cirka_async_watch(h, EV_READ, -1, cb), -EBADF);
+            assert!(take_events().is_empty(), "not called at once");
+            let a = closure(tick_a);
+            let id = cirka_async_timer(0, a);
+            assert_eq!(cirka_async_cancel(id), 1);
+            assert_eq!(cirka_async_cancel(id), 0);
+            cirka_drop(a);
+            cirka_drop(cb);
+            cirka_drop(h);
+        }
+        t
+    }
+
+    #[test]
+    fn a_watch_that_fails_still_calls_back() {
+        let _g = LOCK.lock().unwrap();
+        let b0 = balance();
+        // SAFETY: a closure run as the first callback of a new loop.
+        unsafe {
+            let c = closure(watch_closed);
+            assert_eq!(cirka_async_run(c), 0);
+            assert_eq!(take_events(), vec![-EBADF]);
+            assert!(take_log().is_empty(), "the cancelled timer did not run");
+            cirka_drop(c);
+        }
+        assert_eq!(balance(), b0);
+    }
+
+    /// Reads the pipe in `FD` one byte at a time as long as reads complete
+    /// at once, logging the bytes, then waits for the pipe.
+    extern "C" fn drain_pipe(t: Obj) -> Obj {
+        // SAFETY: the descriptor object in `HANDLE`, strings released.
+        unsafe {
+            let h = HANDLE.load(Ordering::Relaxed) as Obj;
+            let mut n = 0;
+            loop {
+                let d = crate::net::cirka_sock_recv(h, 1);
+                let e = crate::stdio::cirka_errno();
+                let empty = io::bytes_of(d).is_empty();
+                cirka_drop(d);
+                if empty {
+                    if e == 11 {
+                        // EAGAIN: the budget is spent (or the pipe empty).
+                        log(b'|');
+                        let cb = closure(drain_pipe);
+                        assert_eq!(cirka_async_watch(h, EV_READ, -1, cb), 0);
+                        cirka_drop(cb);
+                    }
+                    break;
+                }
+                n += 1;
+            }
+            EVENTS.lock().unwrap().push(n);
+        }
+        t
+    }
+
+    #[test]
+    fn the_budget_lets_other_callbacks_run() {
+        let _g = LOCK.lock().unwrap();
+        let b0 = balance();
+        let (r, w) = pipe_fds();
+        // SAFETY: a descriptor object, closures and a string, released.
+        unsafe {
+            let d = crate::cirka_bytes_from([b'x'; 100].as_ptr(), 100);
+            assert_eq!(crate::net::cirka_fd_write_from(w, d, 0), 100);
+            cirka_drop(d);
+            crate::stdio::cirka_fd_close(w);
+            assert_eq!(crate::net::cirka_fd_set_nonblocking(r, 1), 0);
+            let h = crate::net::cirka_fd_handle(r);
+            HANDLE.store(h as u64, Ordering::Relaxed);
+            let c = closure(drain_pipe);
+            assert_eq!(cirka_async_run(c), 0);
+            // 64 bytes in the first callback, then the rest when the loop
+            // calls back; the end of the pipe stops the reads.
+            assert_eq!(take_events(), vec![64, 36]);
+            assert_eq!(take_log(), b"|");
+            cirka_drop(c);
+            cirka_drop(h);
+        }
+        assert_eq!(balance(), b0);
     }
 }
