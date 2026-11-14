@@ -3,7 +3,8 @@
 //! A recursive top-level function that passes one of its function-typed
 //! parameters unchanged to every recursive call, and otherwise only calls
 //! it, is copied for each call site that passes a known function there: a
-//! global, or a lambda whose free variables become extra parameters.
+//! global, a lambda, or a partial application of a global to atoms (`a i`);
+//! the free variables of the function passed become extra parameters.
 //!
 //! ```text
 //! go f n i = … f a b … go f n (i + 1)        -- f is static in go
@@ -407,11 +408,21 @@ fn expr_has_tyvars(e: &Expr) -> bool {
     found
 }
 
-/// Whether `a` is a function worth specializing on: a global function or a
-/// lambda (not mentioning `f`, which would specialize without end).
+/// Whether `a` is a function worth specializing on: a global function, a
+/// lambda (not mentioning `f`, which would specialize without end), or a
+/// partial application of a global function to atoms (`a i`, in effect
+/// `\j -> a i j`: applying it does no work until it is saturated).
 fn known_fun(p: &Program, a: &Expr, f: &str) -> bool {
     match a {
         Expr::Global(g) => g != f && p.bind(g).is_some_and(|b| matches!(b.expr, Expr::Lam(..))),
+        Expr::App(..) => {
+            let (h, args) = a.collect_args();
+            let (h, _) = ty_args(h);
+            matches!(h, Expr::Global(g) if g != f && p.bind(g).is_some_and(|b| {
+                let (_, xs, _) = split_fun(&b.expr);
+                xs.len() > args.len()
+            })) && args.iter().all(|x| x.is_atom())
+        }
         Expr::Lam(..) => {
             let mut mentions = false;
             walk(a, &mut |s| {

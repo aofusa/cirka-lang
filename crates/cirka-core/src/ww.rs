@@ -28,6 +28,14 @@
 //! cannot change the meaning either. This covers call-by-value frontends
 //! (CirkaLang) and loops whose accumulators are only used on some paths.
 //!
+//! A parameter or result whose type is a newtype of a box type is unboxed
+//! the same way, through a `cast` (FEAT-0061: a newtype costs nothing).
+//!
+//! A parameter that the body only passes to its own position in self-calls
+//! (or does not use) is *absent*: the worker does without it (FEAT-0061: the
+//! token of a borrow). This also applies to functions with linear
+//! parameters, which are otherwise left alone.
+//!
 //! A parameter of a *product type* (one constructor, not linear, not a
 //! newtype: a record such as a loop's accumulator or a string view) is
 //! unboxed into its fields the same way when, besides being strict, every
@@ -497,6 +505,48 @@ pub(crate) fn box_of(p: &Program, t: &Type) -> Option<(String, Type)> {
     Some((k.name.clone(), k.fields[0].clone()))
 }
 
+/// The representation of `t` behind newtypes (not linear ones): the field
+/// type of the newtype, repeatedly; `None` when `t` is not a newtype (or a
+/// newtype that contains itself).
+pub(crate) fn newtype_rep(p: &Program, t: &Type) -> Option<Type> {
+    let mut cur = t.clone();
+    for depth in 0..16 {
+        let Type::Con(d, args) = &cur else {
+            return (depth > 0).then_some(cur);
+        };
+        let Some(dd) = p.data(d) else {
+            return (depth > 0).then_some(cur);
+        };
+        if !dd.newtype
+            || dd.linear
+            || dd.ctors.len() != 1
+            || dd.ctors[0].fields.len() != 1
+            || dd.params.len() != args.len()
+        {
+            return (depth > 0).then_some(cur);
+        }
+        let s: Vec<(TyVar, Type)> = dd
+            .params
+            .iter()
+            .map(|(v, _)| v.clone())
+            .zip(args.iter().cloned())
+            .collect();
+        cur = dd.ctors[0].fields[0].subst_all(&s);
+    }
+    None
+}
+
+/// The box of `t` (see [`box_of`]), also behind newtypes (FEAT-0061: a
+/// newtype costs nothing): the box and the type to cast `t` to before
+/// taking it apart (`None` when `t` is the box type itself).
+pub(crate) fn box_via(p: &Program, t: &Type) -> Option<((String, Type), Option<Type>)> {
+    if let Some(b) = box_of(p, t) {
+        return Some((b, None));
+    }
+    let r = newtype_rep(p, t)?;
+    box_of(p, &r).map(|b| (b, Some(r)))
+}
+
 /// Every return of `e` builds constructor `k` (or diverges, or calls
 /// `f` itself with at least `n` arguments).
 fn returns_con(e: &Expr, k: &str, f: &str, n: usize, boxed: &HashSet<u32>) -> bool {
@@ -504,6 +554,8 @@ fn returns_con(e: &Expr, k: &str, f: &str, n: usize, boxed: &HashSet<u32>) -> bo
         Expr::Con(c, _, _) => c == k,
         // A parameter that the worker receives unboxed.
         Expr::Var(x) => boxed.contains(&x.id),
+        // To or from a newtype of the box.
+        Expr::Cast(x, _) => returns_con(x, k, f, n, boxed),
         Expr::Panic(..) => true,
         Expr::Let(_, b) | Expr::LetStrict(_, _, b) => returns_con(b, k, f, n, boxed),
         Expr::Case(_, _, _, alts) => alts.iter().all(|a| returns_con(&a.rhs, k, f, n, boxed)),
@@ -543,6 +595,7 @@ fn prod_of(p: &Program, t: &Type) -> Option<Unbox> {
         con: k.name.clone(),
         targs: args.clone(),
         fields: k.fields.iter().map(|f| f.subst_all(&s)).collect(),
+        via: None,
     })
 }
 
@@ -571,6 +624,26 @@ fn only_scrutinized(e: &Expr, x: u32, f: &str, pos: usize, n: usize) -> bool {
     all == ok
 }
 
+/// Parameter `x` (position `pos` of `f`'s `n`) is *absent*: it occurs only
+/// as argument `pos` of saturated self-calls, or not at all (FEAT-0061: the
+/// token of a borrow, a parameter whose uses were inlined away). The
+/// worker does without it.
+fn absent(e: &Expr, x: u32, f: &str, pos: usize, n: usize) -> bool {
+    let mut all = 0usize;
+    let mut ok = 0usize;
+    crate::opt::walk(e, &mut |s| match s {
+        Expr::Var(v) if v.id == x => all += 1,
+        Expr::App(..) if is_self_call(s, f, n) => {
+            let (_, args) = s.collect_args();
+            if matches!(args[pos], Expr::Var(v) if v.id == x) {
+                ok += 1;
+            }
+        }
+        _ => {}
+    });
+    all == ok
+}
+
 /// The returns of `e` that are the variable `x`.
 fn returns_of(e: &Expr, x: u32) -> usize {
     match e {
@@ -588,14 +661,25 @@ struct Unbox {
     con: String,
     targs: Vec<Type>,
     fields: Vec<Type>,
+    /// The box type behind the parameter's newtype, if it is one.
+    via: Option<Type>,
 }
 
 impl Unbox {
-    fn of_box((con, ft): (String, Type)) -> Unbox {
+    fn of_box(((con, ft), via): ((String, Type), Option<Type>)) -> Unbox {
         Unbox {
             con,
             targs: Vec::new(),
             fields: vec![ft],
+            via,
+        }
+    }
+
+    /// `x` (of the parameter's type) as a value of the constructor's type.
+    fn scrutinee(&self, x: Expr) -> Expr {
+        match &self.via {
+            Some(t) => Expr::Cast(Box::new(x), t.clone()),
+            None => x,
         }
     }
 }
@@ -608,8 +692,12 @@ struct Plan {
     params: Vec<Binder>,
     /// For each parameter: how it is unboxed, if it is.
     unbox: Vec<Option<Unbox>>,
-    /// The result's box when the result is unboxed (CPR).
+    /// For each parameter: whether the worker does without it.
+    absent: Vec<bool>,
+    /// The result's box when the result is unboxed (CPR), and the box type
+    /// when the result is a newtype of it.
     cpr: Option<(String, Type)>,
+    cpr_via: Option<Type>,
     res: Type,
 }
 
@@ -627,23 +715,40 @@ pub fn worker_wrapper(p: &mut Program, next: &mut u32) -> usize {
             continue;
         }
         let (tvs, xs, body) = split_fun(&b.expr);
-        if xs.is_empty() || xs.iter().any(|x| x.mult != Mult::Many) {
+        if xs.is_empty() {
             continue;
         }
+        // Linear parameters stay as they are; absent parameters are left
+        // out even then.
+        let all_many = xs.iter().all(|x| x.mult == Mult::Many);
         let Some((_, st)) = strict.get(&b.name) else {
             continue;
         };
         let ev = evaluated.get(&b.name);
         let n = xs.len();
+        // A state token (`Unit#`) stays, and so does one parameter at
+        // least: a worker without parameters would be a CAF, evaluated once.
+        // Unboxed parameters stay too (the worker binds an absent one to a
+        // `panic` that is never evaluated, which only a lazy `let` can do).
+        let mut absent: Vec<bool> = xs
+            .iter()
+            .enumerate()
+            .map(|(i, x)| {
+                x.mult == Mult::Many && !x.ty.is_unboxed() && absent(body, x.id.id, &b.name, i, n)
+            })
+            .collect();
+        if absent.iter().all(|a| *a) {
+            absent[n - 1] = false;
+        }
         let unbox: Vec<Option<Unbox>> = xs
             .iter()
             .zip(st)
             .enumerate()
             .map(|(i, (x, s))| {
-                if !(*s || ev.is_some_and(|e| e[i])) {
+                if !all_many || absent[i] || !(*s || ev.is_some_and(|e| e[i])) {
                     return None;
                 }
-                box_of(p, &x.ty).map(Unbox::of_box).or_else(|| {
+                box_via(p, &x.ty).map(Unbox::of_box).or_else(|| {
                     prod_of(p, &x.ty).filter(|_| only_scrutinized(body, x.id.id, &b.name, i, n))
                 })
             })
@@ -674,7 +779,7 @@ pub fn worker_wrapper(p: &mut Program, next: &mut u32) -> usize {
         if !ok {
             continue;
         }
-        let cpr = box_of(p, res).filter(|(k, _)| {
+        let cpr = box_via(p, res).filter(|_| all_many).filter(|((k, _), _)| {
             let boxed: HashSet<u32> = xs
                 .iter()
                 .zip(&unbox)
@@ -686,16 +791,22 @@ pub fn worker_wrapper(p: &mut Program, next: &mut u32) -> usize {
                 .collect();
             returns_con(body, k, &b.name, xs.len(), &boxed)
         });
-        if cpr.is_none() && unbox.iter().all(Option::is_none) {
+        if cpr.is_none() && unbox.iter().all(Option::is_none) && !absent.contains(&true) {
             continue;
         }
+        let (cpr, cpr_via) = match cpr {
+            Some((b, via)) => (Some(b), via),
+            None => (None, None),
+        };
         plans.push(Plan {
             name: b.name.clone(),
             worker: format!("{}$w", b.name),
             tvs,
             params: xs,
             unbox,
+            absent,
             cpr,
+            cpr_via,
             res: res.clone(),
         });
     }
@@ -712,7 +823,12 @@ pub fn worker_wrapper(p: &mut Program, next: &mut u32) -> usize {
         // Worker parameters: the unboxed fields replace the boxes.
         let mut wparams = Vec::new();
         let mut rebox = Vec::new();
-        for (x, u) in plan.params.iter().zip(&plan.unbox) {
+        let mut gone = Vec::new();
+        for ((x, u), ab) in plan.params.iter().zip(&plan.unbox).zip(&plan.absent) {
+            if *ab {
+                gone.push(x.clone());
+                continue;
+            }
             match u {
                 Some(u) => {
                     let ubs: Vec<Binder> = u
@@ -743,8 +859,18 @@ pub fn worker_wrapper(p: &mut Program, next: &mut u32) -> usize {
             None => body,
         };
         for (x, u, ids) in rebox.into_iter().rev() {
-            let con = Expr::Con(u.con, u.targs, ids.into_iter().map(Expr::Var).collect());
+            let mut con = Expr::Con(u.con, u.targs, ids.into_iter().map(Expr::Var).collect());
+            if u.via.is_some() {
+                con = Expr::Cast(Box::new(con), x.ty.clone());
+            }
             wbody = Expr::Let(Bind::NonRec(x, Box::new(con)), Box::new(wbody));
+        }
+        // An absent parameter is only passed to the wrapper in self-calls,
+        // which drops it: once the wrapper is inlined, the binding is dead.
+        for x in gone {
+            let ty = x.ty.clone();
+            let never = Expr::Panic("absent argument".into(), ty);
+            wbody = Expr::Let(Bind::NonRec(x, Box::new(never)), Box::new(wbody));
         }
         let wty = fun_type(&plan.tvs, &wparams, &wres);
         let wexpr = abstract_fun(&plan.tvs, &wparams, wbody);
@@ -752,7 +878,7 @@ pub fn worker_wrapper(p: &mut Program, next: &mut u32) -> usize {
         let wparams_w: Vec<Binder> = plan
             .params
             .iter()
-            .map(|x| Binder::new(fresh(next, &x.id.name), Mult::Many, x.ty.clone()))
+            .map(|x| Binder::new(fresh(next, &x.id.name), x.mult, x.ty.clone()))
             .collect();
         let mut call = Expr::Global(plan.worker.clone());
         for (v, _) in &plan.tvs {
@@ -760,7 +886,10 @@ pub fn worker_wrapper(p: &mut Program, next: &mut u32) -> usize {
         }
         let mut cases = Vec::new();
         let mut args = Vec::new();
-        for (x, u) in wparams_w.iter().zip(&plan.unbox) {
+        for ((x, u), ab) in wparams_w.iter().zip(&plan.unbox).zip(&plan.absent) {
+            if *ab {
+                continue;
+            }
             match u {
                 Some(u) => {
                     let ubs: Vec<Binder> = u
@@ -769,7 +898,7 @@ pub fn worker_wrapper(p: &mut Program, next: &mut u32) -> usize {
                         .map(|ft| Binder::new(fresh(next, &x.id.name), Mult::Many, ft.clone()))
                         .collect();
                     args.extend(ubs.iter().map(|b| Expr::Var(b.id.clone())));
-                    cases.push((x.clone(), u.con.clone(), ubs));
+                    cases.push((x.clone(), u.clone(), ubs));
                 }
                 None => args.push(Expr::Var(x.id.clone())),
             }
@@ -777,11 +906,17 @@ pub fn worker_wrapper(p: &mut Program, next: &mut u32) -> usize {
         let mut wrap = Expr::app(call, args);
         if let Some((k, _)) = &plan.cpr {
             wrap = Expr::Con(k.clone(), Vec::new(), vec![wrap]);
+            if plan.cpr_via.is_some() {
+                wrap = Expr::Cast(Box::new(wrap), plan.res.clone());
+            }
         }
-        for (x, k, ubs) in cases.into_iter().rev() {
-            let cb = Binder::new(fresh(next, "s"), Mult::Many, x.ty.clone());
+        for (x, u, ubs) in cases.into_iter().rev() {
+            let cty = u.via.clone().unwrap_or_else(|| x.ty.clone());
+            let cb = Binder::new(fresh(next, "s"), Mult::Many, cty);
+            let scrut = u.scrutinee(Expr::Var(x.id.clone()));
+            let k = u.con;
             wrap = Expr::Case(
-                Box::new(Expr::Var(x.id.clone())),
+                Box::new(scrut),
                 cb,
                 plan.res.clone(),
                 vec![Alt {
@@ -832,6 +967,8 @@ fn unbox_returns(e: Expr, ft: &Type, plan: &Plan, m: &HashMap<u32, Id>, next: &m
     match e {
         Expr::Var(x) if m.contains_key(&x.id) => Expr::Var(m[&x.id].clone()),
         Expr::Con(_, _, mut args) => args.pop().unwrap(),
+        // To or from a newtype of the box (see `returns_con`).
+        Expr::Cast(x, _) => unbox_returns(*x, ft, plan, m, next),
         Expr::Panic(m, _) => Expr::Panic(m, ft.clone()),
         Expr::Let(b, body) => Expr::Let(b, Box::new(unbox_returns(*body, ft, plan, m, next))),
         Expr::LetStrict(b, r, body) => {
@@ -866,7 +1003,15 @@ fn unbox_returns(e: Expr, ft: &Type, plan: &Plan, m: &HashMap<u32, Id>, next: &m
             }
             let mut binds = Vec::new();
             let mut cargs = Vec::new();
-            for ((a, u), x) in args.into_iter().zip(&plan.unbox).zip(&plan.params) {
+            for (((a, u), x), ab) in args
+                .into_iter()
+                .zip(&plan.unbox)
+                .zip(&plan.params)
+                .zip(&plan.absent)
+            {
+                if *ab {
+                    continue;
+                }
                 match u {
                     Some(u) => {
                         let ubs: Vec<Binder> = u
@@ -878,7 +1023,8 @@ fn unbox_returns(e: Expr, ft: &Type, plan: &Plan, m: &HashMap<u32, Id>, next: &m
                             })
                             .collect();
                         cargs.extend(ubs.iter().map(|b| Expr::Var(b.id.clone())));
-                        binds.push((a, u.con.clone(), ubs, x.ty.clone()));
+                        let bty = u.via.clone().unwrap_or_else(|| x.ty.clone());
+                        binds.push((u.scrutinee(a), u.con.clone(), ubs, bty));
                     }
                     None => cargs.push(a),
                 }

@@ -294,6 +294,79 @@ fn opt_worker_wrapper_unboxes_parameters_passed_evaluated() {
 }
 
 #[test]
+fn opt_worker_wrapper_unboxes_newtypes() {
+    // A loop over `M`, a newtype of `Int` (FEAT-0061): the accumulator and
+    // the result are unboxed through the casts, as for `Int` itself.
+    let src = format!(
+        "{STRICT_INT}(data M () :newtype (MkM Int))
+         (def total (-> M Int M)
+           (lam ((acc M) (n Int))
+             (case n (s Int) M
+               ((I# k) (case k (kk Int#) M
+                 (0 acc)
+                 (_ (case (cast acc Int) (t Int) M
+                   ((I# a) (total (con MkM () (con I# () (prim add a k)))
+                                  (con I# () (prim sub k 1)))))))))))
+         (extern arg () Int#)
+         (def main Int#
+           (let! (x Int# (extern arg))
+             (case (cast (total (con MkM () (con I# () 0)) (con I# () x)) Int) (r Int) Int#
+               ((I# v) v))))"
+    );
+    let mut p = parse_program(FileId(0), &src).unwrap();
+    assert!(lint::lint_program(&p).is_empty());
+    let st = opt::optimize_with_stats(&mut p).unwrap();
+    assert!(lint::lint_program(&p).is_empty(), "{}", print_program(&p));
+    assert!(st.worker_wrapper >= 1, "{st:?}");
+    let w = p.bind("total$w").expect("worker");
+    assert_eq!(w.ty.to_string(), "(-> Int# (-> Int# Int#))");
+    let s = print::print_expr(&w.expr);
+    assert!(
+        !s.contains("I#") && !s.contains("MkM") && !s.contains("cast"),
+        "{s}"
+    );
+    let m = print::print_expr(&p.bind("main").unwrap().expr);
+    assert!(!m.contains("I#") && !m.contains("MkM"), "{m}");
+}
+
+#[test]
+fn opt_worker_wrapper_drops_absent_parameters() {
+    // `loop` only passes the token `t` along to itself: its worker does
+    // without it (FEAT-0061). A state token (`Unit#`) stays, and so does
+    // the last parameter when all are absent (no worker becomes a CAF).
+    let src = format!(
+        "{STRICT_INT}(data Tok () (Tok))
+         (extern arg () Int#)
+         (def loop (-> Tok Int# Int# Int#)
+           (lam ((t Tok) (n Int#) (acc Int#))
+             (case n (k Int#) Int#
+               (0 acc)
+               (_ (loop t (prim sub n 1) (prim add acc n))))))
+         (def eff (-> Unit# Int# Int#)
+           (lam ((w Unit#) (n Int#))
+             (case n (k Int#) Int# (0 0) (_ (eff w (prim sub n 1))))))
+         (def spin (-> Tok Int#) (lam ((t Tok)) (spin t)))
+         (def main Int#
+           (let! (x Int# (extern arg))
+             (case x (c Int#) Int#
+               (12345 (spin (con Tok ())))
+               (_ (prim add (loop (con Tok ()) x 0) (eff unit x))))))"
+    );
+    let mut p = parse_program(FileId(0), &src).unwrap();
+    assert!(lint::lint_program(&p).is_empty(), "{}", print_program(&p));
+    opt::optimize(&mut p).unwrap();
+    let all = print_program(&p);
+    assert!(lint::lint_program(&p).is_empty(), "{all}");
+    let w = p.bind("loop$w").expect("worker");
+    assert_eq!(w.ty.to_string(), "(-> Int# (-> Int# Int#))", "{all}");
+    assert!(!print::print_expr(&w.expr).contains("absent"), "{all}");
+    assert!(
+        p.bind("eff$w").is_none() && p.bind("spin$w").is_none(),
+        "{all}"
+    );
+}
+
+#[test]
 fn worker_wrapper_splits_workers_again() {
     // A worker can get arguments that became values after it was split: a
     // `$w` function is split like any other (FEAT-0068).
@@ -1062,6 +1135,79 @@ fn opt_specializes_static_function_arguments() {
         .map(|b| print::print_expr(&b.expr))
         .unwrap();
     assert!(!copy.contains("con I#"), "{copy}");
+}
+
+#[test]
+fn opt_specializes_aliases_and_partial_applications() {
+    // `fold` is called with `plus2`, an alias of `plus`, and with `addk x`,
+    // a partial application of a global: both are known functions (the
+    // alias is replaced by what it names wherever it occurs), so both calls
+    // get copies in which the function is applied in place.
+    let src = format!(
+        "{STRICT_INT}(extern arg () Int#)
+         (def plus (-> Int Int Int)
+           (lam ((a Int) (b Int))
+             (case a (s Int) Int ((I# x) (case b (t Int) Int ((I# y) (con I# () (prim add x y))))))))
+         (def plus2 (-> Int Int Int) plus)
+         (def addk (-> Int# Int Int Int)
+           (lam ((k Int#) (a Int) (b Int))
+             (case a (s Int) Int
+               ((I# x) (case b (t Int) Int ((I# y) (con I# () (prim add x (prim mul k y)))))))))
+         (def fold (-> (-> Int Int Int) Int Int# Int)
+           (lam ((f (-> Int Int Int)) (acc Int) (n Int#))
+             (case n (k Int#) Int
+               (0 acc)
+               (_ (fold f (f acc (con I# () n)) (prim sub n 1))))))
+         (def main Int#
+           (let! (x Int# (extern arg))
+             (case (fold plus2 (con I# () 0) x) (r Int) Int#
+               ((I# v) (case (fold (addk x) (con I# () 0) x) (q Int) Int#
+                 ((I# w) (prim add v w)))))))"
+    );
+    let mut p = parse_program(FileId(0), &src).unwrap();
+    assert!(lint::lint_program(&p).is_empty());
+    let st = opt::optimize_with_stats(&mut p).unwrap();
+    let all = print_program(&p);
+    assert!(lint::lint_program(&p).is_empty(), "{all}");
+    assert_eq!(st.fun_args, 2, "{st:?}\n{all}");
+    let m = print::print_expr(&p.bind("main").unwrap().expr);
+    assert!(!m.contains("plus2") && !m.contains("addk"), "{m}");
+    for b in p.binds.iter().filter(|b| b.name.starts_with("fold$f")) {
+        let e = print::print_expr(&b.expr);
+        assert!(!e.contains("con I#") && !e.contains("lam ((f"), "{e}");
+    }
+}
+
+#[test]
+fn opt_keeps_polymorphic_aliases_in_dictionaries() {
+    // The field `dF$f0` of the dictionary is a polymorphic alias. Replaced
+    // without its type applications it would leave a `Λ` in the dictionary,
+    // which the floating of dictionary fields (run again after the
+    // specialization of `loop`) would define a second time as `dF$f0`.
+    let src = format!(
+        "{STRICT_INT}(data F (a) (F$Dict (forall (b) (-> b b)) (-> a a)))
+         (def idImpl (forall (b) (-> b b)) (tlam (b) (lam ((x b)) x)))
+         (def dF$f0 (forall (b) (-> b b)) (tlam (b) (@ idImpl b)))
+         (def inc (-> Int Int)
+           (lam ((x Int)) (case x (s Int) Int ((I# v) (con I# () (prim add v 1))))))
+         (def dF (F Int) (con F$Dict (Int) dF$f0 inc))
+         (def loop (forall (a) (-> (F a) Int# a a))
+           (tlam (a) (lam ((d (F a)) (n Int#) (x a))
+             (case n (k Int#) a
+               (0 x)
+               (_ (case d (s (F a)) a
+                 ((F$Dict i f) ((@ loop a) d (prim sub n 1) (f ((@ i a) x))))))))))
+         (extern arg () Int#)
+         (def main Int#
+           (let! (c Int# (extern arg))
+             (case ((@ loop Int) dF c (con I# () 0)) (r Int) Int# ((I# v) v))))"
+    );
+    let mut p = parse_program(FileId(0), &src).unwrap();
+    assert!(lint::lint_program(&p).is_empty(), "{}", print_program(&p));
+    let st = opt::optimize_with_stats(&mut p).unwrap();
+    let all = print_program(&p);
+    assert!(lint::lint_program(&p).is_empty(), "{all}");
+    assert!(st.specialized >= 1, "{st:?}");
 }
 
 #[test]

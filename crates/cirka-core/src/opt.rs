@@ -712,6 +712,23 @@ fn globals_in(e: &Expr, out: &mut Vec<String>) {
     });
 }
 
+/// The global that `e` names when it is an alias: a global under type
+/// abstractions, type applications and casts.
+fn alias_target(e: &Expr) -> &str {
+    let mut a = e;
+    while let Expr::TyLam(_, _, x) | Expr::TyApp(x, _) | Expr::Cast(x, _) = a {
+        a = x;
+    }
+    match a {
+        Expr::Global(g) => g,
+        _ => "",
+    }
+}
+
+fn is_alias(e: &Expr) -> bool {
+    !alias_target(e).is_empty()
+}
+
 /// Top-level functions that may be inlined at call sites: non-recursive
 /// lambdas (possibly under `Λ`s) that are small or called exactly once.
 fn inline_candidates(p: &Program) -> HashMap<String, Expr> {
@@ -755,13 +772,7 @@ fn inline_candidates(p: &Program) -> HashMap<String, Expr> {
         }
         // Aliases (`(+) = primIntAdd`, or a cast of one such as
         // `primBindIO = cast prim$io_bind`) are inlined like small functions.
-        let alias = {
-            let mut a = body;
-            while let Expr::TyApp(x, _) | Expr::Cast(x, _) = a {
-                a = x;
-            }
-            matches!(a, Expr::Global(g) if *g != b.name)
-        };
+        let alias = is_alias(&b.expr) && alias_target(&b.expr) != b.name;
         if b.name == "main" || !(matches!(body, Expr::Lam(..)) || alias) {
             continue;
         }
@@ -1032,7 +1043,22 @@ impl Simp<'_> {
                 Some(_) => self.sub.remove(&x.id).unwrap(),
                 None => Expr::Var(x),
             },
-            Expr::Global(_) | Expr::Lit(_) | Expr::Panic(..) => e,
+            // An alias (`(+) = primIntAdd`) is replaced by what it names
+            // wherever it occurs, not only when called: passed to a
+            // higher-order function, the function it names is known
+            // (FEAT-0061, `sat.rs`). A polymorphic alias only under its
+            // type applications (`alias_at_types`): alone it would leave a
+            // `Λ` where an atom was (the field of a dictionary).
+            Expr::Global(g) => match self.inl.get(&g) {
+                Some(body) if is_alias(body) && !matches!(body, Expr::TyLam(..)) => {
+                    self.hit();
+                    self.st.inlined += 1;
+                    let copy = freshen(body, &mut self.next);
+                    self.expr(copy)
+                }
+                _ => Expr::Global(g),
+            },
+            Expr::Lit(_) | Expr::Panic(..) => e,
             Expr::Con(c, ts, mut a) => {
                 // A newtype constructor is a cast: it cancels with the casts
                 // of its patterns, and the value underneath shows through.
@@ -1063,6 +1089,11 @@ impl Simp<'_> {
                 self.apply(f, a)
             }
             Expr::TyApp(f, t) => {
+                let e = Expr::TyApp(f, t);
+                if let Some(r) = self.alias_at_types(&e) {
+                    return r;
+                }
+                let Expr::TyApp(f, t) = e else { unreachable!() };
                 let f = self.expr(*f);
                 self.ty_apply(f, t)
             }
@@ -1108,6 +1139,39 @@ impl Simp<'_> {
                 self.case(s, b, res, alts)
             }
         }
+    }
+
+    /// `g @t₁ .. @tₙ` for a polymorphic alias `g = Λa₁..aₖ. h ..` with
+    /// k ≤ n: what `g` names at those types (FEAT-0061).
+    fn alias_at_types(&mut self, e: &Expr) -> Option<Expr> {
+        let mut ts = Vec::new();
+        let mut h = e;
+        while let Expr::TyApp(x, t) = h {
+            ts.push(t.clone());
+            h = x;
+        }
+        ts.reverse();
+        let Expr::Global(g) = h else { return None };
+        let body = self.inl.get(g)?;
+        if !is_alias(body) {
+            return None;
+        }
+        let mut k = 0;
+        let mut b = body;
+        while let Expr::TyLam(_, _, x) = b {
+            k += 1;
+            b = x;
+        }
+        if k == 0 || k > ts.len() {
+            return None;
+        }
+        self.hit();
+        self.st.inlined += 1;
+        let mut r = freshen(body, &mut self.next);
+        for t in ts {
+            r = self.ty_apply(r, t);
+        }
+        Some(self.expr(r))
     }
 
     /// Simplifies the head of an application, inlining a top-level
