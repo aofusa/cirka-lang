@@ -28,7 +28,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | CirkaLang | CirkaLang v0.0.2 実用 CUI | 7 / 7 |
 | CirkaLang | CirkaLang v0.0.3 借用・リージョン・性能 | 5 / 5 |
 | CirkaLang | CirkaLang v0.0.4 証明と検証 | 6 / 6 |
-| CirkaLang | CirkaLang v0.0.5 並行性・サーバ・syscall | 0 / 5 |
+| CirkaLang | CirkaLang v0.0.5 並行性・サーバ・syscall | 1 / 5 |
 | CirkaLang | CirkaLang v0.0.6 Vulkan compute・数値計算 | 0 / 4 |
 | CirkaLang | CirkaLang v0.0.7 効果・能力・セッション型 | 0 / 4 |
 | CirkaLang | CX 遠隔環境での GUI 検証 (任意) | 0 / 1 |
@@ -259,7 +259,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 
 | ID | タイトル | 状態 | 優先度 | 依存 |
 |---|---|---|---|---|
-| [FEAT-0240](features/FEAT-0240-cl-threads.md) | スレッドと共有 | todo | P0 | 0235, 0045 |
+| [FEAT-0240](features/FEAT-0240-cl-threads.md) | スレッドと共有 | done | P0 | 0235, 0045 |
 | [FEAT-0241](features/FEAT-0241-cl-net-async.md) | ネットワークと非同期 I/O | todo | P0 | 0240, 0046 |
 | [FEAT-0242](features/FEAT-0242-cl-os-syscall.md) | OS 層 (syscall・シグナル・プロセス) | todo | P1 | 0213 |
 | [FEAT-0244](features/FEAT-0244-cl-core-size-contracts.md) | core の配列・文字列の関数に大きさの契約を付ける | todo | P2 | 0235 |
