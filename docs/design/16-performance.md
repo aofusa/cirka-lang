@@ -109,6 +109,6 @@ Rust は安全性の一部を実行時の検査で担保し、最適化はクレ
 | MIR / LLVM | 一意性・再利用トークンの型を MIR に持たせ、引数に `nonnull`・`noalias`・`readonly` を付ける | FEAT-0062 |
 | LLVM | ランタイムの高速経路のインライン化 (ランタイムを bitcode でも出力し LTO) | FEAT-0060 |
 | ランタイム | アロケータの改善 | FEAT-0051 |
-| 検証 | 証明に基づく実行時検査の除去 | FEAT-0234 |
+| 検証 | 証明に基づく実行時検査の除去 (`Data.Array.index`・`divNZ`・`modNZ`・`unreachable`。bench/binary-search で 3.8% 速い) | 済 (FEAT-0234) |
 
 新しい最適化は、効くベンチと計測値をチケットに記録してから入れる。

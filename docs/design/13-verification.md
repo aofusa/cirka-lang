@@ -131,6 +131,8 @@ data Range : Type where
 
 - 配列の添字・除算・`unreachable` な分岐について、証明済みの事実を Core に注釈し、MIR で境界検査なしのアクセス・`unreachable` に変換する。
 - 証明がない場合は従来どおり実行時検査が残る (安全側)。
+- 確定した規則は [spec-v0.0.4.md](cirkalang/spec-v0.0.4.md) §5。証明に頼る演算は部分集合型の引数を持つライブラリ関数 (`Data.Array.index`・`divNZ`・`modNZ`・`unreachable`) の中だけにあり、
+  `--contracts=off` ではそれらも検査のある演算に戻る。
 
 ## 4. ケイパビリティ・効果・セッション型 (CirkaLang v0.0.7)
 
