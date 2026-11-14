@@ -325,7 +325,37 @@ OS のスレッド (pthread) を 1 対 1 で使う。グリーンスレッドは
   システムコールは払わない。`cirka_fd_set_nonblocking(fd, on)`。`cirka_strerror` はネットワークの errno の文言も返す。
 - `cirka_fd_limit_raise()`: `RLIMIT_NOFILE` の soft を hard (最大 2^20) まで上げ、新しい soft を返す (Docker のコンテナの既定は soft 1024)。
 
-### 10.3 テストと計測
+### 10.3 継続渡しの API (FEAT-0241)
+
+ライブラリ (CirkaLang の `Std.Async`・`Std.Net`、spec-v0.0.5.md §2) は、待つ操作に一度だけ実行される継続を渡す (ADR-089)。
+そのためのランタイムの関数は、ループを引数に取らず、このスレッドで動いているループに働く。
+
+- `cirka_async_run(cb)`: このスレッドに新しいループを作り、`cb` を最初のコールバックとして実行してから `cirka_loop_run` で回し、
+  終わったらループを解放する (残った待ちとタイマーのコールバックは呼ばずに解放)。動いているループ (入れ子なら内側) はスレッドの状態に持つ。
+- `cirka_async_watch(h, events, ms, cb)`・`cirka_async_timer(ms, cb)`・`cirka_async_cancel(id)`・`cirka_async_stop()`・
+  `cirka_async_remote()`・`cirka_async_blocking(work, done)`: 動いているループに対する `cirka_loop_*`。ループが動いていなければ
+  プログラムを終了する (`no event loop is running on this thread (run the program in Std.Async.runLoop)`)。
+  `watch` は記述子オブジェクト `h` (下記) を取る。
+- `cirka_async_events()`: 実行中のコールバックの事象。1 読める、2 書ける、4 エラーか切断 (待っていた事象も立つ)、8 タイムアウト
+  (`EV_TIMEOUT`)、待ちを設定できなかったときは `-errno`、タイマーなら 0。
+- **待ちのタイムアウト.** `ms` が 0 以上なら待ちにタイマーを付ける (タイマーの要素は fd を持ち、コールバックは fd の待ちの側にある)。
+  期限が来ると待ちを epoll から外して世代を進め、コールバックを `EV_TIMEOUT` で呼ぶ。事象が先に来たとき、待ちを置き換えたとき、
+  取り消したときは付いているタイマーを取り消す。`cirka_loop_cancel` はふつうのタイマーだけを取り消す。
+- **一度だけの保証.** 待ちを設定できないとき (閉じた記述子オブジェクトは `-EBADF`、epoll の失敗) は、コールバックを 0 ミリ秒の
+  タイマーにして、次のターンで `-errno` を事象として呼ぶ。継続は、完了・失敗・タイムアウトのどれでもちょうど 1 回実行される。
+  例外はループを止めて解放するときで、コールバックは呼ばずに解放する。
+- **予算.** コールバックごとに、すぐに完了したソケットの操作 (`cirka_sock_*`) を数え、64 回 (`BUDGET`) を超えるとデータがあっても
+  `EAGAIN` を返す (ライブラリは待ちに入り、ほかのコールバックが先に動く)。数はコールバックを始めるたびに 0 に戻し、ループの外では数えない。
+- **記述子オブジェクト.** `cirka_fd_handle(fd)` は記述子を持つオブジェクト (kind `FOREIGN`。語 0 が fd) を作り、解放されると後始末の
+  関数が記述子を閉じる。`cirka_handle_fd(h)` は記述子 (閉じていれば -1)、`cirka_handle_close(h)` は今閉じる (語 0 を閉じた印にするので
+  解放のときに閉じ直さない。2 度目は `-EBADF`)。ソケットの操作 `cirka_sock_accept(h)`・`cirka_sock_recv(h, max)` (64 KiB までを
+  スタックのバッファに読み、`cirka_fd_read` と同じ規約で返す)・`cirka_sock_send(h, data, off)` は記述子オブジェクトを取る。
+  ライブラリは記述子オブジェクトを線形な値で包むので、待ちの間はソケットを継続が持ち、待っている記述子が閉じられることはない
+  (§10.1 の `unwatch` は要らない)。ループと一緒に捨てられた継続が持つソケットも、解放のときに閉じる。
+- **UDP.** `cirka_net_udp_bind(host, port)`・`cirka_sock_sendto(h, data, host, port)`・`cirka_sock_recvfrom(h, max)`
+  (データグラムの最初の `max` バイト。送り手はスレッドの状態に残し、`cirka_net_peer_host()`・`cirka_net_peer_port()` で読む)。
+
+### 10.4 テストと計測
 
 - ランタイムの単体テスト (`evloop.rs`・`net.rs`): タイマーの順序と取り消し、停止と再開、パイプの待ちと切断の知らせ、閉じて再利用された
   記述子、別スレッドからの post、スレッドプール、ループバックのエコー、アドレスとエラー。
@@ -336,4 +366,8 @@ OS のスレッド (pthread) を 1 対 1 で使う。グリーンスレッドは
   受け取るとサーバが待ちを取り消してソケットを閉じ、クライアントは終わりを見て閉じる。サーバが先に閉じるので TIME_WAIT はサーバ側の
   4 つ組に残り、続けて実行してもクライアントのエフェメラルポート (既定 28232 個) を使い切らない。
   i5-3320M で 1 回約 1.1 秒 (接続・エコー・切断が 1 万ずつ、確保 110085 回)、最大 RSS 約 3 MB。
+- ランタイムの単体テスト (FEAT-0241): タイムアウト付きの待ち、設定できない待ちのコールバック、予算 (64 回で待ちに入り、残りは
+  ほかのコールバックの後)、記述子オブジェクトの後始末、データグラムと送り手。
+- CirkaLang の実行テスト `tests/cirkalang/run/v005/` の `async.cirka` (`tsan: 1`)・`async_task.cirka`・`net_tcp.cirka` (1 つのループで 100 の
+  クライアント、1 MB の送受信、タイムアウト、エラー、名前解決、`stopLoop` で閉じるソケット)・`net_udp.cirka`・`http_echo.cirka`。
 - MIR インタプリタはイベントループとソケットを扱わない (MIR のテストは `skip-backend: interp`)。
