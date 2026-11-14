@@ -32,7 +32,8 @@ pub fn elaborate(rp: &rast::Program) -> Elaborated {
             diags,
         };
     }
-    let prog = e.prog;
+    let mut prog = e.prog;
+    prog.refine_sites = e.sites.take();
     if cfg!(debug_assertions)
         && let Err(errs) = lint::lint_program(&prog)
     {

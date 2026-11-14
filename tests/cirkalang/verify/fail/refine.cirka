@@ -1,0 +1,23 @@
+module Main
+
+-- Refinements that do not hold: E0501 with a counterexample.
+
+import Data.Array as A
+
+safeDiv : Int -> {d : Int | d /= 0} -> Int
+safeDiv n d = n / d
+
+-- The guard is the wrong way round.
+bad1 : Int -> Int -> Int
+bad1 n d = if d == 0 then safeDiv n d else 0
+
+-- Off by one.
+bad2 : A.Array Int -> Int -> Int
+bad2 arr i = if i >= 0 && i <= A.size arr then A.index arr i else 0
+
+total
+bad3 : (n : Int) -> {r : Int | r > n}
+bad3 n = n * 2
+
+main : IO ()
+main = printInt (safeDiv 1 2)

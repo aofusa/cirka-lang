@@ -11,8 +11,11 @@ grow n b = b
 safeDiv : Int -> Int -> Int
 safeDiv n d = n / d
 
+twice : Int -> Int
+twice x = x + x
+
 unbox : Box n -> Int
 unbox (MkBox x) = x
 
 main : IO ()
-main = printInt (unbox (grow (S Z) (MkBox (safeDiv 84 2))))
+main = printInt (unbox (grow (S Z) (MkBox (safeDiv (twice 42) 2))))

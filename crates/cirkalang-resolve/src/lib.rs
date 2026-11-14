@@ -1568,6 +1568,50 @@ impl<'s> Resolver<'s> {
                     }
                 }
             }
+            ast::ExprKind::Subset(x, xs, a, pred) => {
+                // `{x : A | p}` is `subsetOf A (\x : A => p)` (spec-v0.0.4.md §3).
+                let g = self
+                    .tables
+                    .get("Prelude")
+                    .and_then(|t| t.own.get("subsetOf"))
+                    .copied();
+                let Some(g) = g else {
+                    self.errs.push(
+                        Diagnostic::error("refinement types need the Prelude's `subsetOf`")
+                            .with_code("E1101")
+                            .with_label(span, "refinement types are not available here"),
+                    );
+                    return Expr {
+                        kind: ExprKind::Wildcard,
+                        span,
+                    };
+                };
+                let dom = self.expr(a);
+                self.locals.push(x.clone());
+                let body = self.expr(pred);
+                self.locals.pop();
+                let lam = Expr {
+                    kind: ExprKind::Lam(
+                        vec![LamBinder {
+                            name: Some(x.clone()),
+                            span: *xs,
+                            mult: None,
+                            ty: Some(dom.clone()),
+                        }],
+                        Box::new(body),
+                    ),
+                    span: pred.span,
+                };
+                let head = Expr {
+                    kind: ExprKind::Global(g),
+                    span,
+                };
+                let l = Expr {
+                    kind: ExprKind::App(Box::new(head), Box::new(dom)),
+                    span,
+                };
+                ExprKind::App(Box::new(l), Box::new(lam))
+            }
             ast::ExprKind::If(c, t, f) => ExprKind::If(
                 Box::new(self.expr(c)),
                 Box::new(self.expr(t)),

@@ -1,0 +1,8 @@
+module Main
+
+safeDiv : Int -> {d : Int | d /= 0} -> Int
+safeDiv n d = n / d
+
+index : (arr : Array a) -> {i : Int | 0 <= i && i < size arr} -> a
+
+pos : (n : Int) -> {r : Int | r > n}

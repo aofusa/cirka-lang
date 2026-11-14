@@ -310,6 +310,11 @@ pub enum Prim {
     Panic,
     /// `primRewrite {a} p x y eq v : p x` for `v : p y` (spec-v0.0.4.md §2.2).
     Rewrite,
+    /// `primRefine {a} p site x = x`: marks a value checked against a
+    /// refinement type (spec-v0.0.4.md §3).
+    Refine,
+    /// `subsetOf a p = a`: the refinement type `{x : a | p x}`.
+    Subset,
     // Unique.
     MkUnique,
     Freeze,
@@ -449,6 +454,8 @@ impl Prim {
         ("exit", Prim::Exit),
         ("panic", Prim::Panic),
         ("primRewrite", Prim::Rewrite),
+        ("primRefine", Prim::Refine),
+        ("subsetOf", Prim::Subset),
         ("unique", Prim::MkUnique),
         ("freeze", Prim::Freeze),
         ("dropFree", Prim::DropFree),
@@ -561,6 +568,17 @@ pub struct Program {
     pub totality: HashMap<GName, (Totality, Span)>,
     /// `decreasing` measures of definitions.
     pub measures: HashMap<GName, Measure>,
+    /// Where values are checked against refinement types: the `site` of
+    /// each `primRefine` (spec-v0.0.4.md §3).
+    pub refine_sites: Vec<RefineSite>,
+}
+
+/// A place where a value must satisfy a refinement.
+#[derive(Clone, Debug)]
+pub struct RefineSite {
+    pub span: Span,
+    /// The definition it is in.
+    pub def: String,
 }
 
 /// A termination measure (spec-v0.0.4.md §1.3): a term of type `Int` or
@@ -659,6 +677,10 @@ pub struct Builtins {
     pub refl: Option<GName>,
     pub void: Option<GName>,
     pub rewrite: Option<GName>,
+    /// `subsetOf a p`: the refinement type `{x : a | p x}` (spec-v0.0.4.md §3).
+    pub subset_of: Option<GName>,
+    /// `primRefine {a} p site x`: `x` checked against `{y : a | p y}`.
+    pub refine: Option<GName>,
 }
 
 impl Program {

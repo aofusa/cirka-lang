@@ -10,6 +10,7 @@
 //! types must be total.
 
 mod measure;
+mod refine;
 mod walk;
 
 use cirka_diagnostics::{Diagnostic, Span};
@@ -51,7 +52,8 @@ pub fn check(rp: &rast::Program, prog: &Program, cache: Option<PathBuf>) -> Vec<
     wanted.sort();
     let in_types = used_in_types(prog);
     let proofs = proofs(prog);
-    if wanted.is_empty() && in_types.is_empty() && proofs.is_empty() {
+    let refined = !prog.refine_sites.is_empty();
+    if wanted.is_empty() && in_types.is_empty() && proofs.is_empty() && !refined {
         return Vec::new();
     }
     let metas = Metas::default();
@@ -71,6 +73,10 @@ pub fn check(rp: &rast::Program, prog: &Program, cache: Option<PathBuf>) -> Vec<
             None => s,
         }),
     };
+    let mut diags = Vec::new();
+    if refined {
+        t.refinements(&mut diags);
+    }
     let roots: Vec<GName> = wanted
         .iter()
         .copied()
@@ -79,7 +85,6 @@ pub fn check(rp: &rast::Program, prog: &Program, cache: Option<PathBuf>) -> Vec<
         .collect();
     t.explore(&roots);
     t.decide();
-    let mut diags = Vec::new();
     let span = |g: GName| rp.info(g).span;
     for f in &wanted {
         if let Some(why) = t.status.get(f).cloned().flatten() {
@@ -211,6 +216,25 @@ struct Totality_<'a> {
 
 impl Totality_<'_> {
     /// Walks the definitions reachable from `roots`.
+    /// Checks the refinement obligations of every definition that has
+    /// some (spec-v0.0.4.md §3).
+    fn refinements(&mut self, diags: &mut Vec<Diagnostic>) {
+        let Some(refine) = self.prog.builtins.refine else {
+            return;
+        };
+        for g in self.prog.order.clone() {
+            let Global::Def { body: Some(b), .. } = self.prog.get(g) else {
+                continue;
+            };
+            if !refine::mentions_refine(b, refine) {
+                continue;
+            }
+            let mut w = Walker::new(self.ev, &self.sels, &self.dict_cons, g);
+            w.run(b);
+            refine::check(self.ev, self.solver.as_ref(), self.prog, &w.facts, diags);
+        }
+    }
+
     fn explore(&mut self, roots: &[GName]) {
         let mut work: Vec<GName> = roots.to_vec();
         while let Some(g) = work.pop() {

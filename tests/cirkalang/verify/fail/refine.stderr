@@ -1,0 +1,21 @@
+error[E0501]: cannot prove the refinement `d /= 0`
+  --> tests/cirkalang/verify/fail/refine.cirka:12:37
+   |
+12 | bad1 n d = if d == 0 then safeDiv n d else 0
+   |                                     ^ in `Main.bad1`
+   = note: counterexample: d = 0
+   = help: check the value, add a condition (`if`), or refine the type of what it is computed from
+error[E0501]: cannot prove the refinement `(0 <= i) && (i < (size arr))`
+  --> tests/cirkalang/verify/fail/refine.cirka:16:60
+   |
+16 | bad2 arr i = if i >= 0 && i <= A.size arr then A.index arr i else 0
+   |                                                            ^ in `Main.bad2`
+   = note: counterexample: i = 0, primArraySize arr = 0
+   = help: check the value, add a condition (`if`), or refine the type of what it is computed from
+error[E0501]: cannot prove the refinement `(n * 2) > n`
+  --> tests/cirkalang/verify/fail/refine.cirka:20:10
+   |
+20 | bad3 n = n * 2
+   |          ^^^^^ in `Main.bad3`
+   = note: counterexample: n = 0
+   = help: check the value, add a condition (`if`), or refine the type of what it is computed from

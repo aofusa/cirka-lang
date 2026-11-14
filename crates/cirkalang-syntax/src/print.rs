@@ -228,6 +228,7 @@ pub fn expr(e: &Expr) -> String {
         }
         ExprKind::If(c, t, f) => format!("(if {} {} {})", expr(c), expr(t), expr(f)),
         ExprKind::Equal(a, b) => format!("(= {} {})", expr(a), expr(b)),
+        ExprKind::Subset(x, _, a, p) => format!("(subset {x} {} {})", expr(a), expr(p)),
         ExprKind::Rewrite(p, e) => format!("(rewrite {} {})", expr(p), expr(e)),
         ExprKind::With(s, alts) => {
             let a: Vec<String> = alts

@@ -1411,7 +1411,8 @@ impl<'a> Lower<'a> {
             | Prim::RIO
             | Prim::In
             | Prim::RefIn
-            | Prim::Lazy => return None,
+            | Prim::Lazy
+            | Prim::Subset => return None,
             // `delay f` = `let t = f () in Lazy# t`: the lazy `let` is a
             // thunk, evaluated once by `force`.
             Prim::Delay => self.skeleton(ty, 1, |a, r| {
@@ -1764,7 +1765,7 @@ impl<'a> Lower<'a> {
             }),
             Prim::MkUnique | Prim::Freeze => id1(),
             // Proofs are erased: rewriting is the identity (spec-v0.0.4.md §2.2).
-            Prim::Rewrite => id1(),
+            Prim::Rewrite | Prim::Refine => id1(),
             // ---- arrays (spec-v0.0.2.md §7) ----
             Prim::ArrayNew => self.skeleton(ty, 2, |a, r| {
                 let elem = array_elem(&r);

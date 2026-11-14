@@ -1,0 +1,81 @@
+module Main
+
+-- Refinement types proved by Z3 (spec-v0.0.4.md §3): bounds, non-zero
+-- divisors, sorted lists, and a fact proved by induction.
+
+import Data.Array as A
+
+-- Division by a value proved non-zero.
+safeDiv : Int -> {d : Int | d /= 0} -> Int
+safeDiv n d = n / d
+
+average : List Int -> Int
+average xs = if length xs == 0 then 0 else safeDiv (sum xs) (length xs)
+
+-- A result that is always positive.
+total
+succPos : (n : Int) -> {r : Int | r > n}
+succPos n = n + 1
+
+total
+absPlus : (n : Int) -> {r : Int | r >= 1}
+absPlus n = if n < 0 then 1 - n else n + 1
+
+-- Indexing proved in bounds.
+sumFrom : A.Array Int -> Int -> Int -> Int
+sumFrom arr i acc = if i < 0 || i >= A.size arr then acc else sumFrom arr (i + 1) (acc + A.index arr i)
+
+sumArr : A.Array Int -> Int
+sumArr arr = sumFrom arr 0 0
+
+-- Sorted pairs and triples.
+total
+sorted : List Int -> Bool
+sorted [] = True
+sorted [_] = True
+sorted (x :: y :: rest) = x <= y && sorted (y :: rest)
+
+total
+sort2 : Int -> Int -> {xs : List Int | sorted xs}
+sort2 a b = if a <= b then [a, b] else [b, a]
+
+total
+lo : (a : Int) -> (b : Int) -> {r : Int | r <= a && r <= b}
+lo a b = if a <= b then a else b
+
+-- Induction.
+total
+fib : Nat -> Int
+fib Z = 0
+fib (S Z) = 1
+fib (S (S k)) = fib k + fib (S k)
+
+-- Z3 cannot see that `fib n >= 0` (it needs induction): prove it by
+-- induction, with refined results of the recursive calls as facts.
+total
+fibNonNeg : (n : Nat) -> {u : () | fib n >= 0}
+fibNonNeg Z = ()
+fibNonNeg (S Z) = ()
+fibNonNeg (S (S k)) =
+  let a = fibNonNeg k
+      b = fibNonNeg (S k)
+  in ()
+
+-- A proof given as an argument.
+divFib : Int -> (n : Nat) -> Int
+divFib x n = let p = fibNonNeg n in safeDiv x (fib n + 1)
+
+-- `So` facts.
+divSo : Int -> (d : Int) -> So (d > 0) -> Int
+divSo x d _ = safeDiv x d
+
+main : IO ()
+main = do
+  printInt (average [1, 2, 3, 6])
+  printInt (succPos 41)
+  printInt (absPlus (-5))
+  printInt (sumArr (A.fromList [1, 2, 3]))
+  printInt (sum (sort2 5 3))
+  printInt (lo 3 (succPos 7))
+  printInt (divFib 100 (S (S (S Z))))
+  printInt (divSo 10 2 Oh)

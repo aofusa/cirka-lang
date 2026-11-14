@@ -80,6 +80,10 @@ size arr = primArraySize arr
 (!) : Array a -> Int -> a
 arr ! i = primArrayIndex arr i
 
+-- The element at an index proved in bounds (spec-v0.0.4.md §3).
+index : (arr : Array a) -> {i : Int | 0 <= i && i < size arr} -> a
+index arr i = primArrayIndex arr i
+
 -- The element at index `i`, if there is one.
 get : Array a -> Int -> Maybe a
 get arr i = if i >= 0 && i < size arr then Just (arr ! i) else Nothing

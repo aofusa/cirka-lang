@@ -334,6 +334,8 @@ pub enum ExprKind {
     RightSection(OpRef, Box<Expr>),
     /// `x = y`: propositional equality (spec-v0.0.4.md §2.1).
     Equal(Box<Expr>, Box<Expr>),
+    /// `{x : A | p}`: a refinement (subset) type (spec-v0.0.4.md §3).
+    Subset(String, Span, Box<Expr>, Box<Expr>),
     /// `rewrite p in e` (spec-v0.0.4.md §2.2).
     Rewrite(Box<Expr>, Box<Expr>),
     /// `with e of alts`: a match that abstracts `e` in the goal

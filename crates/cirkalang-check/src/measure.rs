@@ -27,16 +27,69 @@ pub enum Failure {
     Partial,
 }
 
-struct Tr<'a> {
-    ev: &'a Ev<'a>,
-    prog: &'a Program,
-    sorts: &'a HashMap<u32, Sort>,
-    names: &'a HashMap<u32, String>,
-    nat_vars: BTreeSet<String>,
-    opaque: HashMap<String, String>,
+/// Translation of values to SMT terms. Unknown values become opaque
+/// variables (`t$n`); calls of functions with a refined result add the
+/// refinement of the result as a hypothesis.
+pub(crate) struct Tr<'a> {
+    pub ev: &'a Ev<'a>,
+    pub prog: &'a Program,
+    pub sorts: &'a HashMap<u32, Sort>,
+    pub names: &'a HashMap<u32, String>,
+    pub nat_vars: BTreeSet<String>,
+    pub opaque: HashMap<String, String>,
+    /// Hypotheses learnt from refined results.
+    pub extra: Vec<Expr>,
+    /// The value each opaque variable stands for.
+    pub opaque_vals: HashMap<String, Val>,
 }
 
-impl Tr<'_> {
+/// Unique SMT names for the variables of a definition.
+pub(crate) fn smt_names(facts: &Facts) -> HashMap<u32, String> {
+    let mut count: HashMap<&str, usize> = HashMap::new();
+    for n in facts.names.values() {
+        *count.entry(n.as_str()).or_default() += 1;
+    }
+    facts
+        .names
+        .iter()
+        .map(|(l, n)| {
+            let ok = count.get(n.as_str()) == Some(&1)
+                && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                && !n.starts_with(|c: char| c.is_ascii_digit());
+            (*l, if ok { n.clone() } else { format!("{n}${l}") })
+        })
+        .collect()
+}
+
+impl<'a> Tr<'a> {
+    pub fn new(
+        ev: &'a Ev<'a>,
+        sorts: &'a HashMap<u32, Sort>,
+        names: &'a HashMap<u32, String>,
+    ) -> Tr<'a> {
+        Tr {
+            ev,
+            prog: ev.prog,
+            sorts,
+            names,
+            nat_vars: BTreeSet::new(),
+            opaque: HashMap::new(),
+            extra: Vec::new(),
+            opaque_vals: HashMap::new(),
+        }
+    }
+
+    /// The hypotheses about the variables used: `Nat`s are not negative.
+    pub fn var_hyps(&self) -> Vec<Expr> {
+        let mut out: Vec<Expr> = self
+            .nat_vars
+            .iter()
+            .map(|n| Expr::le(Expr::Int(0), Expr::int_var(n.clone())))
+            .collect();
+        out.extend(self.extra.iter().cloned());
+        out
+    }
+
     fn var_name(&self, l: u32) -> String {
         match self.names.get(&l) {
             Some(n) => n.clone(),
@@ -44,7 +97,7 @@ impl Tr<'_> {
         }
     }
 
-    fn opaque(&mut self, v: &Val, s: cirka_smt::Sort) -> Expr {
+    pub fn opaque(&mut self, v: &Val, s: cirka_smt::Sort) -> Expr {
         let key = format!("{:?}{:?}", s, self.ev.quote(100_000, v));
         let n = self.opaque.len();
         let name = self
@@ -52,14 +105,17 @@ impl Tr<'_> {
             .entry(key)
             .or_insert_with(|| format!("t${n}"))
             .clone();
+        self.opaque_vals
+            .entry(name.clone())
+            .or_insert_with(|| v.clone());
         Expr::Var(name, s)
     }
 
-    fn int(&mut self, v: &Val, depth: u32) -> Expr {
+    pub fn int(&mut self, v: &Val, depth: u32) -> Expr {
         self.tr(v, cirka_smt::Sort::Int, depth)
     }
 
-    fn boolean(&mut self, v: &Val, depth: u32) -> Expr {
+    pub fn boolean(&mut self, v: &Val, depth: u32) -> Expr {
         self.tr(v, cirka_smt::Sort::Bool, depth)
     }
 
@@ -92,9 +148,28 @@ impl Tr<'_> {
             (Val::Neutral(Head::Global(g), sp), _)
                 if sp.iter().all(|e| matches!(e, Elim::App(..))) =>
             {
-                if let Global::Prim { prim, .. } = self.prog.get(*g)
-                    && let Some(e) = self.prim(*prim, sp, want, depth)
+                if let Global::Prim { prim, .. } = self.prog.get(*g) {
+                    if *prim == Prim::Refine
+                        && let Some(Elim::App(x, _)) = sp.last()
+                    {
+                        return self.tr(x, want, depth);
+                    }
+                    if let Some(e) = self.prim(*prim, sp, want, depth) {
+                        return e;
+                    }
+                }
+                // A call of a function with a refined result: opaque, with
+                // the refinement as a hypothesis (spec-v0.0.4.md §3).
+                if depth < 24
+                    && let Some(p) = crate::walk::result_refinement(self.prog, self.ev, *g, sp)
                 {
+                    let before = self.opaque.len();
+                    let e = self.opaque(&v, want);
+                    if self.opaque.len() > before {
+                        let holds = self.ev.apply(p, v.clone(), Icit::Expl);
+                        let h = self.boolean(&holds, depth + 1);
+                        self.extra.push(h);
+                    }
                     return e;
                 }
             }
@@ -219,7 +294,7 @@ impl Tr<'_> {
         None
     }
 
-    fn cond(&mut self, c: &Cond) -> Option<Expr> {
+    pub fn cond(&mut self, c: &Cond) -> Option<Expr> {
         let b = &self.prog.builtins;
         Some(match c {
             Cond::Con(v, con, fields) => {
@@ -271,22 +346,7 @@ impl Tr<'_> {
 
 /// Checks the obligations of `m` at every self-call.
 pub fn check(ev: &Ev, solver: &Solver, facts: &Facts, m: &Measure) -> Result<(), Failure> {
-    // Unique SMT names for the variables.
-    let mut count: HashMap<&str, usize> = HashMap::new();
-    for n in facts.names.values() {
-        *count.entry(n.as_str()).or_default() += 1;
-    }
-    let names: HashMap<u32, String> = facts
-        .names
-        .iter()
-        .map(|(l, n)| {
-            let ok = count.get(n.as_str()) == Some(&1)
-                && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-                && !n.starts_with(|c: char| c.is_ascii_digit());
-            (*l, if ok { n.clone() } else { format!("{n}${l}") })
-        })
-        .collect();
-    let names = &names;
+    let names = &smt_names(facts);
     let np = match m {
         Measure::Given(g) => g.nparams,
         Measure::Param(i) => i + 1,
@@ -303,14 +363,7 @@ pub fn check(ev: &Ev, solver: &Solver, facts: &Facts, m: &Measure) -> Result<(),
         if args.len() < np {
             return Err(Failure::Partial);
         }
-        let mut tr = Tr {
-            ev,
-            prog: ev.prog,
-            sorts: &facts.sorts,
-            names,
-            nat_vars: BTreeSet::new(),
-            opaque: HashMap::new(),
-        };
+        let mut tr = Tr::new(ev, &facts.sorts, names);
         let (old, new) = match m {
             Measure::Given(g) => {
                 let o = ev.eval(&params, &g.term);
@@ -324,9 +377,7 @@ pub fn check(ev: &Ev, solver: &Solver, facts: &Facts, m: &Measure) -> Result<(),
         if !nat {
             goal.push(Expr::le(Expr::Int(0), old));
         }
-        for n in &tr.nat_vars {
-            hyps.push(Expr::le(Expr::Int(0), Expr::int_var(n.clone())));
-        }
+        hyps.extend(tr.var_hyps());
         let q = Query {
             hyps,
             goal: Some(Expr::and(goal)),

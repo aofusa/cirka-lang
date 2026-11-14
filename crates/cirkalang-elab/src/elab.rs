@@ -158,6 +158,8 @@ pub struct Elab<'r> {
     /// (spec-v0.0.2.md §5.1): `(cx, type, sort, span, what)` must be
     /// shareable.
     shareable: RefCell<Vec<(Cxt, Val, Val, Span, &'static str)>>,
+    /// Refinement sites (moved to `Program::refine_sites` at the end).
+    pub sites: RefCell<Vec<RefineSite>>,
     /// Arguments of `ω` parameters whose type was not yet known to be
     /// resource-free, with what they consume (checked at the end).
     deferred_rf: RefCell<Vec<DeferredRf>>,
@@ -197,6 +199,7 @@ impl<'r> Elab<'r> {
             impls: HashMap::new(),
             totality: HashMap::new(),
             measures: HashMap::new(),
+            refine_sites: Vec::new(),
         };
         let f = |n: &str| rp.find("Prelude", n);
         prog.builtins = Builtins {
@@ -253,6 +256,8 @@ impl<'r> Elab<'r> {
             refl: f("Refl"),
             void: f("Void"),
             rewrite: f("primRewrite"),
+            subset_of: f("subsetOf"),
+            refine: f("primRefine"),
         };
         Elab {
             rp,
@@ -270,6 +275,7 @@ impl<'r> Elab<'r> {
             pending: RefCell::new(Vec::new()),
             ltype_vars: Cell::new(false),
             shareable: RefCell::new(Vec::new()),
+            sites: RefCell::new(Vec::new()),
             deferred_rf: RefCell::new(Vec::new()),
             fin_spans: RefCell::new(Vec::new()),
             fin_span_default: Cell::new(Span::DUMMY),
@@ -1208,6 +1214,9 @@ impl<'r> Elab<'r> {
     }
 
     fn check(&self, cx: &mut Cxt, e: &rast::Expr, ty: &Val, rig: Mult) -> Term {
+        if let Some(t) = self.check_refined(cx, e, ty, rig) {
+            return t;
+        }
         if self.prog.builtins.bool_.is_some() && self.short_circuit(e).is_some() {
             let (t, bt) = self.infer(cx, e, rig);
             self.unify_or_err(cx, sp(e), ty, &bt);
@@ -1596,6 +1605,25 @@ impl<'r> Elab<'r> {
     }
 
     fn infer(&self, cx: &mut Cxt, e: &rast::Expr, rig: Mult) -> (Term, Val) {
+        let (t, ty) = self.infer_refined(cx, e, rig);
+        (t, self.unrefine(ty))
+    }
+
+    /// The type without its refinement: `subsetOf A p` is `A`
+    /// (spec-v0.0.4.md §3). Inferred types are not refined, so that a
+    /// refinement does not spread to what a value is used for (`x + x`).
+    fn unrefine(&self, ty: Val) -> Val {
+        let ty = self.ev().force(ty);
+        if let Val::Neutral(Head::Global(g), sp) = &ty
+            && Some(*g) == self.prog.builtins.subset_of
+            && let [Elim::App(a, _), Elim::App(..)] = sp.as_slice()
+        {
+            return self.unrefine(a.clone());
+        }
+        ty
+    }
+
+    fn infer_refined(&self, cx: &mut Cxt, e: &rast::Expr, rig: Mult) -> (Term, Val) {
         if let Some(d) = self.short_circuit(e)
             && let Some(b) = self.prog.builtins.bool_
         {
@@ -4384,6 +4412,52 @@ impl Elab<'_> {
             t = app(t, x, Icit::Expl);
         }
         t
+    }
+
+    /// Checking against a refinement type `{x : A | p}` (`subsetOf A p`,
+    /// spec-v0.0.4.md §3): checks against `A` and marks the value with
+    /// `primRefine {A} p site`, whose obligation `p e` the verifier
+    /// (`cirkalang-check`) discharges. Erased at run time.
+    fn check_refined(&self, cx: &mut Cxt, e: &rast::Expr, ty: &Val, rig: Mult) -> Option<Term> {
+        // Branches are checked against the refinement one by one, each
+        // under what its path has learnt.
+        if matches!(
+            e.kind,
+            ExprKind::If(..)
+                | ExprKind::Case(..)
+                | ExprKind::Let(..)
+                | ExprKind::With(..)
+                | ExprKind::Rewrite(..)
+        ) {
+            return None;
+        }
+        let (sub, prim) = (self.prog.builtins.subset_of?, self.prog.builtins.refine?);
+        let Val::Neutral(Head::Global(g), spine) = self.ev().force(ty.clone()) else {
+            return None;
+        };
+        if g != sub || spine.len() != 2 {
+            return None;
+        }
+        let (Elim::App(a, _), Elim::App(p, _)) = (&spine[0], &spine[1]) else {
+            return None;
+        };
+        let body = self.check(cx, e, a, rig);
+        let site = {
+            let mut sites = self.sites.borrow_mut();
+            sites.push(RefineSite {
+                span: sp(e),
+                def: self.current.borrow().clone(),
+            });
+            sites.len() - 1
+        };
+        let at = self.quote(cx, a);
+        let pt = self.quote(cx, p);
+        let app = |f: Term, x: Term, i: Icit| Term::App(Rc::new(f), Rc::new(x), i);
+        let mut t = app(Term::Global(prim), at, Icit::Impl);
+        for x in [pt, Term::Lit(Lit::Int(site as i64)), body] {
+            t = app(t, x, Icit::Expl);
+        }
+        Some(t)
     }
 
     /// `with e of alts` (spec-v0.0.4.md §2.3): a match on `e` whose

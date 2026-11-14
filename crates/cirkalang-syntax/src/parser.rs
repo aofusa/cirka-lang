@@ -1318,7 +1318,8 @@ impl Parser {
                 })
             }
             Tok::LBrace => {
-                // Implicit binder `{π x, y : A} -> B`.
+                // Implicit binder `{π x, y : A} -> B`, or a refinement
+                // type `{x : A | p}`.
                 self.bump();
                 let mult = self.opt_mult();
                 let names = self.name_list()?;
@@ -1330,6 +1331,38 @@ impl Parser {
                         span: self.prev_end(),
                     }
                 };
+                if self.at(&Tok::Bar) {
+                    let bar = self.span();
+                    self.bump();
+                    let pred = self.expr()?;
+                    self.expect(&Tok::RBrace, "`}`")?;
+                    if mult.is_some() || names.len() != 1 {
+                        self.errs.push(
+                            Diagnostic::error("a refinement type binds one variable")
+                                .with_code("E1001")
+                                .with_label(bar, "write `{x : A | p}`"),
+                        );
+                    }
+                    let (x, xs) = names.into_iter().next().ok_or(())?;
+                    let sub = Expr {
+                        kind: ExprKind::Subset(x, xs, Box::new(dom), Box::new(pred)),
+                        span: self.from(start),
+                    };
+                    if !self.eat(&Tok::Arrow) {
+                        return Ok(sub);
+                    }
+                    let cod = self.expr()?;
+                    return Ok(Expr {
+                        kind: ExprKind::Pi {
+                            mult: None,
+                            implicit: false,
+                            names: Vec::new(),
+                            dom: Box::new(sub),
+                            cod: Box::new(cod),
+                        },
+                        span: self.from(start),
+                    });
+                }
                 self.expect(&Tok::RBrace, "`}`")?;
                 self.expect(&Tok::Arrow, "`->`")?;
                 let cod = self.expr()?;

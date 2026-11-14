@@ -1,0 +1,23 @@
+module Main
+
+-- Refinement types decided by evaluation (spec-v0.0.4.md §3).
+import Data.Array as A
+
+safeDiv : Int -> {d : Int | d /= 0} -> Int
+safeDiv n d = n / d
+
+total
+sorted : List Int -> Bool
+sorted [] = True
+sorted [_] = True
+sorted (x :: y :: rest) = x <= y && sorted (y :: rest)
+
+total
+sum3 : {xs : List Int | sorted xs} -> Int
+sum3 xs = sum xs
+
+main : IO ()
+main = do
+  printInt (safeDiv 84 2)
+  printInt (sum3 [1, 2, 3])
+  printInt (safeDiv (sum3 [4, 4]) 4)

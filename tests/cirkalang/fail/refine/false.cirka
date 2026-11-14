@@ -1,0 +1,8 @@
+module Main
+
+-- A refinement that evaluates to `False` (no Z3 needed).
+safeDiv : Int -> {d : Int | d /= 0} -> Int
+safeDiv n d = n / d
+
+main : IO ()
+main = printInt (safeDiv 1 0)

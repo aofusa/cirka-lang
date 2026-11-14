@@ -55,6 +55,30 @@ pub struct SelfCall {
     pub conds: Vec<Cond>,
 }
 
+/// A value checked against a refinement type (spec-v0.0.4.md §3): `pred
+/// val` must hold under `conds` and the refinements of the binders in
+/// scope.
+#[derive(Clone, Debug)]
+pub struct Obligation {
+    pub site: usize,
+    pub pred: Val,
+    pub val: Val,
+    pub conds: Vec<Cond>,
+    /// What the binders in scope tell.
+    pub assumed: Vec<Assume>,
+}
+
+/// What a binder in scope tells about the values.
+#[derive(Clone, Debug)]
+pub enum Assume {
+    /// A variable (or `let`) of a refinement type: this boolean (the
+    /// predicate applied to the value) holds.
+    Holds(Val),
+    /// A proof of `So e` or `x = y` (its type): a manual proof
+    /// (spec-v0.0.4.md §3.4).
+    Fact(Val),
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Facts {
     /// Number of leading lambdas (the parameters).
@@ -66,6 +90,39 @@ pub struct Facts {
     pub sorts: HashMap<u32, Sort>,
     /// Source names of the variables (by level).
     pub names: HashMap<u32, String>,
+    pub obligations: Vec<Obligation>,
+}
+
+/// The refinement of the result of `g args`, if its type is refined.
+pub fn result_refinement(prog: &Program, ev: &Ev, g: GName, sp: &[Elim]) -> Option<Val> {
+    let ty = match prog.get(g) {
+        Global::Def { ty, .. } | Global::Con { ty, .. } | Global::Extern { ty, .. } => ty,
+        _ => return None,
+    };
+    let mut t = ev.eval(&Vec::new(), ty);
+    for e in sp {
+        let Elim::App(a, _) = e else { return None };
+        ev.fuel.set(10_000);
+        match ev.whnf(t) {
+            Val::Pi(_, _, _, _, c) => t = ev.inst(&c, a.clone()),
+            _ => return None,
+        }
+    }
+    subset_parts(prog, ev, &t).map(|(_, p)| p)
+}
+
+/// `subsetOf a p` (not reduced): `(a, p)`.
+pub fn subset_parts(prog: &Program, ev: &Ev, ty: &Val) -> Option<(Val, Val)> {
+    let Val::Neutral(Head::Global(g), sp) = ev.force(ty.clone()) else {
+        return None;
+    };
+    if Some(g) != prog.builtins.subset_of || sp.len() != 2 {
+        return None;
+    }
+    match (&sp[0], &sp[1]) {
+        (Elim::App(a, _), Elim::App(p, _)) => Some((a.clone(), p.clone())),
+        _ => None,
+    }
 }
 
 /// A trait method or supertrait selector: `\{params} => case d of
@@ -126,6 +183,8 @@ pub struct Walker<'a> {
     sizes: HashMap<u32, Vec<(usize, Rel)>>,
     conds: Vec<Cond>,
     inlining: Vec<GName>,
+    /// What the binders in scope tell.
+    assumed: Vec<Assume>,
     pub facts: Facts,
 }
 
@@ -149,6 +208,7 @@ impl<'a> Walker<'a> {
             sizes: HashMap::new(),
             conds: Vec::new(),
             inlining: Vec::new(),
+            assumed: Vec::new(),
             facts: Facts::default(),
         }
     }
@@ -173,10 +233,25 @@ impl<'a> Walker<'a> {
         self.next += 1;
         self.facts.names.insert(l, name.to_string());
         let tv = self.ev.eval(&self.env, ty);
+        if let Some((_, p)) = subset_parts(self.prog, self.ev, &tv) {
+            let holds = self.ev.apply(p, Val::var(l), Icit::Expl);
+            self.assumed.push(Assume::Holds(holds));
+        }
+        let tv = self.whnf(tv);
+        self.fact(&tv);
         if let Some(s) = self.sort_of(&tv) {
             self.facts.sorts.insert(l, s);
         }
         l
+    }
+
+    /// A binder whose type is a proof of `So e` or `x = y`.
+    fn fact(&mut self, ty: &Val) {
+        if let Val::Data(g, _) = ty
+            && (Some(*g) == self.prog.builtins.equal || self.prog.name(*g) == "Prelude.So")
+        {
+            self.assumed.push(Assume::Fact(ty.clone()));
+        }
     }
 
     fn sort_of(&self, ty: &Val) -> Option<Sort> {
@@ -244,17 +319,38 @@ impl<'a> Walker<'a> {
                 }
             }
             Term::Lam(x, _, _, ty, b) => {
+                let n = self.assumed.len();
                 let l = self.fresh(x, ty);
                 self.env.push(Val::var(l));
                 self.walk(b);
                 self.env.pop();
+                self.assumed.truncate(n);
             }
-            Term::Let(_, _, _, v, b) => {
+            Term::Let(_, _, ty, v, b) => {
                 self.walk(v);
                 let vv = self.eval(v);
+                let n = self.assumed.len();
+                let tv = self.eval(ty);
+                // A refined value: by its type, or as the result of a
+                // function with a refined result.
+                let refined = subset_parts(self.prog, self.ev, &tv)
+                    .map(|(_, p)| p)
+                    .or_else(|| match &vv {
+                        Val::Neutral(Head::Global(g), sp) => {
+                            result_refinement(self.prog, self.ev, *g, sp)
+                        }
+                        _ => None,
+                    });
+                if let Some(p) = refined {
+                    let holds = self.ev.apply(p, vv.clone(), Icit::Expl);
+                    self.assumed.push(Assume::Holds(holds));
+                }
+                let tv = self.whnf(tv);
+                self.fact(&tv);
                 self.env.push(vv);
                 self.walk(b);
                 self.env.pop();
+                self.assumed.truncate(n);
             }
             Term::Case(c) => self.case(c),
             Term::Pi(..)
@@ -288,6 +384,7 @@ impl<'a> Walker<'a> {
                     cons.push(*con);
                     self.call(*con, Vec::new());
                     let n = self.env.len();
+                    let na = self.assumed.len();
                     let mut ls = Vec::new();
                     for (x, _, ty) in fields {
                         let l = self.fresh(x, ty);
@@ -301,6 +398,7 @@ impl<'a> Walker<'a> {
                     self.walk(body);
                     self.conds.pop();
                     self.env.truncate(n);
+                    self.assumed.truncate(na);
                 }
                 Alt::Lit { lit, body } => {
                     lits.push(lit.clone());
@@ -324,6 +422,21 @@ impl<'a> Walker<'a> {
 
     /// `g args`.
     fn app_global(&mut self, g: GName, args: &[&Term]) {
+        // A value checked against a refinement type.
+        if Some(g) == self.prog.builtins.refine
+            && args.len() == 4
+            && self.inlining.is_empty()
+            && let Term::Lit(Lit::Int(site)) = args[2]
+        {
+            let ob = Obligation {
+                site: *site as usize,
+                pred: self.eval(args[1]),
+                val: self.eval(args[3]),
+                conds: self.conds.clone(),
+                assumed: self.assumed.clone(),
+            };
+            self.facts.obligations.push(ob);
+        }
         // A trait method of a known instance: call the method.
         if let Some(sel) = self.sels.get(&g).copied()
             && args.len() > sel.dict

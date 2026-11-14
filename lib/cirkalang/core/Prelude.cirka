@@ -59,6 +59,14 @@ data So : Bool -> Type where
 -- `rewrite` (spec-v0.0.4.md §2.2): the identity at run time.
 prim primRewrite : {a : Type} -> (0 p : a -> LType) -> (0 x : a) -> (0 y : a) -> (0 eq : x = y) -> (1 v : p y) -> p x
 
+-- Refinement types (spec-v0.0.4.md §3): `{x : a | p}` is `subsetOf a (\x => p)`,
+-- a value of `a` (the same at run time) of which `p` holds. `primRefine`
+-- marks where a value is checked against one (the identity at run time).
+-- `subsetOf a p` reduces to `a`.
+prim subsetOf : (a : Type) -> (a -> Bool) -> Type
+
+prim primRefine : {a : Type} -> (0 p : a -> Bool) -> (0 site : Int) -> a -> a
+
 -- Primitive operations (§5.6)
 prim primAddInt : Int -> Int -> Int
 prim primSubInt : Int -> Int -> Int

@@ -1,0 +1,6 @@
+error[E0501]: the refinement `0 /= 0` does not hold
+ --> tests/cirkalang/fail/refine/false.cirka:8:28
+  |
+8 | main = printInt (safeDiv 1 0)
+  |                            ^ in `Main.main`
+  = note: it evaluates to `False`

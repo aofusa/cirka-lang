@@ -321,6 +321,8 @@ impl<'a> Ev<'a> {
                 Val::Con(c, _) if Some(*c) == self.prog.builtins.refl => args[5].clone(),
                 _ => return None,
             },
+            (Prim::Refine, 4) => args[3].clone(),
+            (Prim::Subset, 2) => args[0].clone(),
             _ => return None,
         };
         Some(r)
