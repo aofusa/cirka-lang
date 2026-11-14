@@ -247,7 +247,9 @@ OS のスレッド (pthread) を 1 対 1 で使う。グリーンスレッドは
 - テストのヘッダ `tsan: 1` の MIR 実行テストは、debug・release に加えて TSan 版 (既定のアロケータと `CIRKA_ALLOC=system`) でも実行し、
   TSan の報告があれば失敗にする (10-testing.md)。
 - 高エントロピーの ASLR (`vm.mmap_rnd_bits=32`、Ubuntu 24.04 の既定) では、TSan (LLVM 18) は `personality(2)` で ASLR を切って
-  自分を再実行する。Docker の既定の seccomp プロファイルはこれを禁じるので、コンテナの中では TSan のプログラムが起動できない。
-  テストは TSan が動くか試し、動かない環境では TSan の構成を飛ばす (`scripts/ci.sh` が警告を表示する)。現在 TSan の検査はホストで行う。
+  自分を再実行する。Docker の既定の seccomp プロファイルはこれを禁じるので、開発用コンテナは既定のプロファイルに
+  `personality(ADDR_NO_RANDOMIZE)` を許す規則を 1 つだけ足したプロファイル (`docker/seccomp.json`) で動かす (FEAT-0084)。
+  ASLR を切るのは TSan で計装したプロセスだけ。テストは TSan が動くか試し、動かない環境では TSan の構成を飛ばすが、
+  `scripts/ci.sh` は TSan が動かなければ失敗する。
 - MIR インタプリタはスレッドを扱わない (`spawn` は実行時エラー)。`MVar`・チャネルは単一スレッドの意味で実装し、
   待つことになれば `thread blocked indefinitely in an MVar operation` で終了する (GHC と同じ文言)。

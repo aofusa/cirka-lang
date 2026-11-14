@@ -55,9 +55,10 @@
   検査が働いていることは、わざとデータ競合を入れた `tests/mir/tsan/race.mir` を TSan が報告することで確かめる
   (`tests/mir.rs` の `tsan_reports_a_data_race`)。TSan は実行で起きた競合だけを報告するので、共有されたオブジェクトのアトミックな RC が
   どの実行でも 2 つのアクセスを順序づけない形にしてある。
-  TSan (LLVM 18) は高エントロピーの ASLR のもとで `personality(2)` を使って自分を再実行するが、Docker の既定の seccomp プロファイルが
-  これを禁じるため、コンテナの中では TSan の構成を飛ばす (ハーネスが小さなプログラムで試し、`scripts/ci.sh` が警告を出す)。
-  TSan の検査はホスト (`clang` と `libclang-rt-18-dev` がある環境) で `cargo test --release -p cirka-integration --test mir` として行う。
+  TSan (LLVM 18) は高エントロピーの ASLR のもとで `personality(2)` を使って自分を再実行する。Docker の既定の seccomp プロファイルは
+  これを禁じるので、開発用コンテナはこれだけを許すプロファイル (`docker/seccomp.json`、FEAT-0084) で動かす。
+  ハーネスは小さなプログラムで TSan が動くか試し、動かない環境 (既定のプロファイルのコンテナなど) では TSan の構成を飛ばす。
+  `scripts/ci.sh` は TSan が動かなければ失敗する。
 - `ACHC_BLESS=1` / `CIRKA_BLESS=1` で期待ファイルを更新。
 - 失敗時は生成した `.ll`・ダンプを `_build/test-failures/<name>/` に残す。
 - 並列実行 (`CIRKA_TEST_JOBS`)。
