@@ -70,11 +70,22 @@ pub fn check_native_with(
     interp_ok: bool,
     leak_check: bool,
 ) -> Outcome {
+    use cirka_driver::native::RuntimeKind;
     let work = cirka_testkit::work_dir(suite, &c.name);
-    for (rt, name) in [
-        (cirka_driver::native::RuntimeKind::Debug, "debug"),
-        (cirka_driver::native::RuntimeKind::Release, "release"),
-    ] {
+    let mut runs = vec![
+        (RuntimeKind::Debug, "debug", None),
+        (RuntimeKind::Release, "release", None),
+    ];
+    // `-- tsan: 1`: also under ThreadSanitizer, with both allocators, where
+    // it can run (05-runtime.md §9.7).
+    if c.header.get("tsan") == Some("1") && cirka_driver::native::tsan_usable(cfg) {
+        if let Err(e) = cirka_driver::native::ensure_tsan_runtime_built() {
+            return Outcome::Fail(e);
+        }
+        runs.push((RuntimeKind::Tsan, "tsan", None));
+        runs.push((RuntimeKind::Tsan, "tsan-system", Some("system")));
+    }
+    for (rt, name, alloc) in runs {
         let exe = work.join(format!("prog-{name}"));
         let opts = cirka_driver::native::NativeOptions {
             runtime: rt,
@@ -90,6 +101,12 @@ pub fn check_native_with(
         }
         let mut cmd = std::process::Command::new(&exe);
         cmd.env("CIRKA_STATS", "1").env("CIRKA_LEAK_CHECK", "1");
+        if let Some(a) = alloc {
+            cmd.env("CIRKA_ALLOC", a);
+        }
+        if rt == RuntimeKind::Tsan {
+            cmd.env("TSAN_OPTIONS", "halt_on_error=1");
+        }
         for (k, v) in c.header.runtime_env() {
             cmd.env(k, v);
         }
@@ -97,6 +114,9 @@ pub fn check_native_with(
             Ok(o) => o,
             Err(e) => return Outcome::Fail(e.to_string()),
         };
+        if out.stderr.contains("ThreadSanitizer") {
+            return Outcome::Fail(format!("[{name}] ThreadSanitizer report:\n{}", out.stderr));
+        }
         if out.stdout != reference.stdout {
             cirka_testkit::save_failure(suite, &c.name, &[("out.ll", &ir)]);
             return Outcome::Fail(format!(

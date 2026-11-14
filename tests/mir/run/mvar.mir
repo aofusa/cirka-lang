@@ -1,0 +1,136 @@
+// MVar, channel and compare-and-swap of an IORef in one thread (FEAT-0045,
+// 05-runtime.md §9.4): the interpreter and the native runtime agree.
+type Int { I = 0 { v: i64 } }
+extern fn cirka_write_i64(i64) -> void
+extern fn cirka_write_char(i64) -> void
+extern fn cirka_mvar_new(ptr) -> ptr
+extern fn cirka_mvar_new_empty() -> ptr
+extern fn cirka_mvar_take(ptr) -> ptr
+extern fn cirka_mvar_read(ptr) -> ptr
+extern fn cirka_mvar_put(ptr, ptr) -> i64
+extern fn cirka_mvar_try_take(ptr, ptr) -> ptr
+extern fn cirka_mvar_try_put(ptr, ptr) -> i64
+extern fn cirka_chan_new() -> ptr
+extern fn cirka_chan_send(ptr, ptr) -> i64
+extern fn cirka_chan_recv(ptr) -> ptr
+extern fn cirka_chan_try_recv(ptr, ptr) -> ptr
+extern fn cirka_chan_len(ptr) -> i64
+extern fn cirka_mutvar_new(ptr) -> ptr
+extern fn cirka_mutvar_read(ptr) -> ptr
+extern fn cirka_mutvar_cas(ptr, ptr, ptr) -> i64
+extern fn cirka_thread_id() -> i64
+
+fn say(n: i64) -> i64 {
+entry:
+  let _ = extern cirka_write_i64(n)
+  let _ = extern cirka_write_char(10)
+  ret 0
+}
+
+fn val(x: ptr @owned) -> i64 {
+entry:
+  let v = proj x Int.I.v
+  drop x
+  ret v
+}
+
+fn main() -> i64 {
+entry:
+  let d = alloc Int.I(-1)
+  // A full MVar: read leaves it full, try_put fails, take empties it.
+  let a = alloc Int.I(1)
+  let m = extern cirka_mvar_new(a)
+  drop a
+  let r1 = extern cirka_mvar_read(m)
+  let v1 = call val(r1)
+  let _ = call say(v1)
+  let b = alloc Int.I(2)
+  let ok1 = extern cirka_mvar_try_put(m, b)
+  let _ = call say(ok1)
+  let t1 = extern cirka_mvar_take(m)
+  let v2 = call val(t1)
+  let _ = call say(v2)
+  // Empty: try_take returns the default, try_put succeeds.
+  let t2 = extern cirka_mvar_try_take(m, d)
+  let same = prim ptr_eq(t2, d)
+  drop t2
+  let _ = call say(same)
+  let ok2 = extern cirka_mvar_try_put(m, b)
+  drop b
+  let _ = call say(ok2)
+  let t3 = extern cirka_mvar_try_take(m, d)
+  let v3 = call val(t3)
+  let _ = call say(v3)
+  drop m
+  let e = extern cirka_mvar_new_empty()
+  let c = alloc Int.I(3)
+  let _ = extern cirka_mvar_put(e, c)
+  drop c
+  let t4 = extern cirka_mvar_take(e)
+  let v4 = call val(t4)
+  let _ = call say(v4)
+  // A value left in an MVar is released with it.
+  let c2 = alloc Int.I(4)
+  let _ = extern cirka_mvar_put(e, c2)
+  drop c2
+  drop e
+  // A channel is a FIFO.
+  let ch = extern cirka_chan_new()
+  jump send(1)
+send(i: i64):
+  let more = prim le(i, 20)
+  switch more { 1 => one, default => sent }
+one:
+  let x = alloc Int.I(i)
+  let _ = extern cirka_chan_send(ch, x)
+  drop x
+  let i1 = prim add(i, 1)
+  jump send(i1)
+sent:
+  let n = extern cirka_chan_len(ch)
+  let _ = call say(n)
+  let y1 = extern cirka_chan_recv(ch)
+  let w1 = call val(y1)
+  let y2 = extern cirka_chan_recv(ch)
+  let w2 = call val(y2)
+  let w = prim mul(w1, 100)
+  let w12 = prim add(w, w2)
+  let _ = call say(w12)
+  jump drain(0)
+drain(s: i64):
+  let y = extern cirka_chan_try_recv(ch, d)
+  let none = prim ptr_eq(y, d)
+  switch none { 1 => drained, default => got }
+got:
+  let yv = call val(y)
+  let s1 = prim add(s, yv)
+  jump drain(s1)
+drained:
+  drop y
+  let _ = call say(s)
+  // Values still in a channel are released with it.
+  let z1 = alloc Int.I(5)
+  let _ = extern cirka_chan_send(ch, z1)
+  drop z1
+  drop ch
+  // Compare-and-swap of an IORef.
+  let z = alloc Int.I(10)
+  let r = extern cirka_mutvar_new(z)
+  drop z
+  let old = extern cirka_mutvar_read(r)
+  let n1 = alloc Int.I(11)
+  let ok3 = extern cirka_mutvar_cas(r, old, n1)
+  let ok4 = extern cirka_mutvar_cas(r, old, n1)
+  drop old
+  drop n1
+  let _ = call say(ok3)
+  let _ = call say(ok4)
+  let now = extern cirka_mutvar_read(r)
+  let nv = call val(now)
+  let _ = call say(nv)
+  drop r
+  drop d
+  let id = extern cirka_thread_id()
+  let _ = call say(id)
+  ret 0
+}

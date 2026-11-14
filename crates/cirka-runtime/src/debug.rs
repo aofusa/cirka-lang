@@ -63,17 +63,22 @@ mod imp {
         qpos: 0,
     });
 
+    /// Guards `STATE` in a multithreaded process.
+    static LOCK: crate::sync::SpinLock = crate::sync::SpinLock::new();
+
     fn prefix(o: Obj) -> *mut Prefix {
         (o as usize - PREFIX) as *mut Prefix
     }
 
     pub unsafe fn debug_alloc(size: usize) -> *mut u8 {
-        // SAFETY: single-threaded debug allocator.
+        // SAFETY: the list of live objects is touched by one thread, or
+        // under LOCK.
         unsafe {
             let p = sys::malloc(PREFIX + size.max(8)) as *mut Prefix;
             if p.is_null() {
                 io::fatal(b"out of memory", 2);
             }
+            let _g = LOCK.lock_if_mt();
             let st = STATE.get();
             (*p).magic = MAGIC;
             (*p).id = st.next_id;
@@ -97,6 +102,7 @@ mod imp {
             if (*p).magic != MAGIC {
                 io::fatal(b"cirka debug runtime: double free or corrupted object", 3);
             }
+            let _g = LOCK.lock_if_mt();
             let st = STATE.get();
             if !(*p).prev.is_null() {
                 (*(*p).prev).next = (*p).next;
@@ -123,7 +129,7 @@ mod imp {
             if o.is_null() {
                 fail(what, b"null object");
             }
-            if (*o).rc == 0 {
+            if crate::object::rc(o) == 0 {
                 return; // static / immortal
             }
             let p = prefix(o);
@@ -158,22 +164,29 @@ mod imp {
                 if x.is_null() {
                     continue;
                 }
-                if (*x).rc != 0 {
+                if crate::object::rc(x) != 0 {
                     let p = prefix(x);
                     if (*p).magic != MAGIC || (*p).mark != 0 {
                         continue;
                     }
                     (*p).mark = 1;
                 }
-                let (start, count) = ptr_fields(x, (*x).kind, (*x).nptr);
-                for i in start..start + count {
-                    let c = *word(x, i) as Obj;
+                let mut push = |c: Obj| {
                     if sp < stack.len() {
                         stack[sp] = c;
                         sp += 1;
                     } else {
                         mark(c);
                     }
+                };
+                if crate::sync::is_sync(x) {
+                    // The values a synchronization object holds.
+                    crate::sync::for_each_value(x, &mut push);
+                    continue;
+                }
+                let (start, count) = ptr_fields(x, (*x).kind, (*x).nptr);
+                for i in start..start + count {
+                    push(*word(x, i) as Obj);
                 }
             }
         }

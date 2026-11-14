@@ -117,6 +117,41 @@ fn mir_run_native() {
     });
 }
 
+/// The ThreadSanitizer configuration of the `tsan: 1` tests detects races:
+/// a program with a deliberate data race (`tests/mir/tsan/race.mir`) is
+/// reported (05-runtime.md §9.7). Skipped where TSan cannot run.
+#[test]
+fn tsan_reports_a_data_race() {
+    use cirka_driver::native::{self, NativeOptions, RuntimeKind};
+    cirka_testkit::init();
+    let cfg = cirka_driver::Config::from_env();
+    if !native::tsan_usable(&cfg) {
+        eprintln!("skipped: ThreadSanitizer cannot run here");
+        return;
+    }
+    native::ensure_tsan_runtime_built().unwrap();
+    let src = std::fs::read_to_string(repo_root().join("tests/mir/tsan/race.mir")).unwrap();
+    let m = cirka_mir::parse(FileId(0), &src).expect("parse");
+    let work = cirka_testkit::work_dir("mir-tsan", "race");
+    let exe = work.join("prog");
+    let opts = NativeOptions {
+        runtime: RuntimeKind::Tsan,
+        ..Default::default()
+    };
+    native::build_mir(&cfg, &m, &work, &exe, &opts).unwrap();
+    let out = std::process::Command::new(&exe)
+        .env("TSAN_OPTIONS", "halt_on_error=1")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("WARNING: ThreadSanitizer: data race"),
+        "no race reported (status {:?}):\n{stderr}",
+        out.status
+    );
+    assert!(!out.status.success());
+}
+
 /// The hand-written binary-trees benchmark (FEAT-0016) stays valid: it
 /// verifies, runs leak-free in the interpreter at a small depth and matches
 /// the Rust baseline's output.

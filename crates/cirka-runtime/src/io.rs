@@ -2,8 +2,14 @@
 
 use crate::Global;
 use crate::object::{Obj, word};
+use crate::sync::Mutex;
 use crate::sys;
 use core::ffi::c_void;
+
+/// The buffers are locked only in a multithreaded process (05-runtime.md
+/// §9.2). Lock order: stdin before stdout (reading flushes stdout).
+static STDOUT_LOCK: Mutex = Mutex::new();
+static STDIN_LOCK: Mutex = Mutex::new();
 
 const BUF: usize = 1 << 16;
 
@@ -44,10 +50,11 @@ fn write_all(fd: i32, mut bytes: &[u8]) {
 
 /// Appends bytes to the stdout buffer.
 pub fn out(bytes: &[u8]) {
-    // SAFETY: stdout is used from one thread at a time (FEAT-0045 adds locking).
+    let _g = STDOUT_LOCK.lock_if_mt();
+    // SAFETY: one thread, or the lock is held.
     let b = unsafe { STDOUT.get() };
     if b.len + bytes.len() > BUF {
-        flush();
+        flush_buf(b);
         if bytes.len() > BUF {
             write_all(1, bytes);
             return;
@@ -57,11 +64,15 @@ pub fn out(bytes: &[u8]) {
     b.len += bytes.len();
 }
 
-pub fn flush() {
-    // SAFETY: see `out`.
-    let b = unsafe { STDOUT.get() };
+fn flush_buf(b: &mut OutBuf) {
     write_all(1, &b.data[..b.len]);
     b.len = 0;
+}
+
+pub fn flush() {
+    let _g = STDOUT_LOCK.lock_if_mt();
+    // SAFETY: one thread, or the lock is held.
+    flush_buf(unsafe { STDOUT.get() });
 }
 
 /// Unbuffered write to stderr (flushes stdout first to keep ordering).
@@ -89,8 +100,17 @@ fn fmt_u64(mut n: u64, buf: &mut [u8; 20]) -> &[u8] {
 }
 
 /// Prints `msg` to stderr and exits with `code` (after flushing stdout).
+/// Also called from the signal handler: in a multithreaded process stdout
+/// is flushed only if its lock can be taken (the faulting thread may hold
+/// it).
 pub fn fatal(msg: &[u8], code: i32) -> ! {
-    ewrite(msg);
+    if !crate::sync::is_mt() {
+        flush();
+    } else if let Some(_g) = STDOUT_LOCK.try_lock() {
+        // SAFETY: the lock is held.
+        flush_buf(unsafe { STDOUT.get() });
+    }
+    write_all(2, msg);
     write_all(2, b"\n");
     // SAFETY: terminating the process.
     unsafe { sys::_exit(code) }
@@ -343,7 +363,8 @@ pub extern "C" fn cirka_flush() {
 /// `cirka_read_byte`: the number of bytes (0 at the end of input), or -1
 /// with `errno` set.
 pub fn stdin_read(out: &mut [u8]) -> isize {
-    // SAFETY: stdin buffer used from one thread.
+    let _g = STDIN_LOCK.lock_if_mt();
+    // SAFETY: one thread, or the lock is held.
     let b = unsafe { STDIN.get() };
     if b.pos < b.len {
         let n = (b.len - b.pos).min(out.len());
@@ -366,11 +387,13 @@ pub fn stdin_read(out: &mut [u8]) -> isize {
 /// The next byte of stdin without consuming it; -1 at end of input.
 #[unsafe(no_mangle)]
 pub extern "C" fn cirka_peek_byte() -> i64 {
-    let c = cirka_read_byte();
+    let _g = STDIN_LOCK.lock_if_mt();
+    // SAFETY: one thread, or the lock is held.
+    let b = unsafe { STDIN.get() };
+    let c = read_byte(b);
     if c >= 0 {
-        // SAFETY: stdin buffer used from one thread; the byte just read is
-        // still in the buffer.
-        unsafe { STDIN.get().pos -= 1 };
+        // The byte just read is still in the buffer.
+        b.pos -= 1;
     }
     c
 }
@@ -378,8 +401,12 @@ pub extern "C" fn cirka_peek_byte() -> i64 {
 /// Reads one byte from stdin; -1 at end of input.
 #[unsafe(no_mangle)]
 pub extern "C" fn cirka_read_byte() -> i64 {
-    // SAFETY: stdin buffer used from one thread.
-    let b = unsafe { STDIN.get() };
+    let _g = STDIN_LOCK.lock_if_mt();
+    // SAFETY: one thread, or the lock is held.
+    read_byte(unsafe { STDIN.get() })
+}
+
+fn read_byte(b: &mut InBuf) -> i64 {
     if b.pos == b.len {
         if b.eof {
             return -1;

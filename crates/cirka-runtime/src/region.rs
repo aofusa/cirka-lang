@@ -187,7 +187,7 @@ mod tests {
 
     fn live() -> u64 {
         // SAFETY: the test lock is held.
-        unsafe { alloc::STATS.get().live }
+        unsafe { alloc::stats().live }
     }
 
     /// Values that refer to each other through cells (a ring of 2000

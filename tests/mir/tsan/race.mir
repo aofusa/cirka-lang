@@ -1,0 +1,60 @@
+// A deliberate data race (FEAT-0045): main writes an array element while
+// another thread reads it, with no synchronization between the two.
+// ThreadSanitizer only reports a race the execution exhibits, so nothing
+// may order the two accesses in any execution: main keeps its reference to
+// the closure until after the join (dropping it right after the spawn is an
+// acquire on the closure's shared count, which follows the other thread's
+// release when that thread has already finished). The test
+// `tsan_reports_a_data_race` (tests/mir.rs) requires a report.
+type Int { I = 0 { v: i64 } }
+extern fn cirka_write_i64(i64) -> void
+extern fn cirka_write_char(i64) -> void
+extern fn cirka_thread_spawn(ptr) -> ptr
+extern fn cirka_thread_join(ptr) -> ptr
+extern fn cirka_thread_yield() -> i64
+
+fn reader(a: ptr @owned, tok: ptr @owned) -> ptr {
+entry:
+  drop tok
+  jump loop(0, 0)
+loop(i: i64, s: i64):
+  let c = prim lt(i, 1000)
+  switch c { 1 => step, default => done }
+step:
+  let n = prim bytes_get_i64(a, 0)
+  let _ = extern cirka_thread_yield()
+  let s1 = prim add(s, n)
+  let i1 = prim add(i, 1)
+  jump loop(i1, s1)
+done:
+  drop a
+  let r = alloc Int.I(s)
+  ret r
+}
+
+fn main() -> i64 {
+entry:
+  let a = prim bytes_new(8)
+  dup a
+  let f = mkclosure reader(a)
+  let h = extern cirka_thread_spawn(f)
+  jump loop(0)
+loop(i: i64):
+  let c = prim lt(i, 1000)
+  switch c { 1 => step, default => done }
+step:
+  let _ = prim bytes_set_i64(a, 0, i)
+  let _ = extern cirka_thread_yield()
+  let i1 = prim add(i, 1)
+  jump loop(i1)
+done:
+  drop a
+  let r = extern cirka_thread_join(h)
+  drop h
+  drop f
+  let v = proj r Int.I.v
+  drop r
+  let _ = extern cirka_write_i64(v)
+  let _ = extern cirka_write_char(10)
+  ret 0
+}

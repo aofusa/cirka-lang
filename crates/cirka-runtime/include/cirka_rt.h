@@ -91,8 +91,34 @@ int64_t cirka_big_cmp(void *a, void *b);
 void   *cirka_big_show(void *a);
 void   *cirka_big_read(void *digits, int64_t neg);
 
+/* Mutable references (IORef / STRef; arguments borrowed). */
+void   *cirka_mutvar_new(void *v);
+void   *cirka_mutvar_read(void *r);
+int64_t cirka_mutvar_write(void *r, void *v);
+int64_t cirka_mutvar_cas(void *r, void *old_v, void *new_v);
+
+/* Concurrency (05-runtime.md §9; pointer arguments borrowed). */
+void   *cirka_thread_spawn(void *io);
+void   *cirka_thread_join(void *handle);
+int64_t cirka_thread_id(void);
+int64_t cirka_thread_yield(void);
+int64_t cirka_cpu_count(void);
+void   *cirka_mvar_new(void *v);
+void   *cirka_mvar_new_empty(void);
+void   *cirka_mvar_take(void *m);
+void   *cirka_mvar_read(void *m);
+int64_t cirka_mvar_put(void *m, void *v);
+void   *cirka_mvar_try_take(void *m, void *dflt);
+int64_t cirka_mvar_try_put(void *m, void *v);
+void   *cirka_chan_new(void);
+int64_t cirka_chan_send(void *c, void *v);
+void   *cirka_chan_recv(void *c);
+void   *cirka_chan_try_recv(void *c, void *dflt);
+int64_t cirka_chan_len(void *c);
+
 /* provided by generated code */
 int64_t cirka_main(void);
+void   *cirka_call_1(void *f, void *arg);
 extern void *cirka_caf_roots[];
 extern int64_t cirka_caf_count;
 

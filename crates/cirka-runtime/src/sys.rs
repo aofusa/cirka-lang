@@ -19,11 +19,33 @@ pub const SIGSEGV: c_int = 11;
 pub const SIGBUS: c_int = 7;
 pub const SA_SIGINFO: c_int = 4;
 pub const SA_ONSTACK: c_int = 0x0800_0000;
+pub const SS_DISABLE: c_int = 2;
 
 #[repr(C)]
 pub struct pthread_attr_t {
     _data: [u64; 7],
 }
+
+/// glibc's `pthread_mutex_t` on x86-64 (40 bytes; all zero is
+/// `PTHREAD_MUTEX_INITIALIZER`).
+#[repr(C)]
+pub struct pthread_mutex_t {
+    _data: [u64; 5],
+}
+
+impl pthread_mutex_t {
+    pub const INIT: pthread_mutex_t = pthread_mutex_t { _data: [0; 5] };
+}
+
+/// glibc's `pthread_cond_t` on x86-64 (48 bytes; all zero is
+/// `PTHREAD_COND_INITIALIZER`).
+#[repr(C)]
+pub struct pthread_cond_t {
+    _data: [u64; 6],
+}
+
+pub const PTHREAD_CREATE_DETACHED: c_int = 1;
+pub const SC_NPROCESSORS_ONLN: c_int = 84;
 
 #[repr(C)]
 pub struct stack_t {
@@ -89,6 +111,20 @@ unsafe extern "C" {
         arg: *mut c_void,
     ) -> c_int;
     pub fn pthread_join(t: pthread_t, ret: *mut *mut c_void) -> c_int;
+    pub fn pthread_attr_setdetachstate(a: *mut pthread_attr_t, state: c_int) -> c_int;
+    pub fn pthread_attr_destroy(a: *mut pthread_attr_t) -> c_int;
+    pub fn pthread_mutex_init(m: *mut pthread_mutex_t, attr: *const c_void) -> c_int;
+    pub fn pthread_mutex_destroy(m: *mut pthread_mutex_t) -> c_int;
+    pub fn pthread_mutex_lock(m: *mut pthread_mutex_t) -> c_int;
+    pub fn pthread_mutex_unlock(m: *mut pthread_mutex_t) -> c_int;
+    pub fn pthread_mutex_trylock(m: *mut pthread_mutex_t) -> c_int;
+    pub fn pthread_cond_init(c: *mut pthread_cond_t, attr: *const c_void) -> c_int;
+    pub fn pthread_cond_destroy(c: *mut pthread_cond_t) -> c_int;
+    pub fn pthread_cond_wait(c: *mut pthread_cond_t, m: *mut pthread_mutex_t) -> c_int;
+    pub fn pthread_cond_broadcast(c: *mut pthread_cond_t) -> c_int;
+    pub fn sched_yield() -> c_int;
+    pub fn sysconf(name: c_int) -> c_long;
+    pub fn realloc(p: *mut c_void, size: size_t) -> *mut c_void;
     pub fn sigaltstack(ss: *const stack_t, old: *mut stack_t) -> c_int;
     pub fn sigaction(sig: c_int, act: *const sigaction_t, old: *mut sigaction_t) -> c_int;
 }

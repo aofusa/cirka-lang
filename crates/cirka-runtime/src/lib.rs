@@ -20,17 +20,22 @@ pub mod object;
 pub mod region;
 pub mod start;
 pub mod stdio;
+pub mod sync;
 pub mod sys;
+pub mod thread;
+pub mod tls;
 
 use core::cell::UnsafeCell;
 
-/// A global mutable cell. The runtime is single-threaded until the
-/// concurrency runtime (FEAT-0045) adds per-thread state.
+/// A global mutable cell. Per-thread state lives in the TLS block
+/// (`tls.rs`); a global is touched by one thread at a time: before the
+/// process becomes multithreaded, under a lock, or only at start-up and
+/// exit (05-runtime.md §9.2).
 #[repr(transparent)]
 pub struct Global<T>(UnsafeCell<T>);
 
 // SAFETY: all accesses go through `get`, whose callers guarantee exclusive
-// access (single-threaded runtime state).
+// access (see above).
 unsafe impl<T> Sync for Global<T> {}
 
 impl<T> Global<T> {
@@ -40,7 +45,7 @@ impl<T> Global<T> {
 
     /// # Safety
     /// The caller must guarantee that no other reference to the value is
-    /// alive (the runtime state is only touched from one thread).
+    /// alive (no other thread touches it meanwhile).
     #[allow(clippy::mut_from_ref)]
     #[inline(always)]
     pub unsafe fn get(&self) -> &mut T {
@@ -146,10 +151,10 @@ pub unsafe extern "C" fn cirka_bytes_unique(b: object::Obj) -> object::Obj {
     // SAFETY: b is a live BYTES object of `len` bytes after its length word;
     // the copy has the same size.
     unsafe {
-        if (*b).rc == 1 {
+        if object::rc(b) == 1 {
             return b;
         }
-        alloc::STATS.get().array_copies += 1;
+        alloc::stats().array_copies += 1;
         let len = *object::word(b, 0) as i64;
         let o = cirka_bytes_new(len);
         core::ptr::copy_nonoverlapping(
@@ -173,10 +178,10 @@ pub unsafe extern "C" fn cirka_array_unique(a: object::Obj) -> object::Obj {
     // SAFETY: a is a live array; the copy is a fresh allocation of the
     // same length.
     unsafe {
-        if (*a).rc == 1 {
+        if object::rc(a) == 1 {
             return a;
         }
-        alloc::STATS.get().array_copies += 1;
+        alloc::stats().array_copies += 1;
         let len = *object::word(a, 0);
         let o = alloc::cirka_alloc(16 + 8 * len) as object::Obj;
         (*o).rc = 1;

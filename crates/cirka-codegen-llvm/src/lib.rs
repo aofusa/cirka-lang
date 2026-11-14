@@ -16,6 +16,9 @@ use std::fmt::Write;
 pub struct Options {
     /// Call the checking runtime functions instead of inlining RC fast paths.
     pub debug_rt: bool,
+    /// Instrument the functions for ThreadSanitizer (`sanitize_thread`,
+    /// 05-runtime.md §9.7).
+    pub tsan: bool,
 }
 
 /// Mangles a MIR function name into an LLVM global name.
@@ -99,6 +102,7 @@ const RUNTIME_DECLS: &[(&str, &str)] = &[
     ("cirka_bytes_unique", "ptr @cirka_bytes_unique(ptr)"),
     ("cirka_cycle_candidate", "void @cirka_cycle_candidate(ptr)"),
     ("cirka_cycles_enable", "void @cirka_cycles_enable()"),
+    ("cirka_mark_shared", "void @cirka_mark_shared(ptr)"),
     (
         "llvm.fptosi.sat.i64.f64",
         "i64 @llvm.fptosi.sat.i64.f64(double)",
@@ -344,7 +348,9 @@ impl<'m> Gen<'m> {
             self.fresh_label("dup.slow"),
             self.fresh_label("dup.done"),
         );
-        c.line(&format!("{rc} = load i32, ptr {o}, align 8{TBAA_HEADER}"));
+        c.line(&format!(
+            "{rc} = load atomic i32, ptr {o} unordered, align 8{TBAA_HEADER}"
+        ));
         c.line(&format!("{pos} = icmp sgt i32 {rc}, 0"));
         c.line(&format!(
             "br i1 {pos}, label %{inc}, label %{slow}, !prof !0"
@@ -352,7 +358,9 @@ impl<'m> Gen<'m> {
         c.label(&inc);
         let rc1 = c.t();
         c.line(&format!("{rc1} = add i32 {rc}, 1"));
-        c.line(&format!("store i32 {rc1}, ptr {o}, align 8{TBAA_HEADER}"));
+        c.line(&format!(
+            "store atomic i32 {rc1}, ptr {o} unordered, align 8{TBAA_HEADER}"
+        ));
         c.line(&format!("br label %{done}"));
         c.label(&slow);
         let neg = c.t();
@@ -378,7 +386,9 @@ impl<'m> Gen<'m> {
         let other = self.fresh_label("drop.other");
         let shared = self.fresh_label("drop.shared");
         let done = self.fresh_label("drop.done");
-        c.line(&format!("{rc} = load i32, ptr {o}, align 8{TBAA_HEADER}"));
+        c.line(&format!(
+            "{rc} = load atomic i32, ptr {o} unordered, align 8{TBAA_HEADER}"
+        ));
         c.line(&format!("{gt1} = icmp sgt i32 {rc}, 1"));
         c.line(&format!(
             "br i1 {gt1}, label %{dec}, label %{slow}, !prof !0"
@@ -386,7 +396,9 @@ impl<'m> Gen<'m> {
         c.label(&dec);
         let rc1 = c.t();
         c.line(&format!("{rc1} = sub i32 {rc}, 1"));
-        c.line(&format!("store i32 {rc1}, ptr {o}, align 8{TBAA_HEADER}"));
+        c.line(&format!(
+            "store atomic i32 {rc1}, ptr {o} unordered, align 8{TBAA_HEADER}"
+        ));
         c.line(&format!("br label %{done}"));
         c.label(&slow);
         let is1 = c.t();
@@ -435,7 +447,9 @@ impl<'m> Gen<'m> {
         let slow = self.fresh_label("uniq.copy");
         let done = self.fresh_label("uniq.done");
         let pred = c.cur.clone();
-        c.line(&format!("{rc} = load i32, ptr {o}, align 8{TBAA_HEADER}"));
+        c.line(&format!(
+            "{rc} = load atomic i32, ptr {o} unordered, align 8{TBAA_HEADER}"
+        ));
         c.line(&format!("{is1} = icmp eq i32 {rc}, 1"));
         c.line(&format!(
             "br i1 {is1}, label %{done}, label %{slow}, !prof !0"
@@ -448,6 +462,26 @@ impl<'m> Gen<'m> {
         c.line(&format!(
             "{dst} = phi ptr [ {o}, %{pred} ], [ {r}, %{slow} ]"
         ));
+    }
+
+    /// Marks `v` shared when the array `arr` it is stored into is shared:
+    /// a store through a mutable borrow may write into an array received
+    /// from another thread (05-runtime.md §9.3).
+    fn mark_if_shared(&mut self, c: &mut FnCtx<'_>, arr: &str, v: &str) {
+        let rc = c.t();
+        let neg = c.t();
+        let (mark, done) = (self.fresh_label("set.mark"), self.fresh_label("set.done"));
+        c.line(&format!(
+            "{rc} = load atomic i32, ptr {arr} unordered, align 8{TBAA_HEADER}"
+        ));
+        c.line(&format!("{neg} = icmp slt i32 {rc}, 0"));
+        c.line(&format!(
+            "br i1 {neg}, label %{mark}, label %{done}, !prof !1"
+        ));
+        c.label(&mark);
+        c.line(&format!("call void @cirka_mark_shared(ptr {v})"));
+        c.line(&format!("br label %{done}"));
+        c.label(&done);
     }
 
     fn emit_panic(&mut self, c: &mut FnCtx<'_>, msg: &str) {
@@ -703,7 +737,9 @@ impl<'m> Gen<'m> {
             self.fresh_label("dspec.shared"),
             self.fresh_label("dspec.done"),
         );
-        c.line(&format!("{rc} = load i32, ptr {xo}, align 8{TBAA_HEADER}"));
+        c.line(&format!(
+            "{rc} = load atomic i32, ptr {xo} unordered, align 8{TBAA_HEADER}"
+        ));
         c.line(&format!("{is1} = icmp eq i32 {rc}, 1"));
         c.line(&format!("br i1 {is1}, label %{uniq}, label %{shared}"));
         c.label(&uniq);
@@ -873,7 +909,7 @@ impl<'m> Gen<'m> {
                     }
                 };
                 c.line(&format!(
-                    "store i64 {}, ptr {obj}, align 8{TBAA_HEADER}",
+                    "store atomic i64 {}, ptr {obj} unordered, align 8{TBAA_HEADER}",
                     header_word(1, def.tag, def.nptr(), kind::CON)
                 ));
                 for (i, a) in args.iter().enumerate() {
@@ -932,7 +968,7 @@ impl<'m> Gen<'m> {
                     )
                 };
                 c.line(&format!(
-                    "store i64 {}, ptr {obj}, align 8{TBAA_HEADER}",
+                    "store atomic i64 {}, ptr {obj} unordered, align 8{TBAA_HEADER}",
                     header_word(1, tag, nptr, k)
                 ));
                 Self::store_field(c, &obj, 0, Ty::Ptr, &stub);
@@ -947,7 +983,9 @@ impl<'m> Gen<'m> {
                 let o = var(*v);
                 let kp = Self::gep(c, &o, 7);
                 let k = c.t();
-                c.line(&format!("{k} = load i8, ptr {kp}, align 1"));
+                c.line(&format!(
+                    "{k} = load atomic i8, ptr {kp} unordered, align 1"
+                ));
                 let rel = c.t();
                 c.line(&format!("{rel} = sub i8 {k}, {}", kind::THUNK));
                 let lazy = c.t();
@@ -1162,7 +1200,7 @@ impl<'m> Gen<'m> {
             IsUnique => {
                 let rc = c.t();
                 c.line(&format!(
-                    "{rc} = load i32, ptr {}, align 8{TBAA_HEADER}",
+                    "{rc} = load atomic i32, ptr {} unordered, align 8{TBAA_HEADER}",
                     a[0]
                 ));
                 let t = c.t();
@@ -1174,7 +1212,9 @@ impl<'m> Gen<'m> {
             IsValue => {
                 let kp = Self::gep(c, &a[0], 7);
                 let k = c.t();
-                c.line(&format!("{k} = load i8, ptr {kp}, align 1"));
+                c.line(&format!(
+                    "{k} = load atomic i8, ptr {kp} unordered, align 1"
+                ));
                 let rel = c.t();
                 c.line(&format!("{rel} = sub i8 {k}, {}", kind::THUNK));
                 let t = c.t();
@@ -1289,6 +1329,9 @@ impl<'m> Gen<'m> {
                 if p == ArrayGet {
                     c.line(&format!("{dst} = load ptr, ptr {ep}, align 8{TBAA_ELEM}"));
                 } else {
+                    if p == ArraySetShared {
+                        self.mark_if_shared(c, &a[0], &a[2]);
+                    }
                     let old = c.t();
                     c.line(&format!("{old} = load ptr, ptr {ep}, align 8{TBAA_ELEM}"));
                     c.line(&format!("store ptr {}, ptr {ep}, align 8{TBAA_ELEM}", a[2]));
@@ -1421,7 +1464,9 @@ impl<'m> Gen<'m> {
         call_args.extend(args.iter().cloned());
         if !borrowed {
             let rc = c.t();
-            c.line(&format!("{rc} = load i32, ptr %env, align 8{TBAA_HEADER}"));
+            c.line(&format!(
+                "{rc} = load atomic i32, ptr %env unordered, align 8{TBAA_HEADER}"
+            ));
             let u = c.t();
             c.line(&format!("{u} = icmp eq i32 {rc}, 1"));
             c.line(&format!("br i1 {u}, label %unique, label %shared"));
@@ -1523,7 +1568,7 @@ impl<'m> Gen<'m> {
         );
         s.push_str("entry:\n");
         s.push_str(
-            "  %kp = getelementptr inbounds i8, ptr %f, i64 7\n  %k = load i8, ptr %kp, align 1\n",
+            "  %kp = getelementptr inbounds i8, ptr %f, i64 7\n  %k = load atomic i8, ptr %kp unordered, align 1\n",
         );
         let _ = writeln!(
             s,
@@ -1617,7 +1662,7 @@ impl<'m> Gen<'m> {
             }
             let _ = writeln!(
                 s,
-                "  %rc{j} = load i32, ptr %f, align 8\n  %u{j} = icmp eq i32 %rc{j}, 1\n  br i1 %u{j}, label %uq{j}, label %sh{j}"
+                "  %rc{j} = load atomic i32, ptr %f unordered, align 8\n  %u{j} = icmp eq i32 %rc{j}, 1\n  br i1 %u{j}, label %uq{j}, label %sh{j}"
             );
             let _ = writeln!(
                 s,
@@ -1707,13 +1752,25 @@ impl<'m> Gen<'m> {
             "!7 = !{!\"cirka.elem\", !2, i64 0}\n",
             "!8 = !{!7, !7, i64 0}\n",
         ));
-        self.out.push_str("attributes #0 = { nounwind }\n");
-        self.out
-            .push_str("attributes #1 = { nounwind \"disable-tail-calls\"=\"true\" }\n");
-        self.out
-            .push_str("attributes #2 = { cold noinline nounwind }\n");
+        // The C ABI entry through which the runtime applies a closure (a
+        // new thread runs its IO action, 05-runtime.md §9.1).
         self.out.push_str(
-            "attributes #3 = { cold noinline nounwind \"disable-tail-calls\"=\"true\" }\n",
+            "define ptr @cirka_call_1(ptr %f, ptr %a) #0 {\nentry:\n  %r = call tailcc ptr @cirka_apply_1(ptr %f, ptr %a)\n  ret ptr %r\n}\n",
+        );
+        let ts = if self.opts.tsan {
+            " sanitize_thread"
+        } else {
+            ""
+        };
+        let _ = writeln!(self.out, "attributes #0 = {{ nounwind{ts} }}");
+        let _ = writeln!(
+            self.out,
+            "attributes #1 = {{ nounwind \"disable-tail-calls\"=\"true\"{ts} }}"
+        );
+        let _ = writeln!(self.out, "attributes #2 = {{ cold noinline nounwind{ts} }}");
+        let _ = writeln!(
+            self.out,
+            "attributes #3 = {{ cold noinline nounwind \"disable-tail-calls\"=\"true\"{ts} }}"
         );
     }
 }
@@ -1792,7 +1849,7 @@ entry:
 
     fn ir() -> String {
         let m = cirka_mir::parse::parse(cirka_diagnostics::FileId(0), SRC).unwrap();
-        emit(&m, Options { debug_rt: false })
+        emit(&m, Options::default())
     }
 
     /// Optimization hints (16-performance.md §3, FEAT-0058).
@@ -1811,11 +1868,29 @@ entry:
             "{ir}"
         );
         assert!(ir.contains("cold noreturn nounwind"), "{ir}");
-        // Headers and fields have distinct TBAA tags.
-        assert!(ir.contains("load i32, ptr %v"), "{ir}");
+        // Headers and fields have distinct TBAA tags. Counts are read
+        // with an atomic (`unordered`) load: another thread may change
+        // the count of a shared object meanwhile (05-runtime.md §9.3).
+        assert!(ir.contains("load atomic i32, ptr %v"), "{ir}");
         assert!(
             ir.lines()
-                .any(|l| l.contains("load i32") && l.ends_with("!tbaa !5")),
+                .any(|l| l.contains("load atomic i32")
+                    && l.contains(" unordered, align 8, !tbaa !5")),
+            "{ir}"
+        );
+        assert!(!ir.lines().any(|l| l.contains("= load i32")), "{ir}");
+        // Header stores are atomic too: LLVM forwards a stored header to a
+        // later atomic load (a known count folds a drop) only from an
+        // atomic store.
+        assert!(
+            !ir.lines()
+                .any(|l| (l.contains("store i32") || l.contains("store i64"))
+                    && l.ends_with("!tbaa !5")),
+            "{ir}"
+        );
+        assert!(
+            ir.lines()
+                .any(|l| l.contains("store atomic i64") && l.contains(" unordered, align 8")),
             "{ir}"
         );
         assert!(
@@ -1850,7 +1925,7 @@ entry:
 }
 ";
         let m = cirka_mir::parse::parse(cirka_diagnostics::FileId(0), src).unwrap();
-        let ir = emit(&m, Options { debug_rt: false });
+        let ir = emit(&m, Options::default());
         assert!(ir.contains("call double @llvm.sqrt.f64(double"), "{ir}");
         assert!(!ir.contains("call double @sqrt("), "{ir}");
         assert!(ir.contains("!prof !0"), "{ir}");
@@ -1867,7 +1942,13 @@ entry:
             "{ir}"
         );
         // The debug runtime keeps the plain call (it counts copies).
-        let dbg = emit(&m, Options { debug_rt: true });
+        let dbg = emit(
+            &m,
+            Options {
+                debug_rt: true,
+                ..Options::default()
+            },
+        );
         assert!(!dbg.contains("phi ptr"), "{dbg}");
     }
 
@@ -1904,7 +1985,7 @@ entry:
 ";
         let m = cirka_mir::parse::parse(cirka_diagnostics::FileId(0), src).unwrap();
         assert!(cirka_mir::verify::verify_module(&m).is_empty());
-        let ir = emit(&m, Options { debug_rt: false });
+        let ir = emit(&m, Options::default());
         assert!(
             ir.contains("define internal tailcc { ptr, i64 } @\"_C4pair\"(ptr %v0, i64 %v1) #0 {"),
             "{ir}"
@@ -1956,7 +2037,7 @@ entry:
 }
 ";
         let m = cirka_mir::parse::parse(cirka_diagnostics::FileId(0), src).unwrap();
-        let ir = emit(&m, Options { debug_rt: false });
+        let ir = emit(&m, Options::default());
         assert!(
             ir.contains("define internal tailcc i64 @\"_C1f\"(i64 %v0) #1 {"),
             "{ir}"
@@ -1985,12 +2066,69 @@ entry:
 }
 ";
         let m = cirka_mir::parse::parse(cirka_diagnostics::FileId(0), src).unwrap();
-        let ir = emit(&m, Options { debug_rt: false });
+        let ir = emit(&m, Options::default());
         let external: Vec<&str> = ir
             .lines()
             .filter(|l| l.starts_with("define ") && !l.starts_with("define internal "))
             .collect();
-        assert_eq!(external, vec!["define i64 @cirka_main() {"], "{ir}");
+        assert_eq!(
+            external,
+            vec![
+                "define i64 @cirka_main() {",
+                "define ptr @cirka_call_1(ptr %f, ptr %a) #0 {"
+            ],
+            "{ir}"
+        );
+    }
+
+    /// A thread-sanitized build instruments every generated function;
+    /// stores through a mutable borrow mark the value shared when the
+    /// array is (05-runtime.md §9.3, §9.7).
+    #[test]
+    fn tsan_attributes_and_shared_array_stores() {
+        let src = r"
+type Int { I = 0 { v: i64 } }
+
+fn set(a: ptr @borrowed, x: ptr @borrowed) -> i64 {
+entry:
+  dup x
+  let _ = prim array_set_shared(a, 0, x)
+  ret 0
+}
+
+fn main() -> i64 {
+entry:
+  let z = alloc Int.I(0)
+  dup z
+  let a = prim array_new(1, z)
+  let _ = call set(a, z)
+  drop a
+  drop z
+  ret 0
+}
+";
+        let m = cirka_mir::parse::parse(cirka_diagnostics::FileId(0), src).unwrap();
+        let plain = emit(&m, Options::default());
+        assert!(plain.contains("attributes #0 = { nounwind }"), "{plain}");
+        assert!(
+            plain.contains("call void @cirka_mark_shared(ptr"),
+            "{plain}"
+        );
+        let ts = emit(
+            &m,
+            Options {
+                tsan: true,
+                ..Options::default()
+            },
+        );
+        for g in 0..4 {
+            assert!(
+                ts.lines()
+                    .any(|l| l.starts_with(&format!("attributes #{g} = {{"))
+                        && l.contains("sanitize_thread")),
+                "{ts}"
+            );
+        }
     }
 
     /// A cold function is not inlined and is laid out away from the hot
@@ -2010,7 +2148,7 @@ entry:
 }
 ";
         let m = cirka_mir::parse::parse(cirka_diagnostics::FileId(0), src).unwrap();
-        let ir = emit(&m, Options { debug_rt: false });
+        let ir = emit(&m, Options::default());
         assert!(
             ir.contains("define internal tailcc i64 @\"_C1f\"(i64 %v0) #2 {"),
             "{ir}"
@@ -2043,7 +2181,7 @@ entry:
 }
 ";
         let m = cirka_mir::parse::parse(cirka_diagnostics::FileId(0), src).unwrap();
-        let ir = emit(&m, Options { debug_rt: false });
+        let ir = emit(&m, Options::default());
         assert!(
             ir.contains("define internal tailcc i64 @\"_C3sum\"(i64 %v0.in, i64 %v1.in) #0 {"),
             "{ir}"
@@ -2093,7 +2231,7 @@ entry:
             let main = &main[..main.find("\n}").unwrap()];
             main.matches(&format!("@cirka_panic(ptr {g},")).count()
         };
-        let release = emit(&m, Options { debug_rt: false });
+        let release = emit(&m, Options::default());
         assert_eq!(checks(&release, "index out of bounds"), 1, "{release}");
         assert!(!release.contains("internal error"), "{release}");
         // `is_value` tests the kind as `force` does (not thunk, black hole
@@ -2102,7 +2240,13 @@ entry:
             release.contains("= sub i8 %t") && release.contains("= icmp uge i8 %t"),
             "{release}"
         );
-        let debug = emit(&m, Options { debug_rt: true });
+        let debug = emit(
+            &m,
+            Options {
+                debug_rt: true,
+                ..Options::default()
+            },
+        );
         assert_eq!(checks(&debug, "index out of bounds"), 1, "{debug}");
         assert_eq!(
             checks(&debug, "internal error: unchecked index out of bounds"),

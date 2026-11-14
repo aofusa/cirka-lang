@@ -182,12 +182,7 @@ pub fn compile_core(
     if !errs.is_empty() {
         return Err(errs.into_iter().map(to_ice).collect());
     }
-    let llvm = cirka_codegen_llvm::emit(
-        &m,
-        cirka_codegen_llvm::Options {
-            debug_rt: opts.runtime == RuntimeKind::Debug,
-        },
-    );
+    let llvm = cirka_codegen_llvm::emit(&m, opts.runtime.codegen_options());
     dump(opts, Stage::Llvm, name, &llvm)?;
     Ok(Output { mir: m, llvm })
 }

@@ -125,10 +125,12 @@ pub extern "C" fn cirka_cycles_enable() {
 /// `o` must be a live, fully initialized object.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn cirka_cycle_candidate(o: Obj) {
-    // SAFETY: single-threaded runtime state; `o` is live.
+    // SAFETY: `o` is live. The collector's state is used by the thread
+    // running `main` only: no roots are recorded once the process is
+    // multithreaded (05-runtime.md §9.2).
     unsafe {
         let s = STATE.get();
-        if !s.enabled || (*o).rc <= 0 {
+        if !s.enabled || crate::sync::is_mt() || object::rc(o) <= 0 {
             return;
         }
         (*o).rc += 1;
@@ -140,12 +142,13 @@ pub unsafe extern "C" fn cirka_cycle_candidate(o: Obj) {
     }
 }
 
-/// At exit: collects, then releases the references to the surviving roots.
+/// At exit: collects, then releases the references to the surviving roots
+/// (not while other threads run: the roots' objects may be in use).
 pub fn finish() {
-    // SAFETY: single-threaded at exit.
+    // SAFETY: no other thread runs; the collector's state.
     unsafe {
         let s = STATE.get();
-        if !s.enabled {
+        if !s.enabled || crate::thread::running() > 0 {
             return;
         }
         collect(s);
@@ -176,7 +179,7 @@ unsafe fn each_child(o: Obj, mut f: impl FnMut(Obj)) {
         let (start, count) = ptr_fields(o, (*o).kind & !COLOR, (*o).nptr);
         for i in start..start + count {
             let c = *word(o, i) as Obj;
-            if !c.is_null() && (color(c) != 0 || (*c).rc > 0) {
+            if !c.is_null() && (color(c) != 0 || object::rc(c) > 0) {
                 f(c);
             }
         }
@@ -284,7 +287,7 @@ mod tests {
 
     fn frees() -> u64 {
         // SAFETY: the test lock is held.
-        unsafe { crate::alloc::STATS.get().frees }
+        unsafe { crate::alloc::stats().frees }
     }
 
     fn state() -> State {

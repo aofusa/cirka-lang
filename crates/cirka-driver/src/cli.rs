@@ -6,7 +6,7 @@
 //! <tool> run [flags] FILE [-- args...]
 //! <tool> check [flags] FILE
 //! <tool> test [flags] [--filter=S] FILE   (frontends with tests in sources)
-//! flags: -O0|-O1|-O2  --release (= -O2)  --runtime=release|debug
+//! flags: -O0|-O1|-O2  --release (= -O2)  --runtime=release|debug|tsan
 //!        --dump=core,core-opt,mir,mir-opt,llvm (+ frontend stages)  --build-dir=DIR
 //!        --emit=llvm|exe  -l<lib> / -L<dir> (passed to the linker)
 //!        --NAME=VALUE (other options, checked by the frontend)
@@ -76,6 +76,10 @@ pub fn parse_args(args: &[String]) -> Result<Args, String> {
             }
             "--runtime=debug" => {
                 opts.runtime = RuntimeKind::Debug;
+                runtime_set = true;
+            }
+            "--runtime=tsan" => {
+                opts.runtime = RuntimeKind::Tsan;
                 runtime_set = true;
             }
             s if command == Command::Test && s.starts_with("--filter=") => {
@@ -390,6 +394,8 @@ mod tests {
         assert_eq!(a.opts.tests, SourceTests::Run);
         let a = args("test --runtime=release Main.cirka").unwrap();
         assert_eq!(a.opts.runtime, RuntimeKind::Release);
+        let a = args("run --runtime=tsan Main.cirka").unwrap();
+        assert_eq!(a.opts.runtime, RuntimeKind::Tsan);
         assert_eq!(
             args("check Main.cirka").unwrap().opts.tests,
             SourceTests::Check

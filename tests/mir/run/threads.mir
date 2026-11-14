@@ -1,0 +1,295 @@
+// skip-backend: interp
+// tsan: 1
+// Threads (FEAT-0045, 05-runtime.md §9): a counter in an MVar bumped by
+// four threads, a channel, a shared thunk evaluated once, a counter in an
+// IORef updated by compare-and-swap, and a long list summed by several
+// threads at once (shared marking, atomic counts).
+type Int { I = 0 { v: i64 } }
+type List { Nil = 0 {}, Cons = 1 { head: ptr, tail: ptr } }
+extern fn cirka_write_i64(i64) -> void
+extern fn cirka_write_char(i64) -> void
+extern fn cirka_thread_spawn(ptr) -> ptr
+extern fn cirka_thread_join(ptr) -> ptr
+extern fn cirka_mvar_new(ptr) -> ptr
+extern fn cirka_mvar_take(ptr) -> ptr
+extern fn cirka_mvar_put(ptr, ptr) -> i64
+extern fn cirka_chan_new() -> ptr
+extern fn cirka_chan_send(ptr, ptr) -> i64
+extern fn cirka_chan_recv(ptr) -> ptr
+extern fn cirka_mutvar_new(ptr) -> ptr
+extern fn cirka_mutvar_read(ptr) -> ptr
+extern fn cirka_mutvar_cas(ptr, ptr, ptr) -> i64
+
+fn say(n: i64) -> i64 {
+entry:
+  let _ = extern cirka_write_i64(n)
+  let _ = extern cirka_write_char(10)
+  ret 0
+}
+
+// Takes the counter out of `m` and puts it back incremented, `k` times.
+fn bump(m: ptr @owned, k: i64, tok: ptr @owned) -> ptr {
+entry:
+  drop tok
+  jump loop(k)
+loop(i: i64):
+  switch i { 0 => done, default => step }
+done:
+  drop m
+  let r = alloc Int.I(k)
+  ret r
+step:
+  let c = extern cirka_mvar_take(m)
+  let v = proj c Int.I.v
+  drop c
+  let v1 = prim add(v, 1)
+  let c1 = alloc Int.I(v1)
+  let _ = extern cirka_mvar_put(m, c1)
+  drop c1
+  let i1 = prim sub(i, 1)
+  jump loop(i1)
+}
+
+// Sends 1..n to the channel.
+fn produce(ch: ptr @owned, n: i64, tok: ptr @owned) -> ptr {
+entry:
+  drop tok
+  jump loop(1)
+loop(i: i64):
+  let c = prim gt(i, n)
+  switch c { 1 => done, default => step }
+done:
+  drop ch
+  let r = alloc Int.I(n)
+  ret r
+step:
+  let b = alloc Int.I(i)
+  let _ = extern cirka_chan_send(ch, b)
+  drop b
+  let i1 = prim add(i, 1)
+  jump loop(i1)
+}
+
+// The thunk's code: prints once, whichever thread evaluates it.
+fn expensive(x: ptr @owned) -> ptr {
+entry:
+  let v = proj x Int.I.v
+  drop x
+  let _ = call say(999)
+  let w = prim mul(v, v)
+  let r = alloc Int.I(w)
+  ret r
+}
+
+// Forces the shared thunk and returns its value.
+fn use_thunk(t: ptr @owned, tok: ptr @owned) -> ptr {
+entry:
+  drop tok
+  let v = force t
+  ret v
+}
+
+// Adds 1 to the counter in the reference `r`, `k` times, by
+// compare-and-swap.
+fn cas_bump(r: ptr @owned, k: i64, tok: ptr @owned) -> ptr {
+entry:
+  drop tok
+  jump loop(k)
+loop(i: i64):
+  switch i { 0 => done, default => step }
+done:
+  drop r
+  let z = alloc Int.I(k)
+  ret z
+step:
+  let old = extern cirka_mutvar_read(r)
+  let v = proj old Int.I.v
+  let v1 = prim add(v, 1)
+  let new = alloc Int.I(v1)
+  let ok = extern cirka_mutvar_cas(r, old, new)
+  drop old
+  drop new
+  switch ok { 1 => next, default => again }
+again:
+  jump loop(i)
+next:
+  let i1 = prim sub(i, 1)
+  jump loop(i1)
+}
+
+fn range(i: i64, n: i64) -> ptr {
+entry:
+  let nil = alloc List.Nil()
+  jump loop(n, nil)
+loop(j: i64, acc: ptr):
+  let c = prim lt(j, i)
+  switch c { 1 => done, default => step }
+done:
+  ret acc
+step:
+  let b = alloc Int.I(j)
+  let acc1 = alloc List.Cons(b, acc)
+  let j1 = prim sub(j, 1)
+  jump loop(j1, acc1)
+}
+
+fn sum(xs: ptr @borrowed, acc: i64) -> i64 {
+entry:
+  switch xs { List.Nil => nil, List.Cons => cons }
+nil:
+  ret acc
+cons:
+  let h = proj xs List.Cons.head
+  let t = proj xs List.Cons.tail
+  let v = proj h Int.I.v
+  let acc2 = prim add(acc, v)
+  tailcall sum(t, acc2)
+}
+
+fn sum_list(xs: ptr @owned, tok: ptr @owned) -> ptr {
+entry:
+  drop tok
+  let s = call sum(xs, 0)
+  drop xs
+  let r = alloc Int.I(s)
+  ret r
+}
+
+fn join_value(h: ptr @owned) -> i64 {
+entry:
+  let r = extern cirka_thread_join(h)
+  drop h
+  let v = proj r Int.I.v
+  drop r
+  ret v
+}
+
+fn main() -> i64 {
+entry:
+  // MVar counter: 4 threads x 1000 increments.
+  let z = alloc Int.I(0)
+  let m = extern cirka_mvar_new(z)
+  drop z
+  dup m
+  let b1 = mkclosure bump(m, 1000)
+  dup m
+  let b2 = mkclosure bump(m, 1000)
+  dup m
+  let b3 = mkclosure bump(m, 1000)
+  dup m
+  let b4 = mkclosure bump(m, 1000)
+  let h1 = extern cirka_thread_spawn(b1)
+  let h2 = extern cirka_thread_spawn(b2)
+  let h3 = extern cirka_thread_spawn(b3)
+  let h4 = extern cirka_thread_spawn(b4)
+  drop b1
+  drop b2
+  drop b3
+  drop b4
+  // Channel: a producer of 1..1000.
+  let ch = extern cirka_chan_new()
+  dup ch
+  let p = mkclosure produce(ch, 1000)
+  let hp = extern cirka_thread_spawn(p)
+  drop p
+  // A shared thunk forced by three threads.
+  let x = alloc Int.I(12)
+  let t = mkthunk expensive(x)
+  dup t
+  let u1 = mkclosure use_thunk(t)
+  dup t
+  let u2 = mkclosure use_thunk(t)
+  dup t
+  let u3 = mkclosure use_thunk(t)
+  let ht1 = extern cirka_thread_spawn(u1)
+  let ht2 = extern cirka_thread_spawn(u2)
+  let ht3 = extern cirka_thread_spawn(u3)
+  drop u1
+  drop u2
+  drop u3
+  // IORef counter: 3 threads x 500 compare-and-swap increments.
+  let z2 = alloc Int.I(0)
+  let r = extern cirka_mutvar_new(z2)
+  drop z2
+  dup r
+  let c1 = mkclosure cas_bump(r, 500)
+  dup r
+  let c2 = mkclosure cas_bump(r, 500)
+  dup r
+  let c3 = mkclosure cas_bump(r, 500)
+  let hc1 = extern cirka_thread_spawn(c1)
+  let hc2 = extern cirka_thread_spawn(c2)
+  let hc3 = extern cirka_thread_spawn(c3)
+  drop c1
+  drop c2
+  drop c3
+  // A list of 100000 elements summed by two threads and by main.
+  let xs = call range(1, 100000)
+  dup xs
+  let s1 = mkclosure sum_list(xs)
+  dup xs
+  let s2 = mkclosure sum_list(xs)
+  let hs1 = extern cirka_thread_spawn(s1)
+  let hs2 = extern cirka_thread_spawn(s2)
+  drop s1
+  drop s2
+  let sm = call sum(xs, 0)
+  drop xs
+  // Receive the 1000 values of the channel.
+  jump recv(0, 0)
+recv(i: i64, acc: i64):
+  let c = prim lt(i, 1000)
+  switch c { 1 => more, default => joined }
+more:
+  let e = extern cirka_chan_recv(ch)
+  let ev = proj e Int.I.v
+  drop e
+  let acc1 = prim add(acc, ev)
+  let i1 = prim add(i, 1)
+  jump recv(i1, acc1)
+joined:
+  drop ch
+  let k1 = call join_value(h1)
+  let k2 = call join_value(h2)
+  let k3 = call join_value(h3)
+  let k4 = call join_value(h4)
+  let kp = call join_value(hp)
+  let v1 = call join_value(ht1)
+  let v2 = call join_value(ht2)
+  let v3 = call join_value(ht3)
+  let w1 = call join_value(hc1)
+  let w2 = call join_value(hc2)
+  let w3 = call join_value(hc3)
+  let q1 = call join_value(hs1)
+  let q2 = call join_value(hs2)
+  let total = extern cirka_mvar_take(m)
+  drop m
+  let tv = proj total Int.I.v
+  drop total
+  let _ = call say(tv)
+  let ks = prim add(k1, k2)
+  let ks2 = prim add(ks, k3)
+  let ks3 = prim add(ks2, k4)
+  let _ = call say(ks3)
+  let _ = call say(acc)
+  let _ = call say(kp)
+  let tf = force t
+  let tfv = proj tf Int.I.v
+  drop tf
+  let _ = call say(tfv)
+  let vs = prim add(v1, v2)
+  let vs2 = prim add(vs, v3)
+  let _ = call say(vs2)
+  let rv = extern cirka_mutvar_read(r)
+  drop r
+  let rvv = proj rv Int.I.v
+  drop rv
+  let _ = call say(rvv)
+  let ws = prim add(w1, w2)
+  let ws2 = prim add(ws, w3)
+  let _ = call say(ws2)
+  let _ = call say(sm)
+  let qs = prim add(q1, q2)
+  let _ = call say(qs)
+  ret 0
+}

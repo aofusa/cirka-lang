@@ -11,7 +11,7 @@
 //! count), `rc == 0`: immortal (static data, CAFs, regions).
 
 use crate::alloc::{dealloc, stat_free};
-use core::sync::atomic::{AtomicI32, Ordering};
+use core::sync::atomic::{AtomicI32, AtomicU8, Ordering};
 
 #[repr(C)]
 pub struct Header {
@@ -35,6 +35,28 @@ pub const BIGINT: u8 = 8;
 pub const FOREIGN: u8 = 9;
 pub const MUTVAR: u8 = 10;
 pub const MVAR: u8 = 11;
+
+/// The reference count of `o`. An atomic load (a plain `mov` on x86-64):
+/// another thread may be changing the count of a shared object meanwhile.
+///
+/// # Safety
+/// `o` must be a live object.
+#[inline(always)]
+pub unsafe fn rc(o: Obj) -> i32 {
+    // SAFETY: the count is only ever accessed as an aligned i32.
+    unsafe { AtomicI32::from_ptr(&raw mut (*o).rc).load(Ordering::Relaxed) }
+}
+
+/// The kind of `o`, read with Acquire: a thunk shared between threads
+/// becomes an indirection whose value word was written before (§9.5).
+///
+/// # Safety
+/// `o` must be a live object.
+#[inline(always)]
+pub unsafe fn kind_acquire(o: Obj) -> u8 {
+    // SAFETY: the kind is only ever accessed as a u8.
+    unsafe { AtomicU8::from_ptr(&raw mut (*o).kind).load(Ordering::Acquire) }
+}
 
 /// Word `i` after the header (offset 8 + 8*i).
 ///
@@ -85,17 +107,17 @@ fn unpack(h: u64) -> (Obj, u8, u8) {
 /// # Safety
 /// `c` must be a live object.
 #[inline(always)]
-unsafe fn dec_dies(c: Obj) -> bool {
-    // SAFETY: c is live.
+pub(crate) unsafe fn dec_dies(c: Obj) -> bool {
+    // SAFETY: c is live; a positive count is only touched by this thread.
     unsafe {
-        let rc = (*c).rc;
+        let rc = rc(c);
         if rc == 1 {
             true
         } else if rc > 1 {
             (*c).rc = rc - 1;
             false
         } else if rc < 0 {
-            AtomicI32::from_ptr(&mut (*c).rc).fetch_add(1, Ordering::AcqRel) == -1
+            AtomicI32::from_ptr(&raw mut (*c).rc).fetch_add(1, Ordering::AcqRel) == -1
         } else {
             false
         }
@@ -142,7 +164,26 @@ pub unsafe extern "C" fn cirka_free_object(o: Obj) {
 /// `x` must be a dead heap object that nothing refers to any more.
 pub(crate) unsafe fn release(x: Obj, kind: u8) {
     // SAFETY: guaranteed by the caller; a FOREIGN object stores its
-    // pointer in word 0 and its finalizer (or 0) in word 1.
+    // pointer in word 0 and its finalizer (or 0) in word 1; an MVAR object
+    // owns its synchronization box.
+    unsafe {
+        if kind >= FOREIGN {
+            release_resources(x, kind);
+        }
+        stat_free();
+        dealloc(x);
+    }
+}
+
+/// Runs the finalizer of a dead `FOREIGN` object, or frees the
+/// synchronization box of a dead `MVAR`: out of line, so that freeing
+/// other objects tests the kind once.
+///
+/// # Safety
+/// As for `release`.
+#[inline(never)]
+unsafe fn release_resources(x: Obj, kind: u8) {
+    // SAFETY: as for release.
     unsafe {
         if kind == FOREIGN {
             let fin = *word(x, 1);
@@ -150,9 +191,9 @@ pub(crate) unsafe fn release(x: Obj, kind: u8) {
                 let f: extern "C" fn(usize) = core::mem::transmute(fin);
                 f(*word(x, 0));
             }
+        } else if kind == MVAR {
+            crate::sync::release(x);
         }
-        stat_free();
-        dealloc(x);
     }
 }
 
@@ -165,11 +206,11 @@ pub unsafe extern "C" fn cirka_dup(o: Obj) {
     // SAFETY: o is live.
     unsafe {
         crate::debug::check_live(o, "dup");
-        let rc = (*o).rc;
+        let rc = rc(o);
         if rc > 0 {
             (*o).rc = rc + 1;
         } else if rc < 0 {
-            AtomicI32::from_ptr(&mut (*o).rc).fetch_sub(1, Ordering::Relaxed);
+            AtomicI32::from_ptr(&raw mut (*o).rc).fetch_sub(1, Ordering::Relaxed);
         }
     }
 }
@@ -247,7 +288,7 @@ pub unsafe extern "C" fn cirka_drop_reuse(o: Obj) -> Obj {
     // SAFETY: o is live and owned.
     unsafe {
         crate::debug::check_live(o, "drop_reuse");
-        if (*o).rc == 1 {
+        if rc(o) == 1 {
             cirka_drop_fields(o);
             o
         } else {
@@ -258,35 +299,107 @@ pub unsafe extern "C" fn cirka_drop_reuse(o: Obj) -> Obj {
 }
 
 /// Marks `o` and everything reachable from it as shared between threads
-/// (negative counts, atomic operations from now on).
+/// (negative counts, atomic operations from now on; 05-runtime.md §9.3).
+/// Objects already shared (negative) or immortal (zero) are not entered:
+/// what they reach is shared or immortal too. The work stack grows on the
+/// heap, so deep structures do not use the C stack.
+///
+/// The objects being marked are not yet visible to another thread, so the
+/// marking itself needs no atomic operations.
 ///
 /// # Safety
-/// `o` must be a live object.
+/// `o` must be a live object (or null).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn cirka_mark_shared(o: Obj) {
     // SAFETY: traversal of live objects; the mark is the sign of rc.
     unsafe {
-        let mut stack: [Obj; 64] = [core::ptr::null_mut(); 64];
-        let mut sp = 0;
-        stack[0] = o;
-        sp += 1;
-        while sp > 0 {
-            sp -= 1;
-            let x = stack[sp];
-            if x.is_null() || (*x).rc <= 0 {
+        let mut stack = Stack::new();
+        stack.push(o);
+        while let Some(x) = stack.pop() {
+            if x.is_null() {
                 continue;
             }
-            (*x).rc = -(*x).rc;
+            let n = rc(x);
+            if n <= 0 {
+                continue;
+            }
+            (*x).rc = -n;
+            if (*x).kind == MVAR {
+                crate::sync::for_each_value(x, |v| stack.push(v));
+                continue;
+            }
             let (start, count) = ptr_fields(x, (*x).kind, (*x).nptr);
             for i in start..start + count {
-                let c = *word(x, i) as Obj;
-                if sp < stack.len() {
-                    stack[sp] = c;
-                    sp += 1;
-                } else {
-                    cirka_mark_shared(c);
-                }
+                stack.push(*word(x, i) as Obj);
             }
+        }
+    }
+}
+
+/// A work stack of objects: 64 entries inline, then `malloc`.
+struct Stack {
+    inline: [Obj; 64],
+    heap: *mut Obj,
+    cap: usize,
+    len: usize,
+}
+
+impl Stack {
+    fn new() -> Stack {
+        Stack {
+            inline: [core::ptr::null_mut(); 64],
+            heap: core::ptr::null_mut(),
+            cap: 64,
+            len: 0,
+        }
+    }
+
+    fn slots(&mut self) -> *mut Obj {
+        if self.heap.is_null() {
+            self.inline.as_mut_ptr()
+        } else {
+            self.heap
+        }
+    }
+
+    fn push(&mut self, o: Obj) {
+        if self.len == self.cap {
+            let cap = self.cap * 2;
+            // SAFETY: a fresh buffer of `cap` entries receiving the `len`
+            // current ones; the old heap buffer (if any) is released.
+            unsafe {
+                let p = crate::sys::malloc(cap * 8) as *mut Obj;
+                if p.is_null() {
+                    crate::io::fatal(b"out of memory", 2);
+                }
+                core::ptr::copy_nonoverlapping(self.slots(), p, self.len);
+                if !self.heap.is_null() {
+                    crate::sys::free(self.heap as *mut core::ffi::c_void);
+                }
+                self.heap = p;
+            }
+            self.cap = cap;
+        }
+        // SAFETY: `len < cap` entries.
+        unsafe { *self.slots().add(self.len) = o };
+        self.len += 1;
+    }
+
+    fn pop(&mut self) -> Option<Obj> {
+        if self.len == 0 {
+            return None;
+        }
+        self.len -= 1;
+        // SAFETY: `len` was a filled entry.
+        Some(unsafe { *self.slots().add(self.len) })
+    }
+}
+
+impl Drop for Stack {
+    fn drop(&mut self) {
+        if !self.heap.is_null() {
+            // SAFETY: the buffer came from malloc.
+            unsafe { crate::sys::free(self.heap as *mut core::ffi::c_void) };
         }
     }
 }

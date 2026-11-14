@@ -1,0 +1,23 @@
+// Taking from an empty MVar that no other thread can fill waits forever:
+// the program ends with GHC's message (05-runtime.md §9.4, FEAT-0045).
+extern fn cirka_write_bytes(ptr) -> void
+extern fn cirka_mvar_new_empty() -> ptr
+extern fn cirka_mvar_take(ptr) -> ptr
+global box = mk_box
+
+fn mk_box() -> ptr {
+entry:
+  let m = extern cirka_mvar_new_empty()
+  ret m
+}
+
+fn main() -> i64 {
+entry:
+  let _ = extern cirka_write_bytes("before\n")
+  let g = global box
+  let m = force g
+  let v = extern cirka_mvar_take(m)
+  drop v
+  drop m
+  ret 0
+}

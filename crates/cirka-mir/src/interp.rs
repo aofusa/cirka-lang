@@ -87,6 +87,15 @@ pub struct RunResult {
 #[derive(Debug)]
 struct Fault(String);
 
+/// A synchronization operation that would wait forever (GHC's
+/// `BlockedIndefinitelyOnMVar`; the native runtime's message).
+const BLOCKED: &str = "thread blocked indefinitely in an MVar operation";
+
+/// Whether two values are the same object (`cirka_mutvar_cas`).
+fn same_ptr(a: Val, b: Val) -> bool {
+    matches!((a, b), (Val::P(x), Val::P(y)) if x == y)
+}
+
 enum Exit {
     Fault(Fault),
     Panic(String),
@@ -275,6 +284,14 @@ impl<'m> Interp<'m> {
             }
         }
         Ok(())
+    }
+
+    /// The synchronization object `v` (an `MVAR`).
+    fn sync_obj(&self, v: Val) -> R<u32> {
+        match v {
+            Val::P(p) if self.obj(p)?.kind == kind::MVAR => Ok(p),
+            _ => fault("expected an MVar or a channel"),
+        }
     }
 
     /// Frees an object's memory without touching its fields.
@@ -1519,6 +1536,78 @@ impl<'m> Interp<'m> {
                 self.drop_val(old)?;
                 Ok(unit)
             }
+            "cirka_mutvar_cas" => {
+                let Val::P(r) = a[0] else {
+                    return fault("expected a mutvar");
+                };
+                if !same_ptr(self.obj(r)?.fields[0], a[1]) {
+                    return Ok(Val::I(0));
+                }
+                self.dup(a[2])?;
+                let old = std::mem::replace(&mut self.obj_mut(r)?.fields[0], a[2]);
+                self.drop_val(old)?;
+                Ok(Val::I(1))
+            }
+            // Synchronization objects (05-runtime.md §9.4) with one thread:
+            // the fields are the values held (an MVar has 0 or 1, a channel
+            // is a FIFO). Waiting would wait forever, as in GHC.
+            "cirka_mvar_new" | "cirka_mvar_new_empty" | "cirka_chan_new" => {
+                let mut fields = vec![];
+                if name == "cirka_mvar_new" {
+                    self.dup(a[0])?;
+                    fields.push(a[0]);
+                }
+                let tag = u32::from(name == "cirka_chan_new");
+                Ok(Val::P(self.alloc(
+                    kind::MVAR,
+                    tag,
+                    fields,
+                    Payload::Con,
+                    16,
+                )))
+            }
+            "cirka_mvar_take" | "cirka_mvar_read" | "cirka_chan_recv" => {
+                let p = self.sync_obj(a[0])?;
+                if self.obj(p)?.fields.is_empty() {
+                    return Err(Exit::Panic(BLOCKED.into()));
+                }
+                if name == "cirka_mvar_read" {
+                    let v = self.obj(p)?.fields[0];
+                    self.dup(v)?;
+                    return Ok(v);
+                }
+                Ok(self.obj_mut(p)?.fields.remove(0))
+            }
+            "cirka_mvar_try_take" | "cirka_chan_try_recv" => {
+                let p = self.sync_obj(a[0])?;
+                if self.obj(p)?.fields.is_empty() {
+                    self.dup(a[1])?;
+                    return Ok(a[1]);
+                }
+                Ok(self.obj_mut(p)?.fields.remove(0))
+            }
+            "cirka_mvar_put" | "cirka_mvar_try_put" | "cirka_chan_send" => {
+                let p = self.sync_obj(a[0])?;
+                if name != "cirka_chan_send" && !self.obj(p)?.fields.is_empty() {
+                    if name == "cirka_mvar_put" {
+                        return Err(Exit::Panic(BLOCKED.into()));
+                    }
+                    return Ok(Val::I(0));
+                }
+                self.dup(a[1])?;
+                self.obj_mut(p)?.fields.push(a[1]);
+                Ok(Val::I(i64::from(name == "cirka_mvar_try_put")))
+            }
+            "cirka_chan_len" => {
+                let p = self.sync_obj(a[0])?;
+                Ok(Val::I(self.obj(p)?.fields.len() as i64))
+            }
+            // The interpreter runs one thread (05-runtime.md §9.7).
+            "cirka_thread_spawn" | "cirka_thread_join" => Err(Exit::Panic(
+                "threads are not supported by the MIR interpreter".into(),
+            )),
+            "cirka_thread_id" | "cirka_cpu_count" => Ok(Val::I(1)),
+            "cirka_thread_yield" => Ok(Val::I(0)),
             "cirka_file_read" => {
                 let path = String::from_utf8_lossy(&self.bytes(a[0])?.clone()).into_owned();
                 match std::fs::read(&path) {
