@@ -356,15 +356,20 @@ fn exit_sequence(code: i32) -> ! {
             io::ewrite_u64(s.array_copies);
             io::ewrite(b"\n");
         }
-        if cfg!(feature = "debug-rt")
-            && matches!(sys::env(c"CIRKA_LEAK_CHECK"), Some(b"1"))
-            && crate::thread::running() == 0
-        {
-            let n = crate::debug::leak_report(caf_roots(), true);
-            if n > 0 {
-                io::ewrite(b"cirka: ");
-                io::ewrite_u64(n);
-                io::ewrite(b" objects leaked\n");
+        if cfg!(feature = "debug-rt") && matches!(sys::env(c"CIRKA_LEAK_CHECK"), Some(b"1")) {
+            // Threads that still run may use any object: no check then.
+            let running = crate::thread::running();
+            if running == 0 {
+                let n = crate::debug::leak_report(caf_roots(), true);
+                if n > 0 {
+                    io::ewrite(b"cirka: ");
+                    io::ewrite_u64(n);
+                    io::ewrite(b" objects leaked\n");
+                }
+            } else {
+                io::ewrite(b"cirka: leak check skipped: ");
+                io::ewrite_u64(running as u64);
+                io::ewrite(b" threads still running\n");
             }
         }
         sys::_exit(code)

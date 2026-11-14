@@ -1,0 +1,28 @@
+// A thread still runs when `main` ends: the process ends without waiting
+// for it, and the leak check, which cannot run then, says it was skipped
+// (05-runtime.md §9.1).
+type Unit { U = 0 {} }
+extern fn cirka_thread_spawn(ptr) -> ptr
+extern fn cirka_mvar_new_empty() -> ptr
+extern fn cirka_mvar_take(ptr) -> ptr
+extern fn cirka_write_bytes(ptr) -> void
+
+// Waits for a value that never comes.
+fn wait(m: ptr @owned, tok: ptr @owned) -> ptr {
+entry:
+  drop tok
+  let v = extern cirka_mvar_take(m)
+  drop m
+  ret v
+}
+
+fn main() -> i64 {
+entry:
+  let m = extern cirka_mvar_new_empty()
+  let w = mkclosure wait(m)
+  let h = extern cirka_thread_spawn(w)
+  drop w
+  drop h
+  let _ = extern cirka_write_bytes("main ends\n")
+  ret 0
+}

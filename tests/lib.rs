@@ -43,7 +43,9 @@ fn check_limits(c: &Case, name: &str, stderr: &str) -> Result<(), String> {
 
 /// Builds `m` natively with the debug and release runtimes, runs it and
 /// compares stdout, exit code and allocation counts with the interpreter's
-/// `reference` result (when `interp_ok`), checking for leaks.
+/// `reference` result (when `interp_ok`; otherwise the stdout and exit code
+/// of `reference`, and as many objects left unfreed as on the debug runtime,
+/// whose leak check passed), checking for leaks.
 pub fn check_native(
     cfg: &cirka_driver::Config,
     c: &Case,
@@ -85,6 +87,7 @@ pub fn check_native_with(
         runs.push((RuntimeKind::Tsan, "tsan", None));
         runs.push((RuntimeKind::Tsan, "tsan-system", Some("system")));
     }
+    let mut native_held: Option<u64> = None;
     for (rt, name, alloc) in runs {
         let exe = work.join(format!("prog-{name}"));
         let opts = cirka_driver::native::NativeOptions {
@@ -136,17 +139,32 @@ pub fn check_native_with(
         if !leak_check {
             continue;
         }
-        if out.stderr.contains("objects leaked") || out.stderr.contains("debug runtime") {
+        if out.stderr.contains("objects leaked")
+            || out.stderr.contains("debug runtime")
+            || out.stderr.contains("leak check skipped")
+        {
             return Outcome::Fail(format!("[{name}] runtime report:\n{}", out.stderr));
         }
-        match parse_stats(&out.stderr) {
-            Some((a, f)) if !interp_ok && a == f => {}
-            Some((a, f)) if (a, f) == (reference.stats.allocs, reference.stats.frees) => {}
-            s => {
-                return Outcome::Fail(format!(
-                    "[{name}] allocs/frees {s:?} differ from the interpreter ({}, {})",
-                    reference.stats.allocs, reference.stats.frees
-                ));
+        match (parse_stats(&out.stderr), native_held) {
+            // Without the interpreter, the first run (the debug runtime,
+            // whose leak check passed) is the reference: what it did not
+            // free is held by CAFs. The other runs must leave as many
+            // objects (threads may make the counts themselves vary).
+            (Some((a, f)), None) if !interp_ok && rt == RuntimeKind::Debug && a >= f => {
+                native_held = Some(a - f);
+            }
+            (Some((a, f)), Some(held)) if !interp_ok && a >= f && a - f == held => {}
+            (Some((a, f)), _)
+                if interp_ok && (a, f) == (reference.stats.allocs, reference.stats.frees) => {}
+            (s, held) => {
+                let want = match held {
+                    Some(h) => format!("{h} objects left, as on the debug runtime"),
+                    None => format!(
+                        "the interpreter's ({}, {})",
+                        reference.stats.allocs, reference.stats.frees
+                    ),
+                };
+                return Outcome::Fail(format!("[{name}] allocs/frees {s:?}: expected {want}"));
             }
         }
     }

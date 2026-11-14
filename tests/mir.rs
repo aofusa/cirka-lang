@@ -152,6 +152,38 @@ fn tsan_reports_a_data_race() {
     assert!(!out.status.success());
 }
 
+/// A thread still running at the end of `main` does not keep the process
+/// alive, and the leak check of the debug runtime says that it could not
+/// run (`tests/mir/exit/running_thread.mir`, 05-runtime.md §9.1).
+#[test]
+fn leak_check_skipped_with_running_threads() {
+    use cirka_driver::native::{self, NativeOptions, RuntimeKind};
+    cirka_testkit::init();
+    native::ensure_runtime_built().unwrap();
+    let cfg = cirka_driver::Config::from_env();
+    let src =
+        std::fs::read_to_string(repo_root().join("tests/mir/exit/running_thread.mir")).unwrap();
+    let m = cirka_mir::parse(FileId(0), &src).expect("parse");
+    let work = cirka_testkit::work_dir("mir-exit", "running_thread");
+    let exe = work.join("prog");
+    let opts = NativeOptions {
+        runtime: RuntimeKind::Debug,
+        ..Default::default()
+    };
+    native::build_mir(&cfg, &m, &work, &exe, &opts).unwrap();
+    let out = std::process::Command::new(&exe)
+        .env("CIRKA_LEAK_CHECK", "1")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "status {:?}:\n{stderr}", out.status);
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "main ends\n");
+    assert!(
+        stderr.contains("cirka: leak check skipped: 1 threads still running"),
+        "{stderr}"
+    );
+}
+
 /// The hand-written binary-trees benchmark (FEAT-0016) stays valid: it
 /// verifies, runs leak-free in the interpreter at a small depth and matches
 /// the Rust baseline's output.
