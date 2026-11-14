@@ -25,6 +25,7 @@
 | 契約の実行時検査 | `tests/cirkalang/run/contracts/` | CirkaLang | `--contracts=check` で違反時に期待どおり停止 |
 | メモリ | 実行テスト全体 | 全部 | `CIRKA_ALLOC=system` + valgrind でエラー 0 |
 | 並行性 | `tests/mir/run/` (`tsan: 1`)、`tests/mir/tsan/`、`tests/cirkalang/run/threads/` | 共通基盤 (FEAT-0045)、CirkaLang (v0.0.5〜) | ThreadSanitizer でエラーなし (TSan が動く環境で。下記) |
+| 非同期 I/O | `tests/mir/run/evloop.mir` (`tsan: 1`)・`tests/mir/run/echo_10k.mir`、ランタイムの単体テスト | 共通基盤 (FEAT-0046) | 1 つのループで 1 万の接続を同時に開いてエコーし、リーク 0。ループバックだけを使い、外の名前解決はしない (05-runtime.md §10.3) |
 | Vulkan compute | `tests/cirkalang/run/v0.0.6/vulkan/` | CirkaLang (v0.0.6〜) | lavapipe 上で CPU 計算と一致、検証レイヤーのエラー・警告 0 (Vulkan がなければスキップ) |
 | 遠隔 GUI (任意) | `scripts/remote.sh` で手動実行 | macOS / Windows | CI には含めない。結果は `docs/artifacts/remote/` に置き、結論をチケットに記録 (§7) |
 | 性能 | `bench/` | 全部 | hyperfine で比較し記録 |

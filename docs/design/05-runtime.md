@@ -82,6 +82,13 @@ void*   cirka_mvar_try_take(void* m, void* d);   // 空なら d (dup) を返す�
 void*   cirka_chan_new(void);                    // ほかに send / recv / try_recv(c, d) / chan_len
 int64_t cirka_mutvar_cas(void* r, void* old, void* new); // 値が old なら new に置き換えて 1
 
+// イベントループとソケット (§10、FEAT-0046)。ポインタ引数は借用、失敗は -errno
+void*   cirka_loop_new(void);                    // 呼んだスレッドのループ。ほかに watch / unwatch / events / timer / cancel / run / stop
+void*   cirka_loop_current(void);                // run 中のループ (コールバックはループを捕捉せずにこれで得る)
+void*   cirka_loop_remote(void* l);              // 受け口。cirka_remote_post(rm, io) はどのスレッドからでも呼べる
+int64_t cirka_loop_blocking(void* l, void* work, void* done); // work をスレッドプールで実行し、done r をループで呼ぶ
+int64_t cirka_net_listen(void* host, int64_t port, int64_t backlog); // ほかに accept / connect / send / resolve …
+
 // 実行時エラー
 _Noreturn void cirka_panic(const char* msg, size_t len);   // error / パターン失敗 / <<loop>>
 
@@ -253,3 +260,79 @@ OS のスレッド (pthread) を 1 対 1 で使う。グリーンスレッドは
   `scripts/ci.sh` は TSan が動かなければ失敗する。
 - MIR インタプリタはスレッドを扱わない (`spawn` は実行時エラー)。`MVar`・チャネルは単一スレッドの意味で実装し、
   待つことになれば `thread blocked indefinitely in an MVar operation` で終了する (GHC と同じ文言)。
+
+## 10. 非同期 I/O (FEAT-0046)
+
+多数の接続は、スレッドごとのイベントループ (epoll) とコールバックで扱う (ADR-087)。グリーンスレッドも言語の `async` も持たず、
+ライブラリがコールバックの上に継続渡しの API を作る (CirkaLang は FEAT-0241)。コールバックは IO の動作 (トークンを 1 つ取るクロージャ) で、
+結果は捨てる。ポインタ引数は借用で、ループが dup して持ち、呼ぶときに手放す。
+
+### 10.1 イベントループ
+
+- `cirka_loop_new()`: ループ (kind `FOREIGN`。語 0 は `malloc` した状態、語 1 は後始末の関数)。作ったスレッドが持ち主で、
+  `watch`・`unwatch`・`events`・`timer`・`cancel`・`blocking`・`run`・`stop`・`remote` は持ち主のスレッドだけが呼べる (ほかのスレッドから呼ぶと
+  プログラムを終了する)。ループに入れたコールバックは共有マークしない (単一スレッドのサーバが RC のアトミック操作と再利用の喪失を払わない)。
+  そのためループのオブジェクト自体をほかのスレッドへ渡してはならない (CirkaLang では `Send` でない型にする。FEAT-0240)。
+- `cirka_loop_current()`: このスレッドで `cirka_loop_run` が動いているループ (入れ子なら内側。新しい参照)。なければプログラムを終了する。
+  コールバックはループを捕捉せずにこれで得る: ループはコールバックを持つので、捕捉すると参照の循環になり、ループを捨てても解放されない。
+- `cirka_loop_watch(l, fd, events, cb)`: `fd` が `events` (1 読める、2 書ける) になったら 1 度だけ `cb` を呼ぶ (epoll の `EPOLLONESHOT`)。
+  続けて待つならコールバックの中でまた `watch` する。待ちは fd ごとに 1 つで、2 度目は前の待ちを置き換える (前のコールバックは呼ばずに解放)。
+  起きた事象はコールバックの中で `cirka_loop_events(l)` で読む (1 読める、2 書ける、4 エラーか切断)。エラーと切断は待っていた事象も
+  立てて知らせる (読み書きが失敗か終わりを返すので、コールバックはふだんどおり読み書きすればよい。libuv と同じ)。0 か `-errno`。
+- epoll のデータには fd と、`watch`・`unwatch` のたびに増える世代を入れる。1 回の `epoll_wait` で得た事象のうち、コールバックが先に取り消した
+  (閉じて同じ番号が再利用された) fd の古い事象は世代が合わないので捨てる。閉じて番号が再利用された fd をまた `watch` すると、
+  `EPOLL_CTL_MOD` が `ENOENT` で失敗するので `EPOLL_CTL_ADD` でやり直す。
+- `cirka_loop_unwatch(l, fd)`: 待ちを取り消す (コールバックは呼ばずに解放、epoll から外す)。待っている fd を閉じる前に呼ぶ:
+  閉じた fd は epoll から黙って消え、待ちが残るとループが終わらない。
+- `cirka_loop_timer(l, ms, cb)`: `ms` ミリ秒後に `cb` を呼ぶ。番号 (正) を返し、`cirka_loop_cancel(l, id)` で取り消せる (取り消したら 1)。
+  時刻は `CLOCK_MONOTONIC`。タイマーは番号の表 (スラブ。番号に世代を含むので、使い回した要素を古い番号で取り消すことはない) と
+  期限の二分ヒープで持ち、取り消しは O(1) (ヒープに残った要素は取り出すときに飛ばす)。期限が同じなら作った順に呼ぶ。
+- `cirka_loop_blocking(l, work, done)`: ブロックする処理 `work` (IO の動作) をランタイムのスレッドプールで実行し、結果 `r` について
+  `done r` (IO の動作) をループのスレッドで呼ぶ。`work`・`done`・`r` はスレッドを越えるので共有マークする。
+  プールは最初の `blocking` で作る (`CIRKA_POOL_THREADS`、既定は CPU 数。プロセスはここで MT になる)。
+  待ち行列に入った仕事から終わるまでを「動いているスレッド」に数える (終了時のリーク検査は、動いているスレッドがあれば行わない)。
+  結果を受け口に入れた後の仕事は §9.1 の終わりかけのスレッドと同じに数え、プロセスの終了はそれを待つ。
+  プールのスレッドは終わらないので、仕事を 1 つ終えるたびに確保の統計を合計に足す。
+- `cirka_loop_remote(l)`: ループの受け口 (kind `FOREIGN`)。`cirka_remote_post(rm, cb)` はどのスレッドからでも呼べ、`cb` を共有マークして
+  受け口の待ち行列 (pthread の mutex) に入れ、eventfd でループを起こす。ループがもうなければ `-EPIPE`。受け口の状態はループと別に数え
+  (アトミックな参照数)、ループ・受け口のオブジェクト・実行中の `blocking` の仕事が持つ。
+  受け口のオブジェクトが 1 つでも生きている間は、まだ post が来うるのでループは終わらない (チャネルの送り手と同じ。libuv の async
+  ハンドルにあたる)。最後の受け口が解放されるとループを起こし、ループは待ち行列を実行してから終わりを判断する
+  (受け口の数を待ち行列より先に読むので、解放の前の post を取りこぼさない)。ループのスレッド自身が受け口を持ち続けると
+  ループは終わらないので、受け口はほかのスレッドへ渡して手放す。
+- `cirka_loop_run(l)`: 1 回の繰り返し (ターン) で、受け口の待ち行列 (post と `blocking` の完了)、期限の来たタイマー (その時点のもの。
+  コールバックが足したタイマーは期限が来ていても次のターン)、epoll の事象 (最大 256) の順にコールバックを呼ぶ。待ち・タイマー・
+  待ち行列・実行中の `blocking`・受け口がなくなると 0 を、`cirka_loop_stop(l)` が呼ばれたらそのターンの終わりで 1 を返す
+  (残った待ちとタイマーは次の `run` に引き継ぐ)。同じループの入れ子の `run` はプログラムを終了する。
+- ループのオブジェクトが解放されると、待ちとタイマーのコールバックを呼ばずに解放し (持ち主以外のスレッドで解放されたときは、
+  データ競合を避けるため解放せずリークさせる)、受け口を閉じて待ち行列の動作 (共有済み) を解放し、epoll を閉じる。
+
+### 10.2 ソケットと記述子
+
+- TCP (IPv4・IPv6 の数値アドレス。空のホストは IPv4 の任意のアドレス): `cirka_net_listen(host, port, backlog)`・`cirka_net_accept(fd)`・
+  `cirka_net_connect(host, port)`・`cirka_net_connect_result(fd)`・`cirka_net_local_port(fd)`・`cirka_net_set_nodelay(fd, on)`・
+  `cirka_net_shutdown(fd, how)`。作るソケットは非ブロッキングで close-on-exec、待ち受けは `SO_REUSEADDR` (`backlog` が 0 以下なら 4096。
+  カーネルの `somaxconn` で切り詰められる)。失敗は `-errno` (Std の規約、FEAT-0213)。`accept` は待っている接続がなければ `-EAGAIN`。
+  `connect` は完了を待たずに fd を返し (`EINPROGRESS`)、書けるようになったら `connect_result` で結果 (0 か `-errno`) を読む。
+- 名前解決 `cirka_net_resolve(host)` (`getaddrinfo` の最初のアドレスの文字列。分からなければ空で `errno` が `ENOENT`) はブロックするので
+  `blocking` の中で呼ぶ。
+- 読み書き: `cirka_fd_read(fd, max)` は非ブロッキングの記述子でデータがなければ空を返し `errno` が `EAGAIN` (11)、終わりなら空で `errno` が 0。
+  `cirka_fd_write_from(fd, data, off)` は `data` の `off` バイト目から 1 回の `write` で書けるだけ書き、書いたバイト数か `-errno` を返す。
+  ソケットには `cirka_net_send(fd, data, off)` (同じ意味の `send(MSG_NOSIGNAL)`) を使う: 相手が閉じた接続への書き込みは `SIGPIPE` で
+  プロセスを終わらせず `-EPIPE` か `-ECONNRESET` を返す。ランタイムは `SIGPIPE` の扱いを変えない (閉じたパイプへ書いた CLI は C の
+  プログラムと同じく黙って終わる)。ソケットかどうかは型で分かるので、`write` で試して `ENOTSOCK` なら `send` するような余分な
+  システムコールは払わない。`cirka_fd_set_nonblocking(fd, on)`。`cirka_strerror` はネットワークの errno の文言も返す。
+- `cirka_fd_limit_raise()`: `RLIMIT_NOFILE` の soft を hard (最大 2^20) まで上げ、新しい soft を返す (Docker のコンテナの既定は soft 1024)。
+
+### 10.3 テストと計測
+
+- ランタイムの単体テスト (`evloop.rs`・`net.rs`): タイマーの順序と取り消し、停止と再開、パイプの待ちと切断の知らせ、閉じて再利用された
+  記述子、別スレッドからの post、スレッドプール、ループバックのエコー、アドレスとエラー。
+- `tests/mir/run/evloop.mir` (`tsan: 1`): タイマー・停止と再開・別スレッドからの post (受け口が生きている間ループが待つ)・
+  プールの仕事を、TSan の構成でも実行する。
+- `tests/mir/run/echo_10k.mir`: 1 つのスレッドの 1 つのループで、エコーサーバと 1 万のクライアントが 1 万ずつのソケットを同時に開く
+  (FEAT-0046 の受け入れ条件)。接続中のクライアントは 256 まで (待ち受けのキューは `somaxconn` = 4096)。最後のクライアントがエコーを
+  受け取るとサーバが待ちを取り消してソケットを閉じ、クライアントは終わりを見て閉じる。サーバが先に閉じるので TIME_WAIT はサーバ側の
+  4 つ組に残り、続けて実行してもクライアントのエフェメラルポート (既定 28232 個) を使い切らない。
+  i5-3320M で 1 回約 1.1 秒 (接続・エコー・切断が 1 万ずつ、確保 110085 回)、最大 RSS 約 3 MB。
+- MIR インタプリタはイベントループとソケットを扱わない (MIR のテストは `skip-backend: interp`)。
