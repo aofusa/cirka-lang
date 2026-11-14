@@ -494,7 +494,7 @@ impl Parser {
                 let sp = self.span();
                 self.errs.push(
                     Diagnostic::error(format!(
-                        "`{}` is not supported in CirkaLang v0.0.3",
+                        "`{}` is not supported in CirkaLang v0.0.4",
                         k.name()
                     ))
                     .with_code("E1004")

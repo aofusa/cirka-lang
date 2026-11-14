@@ -3,6 +3,53 @@
 CirkaLang の版ごとの変更を記録する。プロトタイプ (v0.0.x) の間は版間の互換性を保証しない
 (`cirka.toml` の `edition` で対象版を明示する)。aCHC は版を持たないので記録しない。
 
+## CirkaLang v0.0.4
+
+証明と検証: 関数が止まること、等式、部分集合型と契約を、型と SMT (Z3) で示せる。証明は実行時に消え、示した事実で境界検査などの実行時の検査を除ける。
+仕様は [docs/design/cirkalang/spec-v0.0.4.md](docs/design/cirkalang/spec-v0.0.4.md) (v0.0.3 からの差分)。`cirka.toml` の `edition` は `"0.0.4"`。
+
+### 追加
+
+- 全域性: `total` / `covering` / `partial` の宣言、構造的な順序と size-change 原理による終了性、尺度 `decreasing e` と `Int` / `Nat` の引数の自動の尺度 (Z3)。
+  型の中で使う関数は全域でなければならない。診断 E0502 / E0504 / E0505 (FEAT-0230)。
+- 等式と証明: 命題等価 `x = y` と `Refl`、`sym` / `trans` / `cong`、`rewrite p in e`、`with e of alts`、`Void` / `Dec` / `So`。
+  証明は全域で (E0506)、実行時に消える。`core` の `Data.Nat` / `Data.Fin` / `Data.Vect` (FEAT-0231)。
+- 部分集合型 `{x : A | p}`: 証明義務を評価と Z3 で示す (反例付きの E0501、決まらないときは W0503)。経路の条件・束縛の部分集合型・
+  呼び出しの結果の部分集合型 (レコードのフィールドを含む)・配列と文字列の大きさが 0 以上であることを仮定に使う。
+  `{x : A | p} -> B` は `B` でも `x` を使える (FEAT-0232, FEAT-0235)。
+- 契約: `requires` / `ensures` とデータ型の `invariant`。`--contracts=verify|check|off` (示せない義務を誤りにする / 実行時に検査する (W0507) / 調べない) (FEAT-0233)。
+- 証明による実行時検査の除去: `Data.Array.index` (境界検査)、`divNZ` / `modNZ` (ゼロ除算の検査)、`unreachable`。
+  Core に `array_get_unchecked` / `quot_nz` / `rem_nz` と到達しない `panic`、MIR に検査のない除算と `unreachable` (FEAT-0234)。
+- 検証済みのサンプル: `tests/cirkalang/verify/pass/sample_sort.cirka` (長さを型に持つ挿入ソートと、不変条件で整列を示す 3 要素のソーティングネットワーク)、
+  `sample_array.cirka` (境界検査のない総和・内積・スライド窓)、`sample_parser.cirka` (添字の範囲を契約で保つ再帰下降の構文解析) (FEAT-0235)。
+- ベンチ: `bench/binary-search` (契約で境界を示した二分探索)。
+- 修正: トレイトのメソッドを使う不変条件の実行時検査の ICE と誤った W1231 (BUG-0017)、検証が `Int` のラップを無視していた (BUG-0018)、
+  単一化が作るメタ変数による ICE (BUG-0019)。
+
+### 変更 (互換性のない変更)
+
+- `edition = "0.0.3"` のパッケージは受け付けない (`"0.0.4"` に変える)。
+- `decreasing` `rewrite` `with` `requires` `ensures` `invariant` は予約語になった。
+- Prelude に証明と検査の名前 (`So` `Oh` `Void` `Dec` `Yes` `No` `Refl` `sym` `trans` `cong` `subsetOf` `divNZ` `modNZ` `unreachable` など) が加わった。
+- `total` / `covering` / `partial` は使えるようになった (v0.0.3 までは将来用で E1004)。`total` と宣言した関数は、止まることを示せなければ誤り。`mutual` は引き続き将来用。
+
+### 性能 ([bench-report.md](docs/design/bench-report.md) の「CirkaLang v0.0.4」)
+
+- 証明は実行時に消える: 証明・部分集合型・契約のあるプログラムとないプログラムで MIR が一致する (`cirkalang_proofs_are_erased`、`cirkalang_contracts_modes`)。
+  証明を使わない既存の 7 題材は v0.0.3 と同じ LLVM IR を生成する (binary-trees は静的な定数の名前だけが違う)。G3 の達成状況は v0.0.3 のまま。
+- 証明による検査の除去: `bench/binary-search` で `search` の境界検査がなくなり、`--contracts=off` より 4〜6% 速い (0.344 s / 0.364 s)。Rust は 0.237 s (1.47 倍)。
+- 検証の時間: 検証済みサンプル 3 本の `cirka check` は 0.4〜1.0 s (検証なしは 0.2〜0.25 s)。
+
+### 既知の制限
+
+- 部分集合型は一階の位置だけで照合する。関数の型の中 (`(Int -> {r : Int | r > 0}) -> …`) の部分集合型は検査しない。
+- `LType` の値・トレイトのメソッドの部分集合型は扱わない。`check` では、述語の中で多重度 0 の変数を使う義務は実行時に検査できない。
+- 型の中のトレイトのメソッドや多相なリテラル (`So (d /= 0)`) は、インスタンスが決まるまで簡約されないことがある。単相の関数を使う。
+- `let` で束縛した呼び出しの結果の部分集合型を仮定にできるのは、その関数が `total` のときだけ。
+- `Int` はラップするので、範囲の証明には上限・下限の条件が要る (`n + 1 > n` は示せない)。乗算を含む非線形の義務は Z3 が決められないことがある (W0503。`verify` では実行時の検査になる)。
+- 述語の中の未定義の名前は暗黙の変数になり、E1210 (推論できない) と報告される。
+- タクティク・証明の対話的な構成はない (証明は項として書く)。効果・能力・セッション型は v0.0.7 で扱う。
+
 ## CirkaLang v0.0.3
 
 借用・リージョン・性能: 線形な値を手で受け渡さずに貸して使える。循環を含むグラフをリージョンで表せる。遅延の明示と `do` の構文の整理。

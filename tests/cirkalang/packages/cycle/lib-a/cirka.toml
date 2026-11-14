@@ -1,6 +1,6 @@
 [package]
 name = "lib-a"
-edition = "0.0.3"
+edition = "0.0.4"
 
 [dependencies]
 app = { path = "../app" }
