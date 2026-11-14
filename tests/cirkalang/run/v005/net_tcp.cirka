@@ -1,0 +1,216 @@
+-- skip-backend: interp
+-- TCP on the event loop (spec-v0.0.5.md §2.3): an echo server and 100
+-- clients at once on one loop, a megabyte through `sendAll`, timeouts
+-- that leave the socket usable, errors as values, names resolved on the
+-- pool, and a listener closed by `stopLoop` dropping its continuation.
+module Main
+
+import Std.Async
+import Std.Net
+import Std.Thread (MVar, newMVar, newEmptyMVar, takeMVar, putMVar)
+import Std.IO (IOError, MkIOError)
+import Data.String as S
+
+say : String -> IO ()
+say s = putStr (s ++ "\n")
+
+-- ---- echo: 100 clients ----
+
+-- Echoes until the end of the stream, then closes.
+echo : (1 s : TcpStream) -> IO ()
+echo s = recv s 4096 (\s, r => case r of
+  Ok d => if d == "" then close s else sendAll s d (\s, w => echo s)
+  Err e => close s)
+
+-- Accepts `n` connections, then closes the listener.
+serveN : Int -> (1 l : TcpListener) -> IO ()
+serveN n l = if n == 0 then closeListener l else accept l (\l, r => case r of
+  Ok s => do
+    echo s
+    serveN (n - 1) l
+  Err e => do
+    say ("accept failed: " ++ show e)
+    closeListener l)
+
+-- Reads until the end of the stream and passes all of it to `k`.
+readAll : (1 s : TcpStream) -> String -> (1 k : (1 s : TcpStream) -> String -> IO ()) -> IO ()
+readAll s acc k = recv s 65536 (\s, r => case r of
+  Ok d => if d == "" then k s acc else readAll s (acc ++ d) k
+  Err e => k s acc)
+
+-- A client: sends its message, ends its side, reads the echo and counts
+-- it in `done` if it matches.
+client : MVar Int -> Int -> Int -> IO ()
+client done port i = connect "127.0.0.1" port (\r => case r of
+  Ok s => do
+    let msg = "hello " ++ show i
+    sendAll s msg (\s, w => do
+      s <- shutdownWrite s
+      readAll s "" (\s, got => do
+        close s
+        if got == msg then count done else say ("client " ++ show i ++ " got " ++ got)))
+  Err e => say ("connect failed: " ++ show e))
+
+count : MVar Int -> IO ()
+count done = do
+  n <- takeMVar done
+  putMVar done (n + 1)
+  if n + 1 == 100 then say "100 echoes" else pure ()
+
+startClients : MVar Int -> Int -> Int -> IO ()
+startClients done port i = if i == 100 then pure () else do
+  client done port i
+  startClients done port (i + 1)
+
+echoes : IO ()
+echoes = do
+  r <- listen "127.0.0.1" 0
+  case r of
+    Ok l => do
+      (l, port) <- listenerPort l
+      done <- newMVar 0
+      startClients done port 0
+      serveN 100 l
+    Err e => say ("listen failed: " ++ show e)
+
+-- ---- a megabyte ----
+
+-- Reads everything, then answers with its length and last byte.
+measure : (1 s : TcpStream) -> IO ()
+measure s = readAll s "" (\s, d => sendAll s (show (strLength d) ++ " " ++ S.fromStr (S.drop (strLength d - 1) (S.toStr d))) (\s, w => close s))
+
+bulk : IO ()
+bulk = do
+  r <- listen "127.0.0.1" 0
+  case r of
+    Ok l => do
+      (l, port) <- listenerPort l
+      accept l (\l, c => case c of
+        Ok s => measure s
+        Err e => say "accept failed")
+      connect "127.0.0.1" port (\c => case c of
+        Ok s => sendAll s (S.replicate 1048575 "x" ++ "!") (\s, w => do
+          s <- shutdownWrite s
+          readAll s "" (\s, d => do
+            say ("server read " ++ d)
+            close s))
+        Err e => say "connect failed")
+    Err e => say "listen failed"
+
+-- ---- timeouts ----
+
+-- The server answers 60 ms after accepting; the client gives up waiting
+-- after 20 ms, then waits again on the same socket.
+lateServer : (1 s : TcpStream) -> IO ()
+lateServer s = after 60 (sendAll s "late" (\s, w => close s))
+
+timeouts : IO ()
+timeouts = do
+  r <- listen "127.0.0.1" 0
+  case r of
+    Ok l => do
+      (l, port) <- listenerPort l
+      accept l (\l, c => case c of
+        Ok s => do
+          lateServer s
+          -- Nobody else connects.
+          acceptTimeout l 10 (\l, c2 => case c2 of
+            Ok s2 => say "unexpected connection"
+            Err e => say ("accept: " ++ show (e == timedOut)))
+        Err e => say "accept failed")
+      connect "127.0.0.1" port (\c => case c of
+        Ok s => recvTimeout s 100 20 (\s, r1 => case r1 of
+          Ok d => say ("too early: " ++ d)
+          Err e => do
+            say ("recv: " ++ show e)
+            recvTimeout s 100 1000 (\s, r2 => case r2 of
+              Ok d => say ("then " ++ d)
+              Err e2 => say ("then " ++ show e2)))
+        Err e => say "connect failed")
+    Err e => say "listen failed"
+
+-- ---- errors and names ----
+
+errors : IO ()
+errors = do
+  bad <- listen "not an address" 80
+  case bad of
+    Ok l => say "listened on a bad address"
+    Err e => say ("bad address: " ++ show e)
+  r <- listen "127.0.0.1" 0
+  case r of
+    Ok l => do
+      (l, port) <- listenerPort l
+      busy <- listen "127.0.0.1" port
+      case busy of
+        Ok l2 => say "listened twice"
+        Err e => say ("in use: " ++ show (errorCode e))
+      closeListener l
+      -- Nobody listens on the port any more.
+      connect "127.0.0.1" port (\c => case c of
+        Ok s => say "connected to nobody"
+        Err e => say ("refused: " ++ show e))
+    Err e => say "listen failed"
+
+errorCode : IOError -> Int
+errorCode (MkIOError e) = e
+
+names : IO ()
+names = do
+  r <- listen "127.0.0.1" 0
+  case r of
+    Ok l => do
+      (l, port) <- listenerPort l
+      accept l (\l, c => case c of
+        Ok s => sendAll s "by name" (\s, w => close s)
+        Err e => say "accept failed")
+      -- An empty name is unknown without asking a name server.
+      resolve "" (\a => case a of
+        Ok addr => say ("resolved " ++ addr)
+        Err e => do
+          say "unknown name"
+          byName port)
+    Err e => say "listen failed"
+
+-- `localhost` (from the hosts file) may resolve to ::1 first: connect by
+-- the name only if it resolves to the IPv4 address listened on.
+byName : Int -> IO ()
+byName port = resolve "localhost" (\a => case a of
+  Ok addr => connect (if addr == "127.0.0.1" then "localhost" else "127.0.0.1") port (\c => case c of
+    Ok s => readAll s "" (\s, d => do
+      say d
+      close s)
+    Err e => say ("connect failed: " ++ show e))
+  Err e => say ("resolve failed: " ++ show e))
+
+-- ---- stopping ----
+
+-- The pending `accept` is dropped with its continuation: the listener is
+-- closed, so its port can be listened on again.
+stopping : MVar Int -> IO ()
+stopping portVar = do
+  r <- listen "127.0.0.1" 0
+  case r of
+    Ok l => do
+      (l, port) <- listenerPort l
+      putMVar portVar port
+      accept l (\l, c => say "accepted after stop")
+      stopLoop
+    Err e => say "listen failed"
+
+main : IO ()
+main = do
+  runLoop echoes
+  runLoop bulk
+  runLoop timeouts
+  runLoop errors
+  runLoop names
+  portVar <- newEmptyMVar
+  runLoop (stopping portVar)
+  port <- takeMVar portVar
+  again <- listen "127.0.0.1" port
+  case again of
+    Ok l => do
+      say "port free again"
+      closeListener l
+    Err e => say ("port still in use: " ++ show e)

@@ -1,0 +1,69 @@
+-- skip-backend: interp
+-- tsan: 1
+-- The event loop (spec-v0.0.5.md §2.2): continuations after timers run in
+-- the order of their deadlines, `defer` lets ready callbacks run first, a
+-- cancelled timer does not run, blocking work runs on the pool and comes
+-- back to the loop, another thread posts through a `Remote`, and
+-- `stopLoop` ends the loop with continuations still waiting.
+module Main
+
+import Std.Async
+import Std.Thread
+
+say : String -> IO ()
+say s = putStr (s ++ "\n")
+
+-- Sums 1..n (the work of the pool).
+sumTo : Int -> Int -> Int
+sumTo acc n = if n == 0 then acc else sumTo (acc + n) (n - 1)
+
+-- Posts `n` actions to the loop from another thread, then drops the
+-- remote: the loop ends when it has run them.
+poster : Remote -> Int -> IO ()
+poster r n = if n == 0 then pure () else do
+  ok <- post r (say ("posted " ++ show n))
+  poster r (n - 1)
+
+timers : IO ()
+timers = do
+  after 30 (say "after 30")
+  after 10 (say "after 10")
+  after 20 (say "after 20")
+  t <- startTimer 15 (say "cancelled timer ran")
+  c <- cancelTimer t
+  c2 <- cancelTimer t
+  say ("cancelled " ++ show c ++ " " ++ show c2)
+  defer (say "deferred")
+  say "first callback"
+
+-- The second job starts when the first one is back (the pool may run
+-- jobs in any order).
+pool : IO ()
+pool = blocking (pure (sumTo 0 1000)) (\n => do
+  say ("pool " ++ show n)
+  blocking (pure "text") (\s => say ("pool " ++ s)))
+
+posts : IO ()
+posts = do
+  r <- remote
+  t <- spawn (poster r 3)
+  join t
+
+-- A continuation that never runs: the loop is stopped first.
+stopping : IO ()
+stopping = do
+  after 60000 (say "not reached")
+  after 0 (do
+    say "stopping"
+    stopLoop)
+
+main : IO ()
+main = do
+  runLoop timers
+  say "--"
+  runLoop pool
+  say "--"
+  runLoop posts
+  say "--"
+  runLoop stopping
+  say "done"

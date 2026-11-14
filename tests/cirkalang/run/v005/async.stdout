@@ -1,0 +1,16 @@
+cancelled True False
+first callback
+deferred
+after 10
+after 20
+after 30
+--
+pool 500500
+pool text
+--
+posted 3
+posted 2
+posted 1
+--
+stopping
+done

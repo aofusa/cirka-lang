@@ -1,0 +1,16 @@
+-- A socket is linear (spec-v0.0.5.md §2.3): it cannot be sent on twice
+-- while one send has not given it back (E0303).
+module Main
+
+import Std.Async
+import Std.Net
+
+both : (1 s : TcpStream) -> IO ()
+both s = do
+  sendAll s "a" (\s, w => close s)
+  sendAll s "b" (\s, w => close s)
+
+main : IO ()
+main = runLoop (connect "127.0.0.1" 80 (\c => case c of
+  Ok s => both s
+  Err e => pure ()))

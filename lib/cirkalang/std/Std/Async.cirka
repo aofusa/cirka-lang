@@ -1,0 +1,86 @@
+-- Event loops and continuations (spec-v0.0.5.md §2.2).
+--
+-- The asynchronous part of a program runs in `runLoop`: the event loop of
+-- the thread calls back when sockets are ready, timers expire, blocking
+-- work finishes or other threads post actions (05-runtime.md §10). An
+-- operation that waits takes the rest of the work as a one-shot
+-- continuation `k`, which runs exactly once, on the loop's thread.
+module Std.Async
+
+import Foreign (Handle)
+
+private extern "cirka" where
+  cirka_async_run : (1 act : IO ()) -> IO Int
+  cirka_async_timer : Int -> (1 k : IO ()) -> IO Int
+  cirka_async_cancel : Int -> IO Int
+  cirka_async_stop : IO Int
+  cirka_async_blocking : (1 work : IO a) -> (1 k : a -> IO ()) -> IO Int
+  cirka_async_remote : IO Handle
+  cirka_remote_post : Handle -> IO () -> IO Int
+
+-- Runs `act` as the first callback of a new event loop of this thread,
+-- then the loop until nothing is left to wait for (no socket, timer,
+-- blocking work or `Remote`) or `stopLoop` was called.
+runLoop : (1 act : IO ()) -> IO ()
+runLoop act = do
+  r <- cirka_async_run act
+  pure ()
+
+-- Continues with `k` after `ms` milliseconds.
+after : Int -> (1 k : IO ()) -> IO ()
+after ms k = do
+  t <- cirka_async_timer ms k
+  pure ()
+
+-- Continues with `k` in a later turn of the loop, after the callbacks
+-- that are ready now.
+defer : (1 k : IO ()) -> IO ()
+defer k = after 0 k
+
+-- A timer that can be cancelled. Its action may be dropped without
+-- running, so it is not a continuation: it cannot hold linear values.
+data Timer = MkTimer Int
+
+-- Runs `act` after `ms` milliseconds unless the timer is cancelled.
+startTimer : Int -> IO () -> IO Timer
+startTimer ms act = do
+  t <- cirka_async_timer ms act
+  pure (MkTimer t)
+
+-- Cancels a timer of this loop: `True` if it had not run yet.
+cancelTimer : Timer -> IO Bool
+cancelTimer (MkTimer t) = do
+  r <- cirka_async_cancel t
+  pure (r == 1)
+
+-- Ends `runLoop` at the end of this turn. The continuations still waiting
+-- are dropped without running (the sockets they hold are closed).
+stopLoop : IO ()
+stopLoop = do
+  r <- cirka_async_stop
+  pure ()
+
+-- Runs `work` on the runtime's thread pool (work that blocks, such as
+-- resolving a name), then `k` with its result on this loop.
+blocking : Send a => (1 work : IO a) -> (1 k : a -> IO ()) -> IO ()
+blocking work k = do
+  r <- cirka_async_blocking work k
+  pure ()
+
+-- How other threads run actions on a loop. While a `Remote` is alive the
+-- loop waits for what it may post: give it to the other threads and drop
+-- it on the loop's thread.
+data Remote = MkRemote Handle
+
+-- A remote of the running loop.
+remote : IO Remote
+remote = do
+  h <- cirka_async_remote
+  pure (MkRemote h)
+
+-- Runs `act` on the loop of the remote (from any thread): `False` if the
+-- loop is gone.
+post : Remote -> IO () -> IO Bool
+post (MkRemote h) act = do
+  r <- cirka_remote_post h act
+  pure (r == 0)

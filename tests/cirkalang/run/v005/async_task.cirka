@@ -1,0 +1,48 @@
+-- skip-backend: interp
+-- The task form of the asynchronous API, prototyped over the continuations
+-- of `Std.Async` (FEAT-0241): a `Task a` takes its continuation, and its
+-- `Monad` instance lets `do` chain timers and actions. It cannot carry
+-- sockets: `>>=` takes its arguments unrestricted and results of kind
+-- `Type`, so a linear socket can neither be captured by a task used in
+-- `do` nor be its result (spec-v0.0.5.md §2.5). The libraries take
+-- continuations instead.
+module Main
+
+import Std.Async
+
+-- An action that calls its continuation once.
+data Task a = MkTask ((1 k : a -> IO ()) -> IO ())
+
+impl Functor Task where
+  fmap f (MkTask run) = MkTask (\k => run (\x => k (f x)))
+
+impl Monad Task where
+  pure x = MkTask (\k => k x)
+  (MkTask run) >>= f = MkTask (\k => run (\x => runTask (f x) k))
+
+runTask : Task a -> (1 k : a -> IO ()) -> IO ()
+runTask (MkTask run) k = run k
+
+sleep : Int -> Task ()
+sleep ms = MkTask (\k => after ms (k ()))
+
+liftIO : IO a -> Task a
+liftIO act = MkTask (\k => do
+  x <- act
+  k x)
+
+-- Runs `a`, then `b`, and passes on the sum of their results.
+sumOf : Task Int -> Task Int -> Task Int
+sumOf a b = MkTask (\k => runTask a (\x => runTask b (\y => k (x + y))))
+
+prog : Task Int
+prog = do
+  sleep 20
+  liftIO (putStrLn "after 20")
+  n <- sumOf (fmap (\u => 1) (sleep 5)) (pure 2)
+  sleep 10
+  liftIO (putStrLn "after 35")
+  pure (40 + n)
+
+main : IO ()
+main = runLoop (runTask prog (\n => putStrLn ("result " ++ show n)))

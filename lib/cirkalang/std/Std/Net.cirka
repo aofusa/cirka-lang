@@ -1,0 +1,287 @@
+-- Sockets on the event loop (spec-v0.0.5.md §2.3).
+--
+-- A socket is a linear value. An operation takes the socket and gives it
+-- back to its continuation `k`, which runs exactly once: when the
+-- operation completed, failed or timed out (`Err timedOut`). A socket
+-- that is dropped is closed. Addresses are numeric IPv4 or IPv6
+-- addresses (`connect` also resolves names); an empty host listens on
+-- every IPv4 address, and port 0 picks a free port.
+module Std.Net
+
+import Foreign (Handle)
+import Std.IO (IOError, MkIOError)
+import Std.Async (blocking, after)
+
+private extern "cirka" where
+  cirka_errno : IO Int
+  cirka_net_listen : String -> Int -> Int -> IO Int
+  cirka_net_connect : String -> Int -> IO Int
+  cirka_net_connect_result : Int -> IO Int
+  cirka_net_local_port : Int -> IO Int
+  cirka_net_set_nodelay : Int -> Int -> IO Int
+  cirka_net_shutdown : Int -> Int -> IO Int
+  cirka_net_resolve : String -> IO String
+  cirka_net_udp_bind : String -> Int -> IO Int
+  cirka_net_peer_host : IO String
+  cirka_net_peer_port : IO Int
+  cirka_fd_handle : Int -> IO Handle
+  cirka_handle_fd : Handle -> IO Int
+  cirka_handle_close : Handle -> IO Int
+  cirka_sock_accept : Handle -> IO Int
+  cirka_sock_recv : Handle -> Int -> IO String
+  cirka_sock_send : Handle -> String -> Int -> IO Int
+  cirka_sock_sendto : Handle -> String -> String -> Int -> IO Int
+  cirka_sock_recvfrom : Handle -> Int -> IO String
+  cirka_async_watch : Handle -> Int -> Int -> (1 k : IO ()) -> IO Int
+  cirka_async_events : IO Int
+
+-- A listening TCP socket.
+data TcpListener : LType where
+  MkTcpListener : Handle -> TcpListener
+
+-- A connected TCP socket.
+data TcpStream : LType where
+  MkTcpStream : Handle -> TcpStream
+
+-- A UDP socket.
+data UdpSocket : LType where
+  MkUdpSocket : Handle -> UdpSocket
+
+-- A datagram received: its bytes, and the address and port of its sender.
+data Datagram = MkDatagram String String Int
+
+-- The error of an operation whose timeout passed (`ETIMEDOUT`).
+timedOut : IOError
+timedOut = MkIOError 110
+
+private eagain : Int
+eagain = 11
+
+private noTimeout : Int
+noTimeout = 0 - 1
+
+private err : Int -> IOError
+err e = MkIOError e
+
+-- Waits on the loop until the socket `h` is ready for `ev` (1 read, 2
+-- write), for at most `ms` milliseconds if `ms` >= 0, then runs `go` with
+-- 0, or with the error number (the timeout, or a watch that failed).
+private waitFor : Handle -> Int -> Int -> (1 go : Int -> IO ()) -> IO ()
+waitFor h ev ms go = do
+  r <- cirka_async_watch h ev ms (readyThen go)
+  pure ()
+
+private readyThen : (1 go : Int -> IO ()) -> IO ()
+readyThen go = do
+  e <- cirka_async_events
+  go (if e == 8 then 110 else if e < 0 then 0 - e else 0)
+
+-- ---- TCP ----
+
+-- Listens on `host` and `port`.
+listen : String -> Int -> IO1 (Result IOError TcpListener)
+listen host port = do
+  fd <- cirka_net_listen host port 0
+  if fd < 0 then pure1 (Err (err (0 - fd))) else listenerOf fd
+
+private listenerOf : Int -> IO1 (Result IOError TcpListener)
+listenerOf fd = do
+  h <- cirka_fd_handle fd
+  pure1 (Ok (MkTcpListener h))
+
+-- The port the listener listens on (after listening on port 0).
+listenerPort : (1 l : TcpListener) -> IO1 (TcpListener, Int)
+listenerPort (MkTcpListener h) = do
+  fd <- cirka_handle_fd h
+  p <- cirka_net_local_port fd
+  pure1 (MkTcpListener h, p)
+
+-- Accepts a connection.
+accept : (1 l : TcpListener) -> (1 k : (1 l : TcpListener) -> (1 r : Result IOError TcpStream) -> IO ()) -> IO ()
+accept (MkTcpListener h) k = acceptOn h noTimeout k
+
+-- `accept` that gives up after `ms` milliseconds (`Err timedOut`).
+acceptTimeout : (1 l : TcpListener) -> Int -> (1 k : (1 l : TcpListener) -> (1 r : Result IOError TcpStream) -> IO ()) -> IO ()
+acceptTimeout (MkTcpListener h) ms k = acceptOn h ms k
+
+private acceptOn : Handle -> Int -> (1 k : (1 l : TcpListener) -> (1 r : Result IOError TcpStream) -> IO ()) -> IO ()
+acceptOn h ms k = do
+  fd <- cirka_sock_accept h
+  if fd == 0 - eagain
+    then waitFor h 1 ms (\e => if e == 0 then acceptOn h ms k else k (MkTcpListener h) (Err (err e)))
+    else if fd < 0 then k (MkTcpListener h) (Err (err (0 - fd))) else acceptedOn h fd k
+
+private acceptedOn : Handle -> Int -> (1 k : (1 l : TcpListener) -> (1 r : Result IOError TcpStream) -> IO ()) -> IO ()
+acceptedOn h fd k = do
+  c <- cirka_fd_handle fd
+  k (MkTcpListener h) (Ok (MkTcpStream c))
+
+-- Accepts connections for ever and starts `handler` on each one. An
+-- `accept` that fails (too many open files) is tried again 10 ms later.
+serve : (1 l : TcpListener) -> ((1 s : TcpStream) -> IO ()) -> IO ()
+serve l handler = accept l (\l, r => case r of
+  Ok s => do
+    handler s
+    serve l handler
+  Err e => after 10 (serve l handler))
+
+-- Closes the listener.
+closeListener : (1 l : TcpListener) -> IO ()
+closeListener (MkTcpListener h) = do
+  r <- cirka_handle_close h
+  pure ()
+
+-- Connects to `host` (a numeric address or a name) and `port`.
+connect : String -> Int -> (1 k : (1 r : Result IOError TcpStream) -> IO ()) -> IO ()
+connect host port k = connectTimeout host port noTimeout k
+
+-- `connect` that gives up after `ms` milliseconds (`Err timedOut`).
+connectTimeout : String -> Int -> Int -> (1 k : (1 r : Result IOError TcpStream) -> IO ()) -> IO ()
+connectTimeout host port ms k = do
+  fd <- cirka_net_connect host port
+  if fd == 0 - 22 && port >= 0 && port < 65536
+    then resolve host (\r => case r of
+      Ok addr => connectTo addr port ms k
+      Err e => k (Err e))
+    else connecting fd ms k
+
+private connectTo : String -> Int -> Int -> (1 k : (1 r : Result IOError TcpStream) -> IO ()) -> IO ()
+connectTo addr port ms k = do
+  fd <- cirka_net_connect addr port
+  connecting fd ms k
+
+private connecting : Int -> Int -> (1 k : (1 r : Result IOError TcpStream) -> IO ()) -> IO ()
+connecting fd ms k = if fd < 0 then k (Err (err (0 - fd))) else do
+  h <- cirka_fd_handle fd
+  waitFor h 2 ms (\e => if e /= 0 then k (Err (err e)) else connected h fd k)
+
+private connected : Handle -> Int -> (1 k : (1 r : Result IOError TcpStream) -> IO ()) -> IO ()
+connected h fd k = do
+  e <- cirka_net_connect_result fd
+  if e < 0 then k (Err (err (0 - e))) else k (Ok (MkTcpStream h))
+
+-- Receives at most `n` bytes (up to 65536): an empty string at the end
+-- of the stream.
+recv : (1 s : TcpStream) -> Int -> (1 k : (1 s : TcpStream) -> Result IOError String -> IO ()) -> IO ()
+recv (MkTcpStream h) n k = recvOn h n noTimeout k
+
+-- `recv` that gives up after `ms` milliseconds without data
+-- (`Err timedOut`; the socket can still be used).
+recvTimeout : (1 s : TcpStream) -> Int -> Int -> (1 k : (1 s : TcpStream) -> Result IOError String -> IO ()) -> IO ()
+recvTimeout (MkTcpStream h) n ms k = recvOn h n ms k
+
+private recvOn : Handle -> Int -> Int -> (1 k : (1 s : TcpStream) -> Result IOError String -> IO ()) -> IO ()
+recvOn h n ms k = do
+  d <- cirka_sock_recv h n
+  e <- cirka_errno
+  if e == eagain
+    then waitFor h 1 ms (\w => if w == 0 then recvOn h n ms k else k (MkTcpStream h) (Err (err w)))
+    else k (MkTcpStream h) (if e == 0 then Ok d else Err (err e))
+
+-- Sends all of `d`.
+sendAll : (1 s : TcpStream) -> String -> (1 k : (1 s : TcpStream) -> Result IOError () -> IO ()) -> IO ()
+sendAll (MkTcpStream h) d k = sendFrom h d 0 noTimeout k
+
+-- `sendAll` whose waits for room give up after `ms` milliseconds each.
+sendAllTimeout : (1 s : TcpStream) -> String -> Int -> (1 k : (1 s : TcpStream) -> Result IOError () -> IO ()) -> IO ()
+sendAllTimeout (MkTcpStream h) d ms k = sendFrom h d 0 ms k
+
+private sendFrom : Handle -> String -> Int -> Int -> (1 k : (1 s : TcpStream) -> Result IOError () -> IO ()) -> IO ()
+sendFrom h d off ms k = do
+  n <- cirka_sock_send h d off
+  if n == 0 - eagain
+    then waitFor h 2 ms (\w => if w == 0 then sendFrom h d off ms k else k (MkTcpStream h) (Err (err w)))
+    else if n < 0 then k (MkTcpStream h) (Err (err (0 - n)))
+    else if off + n < strLength d then sendFrom h d (off + n) ms k
+    else k (MkTcpStream h) (Ok ())
+
+-- Ends the sending side: the peer sees the end of the stream, and the
+-- socket can still receive.
+shutdownWrite : (1 s : TcpStream) -> IO1 TcpStream
+shutdownWrite (MkTcpStream h) = do
+  fd <- cirka_handle_fd h
+  r <- cirka_net_shutdown fd 1
+  pure1 (MkTcpStream h)
+
+-- Turns Nagle's algorithm off (`True`: small writes go out at once).
+setNodelay : (1 s : TcpStream) -> Bool -> IO1 TcpStream
+setNodelay (MkTcpStream h) on = do
+  fd <- cirka_handle_fd h
+  r <- cirka_net_set_nodelay fd (if on then 1 else 0)
+  pure1 (MkTcpStream h)
+
+-- Closes the socket (dropping it closes it too).
+close : (1 s : TcpStream) -> IO ()
+close (MkTcpStream h) = do
+  r <- cirka_handle_close h
+  pure ()
+
+-- The first address of `host` (a name or a numeric address) as text,
+-- resolved on the runtime's thread pool.
+resolve : String -> (1 k : Result IOError String -> IO ()) -> IO ()
+resolve host k = blocking (resolveNow host) k
+
+private resolveNow : String -> IO (Result IOError String)
+resolveNow host = do
+  a <- cirka_net_resolve host
+  e <- cirka_errno
+  pure (if e /= 0 then Err (err e) else Ok a)
+
+-- ---- UDP ----
+
+-- A UDP socket bound to `host` and `port`.
+bindUdp : String -> Int -> IO1 (Result IOError UdpSocket)
+bindUdp host port = do
+  fd <- cirka_net_udp_bind host port
+  if fd < 0 then pure1 (Err (err (0 - fd))) else udpOf fd
+
+private udpOf : Int -> IO1 (Result IOError UdpSocket)
+udpOf fd = do
+  h <- cirka_fd_handle fd
+  pure1 (Ok (MkUdpSocket h))
+
+-- The port the socket is bound to.
+udpPort : (1 u : UdpSocket) -> IO1 (UdpSocket, Int)
+udpPort (MkUdpSocket h) = do
+  fd <- cirka_handle_fd h
+  p <- cirka_net_local_port fd
+  pure1 (MkUdpSocket h, p)
+
+-- Sends `d` as one datagram to `host` (numeric) and `port`.
+sendTo : (1 u : UdpSocket) -> String -> Int -> String -> (1 k : (1 u : UdpSocket) -> Result IOError () -> IO ()) -> IO ()
+sendTo (MkUdpSocket h) host port d k = sendToOn h host port d k
+
+private sendToOn : Handle -> String -> Int -> String -> (1 k : (1 u : UdpSocket) -> Result IOError () -> IO ()) -> IO ()
+sendToOn h host port d k = do
+  n <- cirka_sock_sendto h d host port
+  if n == 0 - eagain
+    then waitFor h 2 noTimeout (\w => if w == 0 then sendToOn h host port d k else k (MkUdpSocket h) (Err (err w)))
+    else k (MkUdpSocket h) (if n < 0 then Err (err (0 - n)) else Ok ())
+
+-- Receives one datagram (at most `n` bytes of it are kept).
+recvFrom : (1 u : UdpSocket) -> Int -> (1 k : (1 u : UdpSocket) -> Result IOError Datagram -> IO ()) -> IO ()
+recvFrom (MkUdpSocket h) n k = recvFromOn h n noTimeout k
+
+-- `recvFrom` that gives up after `ms` milliseconds (`Err timedOut`).
+recvFromTimeout : (1 u : UdpSocket) -> Int -> Int -> (1 k : (1 u : UdpSocket) -> Result IOError Datagram -> IO ()) -> IO ()
+recvFromTimeout (MkUdpSocket h) n ms k = recvFromOn h n ms k
+
+private recvFromOn : Handle -> Int -> Int -> (1 k : (1 u : UdpSocket) -> Result IOError Datagram -> IO ()) -> IO ()
+recvFromOn h n ms k = do
+  d <- cirka_sock_recvfrom h n
+  e <- cirka_errno
+  if e == eagain
+    then waitFor h 1 ms (\w => if w == 0 then recvFromOn h n ms k else k (MkUdpSocket h) (Err (err w)))
+    else if e /= 0 then k (MkUdpSocket h) (Err (err e)) else received h d k
+
+private received : Handle -> String -> (1 k : (1 u : UdpSocket) -> Result IOError Datagram -> IO ()) -> IO ()
+received h d k = do
+  host <- cirka_net_peer_host
+  port <- cirka_net_peer_port
+  k (MkUdpSocket h) (Ok (MkDatagram d host port))
+
+-- Closes the socket (dropping it closes it too).
+closeUdp : (1 u : UdpSocket) -> IO ()
+closeUdp (MkUdpSocket h) = do
+  r <- cirka_handle_close h
+  pure ()

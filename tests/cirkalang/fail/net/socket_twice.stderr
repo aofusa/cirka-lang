@@ -1,0 +1,8 @@
+error[E0303]: linear variable `s` is used more than once
+  --> tests/cirkalang/fail/net/socket_twice.cirka:11:11
+   |
+10 |   sendAll s "a" (\s, w => close s)
+   |           - first use
+11 |   sendAll s "b" (\s, w => close s)
+   |           ^
+   = help: use it only once, or make it shareable with `freeze`

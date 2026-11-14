@@ -1,0 +1,11 @@
+100 echoes
+server read 1048576 !
+accept: True
+recv: Connection timed out (os error 110)
+then late
+bad address: Invalid argument (os error 22)
+in use: 98
+refused: Connection refused (os error 111)
+unknown name
+by name
+port free again

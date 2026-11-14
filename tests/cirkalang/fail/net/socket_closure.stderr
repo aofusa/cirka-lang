@@ -1,0 +1,7 @@
+error[E0305]: linear variable `s` is captured by a closure used many times
+  --> tests/cirkalang/fail/net/socket_closure.cirka:15:15
+   |
+15 |         close s)
+   |               ^
+   = note: it may be evaluated more than once, so `s` could be used more than once
+   = help: use the closure linearly, or pass the value as an argument

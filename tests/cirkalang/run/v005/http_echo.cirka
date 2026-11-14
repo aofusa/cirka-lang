@@ -1,0 +1,184 @@
+-- skip-backend: interp
+-- An HTTP/1.1 echo server (the sample of spec-v0.0.5.md §2.4).
+--
+-- `http_echo PORT` serves on 127.0.0.1:PORT until it is killed: each
+-- request gets a 200 response whose body is the request's body, or its
+-- method and path when it has none. Connections stay open between
+-- requests (also pipelined ones) unless the client sends
+-- `Connection: close`; a connection idle for 10 s is closed.
+--
+-- Without arguments the program serves on a free port, sends itself
+-- requests (pipelined, split across writes, malformed, and 50
+-- connections at once), prints the responses and stops the loop.
+module Main
+
+import Std.Async
+import Std.Net
+import Std.Env (args)
+import Std.Thread (MVar, newMVar, takeMVar, putMVar)
+import Data.String as S
+
+-- ---- the server ----
+
+-- A request: method, path, body, and whether the client asked to close
+-- the connection after the response.
+data Request = MkRequest String String String Bool
+
+-- What the bytes received so far hold.
+data Parse = Need | Bad | Got Request String
+
+-- The length of the body and whether to close, from the header lines.
+data Headers = MkHeaders Int Bool
+
+-- Parses the first request in `buf`.
+parse : String -> Parse
+parse buf = case S.indexOf (S.toStr buf) "\r\n\r\n" of
+  Nothing => if strLength buf > 65536 then Bad else Need
+  Just i => parseHead (S.splitOn "\r\n" (S.take i (S.toStr buf))) (S.drop (i + 4) (S.toStr buf))
+
+parseHead : List S.Str -> S.Str -> Parse
+parseHead [] rest = Bad
+parseHead (line :: hs) rest = case S.splitOn " " line of
+  (m :: p :: v :: []) => if S.startsWith v "HTTP/1." then withHeaders (S.fromStr m) (S.fromStr p) (headers hs (MkHeaders 0 False)) rest else Bad
+  _ => Bad
+
+withHeaders : String -> String -> Maybe Headers -> S.Str -> Parse
+withHeaders m p Nothing rest = Bad
+withHeaders m p (Just (MkHeaders n closing)) rest =
+  if S.length rest < n then Need
+  else Got (MkRequest m p (S.fromStr (S.take n rest)) closing) (S.fromStr (S.drop n rest))
+
+-- Reads `Content-Length` and `Connection: close` (names in any case).
+headers : List S.Str -> Headers -> Maybe Headers
+headers [] h = Just h
+headers (line :: rest) (MkHeaders n c) = case S.indexOfChar line ':' of
+  Nothing => Nothing
+  Just k =>
+    let name = S.toLower (S.take k line) in
+    let value = S.trim (S.drop (k + 1) line) in
+    if name == "content-length" then (case S.toInt value of
+      Just len => if len < 0 then Nothing else headers rest (MkHeaders len c)
+      Nothing => Nothing)
+    else if name == "connection" then headers rest (MkHeaders n (S.toLower value == "close"))
+    else headers rest (MkHeaders n c)
+
+response : Request -> String
+response (MkRequest m p body closing) =
+  let text = if body == "" then m ++ " " ++ p else body in
+  "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: " ++ show (strLength text)
+    ++ (if closing then "\r\nConnection: close" else "") ++ "\r\n\r\n" ++ text
+
+badRequest : String
+badRequest = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+
+closes : Request -> Bool
+closes (MkRequest _ _ _ c) = c
+
+-- Serves the requests of one connection; `buf` holds the bytes received
+-- and not yet answered.
+serveConn : (1 s : TcpStream) -> String -> IO ()
+serveConn s buf = case parse buf of
+  Need => recvTimeout s 65536 10000 (\s, r => case r of
+    Ok d => if d == "" then close s else serveConn s (buf ++ d)
+    Err e => close s)
+  Bad => sendAll s badRequest (\s, w => close s)
+  Got req rest => sendAll s (response req) (\s, w => case w of
+    Ok _ => if closes req then close s else serveConn s rest
+    Err e => close s)
+
+server : (1 l : TcpListener) -> IO ()
+server l = serve l (\s => serveConn s "")
+
+-- ---- the self-test ----
+
+say : String -> IO ()
+say s = putStr (s ++ "\n")
+
+-- The response, one line per line of HTTP.
+showResponse : String -> String
+showResponse r = S.intercalate "\n" (map S.fromStr (S.splitOn "\r\n" (S.toStr r)))
+
+-- Reads until the end of the stream.
+readAll : (1 s : TcpStream) -> String -> (1 k : (1 s : TcpStream) -> String -> IO ()) -> IO ()
+readAll s acc k = recv s 65536 (\s, r => case r of
+  Ok d => if d == "" then k s acc else readAll s (acc ++ d) k
+  Err e => k s acc)
+
+-- Connects, sends the parts (the later ones 20 ms apart), reads the
+-- responses until the server closes, and passes them to `k`.
+exchange : Int -> List String -> (1 k : String -> IO ()) -> IO ()
+exchange port parts k = connect "127.0.0.1" port (\c => case c of
+  Ok s => sendParts s parts (\s => readAll s "" (\s, got => do
+    close s
+    k got))
+  Err e => k ("connect failed: " ++ show e))
+
+sendParts : (1 s : TcpStream) -> List String -> (1 k : (1 s : TcpStream) -> IO ()) -> IO ()
+sendParts s [] k = k s
+sendParts s (p :: ps) k = sendAll s p (\s, w => if isNil ps then k s else after 20 (sendParts s ps k))
+
+isNil : List a -> Bool
+isNil [] = True
+isNil _ = False
+
+-- One keep-alive request per connection, then a closing one. `ok`
+-- counts the connections whose responses were right, `left` those not
+-- done yet: the last one prints the count and stops the loop.
+concurrent : MVar Int -> MVar Int -> Int -> Int -> IO ()
+concurrent ok left port i = exchange port [get ("/c" ++ show i) False ++ get "/last" True] (\got => do
+  n <- takeMVar ok
+  let right = got == expected ("GET /c" ++ show i) False ++ expected "GET /last" True
+  putMVar ok (if right then n + 1 else n)
+  m <- takeMVar left
+  putMVar left (m - 1)
+  if m == 1 then finish ok else pure ())
+
+finish : MVar Int -> IO ()
+finish ok = do
+  n <- takeMVar ok
+  say ("-- concurrent: " ++ show n ++ " of 50 right")
+  stopLoop
+
+get : String -> Bool -> String
+get path closing = "GET " ++ path ++ " HTTP/1.1\r\nHost: localhost\r\n" ++ (if closing then "Connection: close\r\n" else "") ++ "\r\n"
+
+expected : String -> Bool -> String
+expected text closing = response (MkRequest "" "" text closing)
+
+startAll : MVar Int -> MVar Int -> Int -> Int -> IO ()
+startAll ok left port i = if i == 50 then pure () else do
+  concurrent ok left port i
+  startAll ok left port (i + 1)
+
+selfTest : Int -> IO ()
+selfTest port =
+  exchange port ["POST /echo HTTP/1.1\r\nHost: localhost\r\nContent-Length: 5\r\n\r\nhelloGET /path?q=1 HTTP/1.1\r\nConnection: close\r\n\r\n"] (\got => do
+    say "-- pipelined"
+    say (showResponse got)
+    exchange port ["POST /split HTTP/1.1\r\nContent-Length: 11\r\nconnection: Close\r\n\r\nhello", " world"] (\got2 => do
+      say "-- split"
+      say (showResponse got2)
+      exchange port ["NONSENSE\r\n\r\n"] (\got3 => do
+        say "-- malformed"
+        say (showResponse got3)
+        ok <- newMVar 0
+        left <- newMVar 50
+        startAll ok left port 0)))
+
+main : IO ()
+main = do
+  as <- args
+  case as of
+    (p :: _) => runLoop (do
+      r <- listen "127.0.0.1" (parseInt p)
+      case r of
+        Ok l => server l
+        Err e => say ("listen failed: " ++ show e))
+    [] => runLoop (do
+      r <- listen "127.0.0.1" 0
+      case r of
+        Ok l => do
+          (l, port) <- listenerPort l
+          server l
+          selfTest port
+        Err e => say ("listen failed: " ++ show e))

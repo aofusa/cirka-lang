@@ -1,0 +1,25 @@
+-- pipelined
+HTTP/1.1 200 OK
+Content-Type: text/plain
+Content-Length: 5
+
+helloHTTP/1.1 200 OK
+Content-Type: text/plain
+Content-Length: 13
+Connection: close
+
+GET /path?q=1
+-- split
+HTTP/1.1 200 OK
+Content-Type: text/plain
+Content-Length: 11
+Connection: close
+
+hello world
+-- malformed
+HTTP/1.1 400 Bad Request
+Content-Length: 0
+Connection: close
+
+
+-- concurrent: 50 of 50 right

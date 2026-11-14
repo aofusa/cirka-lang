@@ -1,0 +1,17 @@
+-- The handler of `serve` runs once per connection: it cannot capture a
+-- socket, which would be used by each run (spec-v0.0.5.md §2.3, E0305).
+module Main
+
+import Std.Async
+import Std.Net
+
+main : IO ()
+main = runLoop (do
+  r <- listen "127.0.0.1" 0
+  case r of
+    Ok l => connect "127.0.0.1" 80 (\c => case c of
+      Ok s => serve l (\conn => do
+        close conn
+        close s)
+      Err e => closeListener l)
+    Err e => pure ())

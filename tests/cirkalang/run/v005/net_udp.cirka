@@ -1,0 +1,65 @@
+-- skip-backend: interp
+-- UDP on the event loop (spec-v0.0.5.md §2.3): datagrams with the address
+-- and port of their sender, a datagram longer than the buffer, a receive
+-- that times out, and errors as values.
+module Main
+
+import Std.Async
+import Std.Net
+import Std.IO (IOError)
+
+say : String -> IO ()
+say s = putStr (s ++ "\n")
+
+-- `b` receives what `a` sends.
+exchange : (1 a : UdpSocket) -> (1 b : UdpSocket) -> IO ()
+exchange a b = do
+  (a, pa) <- udpPort a
+  (b, pb) <- udpPort b
+  receive b pa
+  sendTo a "127.0.0.1" pb "hello" (\a, w => sendTo a "127.0.0.1" pb "truncated" (\a, w2 => do
+    say ("a sent two: " ++ show (isOk w && isOk w2))
+    sendTo a "not an address" pb "x" (\a, w3 => do
+      case w3 of
+        Ok _ => say "sent to a bad address"
+        Err e => say ("bad address: " ++ show e)
+      closeUdp a)))
+
+-- Two datagrams from the port `pa`, then nothing for 20 ms.
+receive : (1 b : UdpSocket) -> Int -> IO ()
+receive b pa = recvFrom b 100 (\b, r => case r of
+  Ok (MkDatagram d host port) => do
+    say ("b got " ++ d ++ " from " ++ host ++ (if port == pa then " and a's port" else " and another port"))
+    recvFrom b 3 (\b, r2 => case r2 of
+      Ok (MkDatagram d2 _ _) => do
+        say ("b kept " ++ d2)
+        recvFromTimeout b 100 20 (\b, r3 => case r3 of
+          Ok _ => do
+            say "unexpected datagram"
+            closeUdp b
+          Err e => do
+            say ("then timed out: " ++ show (e == timedOut))
+            closeUdp b)
+      Err e => do
+        say ("recv failed: " ++ show e)
+        closeUdp b)
+  Err e => do
+    say ("recv failed: " ++ show e)
+    closeUdp b)
+
+isOk : Result IOError () -> Bool
+isOk (Ok _) = True
+isOk (Err _) = False
+
+main : IO ()
+main = runLoop (do
+  ra <- bindUdp "127.0.0.1" 0
+  case ra of
+    Ok a => do
+      rb <- bindUdp "127.0.0.1" 0
+      case rb of
+        Ok b => exchange a b
+        Err e => do
+          say ("bind failed: " ++ show e)
+          closeUdp a
+    Err e => say ("bind failed: " ++ show e))
