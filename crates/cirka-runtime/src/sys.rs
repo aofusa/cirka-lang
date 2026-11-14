@@ -44,6 +44,10 @@ pub struct pthread_cond_t {
     _data: [u64; 6],
 }
 
+impl pthread_cond_t {
+    pub const INIT: pthread_cond_t = pthread_cond_t { _data: [0; 6] };
+}
+
 pub const PTHREAD_CREATE_DETACHED: c_int = 1;
 pub const SC_NPROCESSORS_ONLN: c_int = 84;
 
@@ -66,6 +70,89 @@ pub struct sigaction_t {
 pub struct timespec {
     pub tv_sec: i64,
     pub tv_nsec: i64,
+}
+
+// ---- epoll, eventfd, sockets, resource limits (05-runtime.md §10) ----
+
+pub const EPOLL_CLOEXEC: c_int = 0o2000000;
+pub const EPOLL_CTL_ADD: c_int = 1;
+pub const EPOLL_CTL_DEL: c_int = 2;
+pub const EPOLL_CTL_MOD: c_int = 3;
+pub const EPOLLIN: u32 = 0x001;
+pub const EPOLLOUT: u32 = 0x004;
+pub const EPOLLERR: u32 = 0x008;
+pub const EPOLLHUP: u32 = 0x010;
+pub const EPOLLRDHUP: u32 = 0x2000;
+pub const EPOLLONESHOT: u32 = 1 << 30;
+
+/// `struct epoll_event`, packed on x86-64 (12 bytes).
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+pub struct epoll_event {
+    pub events: u32,
+    pub data: u64,
+}
+
+pub const EFD_CLOEXEC: c_int = 0o2000000;
+pub const EFD_NONBLOCK: c_int = 0o4000;
+
+pub const AF_INET: c_int = 2;
+pub const AF_INET6: c_int = 10;
+pub const SOCK_STREAM: c_int = 1;
+pub const SOCK_NONBLOCK: c_int = 0o4000;
+pub const SOCK_CLOEXEC: c_int = 0o2000000;
+pub const SOL_SOCKET: c_int = 1;
+pub const SO_REUSEADDR: c_int = 2;
+pub const SO_ERROR: c_int = 4;
+pub const IPPROTO_TCP: c_int = 6;
+pub const TCP_NODELAY: c_int = 1;
+pub const F_GETFL: c_int = 3;
+pub const F_SETFL: c_int = 4;
+pub const O_NONBLOCK: c_int = 0o4000;
+pub const RLIMIT_NOFILE: c_int = 7;
+
+/// Large enough for any socket address (`struct sockaddr_storage`).
+#[repr(C, align(8))]
+pub struct sockaddr_storage {
+    pub family: u16,
+    pub data: [u8; 126],
+}
+
+#[repr(C)]
+pub struct sockaddr_in {
+    pub sin_family: u16,
+    /// Network byte order.
+    pub sin_port: u16,
+    pub sin_addr: [u8; 4],
+    pub sin_zero: [u8; 8],
+}
+
+#[repr(C)]
+pub struct sockaddr_in6 {
+    pub sin6_family: u16,
+    /// Network byte order.
+    pub sin6_port: u16,
+    pub sin6_flowinfo: u32,
+    pub sin6_addr: [u8; 16],
+    pub sin6_scope_id: u32,
+}
+
+#[repr(C)]
+pub struct rlimit {
+    pub rlim_cur: u64,
+    pub rlim_max: u64,
+}
+
+#[repr(C)]
+pub struct addrinfo {
+    pub ai_flags: c_int,
+    pub ai_family: c_int,
+    pub ai_socktype: c_int,
+    pub ai_protocol: c_int,
+    pub ai_addrlen: u32,
+    pub ai_addr: *mut sockaddr_storage,
+    pub ai_canonname: *mut c_char,
+    pub ai_next: *mut addrinfo,
 }
 
 #[repr(C)]
@@ -127,6 +214,39 @@ unsafe extern "C" {
     pub fn realloc(p: *mut c_void, size: size_t) -> *mut c_void;
     pub fn sigaltstack(ss: *const stack_t, old: *mut stack_t) -> c_int;
     pub fn sigaction(sig: c_int, act: *const sigaction_t, old: *mut sigaction_t) -> c_int;
+    pub fn pthread_cond_signal(c: *mut pthread_cond_t) -> c_int;
+    pub fn epoll_create1(flags: c_int) -> c_int;
+    pub fn epoll_ctl(epfd: c_int, op: c_int, fd: c_int, ev: *mut epoll_event) -> c_int;
+    pub fn epoll_wait(epfd: c_int, evs: *mut epoll_event, max: c_int, timeout: c_int) -> c_int;
+    pub fn eventfd(init: u32, flags: c_int) -> c_int;
+    pub fn socket(domain: c_int, ty: c_int, proto: c_int) -> c_int;
+    pub fn setsockopt(fd: c_int, level: c_int, name: c_int, val: *const c_void, len: u32) -> c_int;
+    pub fn getsockopt(
+        fd: c_int,
+        level: c_int,
+        name: c_int,
+        val: *mut c_void,
+        len: *mut u32,
+    ) -> c_int;
+    pub fn bind(fd: c_int, addr: *const sockaddr_storage, len: u32) -> c_int;
+    pub fn listen(fd: c_int, backlog: c_int) -> c_int;
+    pub fn accept4(fd: c_int, addr: *mut sockaddr_storage, len: *mut u32, flags: c_int) -> c_int;
+    pub fn connect(fd: c_int, addr: *const sockaddr_storage, len: u32) -> c_int;
+    pub fn getsockname(fd: c_int, addr: *mut sockaddr_storage, len: *mut u32) -> c_int;
+    pub fn shutdown(fd: c_int, how: c_int) -> c_int;
+    pub fn send(fd: c_int, buf: *const c_void, n: size_t, flags: c_int) -> ssize_t;
+    pub fn fcntl(fd: c_int, cmd: c_int, ...) -> c_int;
+    pub fn getrlimit(res: c_int, rl: *mut rlimit) -> c_int;
+    pub fn setrlimit(res: c_int, rl: *const rlimit) -> c_int;
+    pub fn inet_pton(af: c_int, src: *const c_char, dst: *mut c_void) -> c_int;
+    pub fn inet_ntop(af: c_int, src: *const c_void, dst: *mut c_char, size: u32) -> *const c_char;
+    pub fn getaddrinfo(
+        node: *const c_char,
+        service: *const c_char,
+        hints: *const addrinfo,
+        res: *mut *mut addrinfo,
+    ) -> c_int;
+    pub fn freeaddrinfo(res: *mut addrinfo);
 }
 
 /// Reads an environment variable as a byte slice (without the NUL).

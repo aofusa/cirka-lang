@@ -11,14 +11,16 @@ use crate::{alloc, sys, tls};
 use core::ffi::c_void;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-/// Threads started by `spawn` that have not finished.
+/// Threads started by `spawn` that have not finished, and jobs of the
+/// thread pool queued or running.
 static RUNNING: AtomicUsize = AtomicUsize::new(0);
 
 /// Threads that have stored their result but not yet finished their exit
 /// (releasing the handle, adding their statistics to the totals).
 static FINISHING: AtomicUsize = AtomicUsize::new(0);
 
-/// Threads started by `spawn` that are still running.
+/// Threads started by `spawn` that are still running, and jobs of the
+/// thread pool not yet over.
 pub fn running() -> usize {
     RUNNING.load(Ordering::Acquire)
 }
@@ -37,13 +39,14 @@ pub fn wait_finishing() {
 unsafe extern "C" {
     /// Generated: applies the closure `f` to `a`, consuming both (the C ABI
     /// entry around `cirka_apply_1`).
-    fn cirka_call_1(f: Obj, a: Obj) -> Obj;
+    pub(crate) fn cirka_call_1(f: Obj, a: Obj) -> Obj;
 }
 
 /// Without generated code (unit tests), a "closure" is a BYTES object
-/// whose word 1 holds an `extern "C" fn(Obj) -> Obj`, applied to the token.
+/// whose word 1 holds an `extern "C" fn(Obj) -> Obj`, applied to the
+/// argument.
 #[cfg(test)]
-unsafe fn cirka_call_1(f: Obj, a: Obj) -> Obj {
+pub(crate) unsafe fn cirka_call_1(f: Obj, a: Obj) -> Obj {
     // SAFETY: the test convention above.
     unsafe {
         let code: extern "C" fn(Obj) -> Obj = core::mem::transmute(*word(f, 1));
@@ -62,8 +65,9 @@ struct Start {
 }
 
 /// Makes the process multithreaded: the values of the CAFs evaluated so
-/// far become shared (any thread can reach them).
-fn become_mt() {
+/// far become shared (any thread can reach them). Called before the first
+/// thread is created, by the only thread.
+pub(crate) fn become_mt() {
     sync::set_mt();
     // SAFETY: the CAF objects; an evaluated CAF is an IND whose word 0 is
     // its value. No other thread exists yet.
@@ -111,10 +115,7 @@ pub unsafe extern "C" fn cirka_thread_spawn(f: Obj) -> Obj {
         let h = sync::new_sync(TAG_THREAD, core::ptr::null_mut());
         cirka_mark_shared(h);
         cirka_dup(h);
-        let stack = sys::env(c"CIRKA_THREAD_STACK_SIZE")
-            .and_then(sys::parse_size)
-            .unwrap_or(64 << 20)
-            .max(1 << 20);
+        let stack = thread_stack_size();
         let st = sys::malloc(core::mem::size_of::<Start>()) as *mut Start;
         if st.is_null() {
             crate::io::fatal(b"out of memory", 2);
@@ -126,19 +127,79 @@ pub unsafe extern "C" fn cirka_thread_spawn(f: Obj) -> Obj {
             stack,
         });
         RUNNING.fetch_add(1, Ordering::AcqRel);
+        start_detached(thread_main, st as *mut c_void, stack);
+        h
+    }
+}
+
+/// The stack size of the threads the runtime starts
+/// (`CIRKA_THREAD_STACK_SIZE`, at least 1 MiB).
+pub(crate) fn thread_stack_size() -> usize {
+    sys::env(c"CIRKA_THREAD_STACK_SIZE")
+        .and_then(sys::parse_size)
+        .unwrap_or(64 << 20)
+        .max(1 << 20)
+}
+
+/// Starts a detached thread running `entry(arg)` with a stack of `stack`
+/// bytes and a guard page area.
+///
+/// # Safety
+/// `entry` must be safe to run on a new thread with `arg`.
+pub(crate) unsafe fn start_detached(
+    entry: extern "C" fn(*mut c_void) -> *mut c_void,
+    arg: *mut c_void,
+    stack: usize,
+) {
+    // SAFETY: plain pthread calls on a local attribute object.
+    unsafe {
         let mut attr = core::mem::zeroed::<sys::pthread_attr_t>();
         sys::pthread_attr_init(&mut attr);
         sys::pthread_attr_setstacksize(&mut attr, stack);
         sys::pthread_attr_setguardsize(&mut attr, 1 << 16);
         sys::pthread_attr_setdetachstate(&mut attr, sys::PTHREAD_CREATE_DETACHED);
         let mut t: sys::pthread_t = 0;
-        let rc = sys::pthread_create(&mut t, &attr, thread_main, st as *mut c_void);
+        let rc = sys::pthread_create(&mut t, &attr, entry, arg);
         sys::pthread_attr_destroy(&mut attr);
         if rc != 0 {
             crate::io::fatal(b"cannot create a thread", 2);
         }
-        h
     }
+}
+
+/// Sets up the runtime state of a thread the runtime started: its number,
+/// its stack bounds (for stack overflow reports) and its alternate signal
+/// stack, which the caller removes with `start::remove_alt_stack`.
+///
+/// # Safety
+/// Called once, first thing, on the new thread; `stack` is its size.
+pub(crate) unsafe fn enter_thread(id: u64, stack: usize, local: *const u8) -> *mut c_void {
+    // SAFETY: this thread's own block.
+    unsafe {
+        let t = &mut *tls::tls();
+        t.id = id;
+        t.stack_hi = local as usize;
+        t.stack_lo = t.stack_hi.saturating_sub(stack);
+        crate::start::install_alt_stack()
+    }
+}
+
+/// A job was queued for the thread pool: it counts as a running thread
+/// for the exit checks until `job_end`.
+pub(crate) fn job_queued() {
+    RUNNING.fetch_add(1, Ordering::AcqRel);
+}
+
+/// The result of a pool job is out (queued for its loop): the process
+/// exit waits for `job_end`, as for a thread whose result is out.
+pub(crate) fn job_result_out() {
+    FINISHING.fetch_add(1, Ordering::AcqRel);
+}
+
+/// A pool job is over (its statistics are in the totals).
+pub(crate) fn job_end() {
+    RUNNING.fetch_sub(1, Ordering::AcqRel);
+    FINISHING.fetch_sub(1, Ordering::Release);
 }
 
 extern "C" fn thread_main(arg: *mut c_void) -> *mut c_void {
@@ -149,11 +210,7 @@ extern "C" fn thread_main(arg: *mut c_void) -> *mut c_void {
     unsafe {
         let st = (arg as *mut Start).read();
         sys::free(arg);
-        let t = &mut *tls::tls();
-        t.id = st.id;
-        t.stack_hi = &local as *const u8 as usize;
-        t.stack_lo = t.stack_hi.saturating_sub(st.stack);
-        let alt = crate::start::install_alt_stack();
+        let alt = enter_thread(st.id, st.stack, &local);
         let r = cirka_call_1(st.f, io_token());
         cirka_mark_shared(r);
         FINISHING.fetch_add(1, Ordering::AcqRel);

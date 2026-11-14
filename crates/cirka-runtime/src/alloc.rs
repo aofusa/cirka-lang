@@ -153,7 +153,20 @@ pub fn thread_exit() {
             *head = core::ptr::null_mut();
         }
         add_stats(TOTALS.get(), &t.stats);
-        t.stats = Stats::default();
+        t.stats = Stats::ZERO;
+    }
+}
+
+/// Adds this thread's statistics to the totals and starts counting from
+/// zero (a pool thread after each job, which never exits: its counts
+/// must be in the totals printed at exit).
+pub fn flush_stats() {
+    let _g = HEAP_LOCK.lock();
+    // SAFETY: TOTALS under HEAP_LOCK; this thread's own block.
+    unsafe {
+        let t = &mut (*tls::heap()).stats;
+        add_stats(TOTALS.get(), t);
+        *t = Stats::ZERO;
     }
 }
 

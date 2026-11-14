@@ -1,0 +1,434 @@
+// skip-backend: interp
+// The event loop of the runtime (FEAT-0046, 05-runtime.md §10): an echo
+// server and 10000 clients in one process, on one loop of one thread. Each
+// client connects, sends a line, reads it back and waits for the server to
+// close; at most 256 clients are connecting at a time (the listen backlog
+// holds 4096). Every connection stays open until the last client has its
+// echo, so 10000 client and 10000 server sockets are open at once. Then
+// the server cancels its watches and closes its sockets, and each client
+// sees the end of its input and closes its own: the loop ends, nothing is
+// left to wait for. (The server closes first: the closed connections wait
+// out TIME_WAIT on its side, not on the clients' ephemeral ports.)
+// Callbacks find the loop with `cirka_loop_current`: capturing it would be
+// a cycle (the loop holds its callbacks).
+type Unit { U = 0 {} }
+
+extern fn cirka_write_bytes(ptr) -> void
+extern fn cirka_write_i64(i64) -> void
+extern fn cirka_write_char(i64) -> void
+extern fn cirka_errno() -> i64
+extern fn cirka_fd_limit_raise() -> i64
+extern fn cirka_fd_read(i64, i64) -> ptr
+extern fn cirka_fd_close(i64) -> i64
+extern fn cirka_loop_new() -> ptr
+extern fn cirka_loop_current() -> ptr
+extern fn cirka_loop_watch(ptr, i64, i64, ptr) -> i64
+extern fn cirka_loop_unwatch(ptr, i64) -> i64
+extern fn cirka_loop_timer(ptr, i64, ptr) -> i64
+extern fn cirka_loop_run(ptr) -> i64
+extern fn cirka_loop_stop(ptr) -> i64
+extern fn cirka_net_listen(ptr, i64, i64) -> i64
+extern fn cirka_net_local_port(i64) -> i64
+extern fn cirka_net_accept(i64) -> i64
+extern fn cirka_net_connect(ptr, i64) -> i64
+extern fn cirka_net_connect_result(i64) -> i64
+extern fn cirka_net_send(i64, ptr, i64) -> i64
+
+// The state: the words of one byte string, updated in place.
+//   0 clients   1 port   2 listener   3 accepted   4 started   5 echoed
+//   6 server sockets open   7 most server sockets open at once
+//   8 client sockets open   9 most client sockets open at once
+//   10 bytes echoed by the server   11 server watches cancelled
+//   16 + i: the socket of client i
+//   10016 + i: the server's socket of the i-th connection accepted
+
+fn add(st: ptr @borrowed, k: i64, d: i64) -> i64 {
+entry:
+  let v = prim bytes_get_i64(st, k)
+  let v1 = prim add(v, d)
+  let _ = prim bytes_set_i64_shared(st, k, v1)
+  ret v1
+}
+
+// One more socket open in counter `k`, whose maximum is word `m`.
+fn opened(st: ptr @borrowed, k: i64, m: i64) -> i64 {
+entry:
+  let v = call add(st, k, 1)
+  let mx = prim bytes_get_i64(st, m)
+  let c = prim gt(v, mx)
+  switch c { 1 => more, default => done }
+more:
+  let _ = prim bytes_set_i64_shared(st, m, v)
+  ret 0
+done:
+  ret 0
+}
+
+fn say(what: ptr @borrowed, n: i64) -> i64 {
+entry:
+  let _ = extern cirka_write_bytes(what)
+  let _ = extern cirka_write_i64(n)
+  let _ = extern cirka_write_char(10)
+  ret 0
+}
+
+// Reports a failure and stops the loop.
+fn fail(what: ptr @borrowed, e: i64) -> i64 {
+entry:
+  let _ = call say(what, e)
+  let l = extern cirka_loop_current()
+  let _ = extern cirka_loop_stop(l)
+  drop l
+  ret 0
+}
+
+// Watches `fd` for `ev` (1 read, 2 write) with the callback `cb`.
+fn watch(fd: i64, ev: i64, cb: ptr @owned) -> i64 {
+entry:
+  let l = extern cirka_loop_current()
+  let r = extern cirka_loop_watch(l, fd, ev, cb)
+  drop l
+  drop cb
+  switch r { 0 => ok, default => failed }
+ok:
+  ret 0
+failed:
+  let _ = call fail("watch: ", r)
+  ret r
+}
+
+fn unit() -> ptr {
+entry:
+  let u = alloc Unit.U()
+  ret u
+}
+
+// The listener is readable: accepts the pending connections.
+fn on_accept(st: ptr @owned, tok: ptr @owned) -> ptr {
+entry:
+  drop tok
+  let lfd = prim bytes_get_i64(st, 2)
+  jump next
+next:
+  let c = extern cirka_net_accept(lfd)
+  let ok = prim ge(c, 0)
+  switch ok { 1 => got, default => none }
+got:
+  let a = call add(st, 3, 1)
+  let at = prim add(a, 10015)
+  let _ = prim bytes_set_i64_shared(st, at, c)
+  let _ = call opened(st, 6, 7)
+  dup st
+  let cb1 = mkclosure on_server_read(st, c)
+  let _ = call watch(c, 1, cb1)
+  jump next
+none:
+  switch c { -11 => drained, default => failed }
+drained:
+  let n = prim bytes_get_i64(st, 0)
+  let acc = prim bytes_get_i64(st, 3)
+  let all = prim ge(acc, n)
+  switch all { 1 => close, default => rewatch }
+rewatch:
+  let cb2 = mkclosure on_accept(st)
+  let _ = call watch(lfd, 1, cb2)
+  let u1 = call unit()
+  ret u1
+close:
+  let _ = extern cirka_fd_close(lfd)
+  drop st
+  let u2 = call unit()
+  ret u2
+failed:
+  let _ = call fail("accept: ", c)
+  drop st
+  let u3 = call unit()
+  ret u3
+}
+
+// A server socket is readable: echoes what came.
+fn on_server_read(st: ptr @owned, c: i64, tok: ptr @owned) -> ptr {
+entry:
+  drop tok
+  let d = extern cirka_fd_read(c, 4096)
+  let e = extern cirka_errno()
+  let n = prim bytes_len(d)
+  switch n { 0 => empty, default => echo }
+echo:
+  let s = extern cirka_net_send(c, d, 0)
+  drop d
+  let full = prim eq(s, n)
+  switch full { 1 => sent, default => short }
+sent:
+  let _ = call add(st, 10, n)
+  let cb1 = mkclosure on_server_read(st, c)
+  let _ = call watch(c, 1, cb1)
+  let u1 = call unit()
+  ret u1
+short:
+  let _ = call fail("server send: ", s)
+  drop st
+  let u2 = call unit()
+  ret u2
+empty:
+  drop d
+  switch e { 11 => spurious, default => error }
+spurious:
+  let cb2 = mkclosure on_server_read(st, c)
+  let _ = call watch(c, 1, cb2)
+  let u3 = call unit()
+  ret u3
+error:
+  // A client never closes first: the end of the input (0) is a failure.
+  let _ = call fail("server read: ", e)
+  drop st
+  let u4 = call unit()
+  ret u4
+}
+
+// The server closes every connection: cancels the watch of each socket
+// (its callback is dropped, not called) and closes it.
+fn close_servers(st: ptr @borrowed, i: i64) -> i64 {
+entry:
+  let n = prim bytes_get_i64(st, 0)
+  let c = prim lt(i, n)
+  switch c { 1 => one, default => done }
+one:
+  let at = prim add(i, 10016)
+  let fd = prim bytes_get_i64(st, at)
+  let l = extern cirka_loop_current()
+  let w = extern cirka_loop_unwatch(l, fd)
+  drop l
+  let _ = call add(st, 11, w)
+  let _ = extern cirka_fd_close(fd)
+  let _ = call add(st, 6, -1)
+  let i1 = prim add(i, 1)
+  tailcall close_servers(st, i1)
+done:
+  ret 0
+}
+
+// Starts the next client, if any is left.
+fn start_one(st: ptr @borrowed) -> i64 {
+entry:
+  let n = prim bytes_get_i64(st, 0)
+  let i = prim bytes_get_i64(st, 4)
+  let more = prim lt(i, n)
+  switch more { 1 => go, default => done }
+done:
+  ret 0
+go:
+  let i1 = prim add(i, 1)
+  let _ = prim bytes_set_i64_shared(st, 4, i1)
+  let port = prim bytes_get_i64(st, 1)
+  let fd = extern cirka_net_connect("127.0.0.1", port)
+  let ok = prim ge(fd, 0)
+  switch ok { 1 => started, default => failed }
+started:
+  let at = prim add(i, 16)
+  let _ = prim bytes_set_i64_shared(st, at, fd)
+  let _ = call opened(st, 8, 9)
+  dup st
+  let cb = mkclosure on_connected(st, fd)
+  let _ = call watch(fd, 2, cb)
+  ret 0
+failed:
+  let _ = call fail("connect: ", fd)
+  ret 0
+}
+
+// Starts `k` clients.
+fn start_clients(st: ptr @borrowed, k: i64) -> i64 {
+entry:
+  switch k { 0 => done, default => one }
+one:
+  let _ = call start_one(st)
+  let k1 = prim sub(k, 1)
+  tailcall start_clients(st, k1)
+done:
+  ret 0
+}
+
+fn kickoff(st: ptr @owned, tok: ptr @owned) -> ptr {
+entry:
+  drop tok
+  let _ = call start_clients(st, 256)
+  drop st
+  let u = call unit()
+  ret u
+}
+
+// A client socket is writable: connected (or failed to). Sends the line.
+fn on_connected(st: ptr @owned, fd: i64, tok: ptr @owned) -> ptr {
+entry:
+  drop tok
+  let r = extern cirka_net_connect_result(fd)
+  switch r { 0 => send, default => failed }
+send:
+  let s = extern cirka_net_send(fd, "hello\n", 0)
+  switch s { 6 => sent, default => short }
+sent:
+  let cb = mkclosure on_echo(st, fd, 0)
+  let _ = call watch(fd, 1, cb)
+  let u1 = call unit()
+  ret u1
+short:
+  let _ = call fail("client send: ", s)
+  drop st
+  let u2 = call unit()
+  ret u2
+failed:
+  let _ = call fail("connect result: ", r)
+  drop st
+  let u3 = call unit()
+  ret u3
+}
+
+// A client socket is readable: `got` bytes of the echo came so far.
+fn on_echo(st: ptr @owned, fd: i64, got: i64, tok: ptr @owned) -> ptr {
+entry:
+  drop tok
+  let d = extern cirka_fd_read(fd, 64)
+  let e = extern cirka_errno()
+  let n = prim bytes_len(d)
+  drop d
+  switch n { 0 => empty, default => part }
+part:
+  let got1 = prim add(got, n)
+  switch got1 { 6 => echoed, default => partial }
+partial:
+  let less = prim lt(got1, 6)
+  switch less { 1 => wait, default => toomuch }
+wait:
+  let cb1 = mkclosure on_echo(st, fd, got1)
+  let _ = call watch(fd, 1, cb1)
+  let u1 = call unit()
+  ret u1
+toomuch:
+  let _ = call fail("echo too long: ", got1)
+  drop st
+  let u2 = call unit()
+  ret u2
+echoed:
+  // Waits for the server to close.
+  dup st
+  let cb2 = mkclosure on_end(st, fd)
+  let _ = call watch(fd, 1, cb2)
+  let k = call add(st, 5, 1)
+  let all = prim bytes_get_i64(st, 0)
+  let last = prim eq(k, all)
+  switch last { 1 => finish, default => next }
+next:
+  let _ = call start_one(st)
+  drop st
+  let u3 = call unit()
+  ret u3
+finish:
+  // Every client has its echo, every connection is open.
+  let _ = call close_servers(st, 0)
+  drop st
+  let u4 = call unit()
+  ret u4
+empty:
+  switch e { 11 => spurious, default => failed }
+spurious:
+  let cb3 = mkclosure on_echo(st, fd, got)
+  let _ = call watch(fd, 1, cb3)
+  let u5 = call unit()
+  ret u5
+failed:
+  // The end of the input (0) before the echo is a failure too.
+  let _ = call fail("echo read: ", e)
+  drop st
+  let u6 = call unit()
+  ret u6
+}
+
+// A client socket is readable after the echo: the server closed.
+fn on_end(st: ptr @owned, fd: i64, tok: ptr @owned) -> ptr {
+entry:
+  drop tok
+  let d = extern cirka_fd_read(fd, 64)
+  let e = extern cirka_errno()
+  let n = prim bytes_len(d)
+  drop d
+  switch n { 0 => empty, default => more }
+more:
+  let _ = call fail("data after the echo: ", n)
+  drop st
+  let u1 = call unit()
+  ret u1
+empty:
+  switch e { 0 => closed, 11 => spurious, default => failed }
+closed:
+  let _ = extern cirka_fd_close(fd)
+  let _ = call add(st, 8, -1)
+  drop st
+  let u2 = call unit()
+  ret u2
+spurious:
+  let cb = mkclosure on_end(st, fd)
+  let _ = call watch(fd, 1, cb)
+  let u3 = call unit()
+  ret u3
+failed:
+  let _ = call fail("end read: ", e)
+  drop st
+  let u4 = call unit()
+  ret u4
+}
+
+fn main() -> i64 {
+entry:
+  // 10000 sockets on each side, the listener, the loop's own.
+  let lim = extern cirka_fd_limit_raise()
+  let enough = prim ge(lim, 20100)
+  switch enough { 1 => go, default => few }
+few:
+  let _ = call say("too few file descriptors: ", lim)
+  ret 1
+go:
+  let lfd = extern cirka_net_listen("127.0.0.1", 0, 0)
+  let ok = prim ge(lfd, 0)
+  switch ok { 1 => listening, default => nolisten }
+nolisten:
+  let _ = call say("listen: ", lfd)
+  ret 1
+listening:
+  let port = extern cirka_net_local_port(lfd)
+  let st = prim bytes_new(160128)
+  let _ = prim bytes_set_i64(st, 0, 10000)
+  let _ = prim bytes_set_i64(st, 1, port)
+  let _ = prim bytes_set_i64(st, 2, lfd)
+  let l = extern cirka_loop_new()
+  dup st
+  let acb = mkclosure on_accept(st)
+  let w = extern cirka_loop_watch(l, lfd, 1, acb)
+  drop acb
+  dup st
+  let kick = mkclosure kickoff(st)
+  let _ = extern cirka_loop_timer(l, 0, kick)
+  drop kick
+  let r = extern cirka_loop_run(l)
+  drop l
+  let _ = call say("watch: ", w)
+  let _ = call say("run: ", r)
+  let a = prim bytes_get_i64(st, 3)
+  let _ = call say("accepted: ", a)
+  let e = prim bytes_get_i64(st, 5)
+  let _ = call say("echoed: ", e)
+  let ms = prim bytes_get_i64(st, 7)
+  let _ = call say("server sockets open at once: ", ms)
+  let mc = prim bytes_get_i64(st, 9)
+  let _ = call say("client sockets open at once: ", mc)
+  let cw = prim bytes_get_i64(st, 11)
+  let _ = call say("server watches cancelled: ", cw)
+  let os = prim bytes_get_i64(st, 6)
+  let oc = prim bytes_get_i64(st, 8)
+  let open = prim add(os, oc)
+  let _ = call say("open at the end: ", open)
+  let b = prim bytes_get_i64(st, 10)
+  let _ = call say("bytes echoed: ", b)
+  drop st
+  ret 0
+}

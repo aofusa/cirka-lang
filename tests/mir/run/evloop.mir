@@ -1,0 +1,229 @@
+// skip-backend: interp
+// tsan: 1
+// The event loop of the runtime (FEAT-0046, 05-runtime.md §10): timers run
+// in the order of their deadlines, a cancelled timer does not run, a loop
+// stops at the end of a turn and runs again, actions posted from another
+// thread through a remote run on the loop's thread (the loop waits while
+// the remote lives), and blocking work runs on the runtime's thread pool
+// while its results come back to the loop's thread.
+type Unit { U = 0 {} }
+type Res { R = 0 { sum: i64, tid: i64 } }
+
+extern fn cirka_write_bytes(ptr) -> void
+extern fn cirka_write_i64(i64) -> void
+extern fn cirka_write_char(i64) -> void
+extern fn cirka_thread_spawn(ptr) -> ptr
+extern fn cirka_thread_join(ptr) -> ptr
+extern fn cirka_thread_id() -> i64
+extern fn cirka_loop_new() -> ptr
+extern fn cirka_loop_current() -> ptr
+extern fn cirka_loop_timer(ptr, i64, ptr) -> i64
+extern fn cirka_loop_cancel(ptr, i64) -> i64
+extern fn cirka_loop_run(ptr) -> i64
+extern fn cirka_loop_stop(ptr) -> i64
+extern fn cirka_loop_remote(ptr) -> ptr
+extern fn cirka_remote_post(ptr, ptr) -> i64
+extern fn cirka_loop_blocking(ptr, ptr, ptr) -> i64
+
+// The state, words of a byte string written on the loop's thread only:
+//   0 the loop's thread   1 sum of the posted numbers   2 posts run on the
+//   loop's thread   5 jobs done   6 sum of the jobs' results   7 results
+//   handled on the loop's thread   8 jobs run on another thread
+
+fn say(what: ptr @borrowed, n: i64) -> i64 {
+entry:
+  let _ = extern cirka_write_bytes(what)
+  let _ = extern cirka_write_i64(n)
+  let _ = extern cirka_write_char(10)
+  ret 0
+}
+
+fn add(st: ptr @borrowed, k: i64, d: i64) -> i64 {
+entry:
+  let v = prim bytes_get_i64(st, k)
+  let v1 = prim add(v, d)
+  let _ = prim bytes_set_i64_shared(st, k, v1)
+  ret v1
+}
+
+// 1 if the calling thread is the loop's.
+fn on_loop_thread(st: ptr @borrowed) -> i64 {
+entry:
+  let me = extern cirka_thread_id()
+  let owner = prim bytes_get_i64(st, 0)
+  let r = prim eq(me, owner)
+  ret r
+}
+
+fn unit() -> ptr {
+entry:
+  let u = alloc Unit.U()
+  ret u
+}
+
+fn tick(n: i64, tok: ptr @owned) -> ptr {
+entry:
+  drop tok
+  let _ = extern cirka_write_i64(n)
+  let _ = extern cirka_write_char(10)
+  let u = call unit()
+  ret u
+}
+
+// Stops the loop. The timer it adds is due at once but runs in a later
+// turn: in the next run.
+fn stopper(tok: ptr @owned) -> ptr {
+entry:
+  drop tok
+  let l = extern cirka_loop_current()
+  let _ = extern cirka_loop_stop(l)
+  let t = mkclosure tick(3)
+  let _ = extern cirka_loop_timer(l, 0, t)
+  drop t
+  drop l
+  let _ = extern cirka_write_bytes("stop\n")
+  let u = call unit()
+  ret u
+}
+
+// Posted from the other thread: runs on the loop's thread.
+fn posted(st: ptr @owned, i: i64, tok: ptr @owned) -> ptr {
+entry:
+  drop tok
+  let _ = call add(st, 1, i)
+  let mine = call on_loop_thread(st)
+  let _ = call add(st, 2, mine)
+  drop st
+  let u = call unit()
+  ret u
+}
+
+// The other thread: posts three actions to the loop, then drops the
+// remote (the last one: the loop ends when it has run the actions).
+fn poster(rm: ptr @owned, st: ptr @owned, tok: ptr @owned) -> ptr {
+entry:
+  drop tok
+  jump loop(1)
+loop(i: i64):
+  let c = prim le(i, 3)
+  switch c { 1 => post, default => done }
+post:
+  dup st
+  let p = mkclosure posted(st, i)
+  let _ = extern cirka_remote_post(rm, p)
+  drop p
+  let i1 = prim add(i, 1)
+  jump loop(i1)
+done:
+  drop rm
+  drop st
+  let u = call unit()
+  ret u
+}
+
+// Blocking work on the pool: 1 + 2 + ... + k, and the thread it ran on.
+fn work(k: i64, tok: ptr @owned) -> ptr {
+entry:
+  drop tok
+  jump loop(1, 0)
+loop(i: i64, s: i64):
+  let c = prim gt(i, k)
+  switch c { 1 => done, default => step }
+step:
+  let s1 = prim add(s, i)
+  let i1 = prim add(i, 1)
+  jump loop(i1, s1)
+done:
+  let tid = extern cirka_thread_id()
+  let r = alloc Res.R(s, tid)
+  ret r
+}
+
+// The result of a job, on the loop's thread.
+fn done(st: ptr @owned, r: ptr @owned, tok: ptr @owned) -> ptr {
+entry:
+  drop tok
+  let s = proj r Res.R.sum
+  let tid = proj r Res.R.tid
+  drop r
+  let _ = call add(st, 5, 1)
+  let _ = call add(st, 6, s)
+  let mine = call on_loop_thread(st)
+  let _ = call add(st, 7, mine)
+  let owner = prim bytes_get_i64(st, 0)
+  let other = prim ne(tid, owner)
+  let _ = call add(st, 8, other)
+  drop st
+  let u = call unit()
+  ret u
+}
+
+fn submit(l: ptr @borrowed, st: ptr @borrowed, k: i64) -> i64 {
+entry:
+  let w = mkclosure work(k)
+  dup st
+  let d = mkclosure done(st)
+  let r = extern cirka_loop_blocking(l, w, d)
+  drop w
+  drop d
+  ret r
+}
+
+fn main() -> i64 {
+entry:
+  let l = extern cirka_loop_new()
+  // Timers.
+  let t1 = mkclosure tick(1)
+  let _ = extern cirka_loop_timer(l, 10, t1)
+  drop t1
+  let t9 = mkclosure tick(9)
+  let id = extern cirka_loop_timer(l, 15, t9)
+  drop t9
+  let t2 = mkclosure tick(2)
+  let _ = extern cirka_loop_timer(l, 20, t2)
+  drop t2
+  let c = extern cirka_loop_cancel(l, id)
+  let _ = call say("cancelled: ", c)
+  let s = mkclosure stopper()
+  let _ = extern cirka_loop_timer(l, 25, s)
+  drop s
+  let r1 = extern cirka_loop_run(l)
+  let _ = call say("run: ", r1)
+  let r2 = extern cirka_loop_run(l)
+  let _ = call say("run: ", r2)
+  // A remote: actions posted by another thread.
+  let st = prim bytes_new(72)
+  let me = extern cirka_thread_id()
+  let _ = prim bytes_set_i64(st, 0, me)
+  let rm = extern cirka_loop_remote(l)
+  dup st
+  let pc = mkclosure poster(rm, st)
+  let h = extern cirka_thread_spawn(pc)
+  drop pc
+  let r3 = extern cirka_loop_run(l)
+  let j = extern cirka_thread_join(h)
+  drop j
+  drop h
+  let _ = call say("run: ", r3)
+  let ps = prim bytes_get_i64(st, 1)
+  let _ = call say("posted: ", ps)
+  let pm = prim bytes_get_i64(st, 2)
+  let _ = call say("posts run on the loop's thread: ", pm)
+  // Blocking work on the thread pool.
+  let _ = call submit(l, st, 1000)
+  let _ = call submit(l, st, 2000)
+  let _ = call submit(l, st, 3000)
+  let r4 = extern cirka_loop_run(l)
+  let _ = call say("run: ", r4)
+  let jd = prim bytes_get_i64(st, 5)
+  let _ = call say("jobs: ", jd)
+  let js = prim bytes_get_i64(st, 6)
+  let _ = call say("sum: ", js)
+  let jm = prim bytes_get_i64(st, 7)
+  let _ = call say("results handled on the loop's thread: ", jm)
+  let jo = prim bytes_get_i64(st, 8)
+  let _ = call say("jobs run on another thread: ", jo)
+  drop l
+  drop st
+  ret 0
+}

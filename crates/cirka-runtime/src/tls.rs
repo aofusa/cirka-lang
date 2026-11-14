@@ -44,6 +44,9 @@ pub struct Tls {
     /// to report stack overflows.
     pub stack_lo: usize,
     pub stack_hi: usize,
+    /// The event loop whose `cirka_loop_run` runs on this thread (the
+    /// innermost; null if none): callbacks find it without capturing it.
+    pub cur_loop: *mut crate::object::Header,
 }
 
 const TLS_SIZE: usize = core::mem::size_of::<Tls>();

@@ -12,10 +12,12 @@ pub mod alloc;
 pub mod bigint;
 pub mod cycles;
 pub mod debug;
+pub mod evloop;
 pub mod fs;
 pub mod io;
 pub mod mem;
 pub mod mutvar;
+pub mod net;
 pub mod object;
 pub mod region;
 pub mod start;
@@ -41,6 +43,12 @@ unsafe impl<T> Sync for Global<T> {}
 impl<T> Global<T> {
     pub const fn new(v: T) -> Global<T> {
         Global(UnsafeCell::new(v))
+    }
+
+    /// A raw pointer to the value (for C functions that take one).
+    #[inline(always)]
+    pub const fn ptr(&self) -> *mut T {
+        self.0.get()
     }
 
     /// # Safety

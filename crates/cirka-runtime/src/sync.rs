@@ -91,6 +91,11 @@ impl Mutex {
         MutexGuard(self)
     }
 
+    /// The pthread mutex, for `pthread_cond_wait` while a guard is held.
+    pub fn raw(&self) -> *mut sys::pthread_mutex_t {
+        self.0.get()
+    }
+
     /// Locks only in a multithreaded process (a single thread pays nothing).
     #[inline(always)]
     pub fn lock_if_mt(&self) -> Option<MutexGuard<'_>> {

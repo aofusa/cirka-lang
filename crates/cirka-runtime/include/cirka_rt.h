@@ -116,6 +116,34 @@ void   *cirka_chan_recv(void *c);
 void   *cirka_chan_try_recv(void *c, void *dflt);
 int64_t cirka_chan_len(void *c);
 
+/* Event loops and sockets (05-runtime.md §10; pointer arguments borrowed;
+ * failures are -errno). A loop is used by the thread that created it;
+ * other threads post to it through a remote. */
+void   *cirka_loop_new(void);
+void   *cirka_loop_current(void);
+int64_t cirka_loop_watch(void *loop, int64_t fd, int64_t events, void *io);
+int64_t cirka_loop_unwatch(void *loop, int64_t fd);
+int64_t cirka_loop_events(void *loop);
+int64_t cirka_loop_timer(void *loop, int64_t ms, void *io);
+int64_t cirka_loop_cancel(void *loop, int64_t timer);
+int64_t cirka_loop_run(void *loop);
+int64_t cirka_loop_stop(void *loop);
+void   *cirka_loop_remote(void *loop);
+int64_t cirka_remote_post(void *remote, void *io);
+int64_t cirka_loop_blocking(void *loop, void *work, void *done);
+int64_t cirka_net_listen(void *host, int64_t port, int64_t backlog);
+int64_t cirka_net_accept(int64_t fd);
+int64_t cirka_net_connect(void *host, int64_t port);
+int64_t cirka_net_connect_result(int64_t fd);
+int64_t cirka_net_local_port(int64_t fd);
+int64_t cirka_net_set_nodelay(int64_t fd, int64_t on);
+int64_t cirka_net_shutdown(int64_t fd, int64_t how);
+void   *cirka_net_resolve(void *host);
+int64_t cirka_net_send(int64_t fd, void *data, int64_t off);
+int64_t cirka_fd_write_from(int64_t fd, void *data, int64_t off);
+int64_t cirka_fd_set_nonblocking(int64_t fd, int64_t on);
+int64_t cirka_fd_limit_raise(void);
+
 /* provided by generated code */
 int64_t cirka_main(void);
 void   *cirka_call_1(void *f, void *arg);

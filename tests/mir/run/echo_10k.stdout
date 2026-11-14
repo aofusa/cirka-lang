@@ -1,0 +1,9 @@
+watch: 0
+run: 0
+accepted: 10000
+echoed: 10000
+server sockets open at once: 10000
+client sockets open at once: 10000
+server watches cancelled: 10000
+open at the end: 0
+bytes echoed: 60000
