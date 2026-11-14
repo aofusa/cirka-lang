@@ -17,6 +17,12 @@ v0.0.4 の目的は、**プログラムが仕様を満たすことを型と証�
 | §1.3 | 尺度 `decreasing e` と、`Int` / `Nat` の引数の自動の尺度 (Z3) | FEAT-0230 |
 | §1.4 | 型の中で使う関数は全域でなければならない | FEAT-0230 |
 | §1.5 | 診断 E0502 / E0504 / E0505 | FEAT-0230 |
+| §2.1 | 命題等価 `x = y` (`Equal`)、`Refl`、`sym` / `trans` / `cong`、`Void` / `Dec` / `So` | FEAT-0231 |
+| §2.2 | `rewrite p in e` | FEAT-0231 |
+| §2.3 | `with e of alts` (ゴールの抽象) | FEAT-0231 |
+| §2.4 | 証明は全域 (E0506) で、実行時に消える | FEAT-0231 |
+| §2.5 | `core` の `Data.Nat` / `Data.Fin` / `Data.Vect` | FEAT-0231 |
+| §2.6 | 診断 E0506 / E1250 / E1251 / E1252 | FEAT-0231 |
 
 ## 1. 全域性 (FEAT-0230)
 
@@ -98,3 +104,80 @@ countdown n = if n <= 0 then 0 else countdown (n - 1)     -- 尺度は自動 (n)
 | E0505 | 型の中で全域でない関数を使った |
 
 `partial` な関数ではない `covering` の関数で場合が欠けていると、従来どおり E1230 (`partial` と宣言する案内を添える)。
+
+## 2. 等式と証明 (FEAT-0231)
+
+```
+total
+appendNilRight : (xs : List a) -> append xs [] = xs
+appendNilRight [] = Refl
+appendNilRight (x :: xs) = rewrite appendNilRight xs in Refl
+```
+
+### 2.1 命題等価
+
+- `x = y` は Prelude の型 `Equal x y` の略記である。
+
+  ```
+  data Equal : {a : Type} -> (0 x : a) -> (0 y : a) -> Type where
+    Refl : Equal x x
+  ```
+
+- `=` は演算子 (`+`、`::`、`==` など) より弱く、`->` より強く結合する (`plus n Z + 0 = n -> n = n` は `((plus n Z + 0) = n) -> (n = n)`)。
+  結合性はなく、`a = b = c` は書けない。`let x : T = e` の注釈の中では `=` は区切りであり、注釈の型に等式を書くときは括弧で囲む。
+- `Refl : x = x` が唯一の構成子である。型検査は両辺を評価して比べるので、`plus (S Z) (S Z) = S (S Z)` は `Refl` で示せる。
+- Prelude の全域な関数: `sym : x = y -> y = x`、`trans : x = y -> y = z -> x = z`、`cong : (f : a -> b) -> x = y -> f x = f y`、`absurd : Void -> a`、`soTrue : So b -> b = True`。
+- Prelude の型: `data Void` (構成子なし)、`data Dec p = Yes p | No (p -> Void)` (決定可能な命題)、`data So : Bool -> Type where Oh : So True` (真であることの証明)。
+
+### 2.2 `rewrite`
+
+- `rewrite p in e`: `p : x = y` のとき、ゴール (期待される型) に現れる `x` をすべて `y` に置き換えた型で `e` を検査する。
+- ゴールは、定義を **case で止まらない限り** 1 段ずつ展開した形で探す (`rev (x :: xs)` は `append (rev xs) [x]` として見る)。`x` も同じ形にして比べる。
+- 期待される型が必要なので、`rewrite` は検査の位置 (型の分かる場所) でだけ使える。
+- Prelude のプリミティブ `primRewrite : {a : Type} -> (0 p : a -> LType) -> (0 x : a) -> (0 y : a) -> (0 eq : x = y) -> (1 v : p y) -> p x` に展開され (線形の値も書き換えられる)、
+  実行時には `e` そのものになる (証明 `p` は消える)。
+
+### 2.3 `with`
+
+```
+emptyOrNot : (xs : List a) -> Either (isEmpty xs = True) (isEmpty xs = False)
+emptyOrNot xs = with isEmpty xs of
+  True => Left Refl
+  False => Right Refl
+```
+
+- `with e of alts` は `case e of alts` と同じく `e` で分岐するが、**ゴールに現れる `e` を各選択肢のパターンに置き換えた型** で選択肢を検査する。
+  上の例では、`True` の選択肢のゴールは `Either (True = True) (True = False)` になる。
+- `e` は共有可能な値でなければならない (線形の値は E1252。`case` を使う)。
+
+### 2.4 証明の全域性と消去
+
+- 結果の型が等式か `Void` である関数を **証明** と呼ぶ。証明は全域でなければならない (E0506)。
+  証明は多重度 0 で使われ実行時に消えるので、止まらない関数や `panic` する関数を証明として認めると、偽の命題が「示せて」しまう。
+- 証明・`So` などの多重度 0 の引数、`rewrite` は実行時に何も残さない。
+  `tests/cirkalang/run/v004/proof_erased.cirka` (証明あり) と `proof_none.cirka` (証明なし) は `-O2` で同一の MIR になることをテストで確かめる。
+  このため Core の最適化は、構成子の分かっている値の型変換 (`cast`) を構成子の分かった値として扱い、遅延のままにできる (ADR-078)。
+
+### 2.5 `core` のライブラリ
+
+| モジュール | 内容 |
+|------------|------|
+| `Data.Nat` | `mult`、`minus`、`natFromInt`、`plusZeroRight`、`plusSuccRight`、`plusComm`、`plusAssoc`、`succInjective`、`zeroNotSucc`、`decEq`、`LTE` (`lteRefl`、`lteSucc`、`isLTE`) |
+| `Data.Fin` | `Fin n` (`FZ` / `FS`、`n` 未満の自然数)、`finToNat`、`finToInt`、`last`、`finZAbsurd`、`natToFin` |
+| `Data.Vect` | `Vect n a` (`VNil` / `VCons`)、`length`、`lengthCorrect`、`head`、`tail`、`index` (`Fin n` で範囲外がない)、`replaceAt`、`append`、`map`、`zipWith`、`foldl`、`replicate`、`toList`、`fromList`、`reverse` |
+
+ライブラリの関数は Z3 なしで全域性を示せるように書く (尺度が要る `natFromInt` は `covering`)。
+
+### 2.6 診断
+
+| コード | 内容 |
+|--------|------|
+| E0506 | 証明 (結果が等式か `Void` の関数) が全域でない |
+| E1250 | `rewrite` の証明が等式でない |
+| E1251 | `rewrite` で置き換える式がゴールに現れない (ゴールを表示) |
+| E1252 | `with` で線形の値を調べた |
+
+### 2.7 制限
+
+- 型の中のトレイトのメソッド・多相なリテラル (`So (d /= 0)`) は、インスタンスが決まるまで評価されないため、等式の両辺で簡約されないことがある。単相の関数を使う。
+- 型の水準の関数の名前は小文字で始める (大文字の名前は構成子・型として解決される)。

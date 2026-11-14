@@ -74,6 +74,8 @@ appendNilRight (x :: xs) = rewrite appendNilRight xs in Refl
 
 - 命題等価 `=`、`Refl`、`rewrite`、`with` 抽象、`Dec`、`So`、`Void` を `core` に置く。
 - 証明は通常の関数として書き、多重度 0 で使えば実行時に消える。
+- 確定した規則は [spec-v0.0.4.md](cirkalang/spec-v0.0.4.md) §2。`x = y` は Prelude の `Equal x y`、`rewrite` はプリミティブ `primRewrite` に展開され実行時には本体だけが残る。
+  結果が等式か `Void` の関数は証明であり全域でなければならない (E0506)。証明の有無で `-O2` の MIR が同一であることをテストで確かめる。
 
 ### 3.3 部分集合型 (洗練型) と SMT
 
