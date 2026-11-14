@@ -1,0 +1,28 @@
+error[E0501]: cannot prove the refinement `(0 <= (i + k)) && ((i + k) < (size arr))`
+  --> tests/cirkalang/verify/fail/overflow.cirka:11:75
+   |
+11 | get arr i k = if 0 <= i && 0 <= k && i + k < A.size arr then A.index arr (i + k) else 0
+   |                                                                           ^^^^^ in `Main.get`
+   = note: counterexample: i = 1, k = 9223372036854775807, primArraySize arr = 9223372036854775807
+   = help: check the value, add a condition (`if`), or refine the type of what it is computed from
+error[E0501]: cannot prove the refinement `(n + 1) > n`
+  --> tests/cirkalang/verify/fail/overflow.cirka:16:10
+   |
+16 | succ n = n + 1
+   |          ^^^^^ in `Main.succ`
+   = note: counterexample: n = 9223372036854775807
+   = help: check the value, add a condition (`if`), or refine the type of what it is computed from
+error[E0501]: cannot prove the refinement `False`
+  --> tests/cirkalang/verify/fail/overflow.cirka:26:51
+   |
+26 | half n = if n * 2 == 0 && n /= 0 then unreachable () else n / 2
+   |                                                   ^^ in `Main.half`
+   = note: counterexample: n = -9223372036854775808
+   = help: check the value, add a condition (`if`), or refine the type of what it is computed from
+error[E0502]: cannot show that `gcd` terminates
+  --> tests/cirkalang/verify/fail/overflow.cirka:20:1
+   |
+20 | gcd : Int -> Int -> Int
+   | ^^^ declared `total`
+   = note: the measure does not decrease (or is negative) at a recursive call when a = 9223372036854775807, b = -9223372036854775808
+   = help: give a measure that decreases: `decreasing e` after a clause (spec-v0.0.4.md §1.3)

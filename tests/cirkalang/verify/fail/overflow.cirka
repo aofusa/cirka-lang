@@ -1,0 +1,29 @@
+module Main
+
+-- BUG-0018: `Int` is 64-bit and wraps on overflow. Facts that hold for
+-- mathematical integers but not for `Int` are not proved.
+
+import Data.Array as A
+
+-- `i + k` wraps to a negative index when both are large: the bounds
+-- check cannot be removed.
+get : (arr : A.Array Int) -> (i : Int) -> (k : Int) -> Int
+get arr i k = if 0 <= i && 0 <= k && i + k < A.size arr then A.index arr (i + k) else 0
+
+-- Not greater for the largest `Int`.
+total
+succ : (n : Int) -> {r : Int | r > n}
+succ n = n + 1
+
+-- `abs` of the smallest `Int` is negative: not a measure.
+total
+gcd : Int -> Int -> Int
+gcd a 0 = abs a
+gcd a b = gcd b (a % b) decreasing abs b
+
+-- `n * 2 == 0 && n /= 0` holds for the smallest `Int`: reachable.
+half : Int -> Int
+half n = if n * 2 == 0 && n /= 0 then unreachable () else n / 2
+
+main : IO ()
+main = printInt (get (A.fromList [1]) 0 0 + succ 1 + gcd 4 6 + half 8)

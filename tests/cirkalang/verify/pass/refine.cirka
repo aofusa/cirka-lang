@@ -12,13 +12,14 @@ safeDiv n d = n / d
 average : List Int -> Int
 average xs = if length xs == 0 then 0 else safeDiv (sum xs) (length xs)
 
--- A result that is always positive.
+-- A result greater than the argument. `Int` wraps (BUG-0018): `n + 1`
+-- is not greater than `n` for the largest `Int`, so `n` is bounded.
 total
-succPos : (n : Int) -> {r : Int | r > n}
+succPos : {n : Int | n < 1000000} -> {r : Int | r > n}
 succPos n = n + 1
 
 total
-absPlus : (n : Int) -> {r : Int | r >= 1}
+absPlus : {n : Int | -1000000 < n && n < 1000000} -> {r : Int | r >= 1}
 absPlus n = if n < 0 then 1 - n else n + 1
 
 -- Indexing proved in bounds.
@@ -45,25 +46,23 @@ lo a b = if a <= b then a else b
 
 -- Induction.
 total
-fib : Nat -> Int
-fib Z = 0
-fib (S Z) = 1
-fib (S (S k)) = fib k + fib (S k)
+parity : Nat -> Int
+parity Z = 0
+parity (S k) = 1 - parity k
 
--- Z3 cannot see that `fib n >= 0` (it needs induction): prove it by
--- induction, with refined results of the recursive calls as facts.
+-- Z3 cannot see that `parity n` is 0 or 1 (it needs induction): prove it
+-- by induction, with the refined result of the recursive call as a fact.
+-- (`fib n >= 0` would be false: `fib 93` wraps.)
 total
-fibNonNeg : (n : Nat) -> {u : () | fib n >= 0}
-fibNonNeg Z = ()
-fibNonNeg (S Z) = ()
-fibNonNeg (S (S k)) =
-  let a = fibNonNeg k
-      b = fibNonNeg (S k)
+parityBit : (n : Nat) -> {u : () | 0 <= parity n && parity n <= 1}
+parityBit Z = ()
+parityBit (S k) =
+  let ih = parityBit k
   in ()
 
 -- A proof given as an argument.
-divFib : Int -> (n : Nat) -> Int
-divFib x n = let p = fibNonNeg n in safeDiv x (fib n + 1)
+divParity : Int -> (n : Nat) -> Int
+divParity x n = let p = parityBit n in safeDiv x (parity n + 1)
 
 -- `So` facts.
 divSo : Int -> (d : Int) -> So (d > 0) -> Int
@@ -77,5 +76,5 @@ main = do
   printInt (sumArr (A.fromList [1, 2, 3]))
   printInt (sum (sort2 5 3))
   printInt (lo 3 (succPos 7))
-  printInt (divFib 100 (S (S (S Z))))
+  printInt (divParity 100 (S (S (S Z))))
   printInt (divSo 10 2 Oh)

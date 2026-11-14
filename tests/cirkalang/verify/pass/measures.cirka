@@ -2,21 +2,27 @@ module Main
 
 -- Termination by measures (spec-v0.0.4.md §1.3), decided by Z3.
 
--- `b` alone may be negative: its absolute value decreases.
+-- `%` cannot overflow and its result is below a positive divisor, so `b`
+-- decreases while it is positive. (`abs b` is not a measure: the absolute
+-- value of the smallest `Int` wraps, BUG-0018.)
+total
+gcdPos : Int -> Int -> Int
+gcdPos a b = if b <= 0 then a else gcdPos b (a % b) decreasing b
+
 total
 gcd : Int -> Int -> Int
-gcd a 0 = abs a
-gcd a b = gcd b (a % b) decreasing abs b
+gcd a b = gcdPos (abs a) (abs b)
 
 -- A decreasing `Int` parameter is found without a measure.
 total
 countdown : Int -> List Int -> List Int
 countdown n acc = if n <= 0 then acc else countdown (n - 1) (n :: acc)
 
--- Two indices that meet in the middle.
+-- Two indices that meet in the middle. (`hi - lo` wraps for a very
+-- negative `lo`: the loop starts at 0 or above.)
 total
 pairs : Int -> Int -> Int -> Int
-pairs lo hi acc = if lo >= hi then acc else pairs (lo + 1) (hi - 1) (acc + 1) decreasing hi - lo
+pairs lo hi acc = if lo < 0 || lo >= hi then acc else pairs (lo + 1) (hi - 1) (acc + 1) decreasing hi - lo
 
 main : IO ()
 main = do

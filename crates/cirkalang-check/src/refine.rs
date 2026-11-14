@@ -221,10 +221,11 @@ fn obligation(
     }
     // The hypotheses learnt while translating (refined results, `Nat`s).
     hyps.extend(tr.var_hyps());
-    let q = Query {
+    let mut q = Query {
         hyps,
         goal: Some(goal),
     };
+    tr.bound_ints(&mut q);
     match solver.prove(&q) {
         Ok(Outcome::Valid) => None,
         Ok(Outcome::Invalid(model)) => {

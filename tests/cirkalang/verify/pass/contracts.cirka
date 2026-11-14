@@ -28,10 +28,11 @@ binarySearch : (arr : A.Array Int) -> (key : Int) -> Maybe Int
   ensures found arr key
 binarySearch arr key = search arr key 0 (A.size arr)
 
--- A data type with an invariant.
+-- A data type with an invariant. (`hi - lo` wraps when `lo` is very
+-- negative, BUG-0018: the range starts at 0 or above.)
 data Range : Type where
   MkRange : (lo : Int) -> (hi : Int) -> Range
-  invariant lo <= hi
+  invariant 0 <= lo && lo <= hi
 
 total
 width : Range -> Int
@@ -40,7 +41,7 @@ width (MkRange lo hi) = hi - lo
 
 total
 range : Int -> Int -> Range
-range a b = if a <= b then MkRange a b else MkRange b a
+range a b = if a < 0 || b < 0 then MkRange 0 0 else if a <= b then MkRange a b else MkRange b a
 
 total
 clamp : (lo : Int) -> (hi : Int) -> (x : Int) -> Int

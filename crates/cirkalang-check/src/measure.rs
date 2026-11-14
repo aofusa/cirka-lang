@@ -98,6 +98,12 @@ impl<'a> Tr<'a> {
         out
     }
 
+    /// `Int` variables (and the opaque values of sort `Int`) are 64-bit;
+    /// `Nat` variables are not bounded.
+    pub fn bound_ints(&self, q: &mut Query) {
+        q.bound_int_vars(i64::MIN.into(), i64::MAX.into(), &self.nat_vars);
+    }
+
     fn var_name(&self, l: u32) -> String {
         match self.names.get(&l) {
             Some(n) => n.clone(),
@@ -251,14 +257,16 @@ impl<'a> Tr<'a> {
             let b = t.int(&args[1], d);
             Some(f(a, b))
         };
+        // `Int` is 64-bit and wraps on overflow (BUG-0018): the results of
+        // `+ - * /` and negation are wrapped; `%` cannot overflow.
         match (p, want) {
-            (Prim::AddInt, S::Int) => bin(self, Expr::plus),
-            (Prim::SubInt, S::Int) => bin(self, Expr::minus),
-            (Prim::MulInt, S::Int) => bin(self, |a, b| Expr::app("*", vec![a, b])),
-            (Prim::DivInt, S::Int) => bin(self, Expr::tdiv),
+            (Prim::AddInt, S::Int) => bin(self, |a, b| Expr::wrap(Expr::plus(a, b), 64)),
+            (Prim::SubInt, S::Int) => bin(self, |a, b| Expr::wrap(Expr::minus(a, b), 64)),
+            (Prim::MulInt, S::Int) => bin(self, |a, b| Expr::wrap(Expr::app("*", vec![a, b]), 64)),
+            (Prim::DivInt, S::Int) => bin(self, |a, b| Expr::wrap(Expr::tdiv(a, b), 64)),
             (Prim::ModInt, S::Int) => bin(self, Expr::trem),
             (Prim::NegInt, S::Int) if args.len() == 1 => {
-                Some(Expr::app("-", vec![self.int(&args[0], d)]))
+                Some(Expr::wrap(Expr::app("-", vec![self.int(&args[0], d)]), 64))
             }
             (Prim::EqInt, S::Bool) => bin(self, Expr::eq),
             (Prim::LtInt, S::Bool) => bin(self, Expr::lt),
@@ -491,10 +499,11 @@ pub fn check(ev: &Ev, solver: &Solver, facts: &Facts, m: &Measure) -> Result<(),
             goal.push(Expr::le(Expr::Int(0), old));
         }
         hyps.extend(tr.var_hyps());
-        let q = Query {
+        let mut q = Query {
             hyps,
             goal: Some(Expr::and(goal)),
         };
+        tr.bound_ints(&mut q);
         match solver.prove(&q) {
             Ok(Outcome::Valid) => {}
             Ok(Outcome::Invalid(model)) => {

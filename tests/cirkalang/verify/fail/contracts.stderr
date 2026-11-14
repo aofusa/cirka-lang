@@ -10,12 +10,12 @@ error[E0501]: cannot prove the refinement `n <= 0`
    |
 15 | useClamp n = clamp n 0 n
    |                        ^ in `Main.useClamp`
-   = note: counterexample: n = 1
+   = note: counterexample: n = 9223372036854775807
    = help: check the value, add a condition (`if`), or refine the type of what it is computed from
 error[E0501]: cannot prove the refinement `a <= b`
   --> tests/cirkalang/verify/fail/contracts.cirka:18:25
    |
 18 | mkRange a b = MkRange a b
    |                         ^ in `Main.mkRange`
-   = note: counterexample: a = 1, b = 0
+   = note: counterexample: a = 0, b = -1
    = help: check the value, add a condition (`if`), or refine the type of what it is computed from

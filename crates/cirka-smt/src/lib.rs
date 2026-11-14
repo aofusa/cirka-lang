@@ -114,6 +114,20 @@ impl Expr {
         )
     }
 
+    /// `e` wrapped to a two's complement integer of `bits` bits (the
+    /// semantics of `Int` arithmetic, which wraps on overflow):
+    /// `((e + 2^(bits-1)) mod 2^bits) - 2^(bits-1)`.
+    pub fn wrap(e: Expr, bits: u32) -> Expr {
+        let half = 1i128 << (bits - 1);
+        Expr::minus(
+            Expr::app(
+                "mod",
+                vec![Expr::plus(e, Expr::Int(half)), Expr::Int(half * 2)],
+            ),
+            Expr::Int(half),
+        )
+    }
+
     /// The sort of the term.
     pub fn sort(&self) -> Sort {
         match self {
@@ -226,6 +240,29 @@ pub struct Query {
 impl Query {
     /// The SMT-LIB script: the declarations, the hypotheses and the negated
     /// goal, then `check-sat` and the values of the variables.
+    /// Adds `lo <= x <= hi` for every integer variable of the query not in
+    /// `skip` (machine integers: the values the variables stand for are
+    /// in range).
+    pub fn bound_int_vars(&mut self, lo: i128, hi: i128, skip: &BTreeSet<String>) {
+        let mut vars = BTreeSet::new();
+        let mut funs = BTreeSet::new();
+        for h in &self.hyps {
+            h.vars(&mut vars, &mut funs);
+        }
+        if let Some(g) = &self.goal {
+            g.vars(&mut vars, &mut funs);
+        }
+        for (x, sort) in vars {
+            if sort == Sort::Int && !skip.contains(&x) {
+                let v = Expr::int_var(x);
+                self.hyps.push(Expr::and(vec![
+                    Expr::le(Expr::Int(lo), v.clone()),
+                    Expr::le(v, Expr::Int(hi)),
+                ]));
+            }
+        }
+    }
+
     pub fn script(&self) -> String {
         let mut vars = BTreeSet::new();
         let mut funs = BTreeSet::new();
@@ -559,6 +596,53 @@ mod tests {
             parse_values("((x 1)\n (|y z| (- 2)))"),
             vec![("x".into(), "1".into()), ("y z".into(), "-2".into())]
         );
+    }
+
+    #[test]
+    fn integer_variables_are_bounded() {
+        let mut q = Query {
+            hyps: vec![Expr::lt(Expr::int_var("n"), Expr::int_var("x"))],
+            goal: Some(Expr::bool_var("p")),
+        };
+        q.bound_int_vars(-8, 7, &BTreeSet::from(["n".to_string()]));
+        assert_eq!(q.hyps.len(), 2);
+        assert_eq!(q.hyps[1].to_string(), "(and (<= (- 8) x) (<= x 7))");
+        assert_eq!(
+            Expr::wrap(Expr::int_var("e"), 4).to_string(),
+            "(- (mod (+ e 8) 16) 8)"
+        );
+    }
+
+    /// BUG-0018: 64-bit integers wrap. `0 <= i ∧ 0 <= k ⇒ 0 <= i + k`
+    /// holds for mathematical integers, not for wrapping ones.
+    #[test]
+    fn z3_wrapping_arithmetic() {
+        let Some(s) = Solver::from_env() else {
+            eprintln!("z3 not found: skipped");
+            return;
+        };
+        let (i, k) = (Expr::int_var("i"), Expr::int_var("k"));
+        let hyps = vec![
+            Expr::le(Expr::Int(0), i.clone()),
+            Expr::le(Expr::Int(0), k.clone()),
+        ];
+        let sum = Expr::wrap(Expr::plus(i.clone(), k.clone()), 64);
+        let mut q = Query {
+            hyps: hyps.clone(),
+            goal: Some(Expr::le(Expr::Int(0), sum)),
+        };
+        q.bound_int_vars(i64::MIN.into(), i64::MAX.into(), &BTreeSet::new());
+        assert!(matches!(s.prove(&q), Ok(Outcome::Invalid(_))));
+        // With `i < 10` and `k < 10` it cannot overflow.
+        let mut hyps2 = hyps;
+        hyps2.push(Expr::lt(i.clone(), Expr::Int(10)));
+        hyps2.push(Expr::lt(k.clone(), Expr::Int(10)));
+        let mut q = Query {
+            hyps: hyps2,
+            goal: Some(Expr::le(Expr::Int(0), Expr::wrap(Expr::plus(i, k), 64))),
+        };
+        q.bound_int_vars(i64::MIN.into(), i64::MAX.into(), &BTreeSet::new());
+        assert_eq!(s.prove(&q), Ok(Outcome::Valid));
     }
 
     /// Runs only where Z3 is installed (the Docker image).
