@@ -16,23 +16,23 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | 共通基盤 | M1 バックエンド基盤 | 7 / 7 |
 | 共通基盤 | M2 Perceus | 3 / 3 |
 | 共通基盤 | M3 共通 Core と Core→MIR | 4 / 4 |
-| 共通基盤 | SX 共通基盤の拡張 (各トラックの必要に応じて) | 0 / 15 |
-| aCHC | H1 Haskell 最小フロントエンド | 0 / 6 |
-| aCHC | H2 Haskell 実用化 (スコープ縮小版) | 0 / 10 |
-| aCHC | H3 所有権拡張 (.chs) | 0 / 9 |
-| aCHC | H4 FFI 拡張と評価 | 0 / 2 |
+| 共通基盤 | SX 共通基盤の拡張 (各トラックの必要に応じて) | 24 / 43 |
+| aCHC | H1 Haskell 最小フロントエンド | 6 / 6 |
+| aCHC | H2 Haskell 実用化 (スコープ縮小版) | 10 / 10 |
+| aCHC | H3 所有権拡張 (.chs) | 9 / 9 |
+| aCHC | H4 FFI 拡張と評価 | 1 / 2 |
 | aCHC | H5 高度な型システム (CirkaLang v0.0.4 の後) | 0 / 5 |
 | aCHC | H6 依存型と検証 (CirkaLang v0.0.4 の後) | 0 / 5 |
 | aCHC | H7 効果・能力・セッション型 (CirkaLang v0.0.7 の後) | 0 / 5 |
-| CirkaLang | CirkaLang v0.0.1 最小の正格言語・所有権・ネイティブ | 5 / 8 |
-| CirkaLang | CirkaLang v0.0.2 実用 CUI | 0 / 6 |
-| CirkaLang | CirkaLang v0.0.3 借用・リージョン・性能 | 0 / 4 |
-| CirkaLang | CirkaLang v0.0.4 証明と検証 | 0 / 6 |
-| CirkaLang | CirkaLang v0.0.5 並行性・サーバ・syscall | 0 / 4 |
+| CirkaLang | CirkaLang v0.0.1 最小の正格言語・所有権・ネイティブ | 8 / 8 |
+| CirkaLang | CirkaLang v0.0.2 実用 CUI | 7 / 7 |
+| CirkaLang | CirkaLang v0.0.3 借用・リージョン・性能 | 5 / 5 |
+| CirkaLang | CirkaLang v0.0.4 証明と検証 | 6 / 6 |
+| CirkaLang | CirkaLang v0.0.5 並行性・サーバ・syscall | 0 / 5 |
 | CirkaLang | CirkaLang v0.0.6 Vulkan compute・数値計算 | 0 / 4 |
 | CirkaLang | CirkaLang v0.0.7 効果・能力・セッション型 | 0 / 4 |
 | CirkaLang | CX 遠隔環境での GUI 検証 (任意) | 0 / 1 |
-| 第二段階 | P2 第二段階 (CirkaLang v0.1.0 以降) | 2 / 4 |
+| 第二段階 | P2 第二段階 (CirkaLang v0.1.0 以降) | 0 / 2 |
 
 ## 共通基盤
 
@@ -250,7 +250,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0232](features/FEAT-0232-cl-refinement-smt.md) | 洗練型 (部分集合型) と SMT による自動証明 | done | P0 | 0231, 0050 |
 | [FEAT-0233](features/FEAT-0233-cl-contracts.md) | 契約 (requires / ensures / invariant) | done | P1 | 0232 |
 | [FEAT-0234](features/FEAT-0234-cl-check-elim.md) | 証明に基づく実行時検査の除去 | done | P1 | 0232, 0211 |
-| [FEAT-0235](features/FEAT-0235-cl-release-v004.md) | CirkaLang v0.0.4 リリース | in-progress | P0 | 0233, 0234 |
+| [FEAT-0235](features/FEAT-0235-cl-release-v004.md) | CirkaLang v0.0.4 リリース | done | P0 | 0233, 0234 |
 
 ### CirkaLang v0.0.5 並行性・サーバ・syscall
 
@@ -259,6 +259,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0240](features/FEAT-0240-cl-threads.md) | スレッドと共有 | todo | P0 | 0235, 0045 |
 | [FEAT-0241](features/FEAT-0241-cl-net-async.md) | ネットワークと非同期 I/O | todo | P0 | 0240, 0046 |
 | [FEAT-0242](features/FEAT-0242-cl-os-syscall.md) | OS 層 (syscall・シグナル・プロセス) | todo | P1 | 0213 |
+| [FEAT-0244](features/FEAT-0244-cl-core-size-contracts.md) | core の配列・文字列の関数に大きさの契約を付ける | todo | P2 | 0235 |
 | [FEAT-0243](features/FEAT-0243-cl-release-v005.md) | CirkaLang v0.0.5 リリース | todo | P0 | 0241, 0242 |
 
 ### CirkaLang v0.0.6 Vulkan compute・数値計算
