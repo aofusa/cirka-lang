@@ -181,13 +181,20 @@ fn obligation(
         );
     };
     let mut tr = Tr::new(ev, &facts.sorts, names);
-    let goal = tr.boolean(&holds, 0);
+    // A call of a function with a refined result stands for itself: its
+    // refinements are hypotheses, and the predicate does not unfold it.
+    let goal = match tr.stand_in(&ev.force(ob.val.clone()), 0) {
+        Some(x) => {
+            let h = ev.apply(ob.pred.clone(), x, Icit::Expl);
+            tr.boolean(&h, 0)
+        }
+        None => tr.boolean(&holds, 0),
+    };
     // What the refined results of the calls in the value tell.
     let mut calls = Vec::new();
     refined_calls(ev, prog, &ob.val, &mut calls, 0);
-    for h in calls {
-        let e = tr.boolean(&h, 0);
-        tr.extra.push(e);
+    for c in calls {
+        tr.stand_in(&c, 0);
     }
     let mut hyps: Vec<Expr> = ob.conds.iter().filter_map(|c| tr.cond(c)).collect();
     for a in &ob.assumed {
@@ -423,7 +430,7 @@ fn bind_scruts(prog: &Program, t: &Term, bool_ty: GName, bool_cons: [GName; 2]) 
     }
 }
 
-/// `q (f a)` for each call `f a` in `v` whose result is refined by `q`.
+/// The calls in `v` of functions with a refined result.
 fn refined_calls(ev: &Ev, prog: &Program, v: &Val, out: &mut Vec<Val>, depth: u32) {
     if depth > 8 {
         return;
@@ -432,10 +439,9 @@ fn refined_calls(ev: &Ev, prog: &Program, v: &Val, out: &mut Vec<Val>, depth: u3
         Val::Neutral(h, sp) => {
             if let Head::Global(g) = h
                 && sp.iter().all(|e| matches!(e, Elim::App(..)))
+                && !crate::walk::result_refinements(prog, ev, g, &sp).is_empty()
             {
-                for q in crate::walk::result_refinements(prog, ev, g, &sp) {
-                    out.push(ev.apply(q, v.clone(), Icit::Expl));
-                }
+                out.push(v.clone());
             }
             for e in &sp {
                 if let Elim::App(a, _) = e {

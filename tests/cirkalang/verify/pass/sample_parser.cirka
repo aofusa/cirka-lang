@@ -1,0 +1,88 @@
+module Main
+
+-- A parser over an array of bytes (FEAT-0235): arithmetic with `+`, `-`,
+-- `*` and parentheses. A position is an index refinement: every function
+-- requires `0 <= pos <= size`, and every result keeps it (`ensures`), so
+-- reading the input needs no bounds checks.
+
+import Data.Array as A
+import Data.String as S
+
+data Parsed : Type where
+  MkParsed : (value : Int) -> (pos : Int) -> Parsed
+
+-- The position of a result is still within the input.
+within : A.Array Int -> Int -> Parsed -> Bool
+within src from r = case r of
+  MkParsed _ p => from <= p && p <= A.size src
+
+peek : (src : A.Array Int) -> (pos : Int) -> Int
+  requires 0 <= pos && pos <= A.size src
+peek src pos = if pos < A.size src then A.index src pos else 0
+
+isDigitB : Int -> Bool
+isDigitB b = b >= 48 && b <= 57
+
+number : (src : A.Array Int) -> (pos : Int) -> (acc : Int) -> Parsed
+  requires 0 <= pos && pos <= A.size src
+  ensures within src pos
+number src pos acc =
+  if pos < A.size src && isDigitB (A.index src pos)
+  then number src (pos + 1) (acc * 10 + A.index src pos - 48)
+  else MkParsed acc pos
+
+atom : (src : A.Array Int) -> (pos : Int) -> Parsed
+  requires 0 <= pos && pos <= A.size src
+  ensures within src pos
+atom src pos =
+  if peek src pos == 40
+  then case expr src (pos + 1) of
+         MkParsed v p => if peek src p == 41 then MkParsed v (p + 1) else MkParsed v p
+  else number src pos 0
+
+termRest : (src : A.Array Int) -> (pos : Int) -> (acc : Int) -> Parsed
+  requires 0 <= pos && pos <= A.size src
+  ensures within src pos
+termRest src pos acc =
+  if peek src pos == 42
+  then case atom src (pos + 1) of
+         MkParsed v p => termRest src p (acc * v)
+  else MkParsed acc pos
+
+term : (src : A.Array Int) -> (pos : Int) -> Parsed
+  requires 0 <= pos && pos <= A.size src
+  ensures within src pos
+term src pos = case atom src pos of
+  MkParsed v p => termRest src p v
+
+exprRest : (src : A.Array Int) -> (pos : Int) -> (acc : Int) -> Parsed
+  requires 0 <= pos && pos <= A.size src
+  ensures within src pos
+exprRest src pos acc =
+  if peek src pos == 43
+  then case term src (pos + 1) of
+         MkParsed v p => exprRest src p (acc + v)
+  else if peek src pos == 45
+  then case term src (pos + 1) of
+         MkParsed v p => exprRest src p (acc - v)
+  else MkParsed acc pos
+
+expr : (src : A.Array Int) -> (pos : Int) -> Parsed
+  requires 0 <= pos && pos <= A.size src
+  ensures within src pos
+expr src pos = case term src pos of
+  MkParsed v p => exprRest src p v
+
+eval : String -> Int
+eval s =
+  let t = S.toStr s
+      src = A.generate (S.length t) (\i => S.byteAt t i)
+  in case expr src 0 of
+       MkParsed v _ => v
+
+main : IO ()
+main = do
+  printInt (eval "1+2*3")
+  printInt (eval "(1+2)*3")
+  printInt (eval "10-4-3")
+  printInt (eval "2*(3+4)*5-1")

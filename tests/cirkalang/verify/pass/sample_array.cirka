@@ -1,0 +1,60 @@
+module Main
+
+-- Bounds-safe array processing (FEAT-0235): every `A.index` is proved in
+-- bounds by the contracts, so the generated code has no bounds checks
+-- (spec-v0.0.4.md §5).
+
+import Data.Array as A
+
+-- The sum of `arr[i..n)`.
+sumFrom : (arr : A.Array Int) -> (i : Int) -> (acc : Int) -> Int
+  requires 0 <= i
+sumFrom arr i acc =
+  if i >= A.size arr then acc else sumFrom arr (i + 1) (acc + A.index arr i)
+
+-- The dot product of two arrays of the same size.
+dotFrom : (xs : A.Array Int) -> (ys : A.Array Int) -> (i : Int) -> (acc : Int) -> Int
+  requires A.size xs == A.size ys && 0 <= i
+dotFrom xs ys i acc =
+  if i >= A.size xs then acc
+  else dotFrom xs ys (i + 1) (acc + A.index xs i * A.index ys i)
+
+dot : (xs : A.Array Int) -> (ys : A.Array Int) -> Int
+  requires A.size xs == A.size ys
+dot xs ys = dotFrom xs ys 0 0
+
+-- The largest sum of `k` consecutive elements (a sliding window): the
+-- element entering and the one leaving are both in bounds.
+windowFrom : (arr : A.Array Int) -> (k : Int) -> (i : Int) -> (cur : Int) -> (best : Int) -> Int
+  requires 0 < k && k <= i
+windowFrom arr k i cur best =
+  if i >= A.size arr then best
+  else
+    let next = cur + A.index arr i - A.index arr (i - k)
+    in windowFrom arr k (i + 1) next (max best next)
+
+maxWindow : (arr : A.Array Int) -> (k : Int) -> Int
+  requires 0 < k && k <= A.size arr
+maxWindow arr k =
+  let first = sumFirst arr k 0 0
+  in windowFrom arr k k first first
+
+sumFirst : (arr : A.Array Int) -> (k : Int) -> (i : Int) -> (acc : Int) -> Int
+  requires 0 <= i && k <= A.size arr
+sumFirst arr k i acc = if i >= k then acc else sumFirst arr k (i + 1) (acc + A.index arr i)
+
+-- A safe lookup: the index is checked once, then proved.
+at : A.Array Int -> Int -> Int
+at arr i = if 0 <= i && i < A.size arr then A.index arr i else 0
+
+main : IO ()
+main = do
+  let arr = A.fromList [4, -1, 3, 7, -2, 5, 1]
+  printInt (sumFrom arr 0 0)
+  -- What a function requires of values built at run time is checked
+  -- once with `if`; inside, it is proved.
+  let ys = A.generate (A.size arr) (\i => i)
+  printInt (if A.size arr == A.size ys then dot arr ys else 0)
+  printInt (if 3 <= A.size arr then maxWindow arr 3 else 0)
+  printInt (at arr 3)
+  printInt (at arr 10)

@@ -1,0 +1,57 @@
+module Main
+
+-- A verified sort (FEAT-0235): insertion sort over `Vect`. The type says
+-- the result has as many elements as the input, the sortedness is proved
+-- for small fixed sizes by a sorting network whose contracts Z3 checks,
+-- and `total` proves both terminate.
+
+import Data.Vect as V
+
+-- ---- insertion sort: the length is in the type ----
+
+total
+insert : Int -> V.Vect n Int -> V.Vect (S n) Int
+insert x V.VNil = V.VCons x V.VNil
+insert x (V.VCons y ys) = if x <= y then V.VCons x (V.VCons y ys) else V.VCons y (insert x ys)
+
+total
+isort : V.Vect n Int -> V.Vect n Int
+isort V.VNil = V.VNil
+isort (V.VCons x xs) = insert x (isort xs)
+
+-- ---- a sorting network for three elements ----
+
+data Sorted3 : Type where
+  MkSorted3 : (a : Int) -> (b : Int) -> (c : Int) -> Sorted3
+  invariant a <= b && b <= c
+
+total
+sort3 : Int -> Int -> Int -> Sorted3
+sort3 a b c =
+  let a1 = if a <= b then a else b
+      b1 = if a <= b then b else a
+      b2 = if b1 <= c then b1 else c
+      c2 = if b1 <= c then c else b1
+      a3 = if a1 <= b2 then a1 else b2
+      b3 = if a1 <= b2 then b2 else a1
+  in MkSorted3 a3 b3 c2
+
+total
+isSorted : List Int -> Bool
+isSorted [] = True
+isSorted (x :: []) = True
+isSorted (x :: y :: rest) = x <= y && isSorted (y :: rest)
+
+showList : List Int -> String
+showList [] = ""
+showList (x :: []) = show x
+showList (x :: xs) = show x ++ " " ++ showList xs
+
+main : IO ()
+main = do
+  let v = isort (V.fromList [5, 2, 9, 1, 5, 6])
+  putStrLn (showList (V.toList v))
+  printInt (V.length v)
+  case sort3 3 1 2 of
+    MkSorted3 a b c => putStrLn (showList [a, b, c])
+  if isSorted (V.toList v) then putStrLn "sorted" else putStrLn "not sorted"

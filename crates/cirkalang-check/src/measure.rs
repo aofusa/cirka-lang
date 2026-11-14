@@ -9,6 +9,7 @@ use cirka_smt::{Expr, Outcome, Query, Solver};
 use cirkalang_elab::eval::Ev;
 use cirkalang_elab::tt::*;
 use std::collections::{BTreeSet, HashMap};
+use std::rc::Rc;
 
 /// The measure of a definition.
 pub enum Measure<'a> {
@@ -41,6 +42,11 @@ pub(crate) struct Tr<'a> {
     pub extra: Vec<Expr>,
     /// The value each opaque variable stands for.
     pub opaque_vals: HashMap<String, Val>,
+    /// Calls of functions with a refined result whose fields are used:
+    /// the variable that stands for the result (a level no binder has).
+    stand_ins: HashMap<String, Val>,
+    /// The call each stand-in level stands for (to show counterexamples).
+    stand_in_calls: HashMap<u32, Val>,
 }
 
 /// Unique SMT names for the variables of a definition.
@@ -76,6 +82,8 @@ impl<'a> Tr<'a> {
             opaque: HashMap::new(),
             extra: Vec::new(),
             opaque_vals: HashMap::new(),
+            stand_ins: HashMap::new(),
+            stand_in_calls: HashMap::new(),
         }
     }
 
@@ -110,9 +118,13 @@ impl<'a> Tr<'a> {
             .entry(key)
             .or_insert_with(|| format!("t${n}"))
             .clone();
+        let shown = match v {
+            Val::Neutral(Head::Var(l), sp) if sp.is_empty() => self.stand_in_calls.get(l),
+            _ => None,
+        };
         self.opaque_vals
             .entry(name.clone())
-            .or_insert_with(|| v.clone());
+            .or_insert_with(|| shown.unwrap_or(v).clone());
         Expr::Var(name, s)
     }
 
@@ -162,25 +174,22 @@ impl<'a> Tr<'a> {
                     if let Some(e) = self.prim(*prim, sp, want, depth) {
                         return e;
                     }
+                    // Sizes are not negative.
+                    if want == S::Int
+                        && matches!(prim, Prim::ArraySize | Prim::StrLength | Prim::UArraySize)
+                    {
+                        let before = self.opaque.len();
+                        let e = self.opaque(&v, want);
+                        if self.opaque.len() > before {
+                            self.extra.push(Expr::le(Expr::Int(0), e.clone()));
+                        }
+                        return e;
+                    }
                 }
                 // A call of a function with a refined result: opaque, with
                 // the refinement as a hypothesis (spec-v0.0.4.md §3).
-                let ps = if depth < 24 {
-                    crate::walk::result_refinements(self.prog, self.ev, *g, sp)
-                } else {
-                    Vec::new()
-                };
-                if !ps.is_empty() {
-                    let before = self.opaque.len();
-                    let e = self.opaque(&v, want);
-                    if self.opaque.len() > before {
-                        for p in ps {
-                            let holds = self.ev.apply(p, v.clone(), Icit::Expl);
-                            let h = self.boolean(&holds, depth + 1);
-                            self.extra.push(h);
-                        }
-                    }
-                    return e;
+                if let Some(x) = self.stand_in(&v, depth) {
+                    return self.tr(&x, want, depth + 1);
                 }
             }
             (Val::Neutral(h, sp), _) if matches!(sp.last(), Some(Elim::Case(..))) => {
@@ -301,7 +310,101 @@ impl<'a> Tr<'a> {
             }
             return Some(e);
         }
+        // A match on a value of a type with one constructor (a record):
+        // the fields are opaque projections of the value, the same in
+        // every formula that mentions them.
+        if let [
+            Alt::Con {
+                con, fields, body, ..
+            },
+        ] = c.alts.as_slice()
+            && let Global::Con { data, .. } = self.prog.get(*con)
+            && matches!(self.prog.get(*data), Global::Data { cons, .. } if cons.len() == 1)
+        {
+            let n = fields.len();
+            // A field itself (a projection): opaque.
+            if let Term::Var(k) = body
+                && (*k as usize) < n
+            {
+                let scrut = Val::Neutral(h.clone(), rest.to_vec());
+                let scrut = self.stand_in(&scrut, d).unwrap_or(scrut);
+                let v = projection(&scrut, *con, n, n - 1 - *k as usize);
+                return Some(self.opaque(&v, want));
+            }
+            let mut e = env.clone();
+            let scrut = Val::Neutral(h.clone(), rest.to_vec());
+            let scrut = self.stand_in(&scrut, d).unwrap_or(scrut);
+            for i in 0..n {
+                e.push(projection(&scrut, *con, n, i));
+            }
+            let bv = self.ev.eval(&e, body);
+            return Some(self.tr(&bv, want, d + 1));
+        }
         None
+    }
+
+    /// A call `v` of a function with a refined result, seen through the
+    /// fields of the result: a variable stands for the result, with the
+    /// refinements as hypotheses. (Matching on the call itself would
+    /// unfold the function.)
+    pub fn stand_in(&mut self, v: &Val, depth: u32) -> Option<Val> {
+        let Val::Neutral(Head::Global(g), sp) = v else {
+            return None;
+        };
+        if depth >= 24 || !sp.iter().all(|e| matches!(e, Elim::App(..))) {
+            return None;
+        }
+        let key = format!(
+            "{:?}",
+            strip_refine(&self.ev.quote(100_000, v), self.prog.builtins.refine)
+        );
+        if let Some(x) = self.stand_ins.get(&key) {
+            return Some(x.clone());
+        }
+        let ps = crate::walk::result_refinements(self.prog, self.ev, *g, sp);
+        if ps.is_empty() {
+            return None;
+        }
+        // Below the level the values are quoted at, above any binder.
+        let l = STAND_IN_LEVEL + self.stand_ins.len() as u32;
+        let x = Val::var(l);
+        self.stand_ins.insert(key, x.clone());
+        self.stand_in_calls.insert(l, v.clone());
+        for p in ps {
+            let holds = self.ev.apply(p, x.clone(), Icit::Expl);
+            let h = self.boolean(&holds, depth + 1);
+            self.extra.push(h);
+        }
+        Some(x)
+    }
+
+    /// `v` matched the only constructor of its type: each field of a
+    /// translated sort is the projection of `v`.
+    fn record_cond(&mut self, v: &Val, con: GName, fields: &[u32]) -> Option<Expr> {
+        let Global::Con { data, .. } = self.prog.get(con) else {
+            return None;
+        };
+        if !matches!(self.prog.get(*data), Global::Data { cons, .. } if cons.len() == 1) {
+            return None;
+        }
+        let scrut = self.ev.force(v.clone());
+        let scrut = self.stand_in(&scrut, 0).unwrap_or(scrut);
+        let n = fields.len();
+        let mut eqs = Vec::new();
+        for (i, l) in fields.iter().enumerate() {
+            let want = match self.sorts.get(l) {
+                Some(Sort::Int | Sort::Nat) => cirka_smt::Sort::Int,
+                Some(Sort::Bool) => cirka_smt::Sort::Bool,
+                None => continue,
+            };
+            let f = self.tr(&Val::var(*l), want, 0);
+            let p = self.tr(&projection(&scrut, con, n, i), want, 0);
+            eqs.push(Expr::eq(f, p));
+        }
+        if eqs.is_empty() {
+            return None;
+        }
+        Some(Expr::and(eqs))
     }
 
     pub fn cond(&mut self, c: &Cond) -> Option<Expr> {
@@ -318,7 +421,7 @@ impl<'a> Tr<'a> {
                     let f = self.int(&Val::var(fields[0]), 0);
                     Expr::eq(self.int(v, 0), Expr::plus(f, Expr::Int(1)))
                 } else {
-                    return None;
+                    return self.record_cond(v, *con, fields);
                 }
             }
             Cond::Lit(v, Lit::Int(n)) => Expr::eq(self.int(v, 0), Expr::Int(*n as i128)),
@@ -440,5 +543,34 @@ pub(crate) fn strip_refine(t: &Term, refine: Option<GName>) -> Term {
             Term::Case(std::rc::Rc::new(c2))
         }
         _ => t.clone(),
+    }
+}
+
+/// The levels of the variables that stand for refined results.
+const STAND_IN_LEVEL: u32 = 90_000;
+
+/// Field `i` of `n` of a value of a one-constructor type, as a stuck match
+/// on it (the same value wherever it is built, so the same SMT variable).
+fn projection(scrut: &Val, con: GName, n: usize, i: usize) -> Val {
+    let proj = Rc::new(Case {
+        scrut: Term::Var(0),
+        ret: Term::Error,
+        alts: vec![Alt::Con {
+            con,
+            fields: (0..n)
+                .map(|_| (Name::from("_"), Mult::Many, Term::Error))
+                .collect(),
+            refine: Vec::new(),
+            body: Term::Var((n - 1 - i) as u32),
+        }],
+        default: None,
+    });
+    match scrut {
+        Val::Neutral(h, sp) => {
+            let mut sp2 = sp.clone();
+            sp2.push(Elim::Case(Vec::new(), proj));
+            Val::Neutral(h.clone(), sp2)
+        }
+        v => v.clone(),
     }
 }
