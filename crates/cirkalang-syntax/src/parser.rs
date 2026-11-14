@@ -1408,18 +1408,20 @@ impl Parser {
                     }
                     let (x, xs) = names.into_iter().next().ok_or(())?;
                     let sub = Expr {
-                        kind: ExprKind::Subset(x, xs, Box::new(dom), Box::new(pred)),
+                        kind: ExprKind::Subset(x.clone(), xs, Box::new(dom), Box::new(pred)),
                         span: self.from(start),
                     };
                     if !self.eat(&Tok::Arrow) {
                         return Ok(sub);
                     }
+                    // `{x : A | p} -> B` binds `x` in `B` too
+                    // (`(x : {x : A | p}) -> B`).
                     let cod = self.expr()?;
                     return Ok(Expr {
                         kind: ExprKind::Pi {
                             mult: None,
                             implicit: false,
-                            names: Vec::new(),
+                            names: vec![(x, xs)],
                             dom: Box::new(sub),
                             cod: Box::new(cod),
                         },

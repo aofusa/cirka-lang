@@ -1,5 +1,5 @@
 (module Main)
-(sig (safeDiv) (-> Int (-> (subset d Int (ops d /= 0)) Int)))
+(sig (safeDiv) (-> Int (-> (d : (subset d Int (ops d /= 0))) Int)))
 (def safeDiv (n d) (ops n / d))
-(sig (index) (-> (arr : (Array a)) (-> (subset i Int (ops 0 <= i && i < (size arr))) a)))
+(sig (index) (-> (arr : (Array a)) (-> (i : (subset i Int (ops 0 <= i && i < (size arr)))) a)))
 (sig (pos) (-> (n : Int) (subset r Int (ops r > n))))
