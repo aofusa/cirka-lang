@@ -1,6 +1,6 @@
 # FEAT-0084: Docker の CI で ThreadSanitizer を動かす
 
-- 状態: in-progress
+- 状態: done
 - トラック: 共通基盤
 - マイルストーン: SX 共通基盤の拡張 (各トラックの必要に応じて)
 - 優先度: P2
@@ -32,19 +32,22 @@ Docker のコンテナの中では TSan のプログラムが起動できない�
 ## 作業内容
 
 - [x] 利用者が対応を選ぶ (1)
-- [ ] `docker/seccomp.json`: Docker 29.8.0 が組み込む既定のプロファイル (moby/profiles `seccomp/v0.2.3` の `default.json`、Apache-2.0) に
+- [x] `docker/seccomp.json`: Docker 29.8.0 が組み込む既定のプロファイル (moby/profiles `seccomp/v0.2.3` の `default.json`、Apache-2.0) に
       `personality` の引数 `262144` (`PER_LINUX | ADDR_NO_RANDOMIZE`) を許す規則を 1 つ足したもの。由来と変更は `docker/README.md`
-- [ ] `compose.yaml` の `dev` に `security_opt: [seccomp=docker/seccomp.json]`
-- [ ] `scripts/ci.sh` の ThreadSanitizer の段: TSan が動かなければ (警告ではなく) 失敗にする
-- [ ] コンテナの中で `scripts/ci.sh` の ThreadSanitizer の段が「動く」と表示し、`tsan: 1` のテストが通ることを確かめる
-- [ ] 10-testing.md と 05-runtime.md §9.7 の「コンテナでは飛ばす」の記述を更新する
+- [x] `compose.yaml` の `dev` に `security_opt: [seccomp=docker/seccomp.json]`
+- [x] `scripts/ci.sh` の ThreadSanitizer の段: TSan が動かなければ (警告ではなく) 失敗にする
+- [x] コンテナの中で `scripts/ci.sh` の ThreadSanitizer の段が「動く」と表示し、`tsan: 1` のテストが通ることを確かめる
+- [x] 10-testing.md と 05-runtime.md §9.7 の「コンテナでは飛ばす」の記述を更新する
 
 ## 受け入れ条件
 
-- [ ] Docker のコンテナの中で `tsan: 1` のテストが TSan の構成でも実行され、報告がない
-- [ ] テストを追加し `scripts/ci.sh` が通る
+- [x] Docker のコンテナの中で `tsan: 1` のテストが TSan の構成でも実行され、報告がない
+- [x] テストを追加し `scripts/ci.sh` が通る
 
 ## メモ
 
 - 2026-11-14: FEAT-0045 の作業中に起票。seccomp を緩める変更はコンテナの権限に関わるため、自動では入れず利用者の判断を待つ。
   ホスト (同じ LLVM 18、`vm.mmap_rnd_bits=32`) では TSan が動き、FEAT-0045 の TSan の検査はそこで行った。
+- 2026-11-14: 案 1 を入れた。コンテナの中の `scripts/ci.sh` で ThreadSanitizer の段が「動く」と表示し、`tests/mir/run/threads.mir` の
+  TSan の 2 構成 (既定のアロケータと `CIRKA_ALLOC=system`) と、わざと競合を入れたプログラムを TSan が報告することを確かめる
+  `tsan_reports_a_data_race` (FEAT-0045) が実行されて通った。テストの追加はなく、FEAT-0045 のテストがコンテナでも走るようになった。

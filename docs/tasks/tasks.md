@@ -16,7 +16,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | 共通基盤 | M1 バックエンド基盤 | 7 / 7 |
 | 共通基盤 | M2 Perceus | 3 / 3 |
 | 共通基盤 | M3 共通 Core と Core→MIR | 4 / 4 |
-| 共通基盤 | SX 共通基盤の拡張 (各トラックの必要に応じて) | 27 / 46 |
+| 共通基盤 | SX 共通基盤の拡張 (各トラックの必要に応じて) | 28 / 46 |
 | aCHC | H1 Haskell 最小フロントエンド | 6 / 6 |
 | aCHC | H2 Haskell 実用化 (スコープ縮小版) | 10 / 10 |
 | aCHC | H3 所有権拡張 (.chs) | 9 / 9 |
@@ -123,7 +123,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0081](features/FEAT-0081-cpr-single-boxed-result.md) | 箱入りの値 1 つだけを返す積の結果の分解 | todo | P2 | 0065, 0220 |
 | [FEAT-0082](features/FEAT-0082-cl-cli-grep-line-allocs.md) | 行ごとの畳み込みの確保の除去 (cli-grep) | todo | P2 | 0223 |
 | [FEAT-0083](features/FEAT-0083-cheap-speculation-of-lazy-bindings.md) | 安価で失敗しない遅延束縛の先行評価 (サンクの除去) | done | P1 | 0056, 0061 |
-| [FEAT-0084](features/FEAT-0084-tsan-in-docker-ci.md) | Docker の CI で ThreadSanitizer を動かす | in-progress | P2 | 0045 |
+| [FEAT-0084](features/FEAT-0084-tsan-in-docker-ci.md) | Docker の CI で ThreadSanitizer を動かす | done | P2 | 0045 |
 | [FEAT-0085](features/FEAT-0085-code-alignment-noise.md) | コード配置による性能の揺らぎの抑制 (関数・ループの整列) | todo | P2 | 0043 |
 
 
