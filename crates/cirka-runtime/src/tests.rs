@@ -144,6 +144,35 @@ fn header_matches() {
     assert_eq!(std::mem::size_of::<Header>(), 8);
 }
 
+/// The C header declares every function the libraries' modules of the
+/// runtime export.
+#[test]
+fn header_declares_the_library_functions() {
+    let h = include_str!("../include/cirka_rt.h");
+    for (file, src) in [
+        ("evloop.rs", include_str!("evloop.rs")),
+        ("net.rs", include_str!("net.rs")),
+        ("os.rs", include_str!("os.rs")),
+        ("stdio.rs", include_str!("stdio.rs")),
+    ] {
+        let mut lines = src.lines();
+        let mut n = 0;
+        while let Some(l) = lines.next() {
+            if l.trim() != "#[unsafe(no_mangle)]" {
+                continue;
+            }
+            let sig = lines.next().unwrap();
+            let name = sig.split("fn ").nth(1).unwrap().split('(').next().unwrap();
+            assert!(
+                h.contains(&format!(" {name}(")) || h.contains(&format!("*{name}(")),
+                "{file}: `{name}` is not declared in cirka_rt.h"
+            );
+            n += 1;
+        }
+        assert!(n > 5, "{file}: {n} functions");
+    }
+}
+
 #[test]
 fn array_unique_copies_only_shared_arrays() {
     let _g = LOCK.lock().unwrap();

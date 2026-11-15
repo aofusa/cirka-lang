@@ -144,6 +144,76 @@ int64_t cirka_fd_write_from(int64_t fd, void *data, int64_t off);
 int64_t cirka_fd_set_nonblocking(int64_t fd, int64_t on);
 int64_t cirka_fd_limit_raise(void);
 
+/* The event loop of this thread as the libraries use it (spec-v0.0.5.md
+ * §2; callbacks and continuations are closures, handles borrowed). */
+int64_t cirka_async_run(void *io);
+int64_t cirka_async_watch(void *handle, int64_t events, int64_t ms, void *k);
+int64_t cirka_async_events(void);
+int64_t cirka_async_timer(int64_t ms, void *k);
+int64_t cirka_async_cancel(int64_t timer);
+int64_t cirka_async_stop(void);
+void   *cirka_async_remote(void);
+int64_t cirka_async_blocking(void *work, void *k);
+
+/* Descriptor objects (kind FOREIGN, closed when freed) and sockets. */
+void   *cirka_fd_handle(int64_t fd);
+int64_t cirka_handle_fd(void *h);
+int64_t cirka_handle_close(void *h);
+int64_t cirka_sock_accept(void *h);
+void   *cirka_sock_recv(void *h, int64_t max);
+int64_t cirka_sock_send(void *h, void *data, int64_t off);
+int64_t cirka_sock_sendto(void *h, void *data, void *host, int64_t port);
+void   *cirka_sock_recvfrom(void *h, int64_t max);
+int64_t cirka_net_udp_bind(void *host, int64_t port);
+void   *cirka_net_peer_host(void);
+int64_t cirka_net_peer_port(void);
+
+/* Input and output of the libraries (spec-v0.0.2.md §8.3; strings
+ * borrowed; failures are -errno, or an empty string with errno set). */
+int64_t cirka_errno(void);
+void   *cirka_strerror(int64_t e);
+int64_t cirka_fs_open(void *path, int64_t mode);
+int64_t cirka_fs_remove(void *path);
+void   *cirka_fd_read(int64_t fd, int64_t max);
+int64_t cirka_fd_write(int64_t fd, void *data);
+int64_t cirka_fd_close(int64_t fd);
+int64_t cirka_stdin_eof(void);
+void   *cirka_read_line(void);
+void   *cirka_getenv(void *name);
+int64_t cirka_env_has(void *name);
+int64_t cirka_clock_ns(int64_t clock);
+int64_t cirka_cstring_new(void *s);
+void   *cirka_cstring_peek(int64_t p, int64_t n);
+
+/* The operating system layer (05-runtime.md §11; strings and handles
+ * borrowed). Results beyond the return value are read with
+ * cirka_os_result. */
+int64_t cirka_os_result(int64_t i);
+int64_t cirka_os_spawn(void *argv, int64_t flags);
+int64_t cirka_os_wait(int64_t pid, int64_t nohang);
+int64_t cirka_os_kill(int64_t pid, int64_t sig);
+void   *cirka_os_communicate(int64_t in, int64_t out, int64_t err, void *input);
+int64_t cirka_os_signal_action(int64_t sig, int64_t action);
+int64_t cirka_os_raise(int64_t sig);
+int64_t cirka_os_signal_mask(int64_t how, int64_t mask);
+int64_t cirka_os_signal_wait(int64_t mask, int64_t ms);
+int64_t cirka_os_signalfd(int64_t mask);
+int64_t cirka_os_signalfd_read(void *h);
+void   *cirka_os_map_file(void *path);
+int64_t cirka_os_map_len(void *m);
+void   *cirka_os_map_slice(void *m, int64_t off, int64_t n);
+int64_t cirka_os_map_byte(void *m, int64_t i);
+int64_t cirka_os_map_count(void *m, int64_t byte, int64_t from, int64_t to);
+int64_t cirka_os_map_find(void *m, int64_t byte, int64_t from);
+void   *cirka_fs_list(void *path);
+int64_t cirka_fs_stat(void *path, int64_t follow);
+int64_t cirka_fs_mkdir(void *path, int64_t mode);
+int64_t cirka_fs_rmdir(void *path);
+int64_t cirka_fs_rename(void *from, void *to);
+void   *cirka_os_getcwd(void);
+int64_t cirka_os_chdir(void *path);
+void   *cirka_os_hostname(void);
+
 /* provided by generated code */
 int64_t cirka_main(void);
 void   *cirka_call_1(void *f, void *arg);
