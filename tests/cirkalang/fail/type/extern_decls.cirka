@@ -1,0 +1,33 @@
+-- The declarations of extern blocks are checked (spec-v0.0.6.md §1.9):
+-- field types, structs without fields or containing themselves, the
+-- shapes of `"dynamic"`, `"wrapper"` and `"&sym"`, symbol names, variadic
+-- arguments, values of opaque types and literals of the C types.
+import Foreign
+
+extern "C" where
+  type Handle0
+  struct Named where
+    name : String
+    ok : Bool
+  struct Loop where
+    inner : Inner
+  struct Inner where
+    back : CArray 2 Loop
+  struct Empty where
+  const Big : CUChar = 300
+  const Neg : CSize = -1
+
+  "dynamic" call1 : Ptr CInt -> CInt
+  "dynamic" call2 : FunPtr (CInt -> CInt) -> CDouble -> CInt
+  "wrapper" wrap1 : (CInt -> CInt) -> FunPtr (CInt -> CInt)
+  "&data" addr1 : CInt
+  "not a symbol" sym1 : CInt -> CInt
+  "printf" print1 : Ptr CChar -> ... -> CFloat -> IO CInt
+  "printf" print2 : Ptr CChar -> ... -> Inner -> IO CInt
+  byValue : Handle0 -> IO ()
+
+extern "cirka" where
+  "cirka_x" runtime1 : Int -> Int
+
+main : IO ()
+main = pure ()

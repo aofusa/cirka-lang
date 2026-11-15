@@ -1,5 +1,8 @@
 extern "Rust" where
   f : Int -> Int
 
-extern "C" link "ssl" where
+extern "C" link "../ssl" where
   g : Int -> Int
+
+extern "C" link "ssl" where
+  h : Int -> Int

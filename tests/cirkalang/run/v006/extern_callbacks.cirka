@@ -1,0 +1,64 @@
+-- skip-backend: interp
+-- C calls CirkaLang functions through pointers made by `"wrapper"`
+-- functions (spec-v0.0.6.md §1.5): scalars, structs in registers and in
+-- memory, actions, closures with captured values, `qsort` from the C
+-- library, freed by `freeFunPtr` or by releasing a `Callback`. The C
+-- side is extern_callbacks.c (callbacks are native only).
+import Foreign
+
+extern "C" where
+  struct Pt where
+    x : CInt
+    y : CInt
+  struct Big where
+    a : CDouble
+    b : CDouble
+    c : CDouble
+    n : CLong
+
+  apply_twice : FunPtr (CInt -> CInt) -> CInt -> IO CInt
+  map_pt : FunPtr (Pt -> Pt) -> Pt -> IO Pt
+  sum_big : FunPtr (CDouble -> Big) -> CDouble -> IO CDouble
+  each : FunPtr (CInt -> IO ()) -> CInt -> IO ()
+  qsort : Ptr CInt -> CSize -> CSize -> FunPtr (Ptr CInt -> Ptr CInt -> IO CInt) -> IO ()
+  "wrapper" mkIntFn : (CInt -> CInt) -> IO (FunPtr (CInt -> CInt))
+  "wrapper" mkPtFn : (Pt -> Pt) -> IO (FunPtr (Pt -> Pt))
+  "wrapper" mkBigFn : (CDouble -> Big) -> IO (FunPtr (CDouble -> Big))
+  "wrapper" mkAction : (CInt -> IO ()) -> IO (FunPtr (CInt -> IO ()))
+  "wrapper" mkCompare : (Ptr CInt -> Ptr CInt -> IO CInt) -> IO (FunPtr (Ptr CInt -> Ptr CInt -> IO CInt))
+
+times : Int -> CInt -> CInt
+times k (MkCInt v) = MkCInt (k * v)
+
+compareInts : Ptr CInt -> Ptr CInt -> IO CInt
+compareInts p q = do
+  a <- peek p
+  b <- peek q
+  pure (if a < b then -1 else if a > b then 1 else 0)
+
+main : IO ()
+main = do
+  -- A closure capturing `k`, freed by releasing its `Callback`.
+  k <- pure 3
+  cb <- callback (mkIntFn (times k))
+  case callbackPtr cb of
+    (cb, f) => do
+      r <- apply_twice f 5
+      print r
+  g <- mkPtFn (\p => Pt.set_y (Pt.x p) p)
+  q <- map_pt g (MkPt 7 0)
+  freeFunPtr g
+  print q
+  h <- mkBigFn (\x => MkBig x x x 1)
+  s <- sum_big h 1.5
+  freeFunPtr h
+  print s
+  act <- mkAction (\i => putStrLn ("each " ++ show i))
+  each act 3
+  freeFunPtr act
+  cmp <- mkCompare compareInts
+  xs <- withArray [MkCInt 5, 3, 9, -1, 4] (\p => do
+    qsort p 5 4 cmp
+    peekArray 5 p)
+  freeFunPtr cmp
+  print xs

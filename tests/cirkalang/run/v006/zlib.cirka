@@ -1,0 +1,124 @@
+-- zlib wrapped with RAII (spec-v0.0.6.md §1.8): a stream is a linear
+-- value whose release ends it (`deflateEnd` / `inflateEnd`) and frees its
+-- C memory on every path, also after an error. A text is compressed and
+-- decompressed back; corrupt input is reported. The layout of `ZStream`
+-- is checked by zlib (`deflateInit_` takes its size).
+import Foreign
+
+extern "C" link "z" where
+  type ZState
+  type Bytef = CUChar
+  struct ZStream where
+    next_in : Ptr Bytef
+    avail_in : CUInt
+    total_in : CULong
+    next_out : Ptr Bytef
+    avail_out : CUInt
+    total_out : CULong
+    msg : Ptr CChar
+    state : Ptr ZState
+    zalloc : Ptr CChar
+    zfree : Ptr CChar
+    opaque : Ptr CChar
+    data_type : CInt
+    adler : CULong
+    reserved : CULong
+  enum Flush : CInt where
+    NoFlush = 0
+    Finish = 4
+  const Z_OK : CInt = 0
+  const Z_STREAM_END : CInt = 1
+  const Z_BEST_COMPRESSION : CInt = 9
+
+  zlibVersion : IO (Ptr CChar)
+  "deflateInit_" deflateInit : Ptr ZStream -> CInt -> Ptr CChar -> CInt -> IO CInt
+  deflate : Ptr ZStream -> Flush -> IO CInt
+  deflateEnd : Ptr ZStream -> IO CInt
+  "inflateInit_" inflateInit : Ptr ZStream -> Ptr CChar -> CInt -> IO CInt
+  inflate : Ptr ZStream -> Flush -> IO CInt
+  inflateEnd : Ptr ZStream -> IO CInt
+  strlen : Ptr CChar -> IO CSize
+
+data Mode = Compress | Decompress deriving (Eq, Show)
+
+-- A zlib stream: its state in C memory, ended and freed when released.
+data Stream : LType where
+  MkStream : Mode -> Ptr ZStream -> Stream
+
+impl Release Stream where
+  release (MkStream m p) = do
+    r <- if m == Compress then deflateEnd p else inflateEnd p
+    freeBytes p
+    putStrLn ("released the " ++ show m ++ " stream: " ++ show r)
+
+-- Starts a stream (its memory is freed when zlib refuses).
+open : Mode -> IO1 (Result CInt Stream)
+open m = do
+  p <- mallocBytes (sizeOf (nullPtr : Ptr ZStream))
+  poke p zeroed
+  v <- zlibVersion
+  r <- if m == Compress
+    then deflateInit p Z_BEST_COMPRESSION v (MkCInt (sizeOf p))
+    else inflateInit p v (MkCInt (sizeOf p))
+  if r == Z_OK
+    then pure1 (Ok (MkStream m p))
+    else do
+      freeBytes p
+      pure1 (Err r)
+
+-- Runs the stream over `input` to its end, writing at most `cap` bytes:
+-- the bytes written, or zlib's error.
+run : (1 s : Stream) -> List Bytef -> Int -> IO1 (Stream, Result CInt (List Bytef))
+run (MkStream m p) input cap = do
+  out <- withArray input (\inp => allocaArray cap (\buf => do
+    poke (ZStream.ptr_next_in p) inp
+    poke (ZStream.ptr_avail_in p) (MkCUInt (length input))
+    poke (ZStream.ptr_next_out p) buf
+    poke (ZStream.ptr_avail_out p) (MkCUInt cap)
+    r <- if m == Compress then deflate p Finish else inflate p Finish
+    z <- peek p
+    if r == Z_STREAM_END
+      then fmap Ok (peekArray (outBytes z) buf)
+      else pure (Err r)))
+  pure1 (MkStream m p, out)
+
+outBytes : ZStream -> Int
+outBytes z = case ZStream.total_out z of
+  MkCULong n => n
+
+-- The bytes of a text, and back.
+bytes : String -> IO (List Bytef)
+bytes s = withCString s (\p => do
+  n <- strlen p
+  peekArray (fromCSize n) (castPtr p))
+
+text : List Bytef -> IO String
+text bs = withArray (append bs [0]) (\p => peekCString (castPtr p))
+
+unpack : List Bytef -> Int -> IO ()
+unpack zs n = do
+  d <- open Decompress
+  case d of
+    Err e => putStrLn ("cannot decompress: " ++ show e)
+    Ok s => do
+      (s, plain) <- run s zs n
+      case plain of
+        Err e => putStrLn ("inflate failed: " ++ show e)
+        Ok bs => do
+          t <- text bs
+          putStrLn t
+
+main : IO ()
+main = do
+  input <- bytes "CirkaLang wraps zlib without a GC. CirkaLang wraps zlib without a GC."
+  c <- open Compress
+  case c of
+    Err e => putStrLn ("cannot compress: " ++ show e)
+    Ok s => do
+      (s, packed) <- run s input 256
+      case packed of
+        Err e => putStrLn ("deflate failed: " ++ show e)
+        Ok zs => do
+          putStrLn ("smaller: " ++ show (length zs < length input))
+          unpack zs (length input)
+  unpack [1, 2, 3] 16

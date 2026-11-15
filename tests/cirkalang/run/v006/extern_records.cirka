@@ -1,0 +1,108 @@
+-- The declarations of extern blocks (spec-v0.0.6.md §1): structs and
+-- unions by value in each System V class (registers, SSE, mixed, memory,
+-- packed, nested with an array), their equality, enums, constants, field
+-- functions and pointers, calls through `"dynamic"`, addresses
+-- (`"&sym"`), a symbol under another name and variadic calls. The C side
+-- is extern_records.c.
+import Foreign
+
+extern "C" where
+  struct Pt where
+    x : CInt
+    y : CInt
+  struct Vec3 where
+    vx : CFloat
+    vy : CFloat
+    vz : CDouble
+  struct Mixed where
+    w : CDouble
+    n : CLong
+  struct Big where
+    a : CDouble
+    b : CDouble
+    c : CDouble
+    n : CLong
+  union Num where
+    i : CInt
+    f : CFloat
+  enum Color : CInt where
+    Red = 1
+    Green = 2
+    Blue = 4
+  struct Nested where
+    tag : CChar
+    p : Pt
+    w : CArray 2 CFloat
+  packed struct Packed3 where
+    c : CChar
+    i : CInt
+    s : CShort
+  const Answer : CInt = 42
+  const Minus : CLong = -3
+  const Half : CDouble = 0.5
+  const Name : String = "records"
+
+  pt_add : Pt -> Pt -> Pt
+  vec3_scale : Vec3 -> CFloat -> Vec3
+  mixed_swap : Mixed -> Mixed
+  big_sum : Big -> CDouble
+  big_make : CDouble -> Big
+  num_bits : Num -> CInt
+  num_of_float : CFloat -> Num
+  color_next : Color -> Color
+  nested_sum : Nested -> CFloat
+  packed_sum : Packed3 -> CLong
+  packed_make : CInt -> Packed3
+  pt_fill : Ptr Pt -> CInt -> IO ()
+  pt_norm1 : Ptr Pt -> IO CInt
+  get_twice : IO (FunPtr (CInt -> CInt))
+  "dynamic" callInt : FunPtr (CInt -> CInt) -> CInt -> CInt
+  "&answer_value" answerAddr : Ptr CInt
+  "&pt_norm1" norm1Addr : FunPtr (Ptr Pt -> IO CInt)
+  "dynamic" callNorm1 : FunPtr (Ptr Pt -> IO CInt) -> Ptr Pt -> IO CInt
+  "pt_add" addPoints : Pt -> Pt -> Pt
+  "snprintf" fmtIntDouble : Ptr CChar -> CSize -> Ptr CChar -> ... -> CInt -> CDouble -> IO CInt
+  "snprintf" fmtPlain : Ptr CChar -> CSize -> Ptr CChar -> ... -> IO CInt
+
+-- Formats with `snprintf` into a buffer.
+format : (Ptr CChar -> CSize -> Ptr CChar -> IO CInt) -> String -> IO String
+format f fmt = allocaArray 64 (\buf => do
+  n <- withCString fmt (\p => f buf 64 p)
+  peekCString buf)
+
+origin : Pt
+origin = zeroed
+
+main : IO ()
+main = do
+  print (pt_add (MkPt 1 2) (MkPt 10 20), addPoints origin (MkPt 3 4))
+  print (vec3_scale (MkVec3 1.5 2.0 (-1.0)) 2.0)
+  print (mixed_swap (MkMixed 2.5 7))
+  print (big_sum (MkBig 1.0 2.0 3.0 4), big_make 1.5)
+  print (Big.n (big_make 1.5), Pt.set_x 5 (MkPt 1 2), Pt.y (MkPt 1 2))
+  print (num_bits (num_of_float 1.0), num_bits zeroed)
+  -- Unions and arrays are equal when their C values are.
+  print (num_of_float 1.0 == MkNum [0, 0, 128, 63], MkCArray [1] == (MkCArray [1, 0] : CArray 2 CInt))
+  print (color_next Green, color_next Blue, Red == MkColor 1, Answer, Minus, Half, Name)
+  print (nested_sum (MkNested 1 (MkPt 2 3) (MkCArray [0.5, 0.25])))
+  print (packed_sum (MkPacked3 1 2 3), packed_make 1000)
+  print (sizeOf (nullPtr : Ptr Nested), alignment (nullPtr : Ptr Nested), sizeOf (nullPtr : Ptr Num))
+  print (sizeOf (nullPtr : Ptr Packed3), alignment (nullPtr : Ptr Packed3), sizeOf (nullPtr : Ptr Big))
+  -- C writes through pointers; field pointers reach into a struct.
+  p <- alloca (\ptr => do
+    pt_fill ptr 9
+    poke (Pt.ptr_y ptr) 5
+    n <- pt_norm1 ptr
+    m <- callNorm1 norm1Addr ptr
+    v <- peek ptr
+    pure (v, n, m))
+  print p
+  u <- withValue (num_of_float 2.0) (\q => peek (Num.f q))
+  print u
+  twice <- get_twice
+  print (callInt twice 21)
+  v <- peek answerAddr
+  print v
+  s <- format (\b, n, f => fmtIntDouble b n f 12 2.5) "%d and %.2f"
+  t <- format fmtPlain "plain"
+  print (s, t)

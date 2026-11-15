@@ -160,16 +160,72 @@ pub enum Abi {
 pub struct ExternBlock {
     pub abi: Abi,
     pub abi_span: Span,
-    /// `link "m"`: the library that defines the functions.
-    pub link: Option<(String, Span)>,
+    /// `link "m"`: the libraries that define the functions.
+    pub links: Vec<(String, Span)>,
     /// `name : type`.
     pub sigs: Vec<ExternSig>,
+    /// The other declarations (spec-v0.0.6.md §1.1), expanded by
+    /// [`crate::cextern`].
+    pub items: Vec<ExternItem>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ExternSig {
     pub name: String,
     pub name_span: Span,
+    /// `"sym" name : type`: the C symbol when it is not the name, or
+    /// `"dynamic"`, `"wrapper"`, `"&sym"` (spec-v0.0.6.md §1.5).
+    pub symbol: Option<(String, Span)>,
+    /// The type without the `...` of a variadic function.
+    pub ty: Expr,
+    /// `...`: the number of fixed parameters (spec-v0.0.6.md §1.4).
+    pub variadic: Option<(usize, Span)>,
+}
+
+/// A declaration of an `extern` block other than a function.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExternItem {
+    pub name: String,
+    pub name_span: Span,
+    pub span: Span,
+    pub kind: ExternItemKind,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum ExternItemKind {
+    /// `type T`: a type without values (pointed to only).
+    Opaque,
+    /// `type T = ty` (a `typedef`).
+    Alias(Expr),
+    /// `const X : ty = literal`.
+    Const { ty: Expr, value: Expr },
+    /// `enum E : ty where { A = n; .. }`.
+    Enum {
+        repr: Expr,
+        consts: Vec<ExternConst>,
+    },
+    /// `struct S where { f : ty; .. }`, `packed struct`, `union`.
+    Record {
+        union: bool,
+        packed: bool,
+        fields: Vec<ExternField>,
+    },
+}
+
+/// `A = n` of an `enum`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExternConst {
+    pub name: String,
+    pub span: Span,
+    /// An integer literal, possibly negated.
+    pub value: Expr,
+}
+
+/// `f : ty` of a `struct` or `union`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExternField {
+    pub name: String,
+    pub span: Span,
     pub ty: Expr,
 }
 

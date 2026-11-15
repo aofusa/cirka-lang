@@ -45,7 +45,33 @@ fn mult(m: &Option<Mult>) -> &'static str {
 fn item(p: &Program, it: &Item) -> String {
     match it {
         Item::Prim(n, t) => format!("(prim {} {})", g(p, *n), expr(p, t)),
-        Item::Extern(n, t, abi) => format!("(extern {abi:?} {} {})", g(p, *n), expr(p, t)),
+        Item::Extern(f) => {
+            let mut extra = String::new();
+            if let Some((s, _)) = &f.symbol {
+                extra += &format!(" (symbol {s:?})");
+            }
+            if let Some((n, _)) = f.variadic {
+                extra += &format!(" (variadic {n})");
+            }
+            for l in &f.links {
+                extra += &format!(" (link {l:?})");
+            }
+            format!(
+                "(extern {:?} {}{extra} {})",
+                f.abi,
+                g(p, f.name),
+                expr(p, &f.ty)
+            )
+        }
+        Item::CRecord(r) => {
+            let what = match (r.union, r.packed) {
+                (true, _) => "cunion",
+                (false, true) => "cstruct-packed",
+                (false, false) => "cstruct",
+            };
+            let ms: Vec<String> = r.members.iter().map(|m| g(p, *m)).collect();
+            format!("({what} {} ({}))", g(p, r.data), ms.join(" "))
+        }
         Item::Trait(t) => {
             let ms: Vec<String> = t.methods.iter().map(|m| g(p, m.name)).collect();
             format!("(trait {} ({}))", g(p, t.name), ms.join(" "))

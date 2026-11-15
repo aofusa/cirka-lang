@@ -65,8 +65,16 @@ impl Ord (FunPtr f) where
 impl Show (FunPtr f) where
   showPrec d (MkFunPtr p) = showParen (d > 10) ("MkFunPtr " ++ showPrec 11 p)
 
-impl Eq a => Eq (CArray n a) where
-  (MkCArray xs) == (MkCArray ys) = xs == ys
+-- Arrays are equal when their C values are: `n` elements, cut or filled
+-- with `zeroed` (as `poke` writes them).
+impl {n : Int} -> (Eq a, Storable a) => Eq (CArray n a) where
+  (MkCArray xs) == (MkCArray ys) = resize n xs == resize n ys
+
+-- `n` elements of the list: cut, or filled with `zeroed`.
+resize : Storable a => Int -> List a -> List a
+resize n xs = if n <= 0 then Nil else case xs of
+  Nil => zeroed :: resize (n - 1) Nil
+  x :: rest => x :: resize (n - 1) rest
 
 impl Show a => Show (CArray n a) where
   showPrec d (MkCArray xs) = showParen (d > 10) ("MkCArray " ++ showPrec 11 xs)
@@ -124,6 +132,31 @@ private extern "cirka" where
   cirka_mem_write_f : Int -> Int -> Float -> IO ()
   cirka_cstring_new : String -> IO Int
   cirka_cstring_peek : Int -> Int -> IO String
+  cirka_callback_free : Int -> IO ()
+
+-- ---- function pointers made from functions (spec-v0.0.6.md §1.5) ----
+
+-- Frees a function pointer made by a `"wrapper"` function. Calling it
+-- from C afterwards is an error of the program (as with freed memory).
+freeFunPtr : FunPtr f -> IO ()
+freeFunPtr (MkFunPtr p) = cirka_callback_free p
+
+-- A function pointer made by a `"wrapper"` function, freed when it is
+-- released: `cb <- callback (mkVisitor visit)`.
+data Callback (f : Type) : LType where
+  MkCallback : FunPtr f -> Callback f
+
+impl Release (Callback f) where
+  release (MkCallback p) = freeFunPtr p
+
+callback : IO (FunPtr f) -> IO1 (Callback f)
+callback mk = do
+  p <- mk
+  pure1 (MkCallback p)
+
+-- The pointer, to give to C while the callback is not released.
+callbackPtr : (1 c : Callback f) -> (Callback f, FunPtr f)
+callbackPtr (MkCallback p) = (MkCallback p, p)
 
 -- `n` bytes of C memory (not initialized), freed with `freeBytes`.
 mallocBytes : Int -> IO (Ptr a)
@@ -330,10 +363,13 @@ impl {n : Int} -> Storable a => Storable (CArray n a) where
   sizeOf _ = n * sizeOf (nullPtr : Ptr a)
   alignment _ = alignment (nullPtr : Ptr a)
   peek p = fmap MkCArray (peekArray n (castPtr p))
-  poke p (MkCArray xs) = pokeArrayFill (castPtr p) 0 n xs
-  zeroed = MkCArray (zeroes n)
+  poke p (MkCArray xs) = pokeArrayN (castPtr p) n xs
+  zeroed = MkCArray (zeroedList n)
 
--- Elements `i` to `n - 1` from the list, then `zeroed`.
+-- Writes exactly `n` elements: the list cut, or filled with `zeroed`.
+pokeArrayN : Storable a => Ptr a -> Int -> List a -> IO ()
+pokeArrayN p n xs = pokeArrayFill p 0 n xs
+
 private pokeArrayFill : Storable a => Ptr a -> Int -> Int -> List a -> IO ()
 pokeArrayFill p i n xs = if i >= n then pure () else case xs of
   Nil => do
@@ -343,8 +379,23 @@ pokeArrayFill p i n xs = if i >= n then pure () else case xs of
     pokeElemOff p i x
     pokeArrayFill p (i + 1) n rest
 
-private zeroes : Storable a => Int -> List a
-zeroes n = if n <= 0 then Nil else zeroed :: zeroes (n - 1)
+-- `n` times `zeroed`.
+zeroedList : Storable a => Int -> List a
+zeroedList n = if n <= 0 then Nil else zeroed :: zeroedList (n - 1)
+
+-- ---- the code of extern blocks (spec-v0.0.6.md §1.9) ----
+
+-- The layout of a C structure or union (the type pointed to, which is not
+-- read): `primCLayout p 0` is its size, `1` its alignment and `2 + i`
+-- the offset of field `i`. The compiler computes it as C does.
+prim primCLayout : {a : Type} -> Ptr a -> Int -> Int
+
+-- The value at address `a + off`.
+peekField : Storable b => Int -> Int -> IO b
+peekField a off = peek (MkPtr (a + off))
+
+pokeField : Storable b => Int -> Int -> b -> IO ()
+pokeField a off x = poke (MkPtr (a + off)) x
 
 -- The element `i` elements after the address.
 peekElemOff : Storable a => Ptr a -> Int -> IO a

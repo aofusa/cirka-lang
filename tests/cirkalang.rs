@@ -136,7 +136,9 @@ fn compile_cirka_with(
 /// (exit code `.exitcode`, default 0) without leaks, and native code with
 /// the debug and release runtimes agrees. Programs with threads, which the
 /// interpreter does not run, say `-- skip-backend: interp` (spec-v0.0.5.md
-/// §1.5): native code alone prints `.stdout`.
+/// §1.5): native code alone prints `.stdout`. A `.c` file next to a
+/// program is its C helper (spec-v0.0.6.md §1), loaded by the interpreter
+/// and linked with native code.
 #[test]
 fn cirkalang_run() {
     cirka_testkit::init();
@@ -164,6 +166,10 @@ fn cirkalang_run() {
             .map(|s| s.trim().parse().unwrap())
             .unwrap_or(0);
         let interp_ok = c.header.get("skip-backend") != Some("interp");
+        let link_args = match cirka_integration::c_helper(&cfg, c, "cirkalang-run") {
+            Ok(a) => a,
+            Err(e) => return Outcome::Fail(e),
+        };
         let mut reference = None;
         for level in [0u8, 2] {
             let mut opts = cirka_driver::pipeline::Options::new(&c.name);
@@ -224,7 +230,7 @@ fn cirkalang_run() {
         {
             return Outcome::Fail(e);
         }
-        cirka_integration::check_native_with(
+        cirka_integration::check_native_linked(
             &cfg,
             c,
             "cirkalang-native",
@@ -233,6 +239,7 @@ fn cirkalang_run() {
             &r,
             interp_ok,
             want_code == 0,
+            &link_args,
         )
     });
 }

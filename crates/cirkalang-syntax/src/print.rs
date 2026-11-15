@@ -93,15 +93,27 @@ fn decl(d: &Decl) -> String {
                 crate::ast::Abi::C => "C",
                 crate::ast::Abi::Cirka => "cirka",
             };
-            let link = match &b.link {
-                Some((l, _)) => format!(" (link {l:?})"),
-                None => String::new(),
-            };
-            let sigs: Vec<String> = b
+            let link: String = b
+                .links
+                .iter()
+                .map(|(l, _)| format!(" (link {l:?})"))
+                .collect();
+            let mut sigs: Vec<String> = b
                 .sigs
                 .iter()
-                .map(|s| format!("({} {})", s.name, expr(&s.ty)))
+                .map(|s| {
+                    let sym = match &s.symbol {
+                        Some((x, _)) => format!(" (symbol {x:?})"),
+                        None => String::new(),
+                    };
+                    let var = match s.variadic {
+                        Some((n, _)) => format!(" (variadic {n})"),
+                        None => String::new(),
+                    };
+                    format!("({}{sym}{var} {})", s.name, expr(&s.ty))
+                })
                 .collect();
+            sigs.extend(b.items.iter().map(extern_item));
             format!("({p}extern {abi:?}{link} {})", sigs.join(" "))
         }
         DeclKind::Trait(t) => {
@@ -359,6 +371,38 @@ pub fn pat(p: &Pat) -> String {
             }
             s.push(')');
             s
+        }
+    }
+}
+
+fn extern_item(i: &crate::ast::ExternItem) -> String {
+    use crate::ast::ExternItemKind as K;
+    match &i.kind {
+        K::Opaque => format!("(type {})", i.name),
+        K::Alias(t) => format!("(type {} {})", i.name, expr(t)),
+        K::Const { ty, value } => format!("(const {} {} {})", i.name, expr(ty), expr(value)),
+        K::Enum { repr, consts } => {
+            let cs: Vec<String> = consts
+                .iter()
+                .map(|c| format!("({} {})", c.name, expr(&c.value)))
+                .collect();
+            format!("(enum {} {} {})", i.name, expr(repr), cs.join(" "))
+        }
+        K::Record {
+            union,
+            packed,
+            fields,
+        } => {
+            let fs: Vec<String> = fields
+                .iter()
+                .map(|f| format!("({} {})", f.name, expr(&f.ty)))
+                .collect();
+            let w = match (union, packed) {
+                (true, _) => "union",
+                (false, true) => "packed-struct",
+                (false, false) => "struct",
+            };
+            format!("({w} {} {})", i.name, fs.join(" "))
         }
     }
 }

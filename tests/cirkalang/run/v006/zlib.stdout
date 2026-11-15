@@ -1,0 +1,6 @@
+smaller: True
+CirkaLang wraps zlib without a GC. CirkaLang wraps zlib without a GC.
+released the Decompress stream: MkCInt 0
+released the Compress stream: MkCInt 0
+inflate failed: MkCInt (-3)
+released the Decompress stream: MkCInt 0

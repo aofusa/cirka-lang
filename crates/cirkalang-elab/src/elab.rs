@@ -53,6 +53,47 @@ struct Cxt {
     shapes: HashMap<u32, Shape>,
 }
 
+/// The parameters and result of the type of an extern function.
+struct ExternShape {
+    /// Each type with the level of its context.
+    params: Vec<(Val, u32)>,
+    /// The result, without `IO` when `io`.
+    result: Val,
+    io: bool,
+    lvl: u32,
+}
+
+/// The C type of a value (spec-v0.0.6.md §1.3).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CVal {
+    /// A scalar: the C type of `Foreign` (qualified name) or the primitive
+    /// type that it is passed as.
+    Scalar(&'static str),
+    /// A struct or union of an extern block.
+    Record(GName),
+    /// `CArray n a`.
+    Array,
+}
+
+/// The scalar C types of `Foreign`.
+const FOREIGN_SCALARS: &[&str] = &[
+    "Foreign.CChar",
+    "Foreign.CUChar",
+    "Foreign.CShort",
+    "Foreign.CUShort",
+    "Foreign.CInt",
+    "Foreign.CUInt",
+    "Foreign.CLong",
+    "Foreign.CULong",
+    "Foreign.CSize",
+    "Foreign.CSSize",
+    "Foreign.CFloat",
+    "Foreign.CDouble",
+    "Foreign.CBool",
+    "Foreign.Ptr",
+    "Foreign.FunPtr",
+];
+
 /// What `enter_scope` saves.
 struct Scope {
     uses: Vec<Usage>,
@@ -143,6 +184,10 @@ pub struct Elab<'r> {
     out_of_fuel: Cell<bool>,
     fuel_span: Cell<Option<Span>>,
     pub diags: RefCell<Vec<Diagnostic>>,
+    /// The places of declarations already reported as wrong (structs of
+    /// extern blocks with fields of no C type): errors in the code made
+    /// for them are not reported again.
+    muted: RefCell<Vec<Span>>,
     /// Name of the definition being elaborated (for messages).
     current: RefCell<String>,
     /// The definition being elaborated is `partial`: missing cases panic.
@@ -198,6 +243,7 @@ impl<'r> Elab<'r> {
             builtins: Builtins::default(),
             traits: HashMap::new(),
             impls: HashMap::new(),
+            c_records: HashMap::new(),
             totality: HashMap::new(),
             trusted: HashSet::new(),
             measures: HashMap::new(),
@@ -276,6 +322,7 @@ impl<'r> Elab<'r> {
             out_of_fuel: Cell::new(false),
             fuel_span: Cell::new(None),
             diags: RefCell::new(Vec::new()),
+            muted: RefCell::new(Vec::new()),
             current: RefCell::new(String::new()),
             partial: Cell::new(false),
             app_expect: RefCell::new(None),
@@ -295,7 +342,15 @@ impl<'r> Elab<'r> {
     }
 
     fn report(&self, d: Diagnostic) {
-        self.diags.borrow_mut().push(d);
+        let muted = d.code.as_deref() != Some("E1272")
+            && d.labels.iter().find(|l| l.primary).is_some_and(|l| {
+                self.muted.borrow().iter().any(|m| {
+                    m.file == l.span.file && m.start <= l.span.start && l.span.end <= m.end
+                })
+            });
+        if !muted {
+            self.diags.borrow_mut().push(d);
+        }
     }
 
     fn error(&self, code: &str, span: Span, msg: impl Into<String>) -> Diagnostic {
@@ -1293,6 +1348,12 @@ impl<'r> Elab<'r> {
             ExprKind::Lit(SLit::Float(x)) if !matches!(wty, Val::Neutral(Head::Meta(_), _)) => {
                 if self.is_prim_type(&wty, self.prog.builtins.float) {
                     Term::Lit(Lit::Float(*x))
+                } else if let Some((_, con, None)) = self.c_literal_type(&wty) {
+                    Term::App(
+                        Rc::new(Term::Global(con)),
+                        Rc::new(Term::Lit(Lit::Float(*x))),
+                        Icit::Expl,
+                    )
                 } else {
                     self.fallback(cx, e, ty, rig)
                 }
@@ -1311,6 +1372,14 @@ impl<'r> Elab<'r> {
                     {
                         Term::Lit(Lit::Float(-*x))
                     }
+                    ExprKind::Lit(SLit::Float(x)) => match self.c_literal_type(&wty) {
+                        Some((_, con, None)) => Term::App(
+                            Rc::new(Term::Global(con)),
+                            Rc::new(Term::Lit(Lit::Float(-*x))),
+                            Icit::Expl,
+                        ),
+                        _ => self.fallback(cx, e, ty, rig),
+                    },
                     _ => self.fallback(cx, e, ty, rig),
                 }
             }
@@ -1401,6 +1470,35 @@ impl<'r> Elab<'r> {
         matches!(v, Val::Neutral(Head::Global(h), sp) if sp.is_empty() && Some(*h) == g)
     }
 
+    /// The C type `v` of `Foreign` whose literals are written as numbers,
+    /// its constructor and the range of its integers (`None`: a
+    /// floating-point type).
+    fn c_literal_type(&self, v: &Val) -> Option<(GName, GName, Option<(i128, i128)>)> {
+        let Val::Data(d, args) = v else {
+            return None;
+        };
+        if !args.is_empty() {
+            return None;
+        }
+        let range = match self.prog.name(*d).strip_prefix("Foreign.")? {
+            "CChar" => Some((i128::from(i8::MIN), i128::from(i8::MAX))),
+            "CUChar" => Some((0, i128::from(u8::MAX))),
+            "CShort" => Some((i128::from(i16::MIN), i128::from(i16::MAX))),
+            "CUShort" => Some((0, i128::from(u16::MAX))),
+            "CInt" => Some((i128::from(i32::MIN), i128::from(i32::MAX))),
+            "CUInt" => Some((0, i128::from(u32::MAX))),
+            "CLong" | "CSSize" => Some((i128::from(i64::MIN), i128::from(i64::MAX))),
+            "CULong" | "CSize" => Some((0, i128::from(u64::MAX))),
+            "CBool" => Some((0, 1)),
+            "CFloat" | "CDouble" => None,
+            _ => return None,
+        };
+        match self.prog.get(*d) {
+            Global::Data { cons, .. } if cons.len() == 1 => Some((*d, cons[0], range)),
+            _ => None,
+        }
+    }
+
     fn check_int(&self, cx: &mut Cxt, n: u128, neg: bool, wty: &Val, span: Span) -> Term {
         let b = &self.prog.builtins;
         let too_big = |what: &str| {
@@ -1438,6 +1536,24 @@ impl<'r> Elab<'r> {
         if self.is_prim_type(wty, b.float) {
             let x = n as f64;
             return Term::Lit(Lit::Float(if neg { -x } else { x }));
+        }
+        // A C type of `Foreign` (spec-v0.0.6.md §1.1): its constructor
+        // applied to the literal, in the range of the C type.
+        if let Some((d, con, range)) = self.c_literal_type(wty) {
+            let v = if neg { -(n as i128) } else { n as i128 };
+            let lit = match range {
+                None => Lit::Float(v as f64),
+                Some((lo, hi)) if v < lo || v > hi => {
+                    return too_big(self.prog.short_name(d));
+                }
+                // Unsigned 64-bit values keep their bits.
+                Some(_) => Lit::Int(v as u64 as i64),
+            };
+            return Term::App(
+                Rc::new(Term::Global(con)),
+                Rc::new(Term::Lit(lit)),
+                Icit::Expl,
+            );
         }
         if let Val::Data(d, _) = wty
             && Some(*d) == b.nat
@@ -3677,6 +3793,21 @@ impl<'r> Elab<'r> {
                 self.data_sig(d);
             }
         }
+        // The type aliases of extern blocks (`type T = t`, spec-v0.0.6.md
+        // §1.1), which the types of extern functions and constructors use.
+        let aliases: Vec<&rast::Def> = items
+            .iter()
+            .filter_map(|it| match it {
+                rast::Item::Def(d) if self.is_type_alias(d) => Some(d),
+                _ => None,
+            })
+            .collect();
+        for d in &aliases {
+            self.def_sig(d);
+        }
+        for d in &aliases {
+            self.def_body(d);
+        }
         // 2. Other primitives; constructors, universes and Drop.
         for it in &items {
             if let rast::Item::Prim(g, t) = it
@@ -3686,8 +3817,12 @@ impl<'r> Elab<'r> {
             }
         }
         for it in &items {
-            if let rast::Item::Extern(g, t, abi) = it {
-                self.extern_fn(*g, t, *abi);
+            match it {
+                rast::Item::Extern(f) => self.extern_fn(f),
+                rast::Item::CRecord(r) => {
+                    self.prog.c_records.insert(r.data, r.clone());
+                }
+                _ => {}
             }
         }
         for it in &items {
@@ -3706,7 +3841,9 @@ impl<'r> Elab<'r> {
         }
         self.check_coherence(&impls);
         for it in &items {
-            if let rast::Item::Def(d) = it {
+            if let rast::Item::Def(d) = it
+                && !self.is_type_alias(d)
+            {
                 self.def_sig(d);
             }
         }
@@ -3720,7 +3857,7 @@ impl<'r> Elab<'r> {
         // 4. Bodies.
         for it in &items {
             match it {
-                rast::Item::Def(d) => self.def_body(d),
+                rast::Item::Def(d) if !self.is_type_alias(d) => self.def_body(d),
                 rast::Item::Trait(t) => self.default_bodies(t),
                 rast::Item::Impl(i) => self.impl_body(i),
                 _ => {}
@@ -4199,14 +4336,56 @@ impl<'r> Elab<'r> {
 
     /// A function of an `extern` block (spec-v0.0.2.md §8.2): its
     /// parameters and result cross the boundary.
-    fn extern_fn(&mut self, g: GName, t: &rast::Expr, abi: Abi) {
+    fn extern_fn(&mut self, f: &rast::ExternFn) {
+        let g = f.name;
         self.begin(self.prog.name(g).to_string());
         let mut cx = Cxt::default();
-        let tt = self.check_type(&mut cx, t);
+        let tt = self.check_type(&mut cx, &f.ty);
         self.solve_pending(true);
         let ty = self.zonk(0, &tt);
+        let (symbol, call) = match f.symbol.as_ref().map(|s| s.0.as_str()) {
+            None => (None, ExternCall::Call),
+            Some("dynamic") => (None, ExternCall::Dynamic),
+            Some("wrapper") => (None, ExternCall::Wrapper),
+            Some(s) => match s.strip_prefix('&') {
+                Some(x) => (Some(x.to_string()), ExternCall::Addr),
+                None => (Some(s.to_string()), ExternCall::Call),
+            },
+        };
+        let info = ExternInfo {
+            symbol,
+            call,
+            variadic: f.variadic.map(|v| v.0),
+            links: f.links.clone(),
+        };
+        if f.abi == Abi::Cirka && (f.symbol.is_some() || f.variadic.is_some()) {
+            let sp = f.symbol.as_ref().map(|s| s.1).or(f.variadic.map(|v| v.1));
+            self.report(
+                self.error(
+                    "E1272",
+                    sp.unwrap_or(self.rp.info(g).span),
+                    "functions of the runtime have no symbol names and are not variadic",
+                )
+                .with_note(
+                    "`\"sym\" name`, `...`, `\"dynamic\"` and `\"wrapper\"` are for `extern \"C\"`",
+                ),
+            );
+        }
+        if let Some(sym) = &info.symbol
+            && (sym.is_empty() || !sym.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+        {
+            self.report(self.error(
+                "E1272",
+                f.symbol.as_ref().unwrap().1,
+                format!("`{sym}` is not the name of a C symbol"),
+            ));
+        }
         // Checked after the data types have their constructors.
-        self.prog.globals[g.0 as usize] = Global::Extern { ty, abi };
+        self.prog.globals[g.0 as usize] = Global::Extern {
+            ty,
+            abi: f.abi,
+            info,
+        };
         self.prog.order.push(g);
     }
 
@@ -4274,75 +4453,458 @@ impl<'r> Elab<'r> {
     }
 
     /// Reports the parameter and result types of extern functions that
-    /// cannot cross the boundary (after `data_cons`).
+    /// cannot cross the boundary, and the fields of structs and unions
+    /// that have no C type (after `data_cons`).
     fn check_externs(&mut self) {
+        self.check_c_records();
         let gs: Vec<GName> = (0..self.prog.globals.len() as u32)
             .map(GName)
             .filter(|g| matches!(self.prog.get(*g), Global::Extern { .. }))
             .collect();
         for g in gs {
-            let Global::Extern { ty, abi } = self.prog.get(g).clone() else {
+            let Global::Extern { ty, abi, info } = self.prog.get(g).clone() else {
                 continue;
             };
             let span = self.rp.info(g).span;
-            let mut v = self.ev().eval(&Vec::new(), &ty);
-            let mut l = 0;
-            let mut bad: Option<String> = None;
-            loop {
-                match self.whnf(&v) {
-                    Val::Pi(_, _, Icit::Impl, _, clo) => {
-                        v = self.ev().inst(&clo, Val::var(l));
-                        l += 1;
-                    }
-                    Val::Pi(_, _, Icit::Expl, a, clo) => {
-                        if !self.extern_scalar(&a, abi, 0)
-                            && !(abi == Abi::Cirka && self.extern_callback(&a))
-                        {
-                            bad = Some(self.show_val(l, &a));
-                            break;
+            let v = self.ev().eval(&Vec::new(), &ty);
+            let shape = self.extern_shape(&v);
+            match info.call {
+                ExternCall::Call => self.check_extern_call(span, abi, &shape, info.variadic),
+                ExternCall::Dynamic => {
+                    // `FunPtr F -> F`.
+                    let f = shape
+                        .params
+                        .first()
+                        .and_then(|(a, _)| self.fun_ptr_arg(a))
+                        .filter(|f| {
+                            let rest = self.extern_rest(&v, 1);
+                            rest.as_ref()
+                                .is_some_and(|(r, l)| self.ev().unify(*l, r, f).is_ok())
+                        });
+                    match f {
+                        Some(_) => {
+                            let rest = self.extern_rest(&v, 1).unwrap().0;
+                            let inner = self.extern_shape(&rest);
+                            self.check_extern_call(span, abi, &inner, info.variadic);
                         }
-                        v = self.ev().inst(&clo, Val::var(l));
-                        l += 1;
+                        None => self.report(
+                            self.error(
+                                "E1272",
+                                span,
+                                "the type of a `\"dynamic\"` function is `FunPtr F -> F`",
+                            )
+                            .with_note("it calls the C function that the pointer points to as `F`"),
+                        ),
                     }
-                    r => {
-                        let r = match &r {
-                            Val::Neutral(Head::Global(h), sp)
-                                if sp.len() == 1
-                                    && (Some(*h) == self.prog.builtins.io
-                                        || Some(*h) == self.prog.builtins.io1) =>
-                            {
-                                match &sp[0] {
-                                    Elim::App(a, _) => a.clone(),
-                                    _ => r.clone(),
-                                }
-                            }
-                            _ => r.clone(),
-                        };
-                        let unit = matches!(self.whnf(&r), Val::Data(d, _) if Some(d) == self.prog.builtins.unit);
-                        if !unit && !self.extern_scalar(&r, abi, 0) {
-                            bad = Some(self.show_val(l, &r));
-                        }
-                        break;
+                }
+                ExternCall::Wrapper => {
+                    // `F -> IO (FunPtr F)`.
+                    let ok = shape.params.len() == 1
+                        && shape.io
+                        && self.fun_ptr_arg(&shape.result).is_some_and(|f| {
+                            self.ev()
+                                .unify(shape.params[0].1, &shape.params[0].0, &f)
+                                .is_ok()
+                        });
+                    if !ok {
+                        self.report(
+                            self.error(
+                                "E1272",
+                                span,
+                                "the type of a `\"wrapper\"` function is `F -> IO (FunPtr F)`",
+                            )
+                            .with_note(
+                                "it makes a C function pointer that calls the CirkaLang function",
+                            ),
+                        );
+                    } else if info.variadic.is_some() {
+                        self.report(self.error("E1273", span, "a callback cannot be variadic"));
+                    } else {
+                        let inner = self.extern_shape(&shape.params[0].0);
+                        self.check_extern_call(span, abi, &inner, None);
+                    }
+                }
+                ExternCall::Addr => {
+                    // `FunPtr F` or `Ptr T`.
+                    let ok = shape.params.is_empty()
+                        && !shape.io
+                        && matches!(self.whnf(&shape.result), Val::Data(d, _)
+                            if matches!(self.prog.name(d), "Foreign.FunPtr" | "Foreign.Ptr"));
+                    if !ok {
+                        self.report(
+                            self.error(
+                                "E1272",
+                                span,
+                                "the type of the address of a symbol (`\"&sym\"`) is `FunPtr F` or `Ptr T`",
+                            ),
+                        );
                     }
                 }
             }
-            if let Some(t) = bad {
-                let what = if abi == Abi::C { "C" } else { "the runtime" };
+        }
+    }
+
+    /// The explicit parameters (with the level after each) and the result
+    /// (without `IO`) of the type of an extern function.
+    fn extern_shape(&self, v: &Val) -> ExternShape {
+        let mut v = v.clone();
+        let mut l = 0;
+        let mut params = Vec::new();
+        loop {
+            match self.whnf(&v) {
+                Val::Pi(_, _, Icit::Impl, _, clo) => {
+                    v = self.ev().inst(&clo, Val::var(l));
+                    l += 1;
+                }
+                Val::Pi(_, _, Icit::Expl, a, clo) => {
+                    params.push(((*a).clone(), l));
+                    v = self.ev().inst(&clo, Val::var(l));
+                    l += 1;
+                }
+                r => {
+                    let io = match &r {
+                        Val::Neutral(Head::Global(h), sp)
+                            if sp.len() == 1
+                                && (Some(*h) == self.prog.builtins.io
+                                    || Some(*h) == self.prog.builtins.io1) =>
+                        {
+                            match &sp[0] {
+                                Elim::App(a, _) => Some(a.clone()),
+                                _ => None,
+                            }
+                        }
+                        _ => None,
+                    };
+                    return ExternShape {
+                        params,
+                        io: io.is_some(),
+                        result: io.unwrap_or(r),
+                        lvl: l,
+                    };
+                }
+            }
+        }
+    }
+
+    /// The type after the first `n` explicit parameters, and its level.
+    fn extern_rest(&self, v: &Val, n: usize) -> Option<(Val, u32)> {
+        let mut v = v.clone();
+        let mut l = 0;
+        let mut seen = 0;
+        while seen < n {
+            match self.whnf(&v) {
+                Val::Pi(_, _, ic, _, clo) => {
+                    if ic == Icit::Expl {
+                        seen += 1;
+                    }
+                    v = self.ev().inst(&clo, Val::var(l));
+                    l += 1;
+                }
+                _ => return None,
+            }
+        }
+        Some((v, l))
+    }
+
+    /// `f` of `FunPtr f`.
+    fn fun_ptr_arg(&self, v: &Val) -> Option<Val> {
+        match self.whnf(v) {
+            Val::Data(d, args) if self.prog.name(d) == "Foreign.FunPtr" && args.len() == 1 => {
+                Some(args[0].0.clone())
+            }
+            _ => None,
+        }
+    }
+
+    /// The parameters and result of a function called through the
+    /// boundary, and the variadic part.
+    fn check_extern_call(
+        &self,
+        span: Span,
+        abi: Abi,
+        shape: &ExternShape,
+        variadic: Option<usize>,
+    ) {
+        let record = |v: &Val| {
+            abi == Abi::C
+                && matches!(self.whnf(v), Val::Data(d, _) if self.prog.c_records.contains_key(&d))
+        };
+        let mut bad: Option<String> = None;
+        for (a, l) in &shape.params {
+            if !self.extern_scalar(a, abi, 0)
+                && !record(a)
+                && !(abi == Abi::Cirka && self.extern_callback(a))
+            {
+                bad = Some(self.show_val(*l, a));
+                break;
+            }
+        }
+        if bad.is_none() {
+            let r = &shape.result;
+            let unit =
+                matches!(self.whnf(r), Val::Data(d, _) if Some(d) == self.prog.builtins.unit);
+            if !unit && !self.extern_scalar(r, abi, 0) && !record(r) {
+                bad = Some(self.show_val(shape.lvl, r));
+            }
+        }
+        if let Some(t) = bad {
+            let what = if abi == Abi::C { "C" } else { "the runtime" };
+            self.report(
+                self.error(
+                    "E1270",
+                    span,
+                    format!("`{t}` cannot be passed to or from {what}"),
+                )
+                .with_note(if abi == Abi::C {
+                    "extern functions take and return `Int`, `UInt`, `Float`, `Char`, `Bool`, \
+                     the C types of `Foreign`, types wrapping one of them, and the structs, \
+                     unions and enums of extern blocks (and `()` as a result)"
+                } else {
+                    "runtime functions take and return `Int`, `UInt`, `Float`, `Char`, `Bool`, \
+                     `String`, `Handle`, the C types of `Foreign` and types wrapping one of them \
+                     (and `()` as a result), and take functions and actions"
+                }),
+            );
+            return;
+        }
+        // The variadic part: the types after the default argument
+        // promotions (spec-v0.0.6.md §1.4).
+        let Some(fixed) = variadic else {
+            return;
+        };
+        for (a, l) in shape.params.iter().skip(fixed) {
+            let msg = match self.c_value(a, 0) {
+                Some(CVal::Record(_)) => Some("structs and unions cannot be variadic arguments"),
+                Some(CVal::Scalar(
+                    "Foreign.CFloat" | "Foreign.CChar" | "Foreign.CUChar" | "Foreign.CShort"
+                    | "Foreign.CUShort" | "Foreign.CBool",
+                )) => Some("a variadic argument is promoted"),
+                _ => None,
+            };
+            if let Some(m) = msg {
                 self.report(
                     self.error(
-                        "E1270",
+                        "E1273",
                         span,
-                        format!("`{t}` cannot be passed to or from {what}"),
+                        format!(
+                            "`{}` cannot be a variadic argument: {m}",
+                            self.show_val(*l, a)
+                        ),
                     )
-                    .with_note(if abi == Abi::C {
-                        "extern functions take and return `Int`, `UInt`, `Float`, `Char`, `Bool`, \
-                         the C types of `Foreign` and types wrapping one of them (and `()` as a result)"
-                    } else {
-                        "runtime functions take and return `Int`, `UInt`, `Float`, `Char`, `Bool`, \
-                         `String`, `Handle`, the C types of `Foreign` and types wrapping one of them \
-                         (and `()` as a result), and take functions and actions"
-                    }),
+                    .with_help(
+                        "pass `CDouble` for `CFloat` and `CInt` for the smaller integers \
+                         (C promotes them), and a pointer for a struct",
+                    ),
                 );
+                return;
+            }
+        }
+    }
+
+    /// The C type of a value of type `ty`, for the fields of structs and
+    /// the boundary (spec-v0.0.6.md §1.3).
+    fn c_value(&self, ty: &Val, depth: u32) -> Option<CVal> {
+        if depth > 8 {
+            return None;
+        }
+        match self.whnf(ty) {
+            Val::Neutral(Head::Global(g), sp) if sp.is_empty() => match self.prog.prim_of(g) {
+                Some(Prim::Int) => Some(CVal::Scalar("Int")),
+                Some(Prim::UInt) => Some(CVal::Scalar("UInt")),
+                Some(Prim::Float) => Some(CVal::Scalar("Float")),
+                Some(Prim::Char) => Some(CVal::Scalar("Char")),
+                _ => None,
+            },
+            Val::Data(d, args) => {
+                if Some(d) == self.prog.builtins.bool_ {
+                    return Some(CVal::Scalar("Bool"));
+                }
+                if self.prog.c_records.contains_key(&d) {
+                    return Some(CVal::Record(d));
+                }
+                let name = self.prog.name(d);
+                if name == "Foreign.CArray" && args.len() == 2 {
+                    let n_ok = matches!(self.whnf(&args[0].0), Val::Lit(Lit::Int(n)) if n >= 0);
+                    return (n_ok && self.c_value(&args[1].0, depth + 1).is_some())
+                        .then_some(CVal::Array);
+                }
+                if let Some(n) = FOREIGN_SCALARS.iter().find(|n| **n == name) {
+                    return Some(CVal::Scalar(n));
+                }
+                let Global::Data { cons, nparams, .. } = self.prog.get(d).clone() else {
+                    return None;
+                };
+                if cons.len() != 1 {
+                    return None;
+                }
+                let mut v = self.ev().eval(&Vec::new(), self.prog.type_of(cons[0])?);
+                for (a, _) in args.iter().take(nparams) {
+                    match self.whnf(&v) {
+                        Val::Pi(_, _, _, _, clo) => v = self.ev().inst(&clo, a.clone()),
+                        _ => return None,
+                    }
+                }
+                let mut fields = Vec::new();
+                let mut l = 0;
+                while let Val::Pi(_, m, _, a, clo) = self.whnf(&v) {
+                    if m != Mult::Zero {
+                        fields.push(a);
+                    }
+                    v = self.ev().inst(&clo, Val::var(l));
+                    l += 1;
+                }
+                match fields.as_slice() {
+                    [f] => match self.c_value(f, depth + 1)? {
+                        CVal::Scalar(s) => Some(CVal::Scalar(s)),
+                        _ => None,
+                    },
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// The fields of the structs and unions of extern blocks have C types,
+    /// and a struct does not contain itself.
+    fn check_c_records(&self) {
+        let mut recs: Vec<(GName, CRecord)> = self
+            .prog
+            .c_records
+            .iter()
+            .map(|(g, r)| (*g, r.clone()))
+            .collect();
+        recs.sort_by_key(|(g, _)| g.0);
+        for (g, r) in &recs {
+            let tys = self.c_record_fields(*g);
+            let sname = self.prog.short_name(*g).to_string();
+            let before = self.diags.borrow().len();
+            if r.fields.is_empty() {
+                let what = if r.union { "union" } else { "struct" };
+                self.report(
+                    self.error("E1272", r.span, format!("the {what} `{sname}` has no fields"))
+                        .with_help(format!(
+                            "declare a type that is only used through pointers as opaque: `type {sname}`"
+                        )),
+                );
+            }
+            for ((fname, fsp), t) in r.fields.iter().zip(&tys) {
+                let what = if r.union { "member" } else { "field" };
+                match self.c_value(t, 0) {
+                    None => self.report(
+                        self.error(
+                            "E1272",
+                            *fsp,
+                            format!(
+                                "the {what} `{fname}` of `{sname}` cannot have type `{}`",
+                                self.show_val(0, t)
+                            ),
+                        )
+                        .with_note(
+                            "the fields of structs and unions have C types: the scalars of the \
+                             boundary, enums, structs, unions and `CArray n T`",
+                        ),
+                    ),
+                    // Values in memory need `Storable`, which `Bool` and
+                    // `Char` do not have (their C size is not fixed).
+                    Some(CVal::Scalar(s @ ("Bool" | "Char"))) => self.report(
+                        self.error(
+                            "E1272",
+                            *fsp,
+                            format!("the {what} `{fname}` of `{sname}` cannot have type `{s}`"),
+                        )
+                        .with_help(if s == "Bool" {
+                            "use `CBool` (C's `bool`)"
+                        } else {
+                            "use `CUInt` (C's `char32_t`) or `CChar`"
+                        }),
+                    ),
+                    Some(CVal::Record(_) | CVal::Array)
+                        if self.record_in(t).is_some_and(|inner| {
+                            self.record_contains(inner, *g, &mut Vec::new())
+                        }) =>
+                    {
+                        self.report(
+                            self.error(
+                                "E1272",
+                                *fsp,
+                                format!("`{sname}` contains itself through the {what} `{fname}`"),
+                            )
+                            .with_help("use a pointer (`Ptr`)"),
+                        );
+                    }
+                    _ => {}
+                }
+            }
+            if self.diags.borrow().len() > before {
+                self.muted.borrow_mut().push(r.span);
+            }
+        }
+    }
+
+    /// The types of the fields of a struct (the constructor's arguments) or
+    /// the members of a union (from `U.m : Ptr U -> Ptr M`).
+    pub(crate) fn c_record_fields(&self, g: GName) -> Vec<Val> {
+        let Some(r) = self.prog.c_records.get(&g) else {
+            return Vec::new();
+        };
+        if r.union {
+            return r
+                .members
+                .iter()
+                .filter_map(|m| {
+                    let ty = self.global_type(*m)?;
+                    let Val::Pi(_, _, _, _, clo) = self.whnf(&ty) else {
+                        return None;
+                    };
+                    match self.whnf(&self.ev().inst(&clo, Val::var(0))) {
+                        Val::Data(_, args) => args.first().map(|a| a.0.clone()),
+                        _ => None,
+                    }
+                })
+                .collect();
+        }
+        let Global::Data { cons, .. } = self.prog.get(g) else {
+            return Vec::new();
+        };
+        let Some(mut v) = cons.first().and_then(|c| self.global_type(*c)) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        let mut l = 0;
+        while let Val::Pi(_, _, _, a, clo) = self.whnf(&v) {
+            out.push((*a).clone());
+            v = self.ev().inst(&clo, Val::var(l));
+            l += 1;
+        }
+        out
+    }
+
+    /// Whether record `r` contains record `target` by value.
+    fn record_contains(&self, r: GName, target: GName, seen: &mut Vec<GName>) -> bool {
+        if r == target {
+            return true;
+        }
+        if seen.contains(&r) {
+            return false;
+        }
+        seen.push(r);
+        self.c_record_fields(r).iter().any(|t| {
+            self.record_in(t)
+                .is_some_and(|d| self.record_contains(d, target, seen))
+        })
+    }
+
+    /// The struct or union that a field of type `t` holds (in arrays too).
+    fn record_in(&self, t: &Val) -> Option<GName> {
+        let mut t = t.clone();
+        loop {
+            match self.whnf(&t) {
+                Val::Data(d, args) if self.prog.name(d) == "Foreign.CArray" && args.len() == 2 => {
+                    t = args[1].0.clone();
+                }
+                Val::Data(d, _) if self.prog.c_records.contains_key(&d) => return Some(d),
+                _ => return None,
             }
         }
     }
@@ -4405,6 +4967,17 @@ impl<'r> Elab<'r> {
             }
             _ => false,
         }
+    }
+
+    /// A type alias of an extern block, `T : Type; T = t` (a definition
+    /// with an upper-case name, which only extern blocks declare).
+    fn is_type_alias(&self, d: &rast::Def) -> bool {
+        matches!(d.sig.kind, rast::ExprKind::Type)
+            && matches!(d.clauses.as_slice(), [c] if c.pats.is_empty())
+            && self
+                .prog
+                .short_name(d.name)
+                .starts_with(|c: char| c.is_ascii_uppercase())
     }
 
     fn def_sig(&mut self, d: &rast::Def) {

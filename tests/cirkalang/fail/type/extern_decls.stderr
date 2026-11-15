@@ -1,0 +1,92 @@
+error[E1272]: `not a symbol` is not the name of a C symbol
+  --> tests/cirkalang/fail/type/extern_decls.cirka:24:3
+   |
+24 |   "not a symbol" sym1 : CInt -> CInt
+   |   ^^^^^^^^^^^^^^
+error[E1272]: functions of the runtime have no symbol names and are not variadic
+  --> tests/cirkalang/fail/type/extern_decls.cirka:30:3
+   |
+30 |   "cirka_x" runtime1 : Int -> Int
+   |   ^^^^^^^^^
+   = note: `"sym" name`, `...`, `"dynamic"` and `"wrapper"` are for `extern "C"`
+error[E1272]: the field `name` of `Named` cannot have type `String`
+  --> tests/cirkalang/fail/type/extern_decls.cirka:10:5
+   |
+10 |     name : String
+   |     ^^^^
+   = note: the fields of structs and unions have C types: the scalars of the boundary, enums, structs, unions and `CArray n T`
+error[E1272]: the field `ok` of `Named` cannot have type `Bool`
+  --> tests/cirkalang/fail/type/extern_decls.cirka:11:5
+   |
+11 |     ok : Bool
+   |     ^^
+   = help: use `CBool` (C's `bool`)
+error[E1272]: `Loop` contains itself through the field `inner`
+  --> tests/cirkalang/fail/type/extern_decls.cirka:13:5
+   |
+13 |     inner : Inner
+   |     ^^^^^
+   = help: use a pointer (`Ptr`)
+error[E1272]: `Inner` contains itself through the field `back`
+  --> tests/cirkalang/fail/type/extern_decls.cirka:15:5
+   |
+15 |     back : CArray 2 Loop
+   |     ^^^^
+   = help: use a pointer (`Ptr`)
+error[E1272]: the struct `Empty` has no fields
+  --> tests/cirkalang/fail/type/extern_decls.cirka:16:3
+   |
+16 |   struct Empty where
+   |   ^^^^^^^^^^^^^^^^^^
+   = help: declare a type that is only used through pointers as opaque: `type Empty`
+error[E1272]: the type of a `"dynamic"` function is `FunPtr F -> F`
+  --> tests/cirkalang/fail/type/extern_decls.cirka:20:13
+   |
+20 |   "dynamic" call1 : Ptr CInt -> CInt
+   |             ^^^^^
+   = note: it calls the C function that the pointer points to as `F`
+error[E1272]: the type of a `"dynamic"` function is `FunPtr F -> F`
+  --> tests/cirkalang/fail/type/extern_decls.cirka:21:13
+   |
+21 |   "dynamic" call2 : FunPtr (CInt -> CInt) -> CDouble -> CInt
+   |             ^^^^^
+   = note: it calls the C function that the pointer points to as `F`
+error[E1272]: the type of a `"wrapper"` function is `F -> IO (FunPtr F)`
+  --> tests/cirkalang/fail/type/extern_decls.cirka:22:13
+   |
+22 |   "wrapper" wrap1 : (CInt -> CInt) -> FunPtr (CInt -> CInt)
+   |             ^^^^^
+   = note: it makes a C function pointer that calls the CirkaLang function
+error[E1272]: the type of the address of a symbol (`"&sym"`) is `FunPtr F` or `Ptr T`
+  --> tests/cirkalang/fail/type/extern_decls.cirka:23:11
+   |
+23 |   "&data" addr1 : CInt
+   |           ^^^^^
+error[E1273]: `CFloat` cannot be a variadic argument: a variadic argument is promoted
+  --> tests/cirkalang/fail/type/extern_decls.cirka:25:12
+   |
+25 |   "printf" print1 : Ptr CChar -> ... -> CFloat -> IO CInt
+   |            ^^^^^^
+   = help: pass `CDouble` for `CFloat` and `CInt` for the smaller integers (C promotes them), and a pointer for a struct
+error[E1273]: `Inner` cannot be a variadic argument: structs and unions cannot be variadic arguments
+  --> tests/cirkalang/fail/type/extern_decls.cirka:26:12
+   |
+26 |   "printf" print2 : Ptr CChar -> ... -> Inner -> IO CInt
+   |            ^^^^^^
+   = help: pass `CDouble` for `CFloat` and `CInt` for the smaller integers (C promotes them), and a pointer for a struct
+error[E1270]: `Handle0` cannot be passed to or from C
+  --> tests/cirkalang/fail/type/extern_decls.cirka:27:3
+   |
+27 |   byValue : Handle0 -> IO ()
+   |   ^^^^^^^
+   = note: extern functions take and return `Int`, `UInt`, `Float`, `Char`, `Bool`, the C types of `Foreign`, types wrapping one of them, and the structs, unions and enums of extern blocks (and `()` as a result)
+error[E1200]: literal out of range for `CUChar`
+  --> tests/cirkalang/fail/type/extern_decls.cirka:17:24
+   |
+17 |   const Big : CUChar = 300
+   |                        ^^^
+error[E1200]: literal out of range for `CSize`
+  --> tests/cirkalang/fail/type/extern_decls.cirka:18:23
+   |
+18 |   const Neg : CSize = -1
+   |                       ^^

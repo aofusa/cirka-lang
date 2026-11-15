@@ -86,10 +86,43 @@ pub enum Item {
     Data(Data),
     Prim(GName, Expr),
     /// A function of an `extern` block (spec-v0.0.2.md §8).
-    Extern(GName, Expr, Abi),
+    Extern(ExternFn),
+    /// A struct or union of an `extern` block (spec-v0.0.6.md §1.3); its
+    /// data type and functions are ordinary items.
+    CRecord(CRecord),
     /// A trait; its dictionary type is an `Item::Data` of the same name.
     Trait(Trait),
     Impl(Impl),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExternFn {
+    pub name: GName,
+    pub ty: Expr,
+    pub abi: Abi,
+    /// `"sym" name : type`: the C symbol when it is not the name, or
+    /// `"dynamic"`, `"wrapper"`, `"&sym"` (spec-v0.0.6.md §1.5).
+    pub symbol: Option<(String, Span)>,
+    /// The number of fixed parameters of a variadic function.
+    pub variadic: Option<(usize, Span)>,
+    /// The libraries of the block (`link "lib"`).
+    pub links: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CRecord {
+    pub data: GName,
+    pub union: bool,
+    pub packed: bool,
+    /// `T.$peek : Int -> IO T` and `T.$poke : Int -> T -> IO ()`.
+    pub peek: GName,
+    pub poke: GName,
+    /// Of a union: the member pointers `U.m : Ptr U -> Ptr M`, whose types
+    /// give the members.
+    pub members: Vec<GName>,
+    /// The names and places of the fields (members).
+    pub fields: Vec<(String, Span)>,
+    pub span: Span,
 }
 
 /// `trait ... where ...` (spec-v0.0.2.md §3): the dictionary type and its

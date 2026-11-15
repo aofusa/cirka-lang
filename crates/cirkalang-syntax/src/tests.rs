@@ -281,3 +281,40 @@ fn strips_or_expands_tests() {
     let out = print::print_module(&m);
     assert!(out.contains("(private sig (test$0) (IO ()))"), "{out}");
 }
+
+#[test]
+fn parses_extern_declarations() {
+    // spec-v0.0.6.md §1.1, §1.4, §1.5: the declarations of extern blocks.
+    let src = "extern \"C\" link \"z\" where\n  type ZInternal\n  type Bytef = CUChar\n  const MAX : CInt = -15\n  const NAME : String = \"z\"\n  const HALF : CDouble = 0.5\n  enum Flush : CInt where\n    Z_NO_FLUSH = 0\n    Z_BAD = -2\n  struct Point where\n    x : CInt\n    y : CArray 2 CFloat\n  packed struct P where\n    a : CChar\n  union U where\n    i : CInt\n  deflate : (strm : Ptr ZStream) -> CInt -> IO CInt\n  \"deflateInit_\" deflateInit : Ptr ZStream -> IO CInt\n  printf : Ptr CChar -> ... -> CInt -> IO CInt\n  \"dynamic\" call : FunPtr (CInt -> IO CInt) -> CInt -> IO CInt\n  type : CInt -> CInt\n";
+    assert_eq!(
+        parse_ok(src),
+        "(extern \"C\" (link \"z\") \
+         (deflate (-> (strm : (Ptr ZStream)) (-> CInt (IO CInt)))) \
+         (deflateInit (symbol \"deflateInit_\") (-> (Ptr ZStream) (IO CInt))) \
+         (printf (variadic 1) (-> (Ptr CChar) (-> CInt (IO CInt)))) \
+         (call (symbol \"dynamic\") (-> (FunPtr (-> CInt (IO CInt))) (-> CInt (IO CInt)))) \
+         (type (-> CInt CInt)) \
+         (type ZInternal) (type Bytef CUChar) (const MAX CInt (ops neg 15)) \
+         (const NAME String \"z\") (const HALF CDouble 0.5) \
+         (enum Flush CInt (Z_NO_FLUSH 0) (Z_BAD (ops neg 2))) \
+         (struct Point (x CInt) (y (CArray 2 CFloat))) (packed-struct P (a CChar)) \
+         (union U (i CInt)))\n"
+    );
+    // Errors: two `...`, a lower-case type name, a missing literal.
+    let (_, errs) = parse(
+        FileId(0),
+        "extern \"C\" where\n  f : CInt -> ... -> ... -> IO ()\n  type foo\n  const X : CInt = y\n",
+    );
+    let msgs: Vec<String> = errs
+        .iter()
+        .map(|e| format!("{}: {}", e.code.as_deref().unwrap_or(""), e.message))
+        .collect();
+    assert_eq!(
+        msgs,
+        [
+            "E1273: a function has one `...`",
+            "E1002: expected a name starting with an upper-case letter, found `foo`",
+            "E1002: expected a literal, found `y`",
+        ]
+    );
+}

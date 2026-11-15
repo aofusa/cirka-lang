@@ -13,6 +13,9 @@ pub struct Parser {
     /// `=` ends the expression (a `let` type annotation) instead of
     /// meaning equality.
     no_eq: bool,
+    /// `...` may be a parameter (the type of an extern function,
+    /// spec-v0.0.6.md §1.4).
+    ellipsis: bool,
 }
 
 /// Parses a module from layout-processed tokens.
@@ -22,6 +25,7 @@ pub fn parse_module(toks: Vec<Token>) -> (Module, Vec<Diagnostic>) {
         pos: 0,
         errs: Vec::new(),
         no_eq: false,
+        ellipsis: false,
     };
     let m = p.module();
     (m, p.errs)
@@ -34,6 +38,7 @@ pub fn parse_expr_tokens(toks: Vec<Token>) -> (Option<Expr>, Vec<Diagnostic>) {
         pos: 0,
         errs: Vec::new(),
         no_eq: false,
+        ellipsis: false,
     };
     while p.at(&Tok::VSemi) {
         p.bump();
@@ -595,7 +600,7 @@ impl Parser {
         })
     }
 
-    /// `extern "C" [link "lib"] where { name : type; .. }` (after `extern`).
+    /// `extern "C" [link "lib" ..] where { name : type; .. }` (after `extern`).
     fn extern_block(&mut self) -> R<ExternBlock> {
         self.bump();
         let abi_span = self.span();
@@ -614,54 +619,264 @@ impl Parser {
                 Abi::C
             }
         };
-        let link = match self.peek().clone() {
-            Tok::LIdent(p, w) if p.is_empty() && w == "link" => {
-                self.bump();
-                let sp = self.span();
-                match self.peek().clone() {
-                    Tok::Str(l) => {
-                        self.bump();
-                        // Programs are linked with these; other libraries
-                        // need the linker options of FEAT-0047.
-                        if !matches!(l.as_str(), "c" | "m" | "pthread") {
-                            self.errs.push(
-                                Diagnostic::error(format!("cannot link library `{l}`"))
-                                    .with_code("E1007")
-                                    .with_label(sp, "only \"c\", \"m\" and \"pthread\" in v0.0.2"),
-                            );
-                        }
-                        Some((l, sp))
-                    }
-                    _ => {
-                        self.error_here("a library name");
-                        return Err(());
-                    }
-                }
-            }
-            _ => None,
-        };
-        self.expect(&Tok::Kw(Kw::Where), "`where`")?;
-        let sigs = self.block(|p| {
-            let (name, name_span) = match p.peek().clone() {
-                Tok::LIdent(path, n) if path.is_empty() => (n, p.bump().span),
-                _ => {
-                    p.error_here("the name of a function");
-                    return Err(());
-                }
+        let mut links = Vec::new();
+        while let Tok::LIdent(p, w) = self.peek().clone()
+            && p.is_empty()
+            && w == "link"
+        {
+            self.bump();
+            let sp = self.span();
+            let Tok::Str(l) = self.peek().clone() else {
+                self.error_here("a library name");
+                return Err(());
             };
-            p.expect(&Tok::Colon, "`:`")?;
-            let ty = p.expr()?;
-            Ok(ExternSig {
-                name,
-                name_span,
-                ty,
-            })
-        })?;
+            self.bump();
+            // Linked as `-l<name>` (spec-v0.0.6.md §1.6).
+            let ok = !l.is_empty()
+                && l.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "_.+-".contains(c));
+            if !ok {
+                self.errs.push(
+                    Diagnostic::error(format!("`{l}` is not the name of a library"))
+                        .with_code("E1007")
+                        .with_label(sp, "linked as `-l<name>`"),
+                );
+            }
+            links.push((l, sp));
+        }
+        self.expect(&Tok::Kw(Kw::Where), "`where`")?;
+        let mut sigs = Vec::new();
+        let mut items = Vec::new();
+        for it in self.block(|p| p.extern_item())? {
+            match it {
+                Ok(sig) => sigs.push(sig),
+                Err(item) => items.push(item),
+            }
+        }
         Ok(ExternBlock {
             abi,
             abi_span,
-            link,
+            links,
             sigs,
+            items,
+        })
+    }
+
+    /// A declaration of an extern block: a function `["sym"] name : type`
+    /// or one of the declarations of spec-v0.0.6.md §1.1, which start with
+    /// a word that is a keyword only here.
+    fn extern_item(&mut self) -> R<Result<ExternSig, ExternItem>> {
+        let start = self.span();
+        let word = match self.peek() {
+            Tok::LIdent(p, w) if p.is_empty() => Some(w.clone()),
+            _ => None,
+        };
+        // A function may have one of these names: it is followed by `:`.
+        let decl = matches!(self.peek_at(1), Tok::UIdent(..) | Tok::LIdent(..));
+        match word.as_deref() {
+            Some("type" | "const" | "enum" | "struct" | "union") if decl => {
+                self.bump();
+                let w = word.unwrap();
+                let item = self.extern_decl(&w, false, start)?;
+                return Ok(Err(item));
+            }
+            Some("packed") if matches!(self.peek_at(1), Tok::LIdent(p, w) if p.is_empty() && w == "struct") =>
+            {
+                self.bump();
+                self.bump();
+                let item = self.extern_decl("struct", true, start)?;
+                return Ok(Err(item));
+            }
+            _ => {}
+        }
+        let symbol = match self.peek().clone() {
+            Tok::Str(s) => Some((s, self.bump().span)),
+            _ => None,
+        };
+        let (name, name_span) = match self.peek().clone() {
+            Tok::LIdent(path, n) if path.is_empty() => (n, self.bump().span),
+            _ => {
+                self.error_here("the name of a function");
+                return Err(());
+            }
+        };
+        self.expect(&Tok::Colon, "`:`")?;
+        let saved = std::mem::replace(&mut self.ellipsis, true);
+        let ty = self.expr();
+        self.ellipsis = saved;
+        let (ty, variadic) = self.strip_ellipsis(ty?);
+        Ok(Ok(ExternSig {
+            name,
+            name_span,
+            symbol,
+            ty,
+            variadic,
+        }))
+    }
+
+    /// Removes the parameter `...` from the type of a function and counts
+    /// the parameters before it.
+    fn strip_ellipsis(&mut self, ty: Expr) -> (Expr, Option<(usize, Span)>) {
+        fn is_dots(e: &Expr) -> bool {
+            matches!(&e.kind, ExprKind::Var(q) if q.module.is_empty() && q.name == "...")
+        }
+        let mut params = Vec::new();
+        let mut t = ty;
+        let mut found: Option<(usize, Span)> = None;
+        let mut fixed = 0;
+        while let ExprKind::Pi {
+            mult,
+            implicit,
+            names,
+            dom,
+            cod,
+        } = t.kind
+        {
+            if is_dots(&dom) {
+                if found.is_some() {
+                    self.errs.push(
+                        Diagnostic::error("a function has one `...`")
+                            .with_code("E1273")
+                            .with_label(dom.span, "second `...`"),
+                    );
+                } else {
+                    found = Some((fixed, dom.span));
+                }
+            } else {
+                if !implicit && found.is_none() {
+                    fixed += names.len().max(1);
+                }
+                params.push((mult, implicit, names, *dom, t.span));
+            }
+            t = *cod;
+        }
+        let ty = params
+            .into_iter()
+            .rev()
+            .fold(t, |cod, (mult, implicit, names, dom, span)| Expr {
+                kind: ExprKind::Pi {
+                    mult,
+                    implicit,
+                    names,
+                    dom: Box::new(dom),
+                    cod: Box::new(cod),
+                },
+                span,
+            });
+        (ty, found)
+    }
+
+    /// The declaration after its first word (`type`, `const`, `enum`,
+    /// `struct`, `union`).
+    fn extern_decl(&mut self, word: &str, packed: bool, start: Span) -> R<ExternItem> {
+        let (name, name_span) = match self.peek().clone() {
+            Tok::UIdent(p, n) if p.is_empty() => (n, self.bump().span),
+            _ => {
+                self.error_here("a name starting with an upper-case letter");
+                return Err(());
+            }
+        };
+        let kind = match word {
+            "type" => {
+                if self.eat(&Tok::Equals) {
+                    ExternItemKind::Alias(self.expr()?)
+                } else {
+                    ExternItemKind::Opaque
+                }
+            }
+            "const" => {
+                self.expect(&Tok::Colon, "`:`")?;
+                let saved = std::mem::replace(&mut self.no_eq, true);
+                let ty = self.expr();
+                self.no_eq = saved;
+                let ty = ty?;
+                self.expect(&Tok::Equals, "`=`")?;
+                let value = self.extern_literal(true)?;
+                ExternItemKind::Const { ty, value }
+            }
+            "enum" => {
+                self.expect(&Tok::Colon, "`:`")?;
+                let saved = std::mem::replace(&mut self.no_eq, true);
+                let repr = self.opseq();
+                self.no_eq = saved;
+                let repr = repr?;
+                self.expect(&Tok::Kw(Kw::Where), "`where`")?;
+                let consts = self.block(|p| {
+                    let (name, span) = match p.peek().clone() {
+                        Tok::UIdent(q, n) if q.is_empty() => (n, p.bump().span),
+                        _ => {
+                            p.error_here("the name of a constant");
+                            return Err(());
+                        }
+                    };
+                    p.expect(&Tok::Equals, "`=`")?;
+                    let value = p.extern_literal(false)?;
+                    Ok(ExternConst { name, span, value })
+                })?;
+                ExternItemKind::Enum { repr, consts }
+            }
+            _ => {
+                self.expect(&Tok::Kw(Kw::Where), "`where`")?;
+                let fields = self.block(|p| {
+                    let (name, span) = match p.peek().clone() {
+                        Tok::LIdent(q, n) if q.is_empty() => (n, p.bump().span),
+                        _ => {
+                            p.error_here("the name of a field");
+                            return Err(());
+                        }
+                    };
+                    p.expect(&Tok::Colon, "`:`")?;
+                    let ty = p.expr()?;
+                    Ok(ExternField { name, span, ty })
+                })?;
+                ExternItemKind::Record {
+                    union: word == "union",
+                    packed,
+                    fields,
+                }
+            }
+        };
+        Ok(ExternItem {
+            name,
+            name_span,
+            span: self.from(start),
+            kind,
+        })
+    }
+
+    /// An integer literal (or, for constants, a floating point number or a
+    /// string), possibly negated.
+    fn extern_literal(&mut self, any: bool) -> R<Expr> {
+        let start = self.span();
+        let neg = match self.peek() {
+            Tok::Op(p, n) if p.is_empty() && n == "-" => Some(self.bump().span),
+            _ => None,
+        };
+        let sp = self.span();
+        let lit = match self.peek().clone() {
+            Tok::Int(n) => Lit::Int(n),
+            Tok::Float(x) if any => Lit::Float(x),
+            Tok::Str(s) if any && neg.is_none() => Lit::Str(s),
+            _ => {
+                self.error_here(if any { "a literal" } else { "an integer" });
+                return Err(());
+            }
+        };
+        self.bump();
+        let e = Expr {
+            kind: ExprKind::Lit(lit),
+            span: sp,
+        };
+        Ok(match neg {
+            None => e,
+            Some(_) => Expr {
+                kind: ExprKind::OpSeq {
+                    neg,
+                    operands: vec![e],
+                    ops: Vec::new(),
+                },
+                span: self.from(start),
+            },
         })
     }
 
@@ -1537,6 +1752,29 @@ impl Parser {
     }
 
     fn arrow_expr(&mut self, start: Span) -> R<Expr> {
+        // `... ->` in the type of an extern function: a marker removed by
+        // `strip_ellipsis`.
+        if self.ellipsis
+            && matches!(self.peek(), Tok::Op(p, n) if p.is_empty() && n == "...")
+            && matches!(self.peek_at(1), Tok::Arrow)
+        {
+            let sp = self.bump().span;
+            self.bump();
+            let cod = self.expr()?;
+            return Ok(Expr {
+                kind: ExprKind::Pi {
+                    mult: None,
+                    implicit: false,
+                    names: Vec::new(),
+                    dom: Box::new(Expr {
+                        kind: ExprKind::Var(QName::simple("...")),
+                        span: sp,
+                    }),
+                    cod: Box::new(cod),
+                },
+                span: self.from(start),
+            });
+        }
         let mut lhs = self.opseq()?;
         if !self.no_eq && self.eat(&Tok::Equals) {
             let rhs = self.opseq()?;

@@ -1,0 +1,5 @@
+error[E1273]: a function has one `...`
+ --> extern_variadic.cirka:2:28
+  |
+2 |   f : Int -> ... -> Int -> ... -> IO Int
+  |                            ^^^ second `...`

@@ -1,0 +1,7 @@
+MkCInt 45
+MkPt (MkCInt 7) (MkCInt 7)
+MkCDouble 5.5
+each MkCInt 0
+each MkCInt 1
+each MkCInt 2
+[MkCInt (-1), MkCInt 3, MkCInt 4, MkCInt 5, MkCInt 9]

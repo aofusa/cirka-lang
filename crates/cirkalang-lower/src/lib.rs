@@ -86,6 +86,8 @@ struct Lower<'a> {
     /// Errors of the program found while lowering (extern functions
     /// declared twice with different signatures).
     user_errs: RefCell<Vec<Diagnostic>>,
+    /// The layouts of the structs and unions of extern blocks (`c_aggs`).
+    c_layouts: RefCell<HashMap<GName, c::Layout>>,
 }
 
 type Binds = Vec<(c::Binder, c::Expr)>;
@@ -170,6 +172,7 @@ impl<'a> Lower<'a> {
             cons: RefCell::new(HashMap::new()),
             errs: RefCell::new(Vec::new()),
             user_errs: RefCell::new(Vec::new()),
+            c_layouts: RefCell::new(HashMap::new()),
         }
     }
 
@@ -706,6 +709,18 @@ impl<'a> Lower<'a> {
             && self.cons.borrow().contains_key(g)
         {
             return self.con_app(cx, *g, &args, want);
+        }
+        if let Term::Global(g) = h
+            && self.p.prim_of(*g) == Some(Prim::CLayout)
+        {
+            let e = match self.c_layout_app(cx, &args) {
+                Some(n) => int_con(c::Expr::int(n)),
+                None => {
+                    self.ice("`primCLayout` of no struct or union".into());
+                    c::Expr::Panic("internal error".into(), int_ty())
+                }
+            };
+            return self.coerce(e, &int_ty(), want);
         }
         let mut binds = Vec::new();
         let (he, hty) = match h {
@@ -1596,6 +1611,11 @@ impl<'a> Lower<'a> {
             Prim::DivProved => int2(O::Quot, "I#", "Int"),
             Prim::ModProved if self.p.proofs_trusted => int2(O::RemNz, "I#", "Int"),
             Prim::ModProved => int2(O::Rem, "I#", "Int"),
+            // Computed at its applications (`c_layout_app`); a use as a
+            // value has no type to compute from.
+            Prim::CLayout => self.skeleton(ty, 2, |_, r| {
+                c::Expr::Panic("primCLayout used as a value".into(), r)
+            }),
             Prim::Unreachable => {
                 let msg = if self.p.proofs_trusted {
                     cirka_core::expr::UNREACHABLE
@@ -2152,6 +2172,26 @@ impl<'a> Lower<'a> {
 
     // ---- program ----
 
+    /// Declares the C function `d` once (E1271 for a different
+    /// declaration of the same name).
+    fn add_extern(&self, prog: &mut c::Program, d: c::ExternDecl) {
+        match prog.externs.iter().find(|x| x.name == d.name) {
+            Some(x) if !externs::same_call(x, &d) => self.user_errs.borrow_mut().push(
+                Diagnostic::error(format!(
+                    "`{}` is declared with two different signatures",
+                    d.name
+                ))
+                .with_code("E1271")
+                .with_note(
+                    "every `extern` declaration of a function (and the compiler's own \
+                     use of it) must pass the same values",
+                ),
+            ),
+            Some(_) => {}
+            None => prog.externs.push(d),
+        }
+    }
+
     fn program(&self) -> Result<c::Program, Vec<Diagnostic>> {
         let mut prog = match c::parse_program(cirka_diagnostics::FileId(u32::MAX), SUPPORT) {
             Ok(p) => p,
@@ -2246,6 +2286,17 @@ impl<'a> Lower<'a> {
             self.data_ctors(*d, decl);
         }
         prog.datas.extend(decls);
+        prog.caggs.extend(self.c_aggs());
+        // The libraries of extern blocks, in the order they appear.
+        for g in &self.p.order {
+            if let Global::Extern { info, .. } = self.p.get(*g) {
+                for l in &info.links {
+                    if !prog.libs.contains(l) {
+                        prog.libs.push(l.clone());
+                    }
+                }
+            }
+        }
         for g in &self.p.order {
             match self.p.get(*g) {
                 Global::Def { ty, body: Some(b) } => {
@@ -2270,30 +2321,18 @@ impl<'a> Lower<'a> {
                     let rep = io_rep(&cty);
                     let body = match self.p.get(*g) {
                         Global::Prim { prim, .. } => self.prim_body(*prim, &rep),
-                        Global::Extern { ty, abi } => match self.extern_fn(*g, ty, *abi) {
-                            Some((e, _, d)) => {
-                                match prog.externs.iter().find(|x| x.name == d.name) {
-                                    Some(x) if !externs::same_call(x, &d) => {
-                                        self.user_errs.borrow_mut().push(
-                                            Diagnostic::error(format!(
-                                                "`{}` is declared with two different signatures",
-                                                d.name
-                                            ))
-                                            .with_code("E1271")
-                                            .with_note(
-                                                "every `extern` declaration of a function \
-                                                 (and the compiler's own use of it) must \
-                                                 pass the same values",
-                                            ),
-                                        )
+                        Global::Extern { ty, abi, info } => {
+                            match self.extern_fn(*g, ty, *abi, info) {
+                                Some(out) => {
+                                    for d in out.decls {
+                                        self.add_extern(&mut prog, d);
                                     }
-                                    Some(_) => {}
-                                    None => prog.externs.push(d),
+                                    prog.binds.extend(out.binds);
+                                    Some(out.body)
                                 }
-                                Some(e)
+                                None => None,
                             }
-                            None => None,
-                        },
+                        }
                         _ => None,
                     };
                     if let Some(e) = body {

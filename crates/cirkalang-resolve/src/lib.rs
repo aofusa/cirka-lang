@@ -259,6 +259,8 @@ impl State {
             self.errs.append(&mut ex.errors);
             self.test_decls.insert(name.clone(), ex);
         }
+        // The declarations of extern blocks use `Foreign` (qualified).
+        let uses_foreign = cirkalang_syntax::cextern::expand(&mut m) && name != "Foreign";
         self.errs
             .append(&mut cirkalang_syntax::derive::expand(&mut m));
         let mut imports: Vec<(String, Span)> = m
@@ -268,6 +270,9 @@ impl State {
             .collect();
         if prelude && name != "Prelude" && !imports.iter().any(|(n, _)| n == "Prelude") {
             imports.insert(0, ("Prelude".to_string(), Span::new(file, 0, 0)));
+        }
+        if uses_foreign && !imports.iter().any(|(n, _)| n == "Foreign") {
+            imports.push(("Foreign".to_string(), Span::new(file, 0, 0)));
         }
         // Aliases (spec-v0.0.2.md §7.1): one module per alias, and an alias
         // is not the name of a module imported without one.
@@ -309,6 +314,7 @@ impl State {
             .iter()
             .filter(|(n, _)| {
                 n == "Prelude"
+                    || (uses_foreign && n == "Foreign")
                     || m.imports
                         .iter()
                         .any(|i| i.alias.is_none() && i.path.join(".") == *n)
@@ -788,6 +794,9 @@ impl<'s> Resolver<'s> {
                 || self.st.loaded[&self.cur].qualified.contains(&m)
                 || self.st.loaded[&self.cur].aliases.values().any(|t| *t == m)
                     && q.module.join(".") != m;
+            if !imported && let Some(g) = self.member_of_type(q) {
+                return Some(g);
+            }
             if !imported {
                 self.errs.push(
                     Diagnostic::error(format!("module `{m}` is not imported"))
@@ -859,6 +868,47 @@ impl<'s> Resolver<'s> {
                 Some(found[0])
             }
         }
+    }
+
+    /// `S.f` / `M.S.f`: a function of the struct, union or enum `S` of an
+    /// extern block (spec-v0.0.6.md §1.3), named after the type and defined
+    /// in its module, when `S` is not a module.
+    fn member_of_type(&self, q: &ast::QName) -> Option<GName> {
+        let (tname, prefix) = q.module.split_last()?;
+        if !tname.starts_with(|c: char| c.is_uppercase()) {
+            return None;
+        }
+        let ty = if prefix.is_empty() {
+            let loaded = &self.st.loaded[&self.cur];
+            std::iter::once(&self.cur)
+                .chain(loaded.imports.iter())
+                .chain(
+                    loaded
+                        .only
+                        .iter()
+                        .filter(|(_, ns)| ns.iter().any(|(n, _)| n == tname))
+                        .map(|(m, _)| m),
+                )
+                .find_map(|m| self.visible(m, tname))?
+        } else {
+            let mut m = prefix.join(".");
+            let loaded = &self.st.loaded[&self.cur];
+            if let Some(t) = loaded.aliases.get(&m) {
+                m = t.clone();
+            } else if m != self.cur && !loaded.qualified.contains(&m) {
+                return None;
+            }
+            self.visible(&m, tname)?
+        };
+        let info = &self.globals[ty.0 as usize];
+        if info.kind != GKind::Data {
+            return None;
+        }
+        let module = info.module.clone();
+        self.visible(
+            &module,
+            &cirkalang_syntax::cextern::member_name(&info.name, &q.name),
+        )
     }
 
     fn unknown(&mut self, q: &ast::QName, span: Span) {
@@ -995,7 +1045,19 @@ impl<'s> Resolver<'s> {
                     for sig in &b.sigs {
                         let g = self.tables[name].own[&sig.name];
                         let t = self.signature(&sig.ty);
-                        items.push(Item::Extern(g, t, b.abi));
+                        items.push(Item::Extern(ExternFn {
+                            name: g,
+                            ty: t,
+                            abi: b.abi,
+                            symbol: sig.symbol.clone(),
+                            variadic: sig.variadic,
+                            links: b.links.iter().map(|l| l.0.clone()).collect(),
+                        }));
+                    }
+                    for it in &b.items {
+                        if let Some(r) = self.c_record(name, it) {
+                            items.push(Item::CRecord(r));
+                        }
                     }
                 }
                 ast::DeclKind::Trait(t) => {
@@ -1203,6 +1265,39 @@ impl<'s> Resolver<'s> {
             span,
         };
         (data, tr)
+    }
+
+    /// The names generated for a struct or union of an extern block
+    /// (`cirkalang_syntax::cextern`).
+    fn c_record(&self, module: &str, it: &ast::ExternItem) -> Option<CRecord> {
+        use cirkalang_syntax::cextern;
+        let ast::ExternItemKind::Record {
+            union,
+            packed,
+            fields,
+        } = &it.kind
+        else {
+            return None;
+        };
+        let own = &self.tables.get(module)?.own;
+        let members = if *union {
+            fields
+                .iter()
+                .map(|f| own.get(&cextern::member_name(&it.name, &f.name)).copied())
+                .collect::<Option<Vec<GName>>>()?
+        } else {
+            Vec::new()
+        };
+        Some(CRecord {
+            data: *own.get(&it.name)?,
+            union: *union,
+            packed: *packed,
+            peek: *own.get(&cextern::peek_name(&it.name))?,
+            poke: *own.get(&cextern::poke_name(&it.name))?,
+            members,
+            fields: fields.iter().map(|f| (f.name.clone(), f.span)).collect(),
+            span: it.span,
+        })
     }
 
     fn impl_(&mut self, i: &ast::ImplDecl, k: usize, span: Span) -> Option<Impl> {

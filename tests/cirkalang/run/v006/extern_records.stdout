@@ -1,0 +1,17 @@
+(MkPt (MkCInt 11) (MkCInt 22), MkPt (MkCInt 3) (MkCInt 4))
+MkVec3 (MkCFloat 3) (MkCFloat 4) (MkCDouble (-2))
+MkMixed (MkCDouble 7) (MkCLong 2)
+(MkCDouble 10, MkBig (MkCDouble 1.5) (MkCDouble 3) (MkCDouble 4.5) (MkCLong 7))
+(MkCLong 7, (MkPt (MkCInt 5) (MkCInt 2), MkCInt 2))
+(MkCInt 1065353216, MkCInt 0)
+(True, True)
+(MkColor (MkCInt 4), (MkColor (MkCInt 1), (True, (MkCInt 42, (MkCLong (-3), (MkCDouble 0.5, "records"))))))
+MkCFloat 6.75
+(MkCLong 6, MkPacked3 (MkCChar 1) (MkCInt 1000) (MkCShort 3))
+(20, (4, 4))
+(7, (1, 32))
+(MkPt (MkCInt 9) (MkCInt 5), (MkCInt 14, MkCInt 14))
+MkCFloat 2
+MkCInt 42
+MkCInt 42
+("12 and 2.50", "plain")

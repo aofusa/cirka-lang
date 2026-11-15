@@ -3,9 +3,9 @@
 //! program.
 
 use cirka_diagnostics::Span;
-pub use cirkalang_resolve::rast::Abi;
 pub use cirkalang_resolve::rast::GName;
 pub use cirkalang_resolve::rast::Totality;
+pub use cirkalang_resolve::rast::{Abi, CRecord};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 use std::rc::Rc;
@@ -225,7 +225,33 @@ pub enum Global {
     Extern {
         ty: Term,
         abi: Abi,
+        info: ExternInfo,
     },
+}
+
+/// How an extern function is called (spec-v0.0.6.md §1.4, §1.5).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ExternInfo {
+    /// The C symbol (`"sym" name`), when it is not the name.
+    pub symbol: Option<String>,
+    pub call: ExternCall,
+    /// The number of fixed parameters of a variadic function.
+    pub variadic: Option<usize>,
+    /// The libraries of the block (`link "z"`).
+    pub links: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ExternCall {
+    /// Calls the C function.
+    #[default]
+    Call,
+    /// `"dynamic"`: calls the function pointer given first.
+    Dynamic,
+    /// `"wrapper"`: a new function pointer calling the closure given.
+    Wrapper,
+    /// `"&sym"`: the address of the symbol.
+    Addr,
 }
 
 /// The primitives known to the compiler (spec §5.4, §5.6).
@@ -404,6 +430,10 @@ pub enum Prim {
     ChanRecv,
     ChanTryRecv,
     ChanLength,
+    /// `primCLayout {a} p k` (spec-v0.0.6.md §1.9): the size (`k = 0`),
+    /// alignment (1) or offset of field `k - 2` of the C struct or union
+    /// `a`, computed by the lowering.
+    CLayout,
 }
 
 impl Prim {
@@ -561,6 +591,7 @@ impl Prim {
         ("primRecv", Prim::ChanRecv),
         ("primTryRecv", Prim::ChanTryRecv),
         ("primChanLength", Prim::ChanLength),
+        ("primCLayout", Prim::CLayout),
     ];
 
     pub fn from_name(s: &str) -> Option<Prim> {
@@ -621,6 +652,9 @@ pub struct Program {
     pub traits: HashMap<GName, TraitInfo>,
     /// Implementations of each trait.
     pub impls: HashMap<GName, Vec<ImplInfo>>,
+    /// The structs and unions of extern blocks, by data type
+    /// (spec-v0.0.6.md §1.3).
+    pub c_records: HashMap<GName, CRecord>,
     /// Declared totality of definitions (spec-v0.0.4.md §1); absent is
     /// `covering`.
     pub totality: HashMap<GName, (Totality, Span)>,
@@ -1111,10 +1145,21 @@ pub fn print_program(p: &Program) -> String {
             Global::Prim { ty, .. } => {
                 let _ = writeln!(s, "prim {name} : {}", print_term(p, &mut Vec::new(), ty));
             }
-            Global::Extern { ty, abi } => {
+            Global::Extern { ty, abi, info } => {
+                let sym = match (&info.symbol, info.call) {
+                    (_, ExternCall::Dynamic) => " \"dynamic\"".to_string(),
+                    (_, ExternCall::Wrapper) => " \"wrapper\"".to_string(),
+                    (Some(x), ExternCall::Addr) => format!(" \"&{x}\""),
+                    (Some(x), _) => format!(" {x:?}"),
+                    (None, _) => String::new(),
+                };
+                let var = match info.variadic {
+                    Some(n) => format!(" (variadic {n})"),
+                    None => String::new(),
+                };
                 let _ = writeln!(
                     s,
-                    "extern {abi:?} {name} : {}",
+                    "extern {abi:?}{sym}{var} {name} : {}",
                     print_term(p, &mut Vec::new(), ty)
                 );
             }
