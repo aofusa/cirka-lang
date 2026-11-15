@@ -745,7 +745,6 @@ pub extern "C" fn cirka_net_peer_port() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::TEST_LOCK as LOCK;
     use crate::evloop::*;
     use crate::object::cirka_drop;
     use core::sync::atomic::{AtomicI64, Ordering};
@@ -855,7 +854,7 @@ mod tests {
 
     #[test]
     fn echo_over_loopback() {
-        let _g = LOCK.lock().unwrap();
+        let _g = crate::test_lock();
         // SAFETY: a loop of this thread and live closures and strings.
         unsafe {
             let any = text("127.0.0.1");
@@ -884,7 +883,7 @@ mod tests {
 
     #[test]
     fn addresses_and_errors() {
-        let _g = LOCK.lock().unwrap();
+        let _g = crate::test_lock();
         // SAFETY: live strings, released at the end.
         unsafe {
             let bad = text("not an address");
@@ -938,6 +937,7 @@ mod tests {
 
     #[test]
     fn descriptor_helpers() {
+        let _g = crate::test_lock();
         let mut fds = [0i32; 2];
         unsafe extern "C" {
             fn pipe(fds: *mut i32) -> i32;
@@ -968,7 +968,7 @@ mod tests {
 
     #[test]
     fn descriptor_objects_close_their_descriptor() {
-        let _g = LOCK.lock().unwrap();
+        let _g = crate::test_lock();
         // SAFETY: descriptor objects released below.
         unsafe {
             let lo = text("127.0.0.1");
@@ -1015,7 +1015,7 @@ mod tests {
 
     #[test]
     fn datagrams_and_their_sender() {
-        let _g = LOCK.lock().unwrap();
+        let _g = crate::test_lock();
         // SAFETY: descriptor objects and strings released below.
         unsafe {
             let lo = text("127.0.0.1");

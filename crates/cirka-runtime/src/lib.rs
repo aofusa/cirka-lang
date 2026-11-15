@@ -91,10 +91,18 @@ fn panic(_info: &core::panic::PanicInfo<'_>) -> ! {
 #[cfg(test)]
 mod tests;
 
-/// The runtime state is single-threaded; every unit test touching it takes
-/// this lock.
+/// The runtime state is single-threaded; every unit test touching it, or
+/// opening descriptors (some tests expect the number of a closed
+/// descriptor to be the next one opened), takes this lock (BUG-0024).
 #[cfg(test)]
 pub(crate) static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Takes [`TEST_LOCK`]. A test that fails while holding it does not make
+/// the others fail too: the lock is taken even when poisoned.
+#[cfg(test)]
+pub(crate) fn test_lock() -> std::sync::MutexGuard<'static, ()> {
+    TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 /// The precompiled `core` references the Rust personality routine from its
 /// unwind tables even with `panic = "abort"`; the runtime never unwinds

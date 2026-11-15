@@ -167,7 +167,6 @@ pub unsafe extern "C" fn cirka_region_set(c: i64, v: Obj) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::TEST_LOCK as LOCK;
     use crate::object::CON;
 
     unsafe fn con(fields: &[usize], nptr: u8) -> Obj {
@@ -195,7 +194,7 @@ mod tests {
     /// when the region ends.
     #[test]
     fn region_frees_cyclic_cells() {
-        let _g = LOCK.lock().unwrap();
+        let _g = crate::test_lock();
         let l0 = live();
         unsafe {
             let r = cirka_region_new();
@@ -227,7 +226,7 @@ mod tests {
     /// finalizer.
     #[test]
     fn region_finalizer_tears_down() {
-        let _g = LOCK.lock().unwrap();
+        let _g = crate::test_lock();
         let l0 = live();
         unsafe {
             let r = cirka_region_new();

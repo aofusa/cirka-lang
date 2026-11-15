@@ -1308,7 +1308,6 @@ mod tests {
     //! find their state in statics, under the test lock.
 
     use super::*;
-    use crate::TEST_LOCK as LOCK;
     use crate::object::CON;
     use core::sync::atomic::{AtomicI64, AtomicU64};
     use std::sync::Mutex as StdMutex;
@@ -1411,7 +1410,7 @@ mod tests {
 
     #[test]
     fn timers_run_in_deadline_order() {
-        let _g = LOCK.lock().unwrap();
+        let _g = crate::test_lock();
         let b0 = balance();
         // SAFETY: a loop of this thread and live closures.
         unsafe {
@@ -1458,7 +1457,7 @@ mod tests {
 
     #[test]
     fn stop_and_drop_a_loop_with_pending_callbacks() {
-        let _g = LOCK.lock().unwrap();
+        let _g = crate::test_lock();
         let b0 = balance();
         let (r, w) = pipe_fds();
         // SAFETY: a loop of this thread and live closures.
@@ -1531,7 +1530,7 @@ mod tests {
 
     #[test]
     fn a_watch_runs_once_per_readiness() {
-        let _g = LOCK.lock().unwrap();
+        let _g = crate::test_lock();
         let b0 = balance();
         let (r, w) = pipe_fds();
         FD.store(r, Ordering::Relaxed);
@@ -1558,7 +1557,7 @@ mod tests {
 
     #[test]
     fn watch_unwatch_and_a_reused_descriptor() {
-        let _g = LOCK.lock().unwrap();
+        let _g = crate::test_lock();
         let b0 = balance();
         // SAFETY: a loop of this thread and live closures.
         unsafe {
@@ -1604,7 +1603,7 @@ mod tests {
 
     #[test]
     fn a_remote_posts_from_another_thread() {
-        let _g = LOCK.lock().unwrap();
+        let _g = crate::test_lock();
         crate::sync::set_mt();
         let b0 = balance();
         OWNER.store(crate::tls::thread_id(), Ordering::Relaxed);
@@ -1666,7 +1665,7 @@ mod tests {
 
     #[test]
     fn blocking_work_runs_on_the_pool() {
-        let _g = LOCK.lock().unwrap();
+        let _g = crate::test_lock();
         let b0 = balance();
         OWNER.store(crate::tls::thread_id(), Ordering::Relaxed);
         // SAFETY: a loop of this thread and live closures.
@@ -1699,7 +1698,7 @@ mod tests {
             });
             t
         }
-        let _g = LOCK.lock().unwrap();
+        let _g = crate::test_lock();
         // SAFETY: a loop of this thread and a live closure.
         unsafe {
             let l = cirka_loop_new();
@@ -1751,7 +1750,7 @@ mod tests {
 
     #[test]
     fn a_watch_with_a_timeout() {
-        let _g = LOCK.lock().unwrap();
+        let _g = crate::test_lock();
         let b0 = balance();
         let (r, w) = pipe_fds();
         FD.store(r, Ordering::Relaxed);
@@ -1801,7 +1800,7 @@ mod tests {
 
     #[test]
     fn a_watch_that_fails_still_calls_back() {
-        let _g = LOCK.lock().unwrap();
+        let _g = crate::test_lock();
         let b0 = balance();
         // SAFETY: a closure run as the first callback of a new loop.
         unsafe {
@@ -1845,7 +1844,7 @@ mod tests {
 
     #[test]
     fn the_budget_lets_other_callbacks_run() {
-        let _g = LOCK.lock().unwrap();
+        let _g = crate::test_lock();
         let b0 = balance();
         let (r, w) = pipe_fds();
         // SAFETY: a descriptor object, closures and a string, released.

@@ -1,4 +1,3 @@
-use crate::TEST_LOCK as LOCK;
 use crate::object::*;
 const N: usize = 1_000_000;
 
@@ -23,7 +22,7 @@ fn stats() -> (u64, u64) {
 
 #[test]
 fn free_long_list_iteratively() {
-    let _g = LOCK.lock().unwrap();
+    let _g = crate::test_lock();
     let (a0, f0) = stats();
     unsafe {
         let mut nil = crate::object::Header {
@@ -47,7 +46,7 @@ fn free_long_list_iteratively() {
 
 #[test]
 fn shared_child_survives() {
-    let _g = LOCK.lock().unwrap();
+    let _g = crate::test_lock();
     unsafe {
         let leaf = con(0, &[7], 0);
         cirka_dup(leaf);
@@ -62,7 +61,7 @@ fn shared_child_survives() {
 
 #[test]
 fn drop_reuse_and_tokens() {
-    let _g = LOCK.lock().unwrap();
+    let _g = crate::test_lock();
     unsafe {
         let leaf = con(0, &[1], 0);
         let p = con(1, &[leaf as usize], 1);
@@ -80,7 +79,7 @@ fn drop_reuse_and_tokens() {
 
 #[test]
 fn shared_objects_use_atomic_counts() {
-    let _g = LOCK.lock().unwrap();
+    let _g = crate::test_lock();
     unsafe {
         let leaf = con(0, &[1], 0);
         let p = con(1, &[leaf as usize], 1);
@@ -96,7 +95,7 @@ fn shared_objects_use_atomic_counts() {
 
 #[test]
 fn bytes_and_pap() {
-    let _g = LOCK.lock().unwrap();
+    let _g = crate::test_lock();
     unsafe {
         let b = crate::cirka_bytes_from(b"hello".as_ptr(), 5);
         assert_eq!(crate::io::bytes_of(b), b"hello");
@@ -175,7 +174,7 @@ fn header_declares_the_library_functions() {
 
 #[test]
 fn array_unique_copies_only_shared_arrays() {
-    let _g = LOCK.lock().unwrap();
+    let _g = crate::test_lock();
     unsafe {
         let e = con(0, &[7], 0);
         let a = crate::cirka_array_new(4, e);
@@ -206,7 +205,7 @@ fn array_unique_copies_only_shared_arrays() {
 /// work stack grows on the heap), and freed entirely.
 #[test]
 fn mark_shared_reaches_deep_structures() {
-    let _g = LOCK.lock().unwrap();
+    let _g = crate::test_lock();
     let (a0, f0) = stats();
     unsafe {
         let mut l = con(0, &[], 0);
@@ -234,7 +233,7 @@ fn mark_shared_reaches_deep_structures() {
 #[test]
 fn mvar_and_channel_between_threads() {
     use crate::sync::*;
-    let _g = LOCK.lock().unwrap();
+    let _g = crate::test_lock();
     set_mt();
     unsafe {
         let m = cirka_mvar_new_empty();
@@ -289,7 +288,7 @@ fn shared_thunk_is_evaluated_once() {
         // SAFETY: a fresh object.
         unsafe { con(0, &[42], 0) }
     }
-    let _g = LOCK.lock().unwrap();
+    let _g = crate::test_lock();
     crate::sync::set_mt();
     unsafe {
         let t = crate::alloc::cirka_alloc(16) as Obj;
@@ -329,7 +328,7 @@ fn shared_thunk_is_evaluated_once() {
 #[test]
 fn shared_mutvar_compare_and_swap() {
     use crate::mutvar::*;
-    let _g = LOCK.lock().unwrap();
+    let _g = crate::test_lock();
     crate::sync::set_mt();
     let before = crate::alloc::total_stats();
     unsafe {
@@ -382,7 +381,7 @@ fn spawn_and_join() {
             con(0, &[crate::tls::thread_id() as usize], 0)
         }
     }
-    let _g = LOCK.lock().unwrap();
+    let _g = crate::test_lock();
     unsafe {
         let code = (work as *const () as usize).to_ne_bytes();
         let f = crate::cirka_bytes_from(code.as_ptr(), 8);
@@ -412,7 +411,7 @@ fn every_thread_has_its_own_allocator_state() {
             con(0, &[crate::tls::heap() as usize], 0)
         }
     }
-    let _g = LOCK.lock().unwrap();
+    let _g = crate::test_lock();
     unsafe {
         let code = (work as *const () as usize).to_ne_bytes();
         let f = crate::cirka_bytes_from(code.as_ptr(), 8);
@@ -436,7 +435,7 @@ fn every_thread_has_its_own_allocator_state() {
 /// thread's free lists, which go to the pool when it exits.
 #[test]
 fn objects_freed_by_another_thread() {
-    let _g = LOCK.lock().unwrap();
+    let _g = crate::test_lock();
     let before = crate::alloc::total_stats();
     let objs: Vec<usize> = (0..10_000)
         .map(|i| unsafe { con(0, &[i], 0) } as usize)

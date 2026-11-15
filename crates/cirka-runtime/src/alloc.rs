@@ -388,7 +388,7 @@ mod tests {
 
     #[test]
     fn zeroed_memory_is_zero_after_reuse() {
-        let _g = crate::TEST_LOCK.lock().unwrap();
+        let _g = crate::test_lock();
         // SAFETY: test of allocator internals on one thread.
         unsafe {
             // A small object, a large one, and one `malloc` serves by `mmap`.
@@ -405,7 +405,7 @@ mod tests {
 
     #[test]
     fn alloc_free_reuses_memory() {
-        let _g = crate::TEST_LOCK.lock().unwrap();
+        let _g = crate::test_lock();
         // SAFETY: test of allocator internals on one thread.
         unsafe {
             let a = cirka_alloc(24);

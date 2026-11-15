@@ -267,7 +267,6 @@ unsafe fn collect(s: &mut State) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::TEST_LOCK as LOCK;
     use crate::object::{CON, cirka_drop};
 
     unsafe fn con(fields: &[usize], nptr: u8) -> Obj {
@@ -306,7 +305,7 @@ mod tests {
     /// (still referenced) survives intact and stays a root.
     #[test]
     fn trial_deletion() {
-        let _g = LOCK.lock().unwrap();
+        let _g = crate::test_lock();
         let mut s = state();
         unsafe {
             let f0 = frees();

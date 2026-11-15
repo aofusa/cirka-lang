@@ -983,6 +983,7 @@ mod tests {
 
     #[test]
     fn a_child_with_pipes() {
+        let _g = crate::test_lock();
         // SAFETY: strings made here; the descriptors are the spawn's.
         unsafe {
             let pid = with_str(
@@ -1005,6 +1006,7 @@ mod tests {
 
     #[test]
     fn a_child_killed_by_a_signal() {
+        let _g = crate::test_lock();
         let pid = with_str(b"sleep\x0010", |a| {
             // SAFETY: a live string.
             unsafe { cirka_os_spawn(a, NULL | (NULL << 2)) }
@@ -1019,6 +1021,7 @@ mod tests {
 
     #[test]
     fn a_missing_program_and_a_child_that_stops_reading() {
+        let _g = crate::test_lock();
         let r = with_str(b"/no/such/program", |a| {
             // SAFETY: a live string.
             unsafe { cirka_os_spawn(a, 0) }
@@ -1043,6 +1046,7 @@ mod tests {
 
     #[test]
     fn signals_waited_for_and_read_from_a_descriptor() {
+        let _g = crate::test_lock();
         let usr1 = 1i64 << (10 - 1);
         let usr2 = 1i64 << (12 - 1);
         assert_eq!(cirka_os_signal_mask(0, usr1), 0);
@@ -1068,6 +1072,7 @@ mod tests {
 
     #[test]
     fn files_mapped_listed_and_described() {
+        let _g = crate::test_lock();
         let dir = format!("/tmp/cirka-os-test-{}\0", std::process::id());
         let d = dir.trim_end_matches('\0').as_bytes().to_vec();
         let file = [&d[..], b"/lines.txt"].concat();
@@ -1120,6 +1125,7 @@ mod tests {
 
     #[test]
     fn the_working_directory_and_the_host_name() {
+        let _g = crate::test_lock();
         let cwd = cirka_os_getcwd();
         // SAFETY: strings made by the runtime, dropped here.
         unsafe {
