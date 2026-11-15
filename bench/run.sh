@@ -56,6 +56,8 @@ for name in "${names[@]}"; do
     rustc -C opt-level=3 -o "$bin/$name-rust" "$dir/rust/main.rs"
     cmds+=(-n rust "$bin/$name-rust $args")
   fi
+  # A directory without these (bench/http-server has its own run.sh).
+  [ ${#cmds[@]} -gt 0 ] || continue
   echo "== $name"
   hyperfine -N -w 1 -r "$runs" --export-markdown "$out/$name.md" --export-json "$out/$name.json" "${cmds[@]}"
   # peak RSS of each implementation: GNU time, or getrusage from python3

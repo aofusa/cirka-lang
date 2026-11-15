@@ -1,0 +1,61 @@
+-- The HTTP server of the benchmark (FEAT-0243, bench/http-server/run.sh).
+--
+-- `server PORT` answers every `GET` request on 127.0.0.1:PORT with
+-- `Hello, World!`, keeping the connection open (HTTP/1.1; pipelined
+-- requests are answered with one write). Another method gets 400 and the
+-- connection is closed. With PORT 0 a free port is chosen; the port is
+-- printed on the first line. One thread runs the event loop, as in
+-- rust/server.rs.
+module Main
+
+import Std.Async
+import Std.Net
+import Std.Env (args)
+import Std.IO (flush)
+import Data.String as S
+
+hello : String
+hello = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 13\r\n\r\nHello, World!"
+
+badRequest : String
+badRequest = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+
+-- The answers to the complete requests at the start of the bytes
+-- received, and the bytes after them.
+data Step = Reply String String | Bad
+
+step : S.Str -> String -> Step
+step buf out = case S.indexOf buf "\r\n\r\n" of
+  Nothing => if S.length buf > 65536 then Bad else Reply out (S.fromStr buf)
+  Just i => if S.startsWith buf "GET " then step (S.drop (i + 4) buf) (out ++ hello) else Bad
+
+-- Reads more of a connection; `buf` holds the bytes of a request not
+-- complete yet.
+serveConn : (1 s : TcpStream) -> String -> IO ()
+serveConn s buf = recv s 65536 (\s, r => case r of
+  Ok d => if d == "" then close s else answer s (buf ++ d)
+  Err e => close s)
+
+answer : (1 s : TcpStream) -> String -> IO ()
+answer s buf = case step (S.toStr buf) "" of
+  Bad => sendAll s badRequest (\s, w => close s)
+  Reply out rest => if out == "" then serveConn s rest else sendAll s out (\s, w => case w of
+    Ok _ => serveConn s rest
+    Err e => close s)
+
+portArg : List String -> Int
+portArg (p :: _) = parseInt p
+portArg [] = 0
+
+main : IO ()
+main = do
+  as <- args
+  runLoop (do
+    r <- listen "127.0.0.1" (portArg as)
+    case r of
+      Ok l => do
+        (l, port) <- listenerPort l
+        putStr (show port ++ "\n")
+        flush
+        serve l (\s => serveConn s "")
+      Err e => putStr ("listen failed: " ++ show e ++ "\n"))

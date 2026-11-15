@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# The HTTP server benchmark (FEAT-0243, 10-testing.md §5). The CirkaLang
+# server (server.cirka) and the Rust one (rust/server.rs: one thread and
+# epoll, like the event loop of the CirkaLang runtime) answer `GET /` with
+# `Hello, World!`; load.rs sends keep-alive requests, one at a time on
+# each connection, and reports the throughput and the latency.
+#
+#   CIRKA_HTTP_CONNS     numbers of connections (default "1 16 64")
+#   CIRKA_HTTP_REQUESTS  requests of a run, split among the connections
+#                        (default 200000)
+#   CIRKA_BENCH_RUNS     runs of each server and number (default 3)
+#
+# Results go to docs/artifacts/bench/http-server.md (git-ignored): the
+# mean of the runs, and the peak RSS of the server (VmHWM).
+# Usage: bench/http-server/run.sh (in the Docker image).
+set -euo pipefail
+cd "$(dirname "$0")/../.."
+[ -n "${CIRKA_ROOT:-}" ] || source scripts/env.sh
+out=docs/artifacts/bench
+bin=_build/bench
+mkdir -p "$out" "$bin"
+cargo build -q --release -p cirka
+scripts/build-runtime.sh
+target/release/cirka build -O2 -o "$bin/http-cirka" bench/http-server/server.cirka
+rustc -C opt-level=3 -o "$bin/http-rust" bench/http-server/rust/server.rs
+rustc -C opt-level=3 -o "$bin/http-load" bench/http-server/load.rs
+runs="${CIRKA_BENCH_RUNS:-3}"
+conns_list="${CIRKA_HTTP_CONNS:-1 16 64}"
+total="${CIRKA_HTTP_REQUESTS:-200000}"
+tmp=$(mktemp -d)
+pid=
+trap '[ -n "$pid" ] && kill "$pid" 2>/dev/null; rm -rf "$tmp"' EXIT
+raw="$tmp/raw"
+for impl in cirka rust; do
+  for conns in $conns_list; do
+    for ((r = 1; r <= runs; r++)); do
+      portf="$tmp/port-$impl-$conns-$r"
+      "$bin/http-$impl" 0 > "$portf" &
+      pid=$!
+      for _ in $(seq 200); do [ -s "$portf" ] && break; sleep 0.05; done
+      port=$(head -1 "$portf")
+      res=$("$bin/http-load" "$port" "$conns" $((total / conns)))
+      rss=$(awk '/^VmHWM/ {print $2}' "/proc/$pid/status")
+      kill "$pid"
+      wait "$pid" 2>/dev/null || true
+      pid=
+      echo "impl=$impl conns=$conns $res rss_kib=$rss" | tee -a "$raw"
+    done
+  done
+done
+python3 - "$raw" > "$out/http-server.md" <<'PY'
+import sys, collections
+rows = collections.OrderedDict()
+for line in open(sys.argv[1]):
+    kv = dict(f.split("=", 1) for f in line.split())
+    rows.setdefault((kv["impl"], int(kv["conns"])), []).append(kv)
+print("| server | connections | requests/s | p50 (µs) | p90 (µs) | p99 (µs) | peak RSS (KiB) |")
+print("|---|---:|---:|---:|---:|---:|---:|")
+for (impl, conns), runs in rows.items():
+    mean = lambda k: sum(float(r[k]) for r in runs) / len(runs)
+    print(f"| {impl} | {conns} | {mean('rps'):.0f} | {mean('p50_us'):.1f} | {mean('p90_us'):.1f} "
+          f"| {mean('p99_us'):.1f} | {max(int(r['rss_kib']) for r in runs)} |")
+PY
+cat "$out/http-server.md"

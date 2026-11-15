@@ -162,3 +162,132 @@ fn bench_programs() {
     assert!(failed.is_empty(), "{}", failed.join("\n"));
     assert!(ran >= 12, "only {ran} implementations ran");
 }
+
+/// The answer of the HTTP benchmark's servers to `GET` (FEAT-0243).
+const HTTP_HELLO: &[u8] =
+    b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 13\r\n\r\nHello, World!";
+
+/// Talks to the HTTP server on `port`: pipelined requests, a request
+/// split across writes, and another method (400, then closed).
+fn http_exchange(port: u16) -> Result<(), String> {
+    use std::io::{Read, Write};
+    let connect = || -> Result<std::net::TcpStream, String> {
+        let s = std::net::TcpStream::connect(("127.0.0.1", port)).map_err(|e| e.to_string())?;
+        s.set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .map_err(|e| e.to_string())?;
+        Ok(s)
+    };
+    let read = |s: &mut std::net::TcpStream, n: usize| -> Result<Vec<u8>, String> {
+        let mut got = vec![0u8; n];
+        s.read_exact(&mut got)
+            .map_err(|e| format!("reading {n} bytes: {e}"))?;
+        Ok(got)
+    };
+    let mut s = connect()?;
+    s.write_all(b"GET /a HTTP/1.1\r\nHost: localhost\r\n\r\nGET /b HTTP/1.1\r\n\r\n")
+        .map_err(|e| e.to_string())?;
+    if read(&mut s, 2 * HTTP_HELLO.len())? != [HTTP_HELLO, HTTP_HELLO].concat() {
+        return Err("pipelined requests: wrong answers".into());
+    }
+    s.write_all(b"GET /split HT").map_err(|e| e.to_string())?;
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    s.write_all(b"TP/1.1\r\n\r\n").map_err(|e| e.to_string())?;
+    if read(&mut s, HTTP_HELLO.len())? != HTTP_HELLO {
+        return Err("split request: wrong answer".into());
+    }
+    s.write_all(b"POST / HTTP/1.1\r\n\r\n")
+        .map_err(|e| e.to_string())?;
+    let mut rest = Vec::new();
+    s.read_to_end(&mut rest).map_err(|e| e.to_string())?;
+    let bad: &[u8] = b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+    if rest != bad {
+        return Err(format!(
+            "another method: answered {:?}",
+            String::from_utf8_lossy(&rest)
+        ));
+    }
+    Ok(())
+}
+
+/// Runs the server `exe` on a free port (printed first) and gives the port
+/// to `f`; the server is killed afterwards.
+fn with_server(exe: &Path, f: impl FnOnce(u16) -> Result<(), String>) -> Result<(), String> {
+    use std::io::BufRead;
+    let mut child = std::process::Command::new(exe)
+        .arg("0")
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("cannot run {}: {e}", exe.display()))?;
+    let mut line = String::new();
+    let out = child.stdout.take().unwrap();
+    let r = std::io::BufReader::new(out)
+        .read_line(&mut line)
+        .map_err(|e| e.to_string())
+        .and_then(|_| {
+            line.trim()
+                .parse::<u16>()
+                .map_err(|_| format!("printed {line:?} instead of the port"))
+        })
+        .and_then(f);
+    let _ = child.kill();
+    let _ = child.wait();
+    r
+}
+
+/// The servers of the HTTP benchmark (bench/http-server/, FEAT-0243)
+/// answer as `load.rs` expects, and the load runs against the CirkaLang
+/// one. The Rust server and the load need `rustc` (in the Docker image).
+#[test]
+fn http_server() {
+    cirka_testkit::init();
+    cirka_driver::native::ensure_runtime_built().unwrap();
+    let cfg = cirka_driver::Config::from_env();
+    let dir = repo_root().join("bench/http-server");
+    let work = cirka_testkit::work_dir("bench", "http-server");
+    let core = compile(&dir.join("server.cirka")).unwrap();
+    let mut opts = cirka_driver::pipeline::Options::new("http-server");
+    opts.opt_level = 2;
+    opts.build_dir = work.clone();
+    let out = cirka_driver::pipeline::compile_core(core, "http-server", &opts, false)
+        .map_err(|ds| ds[0].message.clone())
+        .unwrap();
+    let cirka = work.join("server-cirka");
+    let native = cirka_driver::native::NativeOptions {
+        runtime: cirka_driver::native::RuntimeKind::Debug,
+        ..Default::default()
+    };
+    cirka_driver::native::build_mir(&cfg, &out.mir, &work, &cirka, &native).unwrap();
+    let rustc = |src: &str, exe: &str| -> Option<PathBuf> {
+        let exe = work.join(exe);
+        let st = std::process::Command::new("rustc")
+            .args(["-O", "-o"])
+            .arg(&exe)
+            .arg(dir.join(src))
+            .status()
+            .ok()?;
+        assert!(st.success(), "rustc failed on {src}");
+        Some(exe)
+    };
+    let load = rustc("load.rs", "load");
+    with_server(&cirka, |port| {
+        http_exchange(port)?;
+        if let Some(load) = &load {
+            let out = std::process::Command::new(load)
+                .args([port.to_string(), "4".into(), "200".into()])
+                .output()
+                .map_err(|e| e.to_string())?;
+            let text = String::from_utf8_lossy(&out.stdout);
+            if !out.status.success() || !text.starts_with("requests=800 ") {
+                return Err(format!(
+                    "load: {text}{}",
+                    String::from_utf8_lossy(&out.stderr)
+                ));
+            }
+        }
+        Ok(())
+    })
+    .unwrap();
+    if let Some(rust) = rustc("rust/server.rs", "server-rust") {
+        with_server(&rust, http_exchange).unwrap();
+    }
+}
