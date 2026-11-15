@@ -125,6 +125,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0083](features/FEAT-0083-cheap-speculation-of-lazy-bindings.md) | 安価で失敗しない遅延束縛の先行評価 (サンクの除去) | done | P1 | 0056, 0061 |
 | [FEAT-0084](features/FEAT-0084-tsan-in-docker-ci.md) | Docker の CI で ThreadSanitizer を動かす | done | P2 | 0045 |
 | [FEAT-0085](features/FEAT-0085-code-alignment-noise.md) | コード配置による性能の揺らぎの抑制 (関数・ループの整列) | todo | P2 | 0043 |
+| [FEAT-0086](features/FEAT-0086-cl-server-request-allocs.md) | サーバの要求ごとの確保を減らす (継続・Result・文字列のビュー) | todo | P1 | 0243 |
 
 
 ## aCHC
@@ -263,7 +264,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0241](features/FEAT-0241-cl-net-async.md) | ネットワークと非同期 I/O | done | P0 | 0240, 0046 |
 | [FEAT-0242](features/FEAT-0242-cl-os-syscall.md) | OS 層 (syscall・シグナル・プロセス) | done | P1 | 0213 |
 | [FEAT-0244](features/FEAT-0244-cl-core-size-contracts.md) | core の配列・文字列の関数に大きさの契約を付ける | done | P2 | 0235 |
-| [FEAT-0243](features/FEAT-0243-cl-release-v005.md) | CirkaLang v0.0.5 リリース | todo | P0 | 0241, 0242 |
+| [FEAT-0243](features/FEAT-0243-cl-release-v005.md) | CirkaLang v0.0.5 リリース | done | P0 | 0241, 0242 |
 
 ### CirkaLang v0.0.6 Vulkan compute・数値計算
 
