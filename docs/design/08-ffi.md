@@ -91,12 +91,73 @@ callbackPtr :: Ref r (Callback f) -> Borrow r (FunPtr f)   -- C 側が保持し�
 
 クロージャを保持するトランポリンを確保し、`Release` で解放する。
 
-## 6. `import "C"` と bindgen
+## 6. bindgen と `import "C"`
 
-- `achc bindgen header.h [--allowlist 'sin|cos'] -o Math.chs` / `cirka bindgen header.h -o math.cirka` が、共通の `cirka-bindgen` (libclang) でヘッダを解析し `extern` ブロックを生成する。
-- 既定の推測: ポインタ引数 → `Ptr`、`const T*` → `BorrowedPtr`、戻り値ポインタ → `Ptr`(所有権は推測しない)。
-  所有権は利用者が生成ファイルを編集して与える(Rust の bindgen と同じ考え方)。
-- `import "C" "math.h" (sin, cos)` はビルド時に bindgen を走らせてキャッシュする糖衣。
+共通の `cirka-bindgen` (FEAT-0048) が C ヘッダを libclang で解析し、言語に依らない宣言の表 (関数・構造体・共用体・列挙・型の別名・定数) を作って、
+言語ごとのプリンタで出力する。
+
+```
+achc bindgen [options] header.h [-o Math.hs] [-- clang の引数...]
+cirka bindgen [options] header.h [-o math.cirka] [-- clang の引数...]
+  --allowlist=PATTERNS   出力する宣言の名前 (`|` 区切りのグロブ、`*` は任意の列)。参照する型は自動で加わる
+  --file=PATTERNS        出力する宣言を書いたファイルのパス (グロブ)
+  --pure=PATTERNS        IO なしで宣言する関数 (`sin` など。純粋かどうかは宣言者の責任)
+  --link=LIB             リンクするライブラリ (CirkaLang は `link "LIB"`、aCHC は注釈)
+  --module=NAME          モジュール名 (aCHC の既定は出力ファイル名、CirkaLang は既定で書かない)
+  -I DIR  -D NAME[=V]  -U NAME   clang へ渡す
+```
+
+**libclang。** コンパイラの実行ファイルは libclang をリンクせず、`bindgen` が実行時に `dlopen` で読み込む
+(`CIRKA_LIBCLANG`。空なら `libclang-<CIRKA_LLVM_VERSION>.so.1` などを探す)。clang の組み込みヘッダ (`stddef.h` など) は
+`CIRKA_CLANG -print-resource-dir` の場所を使う。ヘッダのエラーは clang の診断 (ファイル:行:桁) で報告し、何も出力しない。
+
+**選ぶ宣言。** 既定ではヘッダが取り込むすべての宣言を出す (Rust の bindgen と同じ)。予約された名前 (`__x`、`_X`) と
+clang の組み込みヘッダの宣言は出さず、予約された名前の `typedef` は透過して元の型で書く。`--allowlist`・`--file` を与えると、
+両方に合う宣言を根として、根から型で参照される宣言だけを出す (列挙はその名前か定数の名前が合えば根)。
+`--file` のパターンは宣言を書いたファイルの絶対パス (`.` と `..` を除いたもの) と照合する (`--file='*/vulkan_core.h'`)。
+`static` な関数 (インライン) と大域変数は出さない (注釈を出す)。
+
+**型。**
+
+| C | aCHC | CirkaLang |
+|---|------|-----------|
+| `char` `signed char` `unsigned char` | `CChar` `CSChar` `CUChar` | `CChar` `CChar` `CUChar` |
+| `short` `int` `long` `long long` (と `unsigned`) | `CShort` `CInt` `CLong` `CLLong` (`CU…`) | `CShort` `CInt` `CLong` `CLong` (`CU…`) |
+| `int8_t` 〜 `uint64_t` | `Int8` 〜 `Word64` | 大きさと符号が同じ C の型 (`CChar` `CUChar` `CShort` … `CULong`) |
+| `size_t` `ssize_t` `intptr_t` `uintptr_t` `ptrdiff_t` `wchar_t` | `CSize` `CLong` `CIntPtr` `CUIntPtr` `CPtrdiff` `CWchar` | `CSize` `CSSize` `CLong` `CULong` `CLong` `CInt` |
+| `_Bool` / `bool` | `CBool` | `CBool` |
+| `float` `double` | `CFloat` `CDouble` | `CFloat` `CDouble` |
+| `T *` (`const T *` も) / `void *` | `Ptr T` / `Ptr ()` | `Ptr T` / `Ptr ()` |
+| 関数ポインタ | `FunPtr (A -> IO R)` | `FunPtr (A -> IO R)` |
+| フィールドの配列 `T[n]` | `[T]` (多次元は平らにする) | `CArray n T` |
+| `long double`・`__int128`・`_Complex`・ベクトル型 | 扱わない (その宣言を飛ばして注釈を出す) | 同左 |
+
+- **所有権と借用は推測しない** (ポインタはすべて `Ptr`)。生成したファイルを利用者が編集するか、安全な型で包む
+  (Rust の bindgen と `-sys` クレートの分け方)。`const T*` を `BorrowedPtr` にする当初の案はやめた (借用元の所有者がない値には使えない。ADR-093)。
+- 関数の結果には `IO` を付ける (`--pure` に合う関数を除く)。
+
+**構造体と共用体。** フィールドの位置・大きさ・境界を clang の値と `cirka_core::ctype` のレイアウト計算 (extern ブロックの構造体が使う、§7.2) で比べて確かめる。
+一致しないもの (`alignas`、格納単位にまとめられないビットフィールド、値として表せない型のフィールド) は **不透明型** として出し、理由を注釈に書く。
+- ビットフィールドは格納単位 (宣言の型の大きさに揃った単位) ごとに 1 つの符号なし整数のフィールド `bitfieldN` にまとめ、各ビットフィールドの位置と幅を注釈に書く。
+- 名前のない構造体・共用体の型は `<親>_<フィールド>` (名前のないメンバは `<親>_anonN`) と名付け、名前のないメンバ (C11 の無名メンバ) は `anonN` というフィールドにする。
+- フレキシブル配列メンバ (`char name[];`) は大きさに含まれないので省き、注釈に書く。前方宣言だけの構造体 (`struct VkInstance_T`) は不透明型。
+
+**定数。** オブジェクト形式のマクロは、ヘッダを取り込んだ 2 つ目の翻訳単位で `__auto_type v = MACRO;` と宣言して **clang に評価させる**
+(`VK_MAKE_API_VERSION(...)` のように関数形式のマクロを使うものも値になる)。整数・浮動小数・文字列になったものを推論された型の定数として出し、
+式にならないもの・ポインタ・有限でない浮動小数は出さない。`static const` の整数の変数 (Vulkan の 64 ビットのフラグ) と列挙定数も定数にする。
+
+**aCHC のプリンタ。** Haskell 2010 の FFI と `Storable` で書くので、`.hs` (GHC でも) と `.chs` のどちらでも使える。
+extern ブロックで書く出力は FEAT-0130 で加える。
+- 関数は `foreign import ccall "sym" c_sym :: …`。値の名前は C の名前に `c_` を付ける (Haskell の予約語や Prelude と衝突せず、大文字で始まる C の名前も使える)。
+  構造体の値渡しと可変長引数は Haskell 2010 の FFI で書けないので飛ばす (注釈)。関数ポインタの `typedef` には `dyn_T` (`dynamic`) と `wrap_T` (`wrapper`) を出す。
+- 構造体は同名の構成子のレコード (フィールドは `<型名の先頭を小文字にしたもの>_<フィールド>`) と、clang のオフセットで読み書きする `Storable` のインスタンス。
+  共用体は大きさ分のバイト列の newtype (`newtype U = U [Word8]`)。
+- 列挙は `newtype T = T CInt` (列挙の整数型) と定数 `c_NAME :: T` と `Storable`。名前のない列挙の定数とマクロは C の型の定数。型の名前は先頭を大文字にする (`timespec` → `Timespec`)。
+
+**CirkaLang のプリンタ。** §8 の extern ブロックの宣言 (`type`・`enum`・`const`・`struct`・`union`) で書く。構文と意味は FEAT-0250 で実装する。
+型・定数の名前は大文字で始め、フィールドと引数の名前が予約語なら後ろに `_` を付ける。大文字で始まる C の関数は宣言できないので飛ばす (注釈)。
+
+`import "C" "math.h" (sin, cos)` (ビルド時に bindgen を走らせて取り込む糖衣) は extern ブロックの実装 (FEAT-0130 / FEAT-0250) の後に加える。
 
 ## 7. 実装
 
