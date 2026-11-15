@@ -329,5 +329,6 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [BUG-0022](bugs/BUG-0022-cl-case-refines-unsolved-metas.md) | 変数での場合分けが、その変数を引数に持つ未解決のメタ変数を解けなくする | done | major | FEAT-0242 |
 | [BUG-0023](bugs/BUG-0023-cl-prim-outside-libraries.md) | 利用者のプログラムに `prim` 宣言を書け、検査のない配列の読み出しでメモリ安全を破れる | done | critical | FEAT-0244 |
 | [BUG-0024](bugs/BUG-0024-runtime-tests-descriptor-race.md) | ランタイムの単体テストが記述子番号の再利用で競合し、まれに失敗する | done | minor | FEAT-0242 |
+| [BUG-0025](bugs/BUG-0025-runtime-siginfo-size.md) | ランタイムの `siginfo_t` が 8 バイト短く、`sigtimedwait` がスタックを壊す | done | critical | FEAT-0242, FEAT-0047 |
 
 新しいチケットは `features/_TEMPLATE.md` / `bugs/_TEMPLATE.md` をコピーして作成する。

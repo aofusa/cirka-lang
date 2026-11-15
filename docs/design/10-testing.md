@@ -124,6 +124,7 @@ cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo build -p cirka-runtime --profile release   (+ debug runtime)
 cargo test --workspace                           (ユニット・スナップショット・mir・core・achc run/fail・cirkalang run/fail)
+cargo test --release -p cirka-runtime --lib      (ランタイムの単体テストを最適化ビルドでも。BUG-0025)
 cargo test --workspace の achc_diff               (GHC との比較は CIRKA_GHC があれば)
 cargo test --test cirkalang_verify               (CIRKA_Z3 があれば)
 cargo test --test achc_verify                    (後期 H6〜、CIRKA_Z3 があれば)

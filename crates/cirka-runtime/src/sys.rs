@@ -157,6 +157,7 @@ pub struct addrinfo {
     pub ai_next: *mut addrinfo,
 }
 
+/// `siginfo_t` (128 bytes).
 #[repr(C)]
 pub struct siginfo_t {
     pub si_signo: c_int,
@@ -164,7 +165,7 @@ pub struct siginfo_t {
     pub si_code: c_int,
     _pad: c_int,
     pub si_addr: *mut c_void,
-    _rest: [u64; 12],
+    _rest: [u64; 13],
 }
 
 unsafe extern "C" {
@@ -353,6 +354,33 @@ pub struct signalfd_siginfo {
     pub ssi_signo: u32,
     _rest: [u8; 124],
 }
+
+// The structures have the sizes of glibc's on x86-64: the C library reads
+// and writes whole structures, so a shorter one lets it overrun the
+// runtime's buffer (BUG-0025).
+const _: () = {
+    use core::mem::size_of;
+    assert!(size_of::<pthread_attr_t>() == 56);
+    assert!(size_of::<pthread_mutex_t>() == 40);
+    assert!(size_of::<pthread_cond_t>() == 48);
+    assert!(size_of::<stack_t>() == 24);
+    assert!(size_of::<sigaction_t>() == 152);
+    assert!(size_of::<timespec>() == 16);
+    assert!(size_of::<epoll_event>() == 12);
+    assert!(size_of::<sockaddr_storage>() == 128);
+    assert!(size_of::<sockaddr_in>() == 16);
+    assert!(size_of::<sockaddr_in6>() == 28);
+    assert!(size_of::<rlimit>() == 16);
+    assert!(size_of::<addrinfo>() == 48);
+    assert!(size_of::<siginfo_t>() == 128);
+    assert!(size_of::<sigset_t>() == 128);
+    assert!(size_of::<posix_spawn_file_actions_t>() == 80);
+    assert!(size_of::<posix_spawnattr_t>() == 336);
+    assert!(size_of::<stat_t>() == 144);
+    assert!(size_of::<dirent>() == 280);
+    assert!(size_of::<pollfd>() == 8);
+    assert!(size_of::<signalfd_siginfo>() == 128);
+};
 
 unsafe extern "C" {
     pub static environ: *const *const c_char;

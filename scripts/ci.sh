@@ -39,5 +39,10 @@ fi
 stage "cargo test"
 cargo test --workspace
 
+stage "runtime unit tests (optimized)"
+# Programs link the optimized runtime. Inlining changes stack layouts, so a
+# C call overrunning a buffer may only show up here (BUG-0025).
+cargo test --release -p cirka-runtime --lib
+
 echo
 echo "ci: all stages passed"

@@ -1070,6 +1070,38 @@ mod tests {
         assert_eq!(cirka_os_signal_action(13, 0), 0);
     }
 
+    /// `sigtimedwait` writes a whole `siginfo_t` of the C library, which
+    /// ends where the runtime's ends: the word after it is left as it was
+    /// (BUG-0025).
+    #[test]
+    fn sigtimedwait_stays_within_siginfo() {
+        let _g = crate::test_lock();
+        #[repr(C)]
+        struct Guarded {
+            info: sys::siginfo_t,
+            canary: u64,
+        }
+        const CANARY: u64 = 0x5a5a_5a5a_5a5a_5a5a;
+        let usr1 = 1i64 << (10 - 1);
+        let set = sigset(usr1);
+        let zero = sys::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        assert_eq!(cirka_os_signal_mask(0, usr1), 0);
+        assert_eq!(cirka_os_raise(10), 0);
+        // SAFETY: a zeroed information buffer followed by the canary.
+        let (r, canary) = unsafe {
+            let mut g: Guarded = core::mem::zeroed();
+            g.canary = CANARY;
+            let r = sys::sigtimedwait(&set, &mut g.info, &zero);
+            (r, core::ptr::read_volatile(&g.canary))
+        };
+        assert_eq!(cirka_os_signal_mask(1, usr1), 0);
+        assert_eq!(r, 10);
+        assert_eq!(canary, CANARY);
+    }
+
     #[test]
     fn files_mapped_listed_and_described() {
         let _g = crate::test_lock();
