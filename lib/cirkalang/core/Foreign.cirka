@@ -1,4 +1,4 @@
--- The C foreign function interface (spec-v0.0.2.md §8).
+-- The C foreign function interface (spec-v0.0.2.md §8, spec-v0.0.6.md §1).
 --
 -- The C types are wrappers of `Int` / `Float`: a value is converted to
 -- the C type (its low bits) when it is passed to C, and a result from C
@@ -18,6 +18,8 @@ data CSize = MkCSize Int deriving (Eq, Ord, Show)
 data CSSize = MkCSSize Int deriving (Eq, Ord, Show)
 data CFloat = MkCFloat Float deriving (Eq, Ord, Show)
 data CDouble = MkCDouble Float deriving (Eq, Ord, Show)
+-- `_Bool` (`bool`): 0 or 1.
+data CBool = MkCBool Int deriving (Eq, Ord, Show)
 
 -- Conversions (the low bits are kept when a value is passed to C).
 fromCInt : CInt -> Int
@@ -33,7 +35,41 @@ fromCDouble : CDouble -> Float
 fromCDouble (MkCDouble x) = x
 
 -- An address of C memory holding `a`s.
-data Ptr (a : Type) = MkPtr Int deriving (Eq, Ord, Show)
+data Ptr (a : Type) = MkPtr Int
+
+-- The address of a C function of type `f` (a type of extern functions,
+-- spec-v0.0.6.md §1.5).
+data FunPtr (f : Type) = MkFunPtr Int
+
+-- A C array `a[n]`, the type of a field of a structure (spec-v0.0.6.md
+-- §1.2). It is written as `n` elements: a longer list is cut, a shorter
+-- one is filled with `zeroed`.
+data CArray (n : Int) (a : Type) = MkCArray (List a)
+
+-- Addresses compare whatever they point to.
+impl Eq (Ptr a) where
+  (MkPtr p) == (MkPtr q) = p == q
+
+impl Ord (Ptr a) where
+  compare (MkPtr p) (MkPtr q) = compare p q
+
+impl Show (Ptr a) where
+  showPrec d (MkPtr p) = showParen (d > 10) ("MkPtr " ++ showPrec 11 p)
+
+impl Eq (FunPtr f) where
+  (MkFunPtr p) == (MkFunPtr q) = p == q
+
+impl Ord (FunPtr f) where
+  compare (MkFunPtr p) (MkFunPtr q) = compare p q
+
+impl Show (FunPtr f) where
+  showPrec d (MkFunPtr p) = showParen (d > 10) ("MkFunPtr " ++ showPrec 11 p)
+
+impl Eq a => Eq (CArray n a) where
+  (MkCArray xs) == (MkCArray ys) = xs == ys
+
+impl Show a => Show (CArray n a) where
+  showPrec d (MkCArray xs) = showParen (d > 10) ("MkCArray " ++ showPrec 11 xs)
 
 -- An address that must be given back to C exactly once (a linear value;
 -- wrap it in a type with `Release` that frees it).
@@ -61,6 +97,21 @@ castPtr (MkPtr p) = MkPtr p
 ptrAddress : Ptr a -> Int
 ptrAddress (MkPtr p) = p
 
+nullFunPtr : FunPtr f
+nullFunPtr = MkFunPtr 0
+
+castFunPtr : FunPtr f -> FunPtr g
+castFunPtr (MkFunPtr p) = MkFunPtr p
+
+funPtrAddress : FunPtr f -> Int
+funPtrAddress (MkFunPtr p) = p
+
+castFunPtrToPtr : FunPtr f -> Ptr a
+castFunPtrToPtr (MkFunPtr p) = MkPtr p
+
+castPtrToFunPtr : Ptr a -> FunPtr f
+castPtrToFunPtr (MkPtr p) = MkFunPtr p
+
 private extern "C" where
   malloc : CSize -> IO (Ptr CChar)
   free : Ptr CChar -> IO ()
@@ -69,6 +120,8 @@ private extern "C" where
 private extern "cirka" where
   cirka_mem_read : Int -> Int -> IO Int
   cirka_mem_write : Int -> Int -> Int -> IO ()
+  cirka_mem_read_f : Int -> Int -> IO Float
+  cirka_mem_write_f : Int -> Int -> Float -> IO ()
   cirka_cstring_new : String -> IO Int
   cirka_cstring_peek : Int -> Int -> IO String
 
@@ -117,3 +170,245 @@ peekInt64 (MkPtr p) i = cirka_mem_read (p + i * 8) 6
 
 pokeInt64 : Ptr a -> Int -> Int -> IO ()
 pokeInt64 (MkPtr p) i v = cirka_mem_write (p + i * 8) 6 v
+
+-- ---- Storable (spec-v0.0.6.md §1.2) ----
+
+-- Values with a C representation in memory. The type of `sizeOf` and
+-- `alignment` is given by a pointer, which is not read:
+-- `sizeOf (nullPtr : Ptr CInt)`. Reading and writing are not checked.
+trait Storable a where
+  -- The size in bytes.
+  sizeOf : Ptr a -> Int
+  alignment : Ptr a -> Int
+  peek : Ptr a -> IO a
+  poke : Ptr a -> a -> IO ()
+  -- The value whose bytes are all 0 (C's `{0}`).
+  zeroed : a
+
+-- Integers (`kind` of `cirka_mem_read`) and floating point numbers
+-- (0 `float`, 1 `double`) at an address.
+private peekI : Int -> Ptr a -> IO Int
+peekI k (MkPtr p) = cirka_mem_read p k
+
+private pokeI : Int -> Ptr a -> Int -> IO ()
+pokeI k (MkPtr p) v = cirka_mem_write p k v
+
+private peekF : Int -> Ptr a -> IO Float
+peekF k (MkPtr p) = cirka_mem_read_f p k
+
+private pokeF : Int -> Ptr a -> Float -> IO ()
+pokeF k (MkPtr p) v = cirka_mem_write_f p k v
+
+impl Storable CChar where
+  sizeOf _ = 1
+  alignment _ = 1
+  peek p = fmap MkCChar (peekI 0 p)
+  poke p (MkCChar v) = pokeI 0 p v
+  zeroed = MkCChar 0
+
+impl Storable CUChar where
+  sizeOf _ = 1
+  alignment _ = 1
+  peek p = fmap MkCUChar (peekI 1 p)
+  poke p (MkCUChar v) = pokeI 1 p v
+  zeroed = MkCUChar 0
+
+impl Storable CShort where
+  sizeOf _ = 2
+  alignment _ = 2
+  peek p = fmap MkCShort (peekI 2 p)
+  poke p (MkCShort v) = pokeI 2 p v
+  zeroed = MkCShort 0
+
+impl Storable CUShort where
+  sizeOf _ = 2
+  alignment _ = 2
+  peek p = fmap MkCUShort (peekI 3 p)
+  poke p (MkCUShort v) = pokeI 3 p v
+  zeroed = MkCUShort 0
+
+impl Storable CInt where
+  sizeOf _ = 4
+  alignment _ = 4
+  peek p = fmap MkCInt (peekI 4 p)
+  poke p (MkCInt v) = pokeI 4 p v
+  zeroed = MkCInt 0
+
+impl Storable CUInt where
+  sizeOf _ = 4
+  alignment _ = 4
+  peek p = fmap MkCUInt (peekI 5 p)
+  poke p (MkCUInt v) = pokeI 5 p v
+  zeroed = MkCUInt 0
+
+impl Storable CLong where
+  sizeOf _ = 8
+  alignment _ = 8
+  peek p = fmap MkCLong (peekI 6 p)
+  poke p (MkCLong v) = pokeI 6 p v
+  zeroed = MkCLong 0
+
+impl Storable CULong where
+  sizeOf _ = 8
+  alignment _ = 8
+  peek p = fmap MkCULong (peekI 6 p)
+  poke p (MkCULong v) = pokeI 6 p v
+  zeroed = MkCULong 0
+
+impl Storable CSize where
+  sizeOf _ = 8
+  alignment _ = 8
+  peek p = fmap MkCSize (peekI 6 p)
+  poke p (MkCSize v) = pokeI 6 p v
+  zeroed = MkCSize 0
+
+impl Storable CSSize where
+  sizeOf _ = 8
+  alignment _ = 8
+  peek p = fmap MkCSSize (peekI 6 p)
+  poke p (MkCSSize v) = pokeI 6 p v
+  zeroed = MkCSSize 0
+
+impl Storable CFloat where
+  sizeOf _ = 4
+  alignment _ = 4
+  peek p = fmap MkCFloat (peekF 0 p)
+  poke p (MkCFloat v) = pokeF 0 p v
+  zeroed = MkCFloat 0.0
+
+impl Storable CDouble where
+  sizeOf _ = 8
+  alignment _ = 8
+  peek p = fmap MkCDouble (peekF 1 p)
+  poke p (MkCDouble v) = pokeF 1 p v
+  zeroed = MkCDouble 0.0
+
+impl Storable CBool where
+  sizeOf _ = 1
+  alignment _ = 1
+  peek p = fmap MkCBool (peekI 1 p)
+  poke p (MkCBool v) = pokeI 1 p v
+  zeroed = MkCBool 0
+
+-- `int64_t`, `uint64_t` and `double`.
+impl Storable Int where
+  sizeOf _ = 8
+  alignment _ = 8
+  peek p = peekI 6 p
+  poke p v = pokeI 6 p v
+  zeroed = 0
+
+impl Storable UInt where
+  sizeOf _ = 8
+  alignment _ = 8
+  peek p = fmap primIntToUInt (peekI 6 p)
+  poke p v = pokeI 6 p (primUIntToInt v)
+  zeroed = primIntToUInt 0
+
+impl Storable Float where
+  sizeOf _ = 8
+  alignment _ = 8
+  peek p = peekF 1 p
+  poke p v = pokeF 1 p v
+  zeroed = 0.0
+
+impl Storable (Ptr b) where
+  sizeOf _ = 8
+  alignment _ = 8
+  peek p = fmap MkPtr (peekI 6 p)
+  poke p (MkPtr v) = pokeI 6 p v
+  zeroed = nullPtr
+
+impl Storable (FunPtr f) where
+  sizeOf _ = 8
+  alignment _ = 8
+  peek p = fmap MkFunPtr (peekI 6 p)
+  poke p (MkFunPtr v) = pokeI 6 p v
+  zeroed = nullFunPtr
+
+impl {n : Int} -> Storable a => Storable (CArray n a) where
+  sizeOf _ = n * sizeOf (nullPtr : Ptr a)
+  alignment _ = alignment (nullPtr : Ptr a)
+  peek p = fmap MkCArray (peekArray n (castPtr p))
+  poke p (MkCArray xs) = pokeArrayFill (castPtr p) 0 n xs
+  zeroed = MkCArray (zeroes n)
+
+-- Elements `i` to `n - 1` from the list, then `zeroed`.
+private pokeArrayFill : Storable a => Ptr a -> Int -> Int -> List a -> IO ()
+pokeArrayFill p i n xs = if i >= n then pure () else case xs of
+  Nil => do
+    pokeElemOff p i zeroed
+    pokeArrayFill p (i + 1) n Nil
+  x :: rest => do
+    pokeElemOff p i x
+    pokeArrayFill p (i + 1) n rest
+
+private zeroes : Storable a => Int -> List a
+zeroes n = if n <= 0 then Nil else zeroed :: zeroes (n - 1)
+
+-- The element `i` elements after the address.
+peekElemOff : Storable a => Ptr a -> Int -> IO a
+peekElemOff p i = peek (advancePtr p i)
+
+pokeElemOff : Storable a => Ptr a -> Int -> a -> IO ()
+pokeElemOff p i x = poke (advancePtr p i) x
+
+-- The address `i` elements after `p`.
+advancePtr : Storable a => Ptr a -> Int -> Ptr a
+advancePtr p i = plusPtr p (i * sizeOf p)
+
+-- `n` elements from the address.
+peekArray : Storable a => Int -> Ptr a -> IO (List a)
+peekArray n p = peekDown p (n - 1) Nil
+
+private peekDown : Storable a => Ptr a -> Int -> List a -> IO (List a)
+peekDown p i acc = if i < 0 then pure acc else do
+  x <- peekElemOff p i
+  peekDown p (i - 1) (x :: acc)
+
+-- Writes the elements from the address.
+pokeArray : Storable a => Ptr a -> List a -> IO ()
+pokeArray p xs = pokeUp p 0 xs
+
+private pokeUp : Storable a => Ptr a -> Int -> List a -> IO ()
+pokeUp _ _ Nil = pure ()
+pokeUp p i (x :: xs) = do
+  pokeElemOff p i x
+  pokeUp p (i + 1) xs
+
+-- Memory for `n` elements (not initialized), freed with `freeBytes`.
+mallocArray : Storable a => Int -> IO (Ptr a)
+mallocArray n = mallocFor nullPtr n
+
+private mallocFor : Storable a => Ptr a -> Int -> IO (Ptr a)
+mallocFor z n = mallocBytes (n * sizeOf z)
+
+-- Calls `f` with memory for one value (not initialized), freed after `f`.
+alloca : Storable a => (Ptr a -> IO b) -> IO b
+alloca f = allocaArray 1 f
+
+-- Calls `f` with memory for `n` values (not initialized), freed after `f`.
+allocaArray : Storable a => Int -> (Ptr a -> IO b) -> IO b
+allocaArray n f = do
+  p <- mallocArray n
+  r <- f p
+  freeBytes p
+  pure r
+
+-- Calls `f` with a copy of `x` in memory, freed after `f`.
+withValue : Storable a => a -> (Ptr a -> IO b) -> IO b
+withValue x f = alloca (pokeThen x f)
+
+private pokeThen : Storable a => a -> (Ptr a -> IO b) -> Ptr a -> IO b
+pokeThen x f p = do
+  poke p x
+  f p
+
+-- Calls `f` with the elements in memory, freed after `f`.
+withArray : Storable a => List a -> (Ptr a -> IO b) -> IO b
+withArray xs f = allocaArray (length xs) (pokeArrayThen xs f)
+
+private pokeArrayThen : Storable a => List a -> (Ptr a -> IO b) -> Ptr a -> IO b
+pokeArrayThen xs f p = do
+  pokeArray p xs
+  f p

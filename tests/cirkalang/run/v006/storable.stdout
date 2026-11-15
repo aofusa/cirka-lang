@@ -1,0 +1,24 @@
+[1, 2, 4, 8, 4, 8, 1, 8, 8, 6, 2, 24]
+MkCChar (-5)
+MkCUChar 200
+MkCShort (-1234)
+MkCUShort 65535
+MkCInt (-100000)
+MkCUInt 4000000000
+MkCLong (-9000000000)
+MkCSize 123456789012
+MkCFloat 1.5
+MkCDouble (-2.25)
+MkCBool 1
+42
+0.125
+MkPtr 0
+MkCArray [MkCInt 1, MkCInt 2, MkCInt 0, MkCInt 0]
+MkCArray [MkCInt 1, MkCInt 2]
+MkCArray [MkCArray [MkCFloat 0.5, MkCFloat 0], MkCArray [MkCFloat 1, MkCFloat 2]]
+MkCArray [MkCUChar 0, MkCUChar 0, MkCUChar 0]
+MkPtr 0
+(MkCChar 44, MkCUShort 65534)
+[10, 25, 30]
+MkCUChar 7
+True

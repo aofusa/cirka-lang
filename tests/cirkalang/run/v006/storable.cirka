@@ -1,0 +1,64 @@
+-- `Storable` (spec-v0.0.6.md §1.2): the sizes of the C types, reading and
+-- writing every type, arrays of `CArray n a` (cut and filled with
+-- zeros), `alloca`, `withValue`, `withArray` and the element functions.
+import Foreign
+
+sizes : List Int
+sizes =
+  [ sizeOf (nullPtr : Ptr CChar), sizeOf (nullPtr : Ptr CShort), sizeOf (nullPtr : Ptr CInt)
+  , sizeOf (nullPtr : Ptr CLong), sizeOf (nullPtr : Ptr CFloat), sizeOf (nullPtr : Ptr CDouble)
+  , sizeOf (nullPtr : Ptr CBool), sizeOf (nullPtr : Ptr (Ptr CInt))
+  , sizeOf (nullPtr : Ptr (FunPtr (CInt -> IO CInt)))
+  , sizeOf (nullPtr : Ptr (CArray 3 CShort)), alignment (nullPtr : Ptr (CArray 3 CShort))
+  , sizeOf (nullPtr : Ptr (CArray 2 (CArray 3 CFloat)))
+  ]
+
+-- Writes `x`, reads it back and shows it.
+roundTrip : (Storable a, Show a) => a -> IO ()
+roundTrip x = do
+  y <- withValue x peek
+  putStrLn (show y)
+
+-- Values change when they do not fit: 300 as a `char` is 44.
+wrapped : IO ()
+wrapped = do
+  p <- (mallocBytes 8 : IO (Ptr CChar))
+  poke p (MkCChar 300)
+  c <- peek p
+  poke (castPtr p) (MkCShort (0 - 2))
+  u <- peek (castPtr p : Ptr CUShort)
+  freeBytes p
+  print (c, u)
+
+main : IO ()
+main = do
+  print sizes
+  roundTrip (MkCChar (0 - 5))
+  roundTrip (MkCUChar 200)
+  roundTrip (MkCShort (0 - 1234))
+  roundTrip (MkCUShort 65535)
+  roundTrip (MkCInt (0 - 100000))
+  roundTrip (MkCUInt 4000000000)
+  roundTrip (MkCLong (0 - 9000000000))
+  roundTrip (MkCSize 123456789012)
+  roundTrip (MkCFloat 1.5)
+  roundTrip (MkCDouble (0.0 - 2.25))
+  roundTrip (MkCBool 1)
+  roundTrip (42 : Int)
+  roundTrip 0.125
+  roundTrip (castPtr (nullPtr : Ptr CInt) : Ptr CChar)
+  roundTrip (MkCArray [MkCInt 1, MkCInt 2] : CArray 4 CInt)
+  roundTrip (MkCArray [MkCInt 1, MkCInt 2, MkCInt 3] : CArray 2 CInt)
+  roundTrip (MkCArray [MkCArray [MkCFloat 0.5], MkCArray [MkCFloat 1.0, MkCFloat 2.0]] : CArray 2 (CArray 2 CFloat))
+  print (zeroed : CArray 3 CUChar)
+  print (zeroed : Ptr CInt)
+  wrapped
+  xs <- withArray [10, 20, 30] (\p => do
+    pokeElemOff p 1 (25 : Int)
+    peekArray 3 p)
+  print xs
+  n <- alloca (\p => do
+    poke p (MkCUInt 7)
+    peek (castPtr p : Ptr CUChar))
+  print n
+  print (advancePtr (nullPtr : Ptr CDouble) 3 == plusPtr (nullPtr : Ptr CChar) 24)

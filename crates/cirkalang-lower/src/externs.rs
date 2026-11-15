@@ -50,7 +50,8 @@ fn foreign_cty(name: &str) -> Option<c::CTy> {
         "CULong" | "CSize" => U64,
         "CFloat" => F32,
         "CDouble" => F64,
-        "Ptr" | "OwnedPtr" => Ptr,
+        "CBool" => U8,
+        "Ptr" | "OwnedPtr" | "FunPtr" => Ptr,
         _ => return None,
     })
 }
