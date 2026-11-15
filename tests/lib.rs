@@ -1,6 +1,31 @@
 //! Shared helpers for the integration tests.
 
-use cirka_testkit::{Case, Outcome};
+use cirka_testkit::{Case, Outcome, repo_root};
+use std::path::PathBuf;
+use std::sync::OnceLock;
+
+/// Builds both CLIs (`achc`, `cirka`) once and returns their paths.
+pub fn cli_bins() -> &'static (PathBuf, PathBuf) {
+    static BINS: OnceLock<(PathBuf, PathBuf)> = OnceLock::new();
+    BINS.get_or_init(|| {
+        let st = std::process::Command::new(env!("CARGO"))
+            .args(["build", "-q", "-p", "achc", "-p", "cirka"])
+            .current_dir(repo_root())
+            .status()
+            .unwrap();
+        assert!(st.success(), "building achc/cirka failed");
+        let target = std::env::var_os("CARGO_TARGET_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| repo_root().join("target"));
+        let target = if target.is_relative() {
+            repo_root().join(target)
+        } else {
+            target
+        };
+        let dir = target.join("debug");
+        (dir.join("achc"), dir.join("cirka"))
+    })
+}
 
 /// Parses `cirka-stats: allocs=N frees=M ...` from stderr.
 pub fn parse_stats(stderr: &str) -> Option<(u64, u64)> {
@@ -97,7 +122,9 @@ pub fn c_helper(cfg: &cirka_driver::Config, c: &Case, suite: &str) -> Result<Vec
     }
     let dir = cirka_testkit::work_dir(suite, &c.name);
     std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
-    let lib = dir.join(format!("lib{}.so", c.name));
+    // Cases in directories have `/` in their names.
+    let name = c.name.replace('/', "__");
+    let lib = dir.join(format!("lib{name}.so"));
     let out = std::process::Command::new(&cfg.clang)
         .args(["-O2", "-shared", "-fPIC", "-Wall", "-Werror", "-o"])
         .arg(&lib)
@@ -114,7 +141,7 @@ pub fn c_helper(cfg: &cirka_driver::Config, c: &Case, suite: &str) -> Result<Vec
     cirka_mir::ffi::load_library(&lib)?;
     Ok(vec![
         format!("-L{}", dir.display()),
-        format!("-l{}", c.name),
+        format!("-l{name}"),
         format!("-Wl,-rpath,{}", dir.display()),
     ])
 }

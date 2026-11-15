@@ -431,6 +431,18 @@ pub fn ghc_reference(
     stdin: Option<&[u8]>,
     args: &[String],
 ) -> Option<Result<RunOutput, String>> {
+    ghc_reference_with(src, stdin, args, &[])
+}
+
+/// [`ghc_reference`] with more arguments for GHC (`ghc_args`: C sources to
+/// compile with the program, `-l` flags). The contents of the files among
+/// them are part of the cache key.
+pub fn ghc_reference_with(
+    src: &Path,
+    stdin: Option<&[u8]>,
+    args: &[String],
+    ghc_args: &[String],
+) -> Option<Result<RunOutput, String>> {
     let ghc = std::env::var("CIRKA_GHC").ok().filter(|s| !s.is_empty())?;
     let text = std::fs::read(src).ok()?;
     let mut key = text.clone();
@@ -456,6 +468,13 @@ pub fn ghc_reference(
         key.extend_from_slice(a.as_bytes());
         key.push(0);
     }
+    for a in ghc_args {
+        key.extend_from_slice(a.as_bytes());
+        key.push(1);
+        if let Ok(text) = std::fs::read(a) {
+            key.extend_from_slice(&text);
+        }
+    }
     let h = fnv64(&key);
     let cache = repo_root().join("_build").join("ghc-cache");
     let _ = std::fs::create_dir_all(&cache);
@@ -476,6 +495,7 @@ pub fn ghc_reference(
         .arg("-o")
         .arg(&exe)
         .arg(format!("-i{}", dir.display()))
+        .args(ghc_args)
         .arg(src)
         .output();
     let out = match out {

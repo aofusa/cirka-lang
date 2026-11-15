@@ -4,30 +4,6 @@
 use cirka_testkit::{Outcome, discover, repo_root, run_suite};
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::OnceLock;
-
-/// Builds both CLIs once and returns their paths.
-fn bins() -> &'static (PathBuf, PathBuf) {
-    static BINS: OnceLock<(PathBuf, PathBuf)> = OnceLock::new();
-    BINS.get_or_init(|| {
-        let st = Command::new(env!("CARGO"))
-            .args(["build", "-q", "-p", "achc", "-p", "cirka"])
-            .current_dir(repo_root())
-            .status()
-            .unwrap();
-        assert!(st.success(), "building achc/cirka failed");
-        let target = std::env::var_os("CARGO_TARGET_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| repo_root().join("target"));
-        let target = if target.is_relative() {
-            repo_root().join(target)
-        } else {
-            target
-        };
-        let dir = target.join("debug");
-        (dir.join("achc"), dir.join("cirka"))
-    })
-}
 
 fn run(bin: &PathBuf, args: &[&str], cwd: &std::path::Path) -> cirka_testkit::RunOutput {
     let mut cmd = Command::new(bin);
@@ -43,7 +19,7 @@ fn both_clis_agree_on_core_input() {
     cirka_testkit::init();
     cirka_driver::native::ensure_runtime_built().unwrap();
     let cfg = cirka_driver::Config::from_env();
-    let (achc, cirka) = bins();
+    let (achc, cirka) = cirka_integration::cli_bins();
     let cases = discover(&repo_root().join("tests/core/run"), &["core"]);
     assert!(!cases.is_empty());
     run_suite("driver-core", &cases, |c| {
@@ -95,7 +71,7 @@ fn both_clis_agree_on_core_input() {
 fn check_and_dump() {
     cirka_testkit::init();
     cirka_driver::native::ensure_runtime_built().unwrap();
-    let (achc, cirka) = bins();
+    let (achc, cirka) = cirka_integration::cli_bins();
     let fail = discover(&repo_root().join("tests/core/fail"), &["core"]);
     let bad = fail[0].path.to_str().unwrap().to_string();
     let work = cirka_testkit::work_dir("driver-misc", "check");
@@ -142,7 +118,7 @@ fn check_and_dump() {
 fn cirka_source_tests() {
     cirka_testkit::init();
     cirka_driver::native::ensure_runtime_built().unwrap();
-    let (achc, cirka) = bins();
+    let (achc, cirka) = cirka_integration::cli_bins();
     let cases = discover(&repo_root().join("tests/cirkalang/test"), &["cirka"]);
     assert!(!cases.is_empty());
     run_suite("cirka-test", &cases, |c| {
