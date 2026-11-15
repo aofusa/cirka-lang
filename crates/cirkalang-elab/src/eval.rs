@@ -739,6 +739,76 @@ impl<'a> Ev<'a> {
         Ok(Some(t))
     }
 
+    /// Makes the unsolved metas in `v` (at level `lvl`) independent of the
+    /// variable `x` where they are applied to it (BUG-0022): `?m .. x ..`
+    /// is solved as `\ys. ?m' (ys without the positions of x)`. A match on
+    /// `x` then refines it without leaving the metas applied to a pattern,
+    /// which pattern unification cannot solve.
+    pub fn prune_var(&self, lvl: u32, v: &Val, x: u32) {
+        match self.force(v.clone()) {
+            Val::Neutral(h, sp) => {
+                if let Head::Meta(m) = h {
+                    self.prune_meta_var(m, &sp, x);
+                }
+                for e in &sp {
+                    if let Elim::App(a, _) = e {
+                        self.prune_var(lvl, a, x);
+                    }
+                }
+            }
+            Val::Con(_, args) => {
+                for a in &args {
+                    self.prune_var(lvl, a, x);
+                }
+            }
+            Val::Data(_, args) => {
+                for (a, _) in &args {
+                    self.prune_var(lvl, a, x);
+                }
+            }
+            Val::Lam(_, _, _, a, c) | Val::Pi(_, _, _, a, c) => {
+                self.prune_var(lvl, &a, x);
+                self.prune_var(lvl + 1, &self.inst(&c, Val::var(lvl)), x);
+            }
+            _ => {}
+        }
+    }
+
+    /// Solves the unsolved `?m` applied to `sp` as a fresh meta applied to
+    /// the arguments of `sp` other than the variable `x`.
+    fn prune_meta_var(&self, m: MetaId, sp: &[Elim], x: u32) {
+        let mut icits = Vec::new();
+        let mut keep = Vec::new();
+        for e in sp {
+            let Elim::App(a, i) = e else { return };
+            icits.push(*i);
+            keep.push(!matches!(self.force(a.clone()), Val::Neutral(Head::Var(y), s) if y == x && s.is_empty()));
+        }
+        if keep.iter().all(|k| *k) || self.metas.sol.borrow()[m as usize].is_some() {
+            return;
+        }
+        let m3 = self.metas.fresh();
+        self.metas.pruned_from.borrow_mut().insert(m3, m);
+        let n = sp.len() as u32;
+        let mut body = Term::Meta(m3);
+        for (k, i) in icits.iter().enumerate() {
+            if keep[k] {
+                body = Term::App(Rc::new(body), Rc::new(Term::Var(n - 1 - k as u32)), *i);
+            }
+        }
+        for (k, i) in icits.iter().enumerate().rev() {
+            body = Term::Lam(
+                format!("x{k}").into(),
+                Mult::Many,
+                *i,
+                Rc::new(Term::Error),
+                Rc::new(body),
+            );
+        }
+        let v = self.eval(&Vec::new(), &body);
+        self.metas.sol.borrow_mut()[m as usize] = Some(v);
+    }
+
     /// Renames `v` (at level `cod`) into the solution context of `dom`
     /// variables, with occurs and scope checks.
     fn rename(

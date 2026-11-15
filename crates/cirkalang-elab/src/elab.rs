@@ -2619,6 +2619,7 @@ impl<'r> Elab<'r> {
             && cx.bound[l as usize]
         {
             ci.top = vec![l];
+            self.prune_refined(cx, ty, l);
             let rows = alts
                 .iter()
                 .enumerate()
@@ -2676,6 +2677,21 @@ impl<'r> Elab<'r> {
         self.pop(cx, rig != Mult::Zero);
         self.warn_unused(&ci);
         Term::Let("scrut$".into(), m, Rc::new(at), Rc::new(st), Rc::new(body))
+    }
+
+    /// Makes the unsolved metas of the goal and of the types in scope
+    /// independent of the variable `l`, which a match is about to refine
+    /// (BUG-0022). They are applied to every variable bound when they were
+    /// made, and once `l` is replaced by a pattern in the branches, pattern
+    /// unification can no longer solve them (`pure (case m of …)`, or a
+    /// variable of type `Ptr ?a` in scope). A meta whose solution should
+    /// depend on `l` could not be solved in the branches either.
+    fn prune_refined(&self, cx: &Cxt, ty: &Val, l: u32) {
+        let lvl = cx.lvl();
+        self.ev().prune_var(lvl, ty, l);
+        for k in 0..lvl {
+            self.ev().prune_var(lvl, &self.ty_val(cx, k), l);
+        }
     }
 
     fn warn_unused(&self, ci: &ClauseInfo) {

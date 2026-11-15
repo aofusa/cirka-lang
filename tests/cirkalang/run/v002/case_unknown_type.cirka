@@ -1,0 +1,50 @@
+-- A `case` on a variable where types are not known yet (BUG-0022): the
+-- result type of the match, or the type of another variable in scope,
+-- holds a meta that may mention the matched variable. Matching refines
+-- the variable; the metas must not depend on it.
+import Foreign
+
+-- The argument of `pure` has an unknown type when the match is checked.
+orZero : Maybe Int -> IO Int
+orZero m = pure (case m of
+  Just n => n
+  Nothing => 0)
+
+-- `buf : Ptr a` with `a` known only in a branch (`peekCStringLen`).
+firstBytes : Maybe Int -> IO String
+firstBytes r = do
+  buf <- mallocBytes 4
+  pokeByte buf 0 79
+  pokeByte buf 1 75
+  s <- case r of
+    Just n => peekCStringLen buf n
+    Nothing => pure "-"
+  freeBytes buf
+  pure s
+
+-- `xs : List a` with `a` known only in a branch.
+count : Maybe Int -> Int
+count r =
+  let xs = [] in
+  case r of
+    Just n => length (n :: xs)
+    Nothing => 0
+
+-- A constructor of unknown type in each branch.
+wrap : Maybe Int -> IO (Maybe String)
+wrap r = do
+  let s = "x"
+  pure (case r of
+    Just _ => Just s
+    Nothing => Nothing)
+
+main : IO ()
+main = do
+  a <- orZero (Just 3)
+  b <- orZero Nothing
+  c <- firstBytes (Just 2)
+  d <- firstBytes Nothing
+  e <- wrap (Just 1)
+  f <- wrap Nothing
+  putStrLn (show a ++ " " ++ show b ++ " " ++ c ++ " " ++ d ++ " " ++ show (count (Just 5)) ++ " " ++ show (count Nothing))
+  putStrLn (show e ++ " " ++ show f)
