@@ -53,6 +53,9 @@ pub struct Tls {
     /// The sender of the last datagram received (`net.rs`).
     pub peer_len: u32,
     pub peer: crate::sys::sockaddr_storage,
+    /// Results of the last call of `os.rs` beyond its return value (the
+    /// pipes of a spawn, the status of a wait, the fields of a stat).
+    pub os: [i64; 6],
 }
 
 const TLS_SIZE: usize = core::mem::size_of::<Tls>();

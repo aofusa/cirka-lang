@@ -267,6 +267,149 @@ unsafe extern "C" {
     pub fn freeaddrinfo(res: *mut addrinfo);
 }
 
+// ---- processes, signals, mappings, directories (05-runtime.md §11) ----
+
+pub const O_RDONLY: c_int = 0;
+pub const O_RDWR: c_int = 2;
+pub const O_CLOEXEC: c_int = 0o2000000;
+pub const WNOHANG: c_int = 1;
+pub const SIG_BLOCK: c_int = 0;
+pub const SIG_UNBLOCK: c_int = 1;
+pub const SIG_SETMASK: c_int = 2;
+pub const SFD_NONBLOCK: c_int = 0o4000;
+pub const SFD_CLOEXEC: c_int = 0o2000000;
+pub const POSIX_SPAWN_SETSIGDEF: i16 = 0x04;
+pub const POSIX_SPAWN_SETSIGMASK: i16 = 0x08;
+pub const POLLIN: i16 = 0x001;
+pub const POLLOUT: i16 = 0x004;
+pub const POLLERR: i16 = 0x008;
+pub const POLLHUP: i16 = 0x010;
+pub const S_IFMT: u32 = 0o170000;
+pub const S_IFREG: u32 = 0o100000;
+pub const S_IFDIR: u32 = 0o040000;
+pub const S_IFLNK: u32 = 0o120000;
+
+/// glibc's `sigset_t` (1024 bits; signal `s` is bit `s - 1`).
+#[repr(C)]
+pub struct sigset_t {
+    pub bits: [u64; 16],
+}
+
+/// glibc's `posix_spawn_file_actions_t` on x86-64 (80 bytes).
+#[repr(C)]
+pub struct posix_spawn_file_actions_t {
+    _data: [u64; 10],
+}
+
+/// glibc's `posix_spawnattr_t` on x86-64 (336 bytes).
+#[repr(C)]
+pub struct posix_spawnattr_t {
+    _data: [u64; 42],
+}
+
+/// `struct stat` on x86-64 (144 bytes).
+#[repr(C)]
+pub struct stat_t {
+    pub st_dev: u64,
+    pub st_ino: u64,
+    pub st_nlink: u64,
+    pub st_mode: u32,
+    pub st_uid: u32,
+    pub st_gid: u32,
+    _pad0: i32,
+    pub st_rdev: u64,
+    pub st_size: i64,
+    pub st_blksize: i64,
+    pub st_blocks: i64,
+    pub st_atime: i64,
+    pub st_atime_nsec: i64,
+    pub st_mtime: i64,
+    pub st_mtime_nsec: i64,
+    pub st_ctime: i64,
+    pub st_ctime_nsec: i64,
+    _unused: [i64; 3],
+}
+
+/// `struct dirent` on x86-64 (the name starts at byte 19).
+#[repr(C)]
+pub struct dirent {
+    pub d_ino: u64,
+    pub d_off: i64,
+    pub d_reclen: u16,
+    pub d_type: u8,
+    pub d_name: [c_char; 256],
+}
+
+#[repr(C)]
+pub struct pollfd {
+    pub fd: c_int,
+    pub events: i16,
+    pub revents: i16,
+}
+
+/// `struct signalfd_siginfo` (128 bytes).
+#[repr(C)]
+pub struct signalfd_siginfo {
+    pub ssi_signo: u32,
+    _rest: [u8; 124],
+}
+
+unsafe extern "C" {
+    pub static environ: *const *const c_char;
+    pub fn pipe2(fds: *mut c_int, flags: c_int) -> c_int;
+    pub fn posix_spawnp(
+        pid: *mut c_int,
+        file: *const c_char,
+        actions: *const posix_spawn_file_actions_t,
+        attr: *const posix_spawnattr_t,
+        argv: *const *const c_char,
+        envp: *const *const c_char,
+    ) -> c_int;
+    pub fn posix_spawn_file_actions_init(a: *mut posix_spawn_file_actions_t) -> c_int;
+    pub fn posix_spawn_file_actions_destroy(a: *mut posix_spawn_file_actions_t) -> c_int;
+    pub fn posix_spawn_file_actions_adddup2(
+        a: *mut posix_spawn_file_actions_t,
+        fd: c_int,
+        newfd: c_int,
+    ) -> c_int;
+    pub fn posix_spawn_file_actions_addopen(
+        a: *mut posix_spawn_file_actions_t,
+        fd: c_int,
+        path: *const c_char,
+        flags: c_int,
+        mode: u32,
+    ) -> c_int;
+    pub fn posix_spawnattr_init(a: *mut posix_spawnattr_t) -> c_int;
+    pub fn posix_spawnattr_destroy(a: *mut posix_spawnattr_t) -> c_int;
+    pub fn posix_spawnattr_setflags(a: *mut posix_spawnattr_t, flags: i16) -> c_int;
+    pub fn posix_spawnattr_setsigmask(a: *mut posix_spawnattr_t, set: *const sigset_t) -> c_int;
+    pub fn posix_spawnattr_setsigdefault(a: *mut posix_spawnattr_t, set: *const sigset_t) -> c_int;
+    pub fn waitpid(pid: c_int, status: *mut c_int, options: c_int) -> c_int;
+    pub fn kill(pid: c_int, sig: c_int) -> c_int;
+    pub fn raise(sig: c_int) -> c_int;
+    pub fn pthread_sigmask(how: c_int, set: *const sigset_t, old: *mut sigset_t) -> c_int;
+    pub fn sigtimedwait(
+        set: *const sigset_t,
+        info: *mut siginfo_t,
+        timeout: *const timespec,
+    ) -> c_int;
+    pub fn signalfd(fd: c_int, mask: *const sigset_t, flags: c_int) -> c_int;
+    pub fn munmap(addr: *mut c_void, len: size_t) -> c_int;
+    pub fn fstat(fd: c_int, st: *mut stat_t) -> c_int;
+    pub fn stat(path: *const c_char, st: *mut stat_t) -> c_int;
+    pub fn lstat(path: *const c_char, st: *mut stat_t) -> c_int;
+    pub fn opendir(path: *const c_char) -> *mut c_void;
+    pub fn readdir(dir: *mut c_void) -> *mut dirent;
+    pub fn closedir(dir: *mut c_void) -> c_int;
+    pub fn mkdir(path: *const c_char, mode: u32) -> c_int;
+    pub fn rmdir(path: *const c_char) -> c_int;
+    pub fn rename(from: *const c_char, to: *const c_char) -> c_int;
+    pub fn getcwd(buf: *mut c_char, size: size_t) -> *mut c_char;
+    pub fn chdir(path: *const c_char) -> c_int;
+    pub fn gethostname(name: *mut c_char, len: size_t) -> c_int;
+    pub fn poll(fds: *mut pollfd, n: u64, timeout: c_int) -> c_int;
+}
+
 /// Reads an environment variable as a byte slice (without the NUL).
 pub fn env(name: &core::ffi::CStr) -> Option<&'static [u8]> {
     // SAFETY: getenv returns NULL or a NUL-terminated string that lives as

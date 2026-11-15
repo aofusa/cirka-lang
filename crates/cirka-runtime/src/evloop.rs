@@ -1255,11 +1255,17 @@ fn start_pool() {
         .unwrap_or(crate::thread::cirka_cpu_count() as usize)
         .clamp(1, 256);
     let stack = crate::thread::thread_stack_size();
+    // The workers start with the signals blocked (they inherit the mask of
+    // this thread), so that a signal sent to the process goes to a thread
+    // of the program, even one that blocked it to receive it
+    // (05-runtime.md §11.3).
+    let old = crate::os::block_async_signals();
     for _ in 0..n {
         let id = tls::new_id();
         // SAFETY: the worker only reads its number from the argument.
         unsafe { crate::thread::start_detached(worker_main, id as usize as *mut c_void, stack) };
     }
+    crate::os::set_signal_mask(&old);
 }
 
 extern "C" fn worker_main(arg: *mut c_void) -> *mut c_void {

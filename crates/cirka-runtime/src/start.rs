@@ -15,6 +15,9 @@ struct Startup {
     argc: usize,
     argv: *const *const c_char,
     stack_size: usize,
+    /// The signal mask the process started with, for the thread running
+    /// the program (the first thread blocks every signal).
+    sigmask: sys::sigset_t,
 }
 
 /// Written by `main` before the thread running the program starts; read
@@ -24,6 +27,7 @@ static STARTUP: Global<Startup> = Global::new(Startup {
     argc: 0,
     argv: core::ptr::null(),
     stack_size: 0,
+    sigmask: sys::sigset_t { bits: [0; 16] },
 });
 
 /// Word 0 of a thunk being evaluated (`BLACKHOLE`) once the evaluating
@@ -453,6 +457,11 @@ extern "C" fn main_thread(_arg: *mut c_void) -> *mut c_void {
         t.id = 1;
         t.stack_hi = &local as *const u8 as usize;
         t.stack_lo = t.stack_hi.saturating_sub(STARTUP.get().stack_size);
+        sys::pthread_sigmask(
+            sys::SIG_SETMASK,
+            &STARTUP.get().sigmask,
+            core::ptr::null_mut(),
+        );
     }
     install_segv_handler();
     // SAFETY: calling the generated entry point.
@@ -461,7 +470,9 @@ extern "C" fn main_thread(_arg: *mut c_void) -> *mut c_void {
 }
 
 /// Process entry point: runs `main` on a thread with a large stack
-/// (`CIRKA_STACK_SIZE`, default 512M) with a guard page.
+/// (`CIRKA_STACK_SIZE`, default 512M) with a guard page. The first thread
+/// only waits for it, with every signal blocked: a signal sent to the
+/// process goes to a thread of the program (05-runtime.md §11.3).
 ///
 /// # Safety
 /// Called by the C runtime with valid `argc`/`argv`.
@@ -481,6 +492,8 @@ pub unsafe extern "C" fn main(argc: c_int, argv: *const *const c_char) -> c_int 
             .unwrap_or(512 << 20)
             .max(1 << 20);
         st.stack_size = size;
+        let all = sys::sigset_t { bits: [!0; 16] };
+        sys::pthread_sigmask(sys::SIG_BLOCK, &all, &mut st.sigmask);
         let mut attr = core::mem::zeroed::<sys::pthread_attr_t>();
         sys::pthread_attr_init(&mut attr);
         sys::pthread_attr_setstacksize(&mut attr, size);
