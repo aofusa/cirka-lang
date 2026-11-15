@@ -8,7 +8,7 @@
 //! <tool> test [flags] [--filter=S] FILE   (frontends with tests in sources)
 //! flags: -O0|-O1|-O2  --release (= -O2)  --runtime=release|debug|tsan
 //!        --dump=core,core-opt,mir,mir-opt,llvm (+ frontend stages)  --build-dir=DIR
-//!        --emit=llvm|exe  -l<lib> / -L<dir> (passed to the linker)
+//!        --emit=llvm|exe  -l<lib> / -L<dir> / -Wl,<args> (passed to the linker)
 //!        --NAME=VALUE (other options, checked by the frontend)
 //! ```
 
@@ -106,7 +106,9 @@ pub fn parse_args(args: &[String]) -> Result<Args, String> {
             s if s.starts_with("--build-dir=") => {
                 build_dir = Some(PathBuf::from(&s["--build-dir=".len()..]))
             }
-            s if s.starts_with("-l") || s.starts_with("-L") => opts.link_args.push(s.to_string()),
+            s if s.starts_with("-l") || s.starts_with("-L") || s.starts_with("-Wl,") => {
+                opts.link_args.push(s.to_string())
+            }
             // Frontend options are checked by the frontend.
             s if s.starts_with("--") && s.contains('=') => opts.frontend_flags.push(s.to_string()),
             s if s.starts_with('-') => return Err(format!("unknown option `{s}`")),
@@ -442,5 +444,16 @@ mod tests {
         );
         assert!(args("check --bogus Main.hs").is_err());
         assert!(args("check -x Main.hs").is_err());
+    }
+
+    #[test]
+    fn linker_flags_are_passed_through_in_order() {
+        let a = args("run -L/opt/z/lib -lz -Wl,-rpath,/opt/z/lib Main.cirka").unwrap();
+        assert_eq!(
+            a.opts.link_args,
+            vec!["-L/opt/z/lib", "-lz", "-Wl,-rpath,/opt/z/lib"]
+        );
+        // Other compiler flags are not taken for linker flags.
+        assert!(args("run -Wall Main.cirka").is_err());
     }
 }

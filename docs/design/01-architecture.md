@@ -133,6 +133,7 @@ cirka --version                             # 例: CirkaLang v0.0.1
 ```
 
 フラグ: `-O0|-O1|-O2`、`--runtime=release|debug`、`--contracts=off|check|verify`、`--emit=llvm|obj|exe`。
+C のライブラリは `-l<名前>`・`-L<ディレクトリ>`・`-Wl,<引数>` (例: `-Wl,-rpath,<ディレクトリ>`) でリンクする。これらは順にリンカ (clang) へ渡る (FEAT-0047)。
 
 ```toml
 # cirka.toml
