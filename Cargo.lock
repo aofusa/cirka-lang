@@ -10,6 +10,7 @@ dependencies = [
  "achc-rename",
  "achc-syntax",
  "achc-typeck",
+ "cirka-bindgen",
  "cirka-core",
  "cirka-diagnostics",
  "cirka-driver",
