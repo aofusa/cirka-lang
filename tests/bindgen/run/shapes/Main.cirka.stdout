@@ -1,0 +1,12 @@
+(MkCUInt 65538, MkCDouble 0.25)
+shapes
+[MkShapeKind (MkCInt (-1)), MkShapeKind (MkCInt 1), MkShapeKind (MkCInt 2)]
+(48, 8)
+MkCDouble 12
+MkVec2 (MkCDouble 1.5) (MkCDouble (-1))
+True
+box
+MkCInt 2
+(MkCInt 3, MkCInt 8)
+MkCDouble 1.5
+(MkCUInt 16909060, [MkCUChar 4, MkCUChar 3, MkCUChar 2, MkCUChar 1])

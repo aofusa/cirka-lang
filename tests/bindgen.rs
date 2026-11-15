@@ -1,11 +1,13 @@
 //! bindgen tests (FEAT-0048, 08-ffi.md §6).
 //!
 //! - tests/bindgen/gen/*.h: the declarations written for aCHC (`.hs`) and
-//!   CirkaLang (`.cirka`), or clang's diagnostics (`.stderr`). The
-//!   arguments of `bindgen` are in the `// bindgen:` comment.
+//!   CirkaLang (`.cirka`), or clang's diagnostics (`.stderr`), which the
+//!   front ends accept. The arguments of `bindgen` are in the
+//!   `// bindgen:` comment.
 //! - tests/bindgen/run/<case>/<name>.h: `achc bindgen` / `cirka bindgen`
 //!   write the module `<Name>` from the header, which `Main.hs` /
-//!   `Main.cirka` uses; each program prints `Main.stdout`. A `<name>.c`
+//!   `Main.cirka` uses; each program prints `Main.stdout` (or its own
+//!   `Main.hs.stdout` / `Main.cirka.stdout`). A `<name>.c`
 //!   next to the header is a C library linked with the program, as are
 //!   the `--link=` libraries. With `CIRKA_GHC`, GHC runs `Main.hs` too.
 //! - Whole system headers (`math.h`, `vulkan_core.h`) are converted to
@@ -92,6 +94,11 @@ fn bindgen_golden() {
         {
             return Outcome::Fail(e);
         }
+        if !cirka.is_empty()
+            && let Err(e) = cirka_accepts(c, &cirka)
+        {
+            return Outcome::Fail(e);
+        }
         for (ext, text) in [("hs", hs), ("cirka", cirka), ("stderr", stderr)] {
             if let Err(e) = check_expect(&c.sibling(ext), &text) {
                 return Outcome::Fail(e);
@@ -115,6 +122,30 @@ fn achc_accepts(c: &Case, module: &str, text: &str) -> Result<(), String> {
     let opts = cirka_driver::pipeline::Options::new(&c.name);
     let roots = vec![work.clone(), achc::lib_dir()];
     achc::compile(&mut sm, &main, &roots, &opts, "test")
+        .map(|_| ())
+        .map_err(|ds| {
+            ds.iter()
+                .map(|d| cirka_diagnostics::render(d, &sm, cirka_diagnostics::Style::Plain))
+                .collect()
+        })
+}
+
+/// The CirkaLang front end accepts the module `text` (spec-v0.0.6.md §1),
+/// imported by a `Main`.
+fn cirka_accepts(c: &Case, text: &str) -> Result<(), String> {
+    let work = cirka_testkit::work_dir("bindgen-gen", &c.name);
+    let main = work.join("Main.cirka");
+    std::fs::write(work.join("Bindings.cirka"), text).map_err(|e| e.to_string())?;
+    std::fs::write(
+        &main,
+        "module Main\n\nimport Bindings as B\n\nmain : IO ()\nmain = pure ()\n",
+    )
+    .map_err(|e| e.to_string())?;
+    let mut sm = cirka_diagnostics::SourceMap::new();
+    let opts = cirka_driver::pipeline::Options::new(&c.name);
+    let mut roots = vec![work.clone()];
+    roots.extend(cirka::lib_roots());
+    cirka::compile(&mut sm, &main, &roots, &opts, "test")
         .map(|_| ())
         .map_err(|ds| {
             ds.iter()
@@ -218,6 +249,8 @@ fn bindgen_run() {
             }
             programs += 1;
             let work = cirka_testkit::work_dir("bindgen-run", &format!("{}-{tool}", c.name));
+            let expected = std::fs::read_to_string(dir.join(format!("Main.{ext}.stdout")))
+                .unwrap_or_else(|_| expected.clone());
             if let Err(e) = run_with(tool, bin, ext, c, &work, &link, &expected) {
                 return Outcome::Fail(e);
             }

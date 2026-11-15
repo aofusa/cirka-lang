@@ -1,0 +1,58 @@
+-- The module Shapes is written by `cirka bindgen shapes.h` (spec-v0.0.6.md
+-- §1.7); shapes.c is linked with the program. The same program as
+-- Main.hs: structs, an enum, a union, constants, a callback made from a
+-- CirkaLang function and a C function pointer called from CirkaLang.
+module Main
+
+import Foreign
+import Data.String as S
+import Shapes
+
+-- A label: the bytes of `s`, filled with zeros to 6.
+label : String -> IO (CArray 6 CChar)
+label s = withCString s (\p => fmap MkCArray (peekArray (S.length (S.toStr s)) p))
+
+-- The bit-field unit: `visible` is bit 0, `layer` bits 1..8.
+bits : Bool -> Int -> CUChar
+bits visible layer = MkCUChar ((if visible then 1 else 0) + 2 * layer)
+
+main : IO ()
+main = do
+  print (SHAPES_VERSION, SHAPES_EPSILON)
+  putStrLn SHAPES_NAME
+  print [SHAPE_NONE, SHAPE_CIRCLE, SHAPE_RECT]
+  print (sizeOf (nullPtr : Ptr Shape), alignment (nullPtr : Ptr Shape))
+  ring <- label "ring"
+  box <- label "box"
+  empty <- label ""
+  let circle = MkShape SHAPE_CIRCLE (MkVec2 0.0 0.0) (MkCArray [2.0, 0.0]) (bits True 3) ring
+  let rect = MkShape SHAPE_RECT (MkVec2 1.0 1.0) (MkCArray [3.0, 4.0]) (bits True 5) box
+  let hidden = MkShape SHAPE_RECT (MkVec2 0.0 0.0) (MkCArray [1.0, 1.0]) (bits False 7) empty
+  -- Structs are written and read at C's offsets.
+  withValue rect (\p => do
+    area <- shape_area p
+    print area
+    withValue (MkVec2 0.5 (-2.0)) (shape_move p)
+    r <- peek p
+    print (Shape.center r)
+    print (r == Shape.set_center (MkVec2 1.5 (-1.0)) rect)
+    name <- peekCString (castPtr (Shape.ptr_label p))
+    putStrLn name)
+  withArray [circle, rect, hidden] (\arr => do
+    -- A CirkaLang function as a C callback.
+    count <- wrap_Visitor (\_, _ => pure 1)
+    n <- shapes_visit arr 3 count nullPtr
+    freeFunPtr count
+    print n
+    -- A C function pointer, called from CirkaLang and passed back to C.
+    layerOf <- shapes_layer_visitor
+    l <- dyn_Visitor layerOf arr nullPtr
+    sum <- shapes_visit arr 3 layerOf nullPtr
+    print (l, sum))
+  print (lerp 1.0 3.0 0.25)
+  -- A union is its bytes.
+  withValue (MkBits [1, 2, 3, 4]) (\p => do
+    w <- bits_reverse p
+    b <- peek p
+    case b of
+      MkBits bs => print (w, bs))

@@ -1,0 +1,7 @@
+(MkCUInt 4194304, MkCUInt 4198400)
+(MkVkStructureType (MkCUInt 0), MkVkResult (MkCInt 0))
+MkCUInt 256
+(48, 64)
+(824, 504)
+(True, True)
+(True, MkCUInt 4194304)

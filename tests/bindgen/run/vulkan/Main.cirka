@@ -1,0 +1,33 @@
+-- The module Vulkan is written by `cirka bindgen vulkan.h` (vulkan_core.h,
+-- spec-v0.0.6.md §1.7) and the program is linked with the Vulkan loader
+-- (`link "vulkan"`). The same program as Main.hs.
+module Main
+
+import Foreign
+import Vulkan
+
+-- At least version 1.0 (`v >> 22 >= 1`).
+atLeast1 : CUInt -> Bool
+atLeast1 (MkCUInt v) = v >= 4194304
+
+main : IO ()
+main = do
+  -- Constants from function-like macros and enums.
+  print (VK_API_VERSION_1_0, VK_API_VERSION_1_1)
+  print (VK_STRUCTURE_TYPE_APPLICATION_INFO, VK_SUCCESS)
+  print VK_MAX_PHYSICAL_DEVICE_NAME_SIZE
+  -- Layouts as C computes them.
+  print (sizeOf (nullPtr : Ptr VkApplicationInfo), sizeOf (nullPtr : Ptr VkInstanceCreateInfo))
+  print (sizeOf (nullPtr : Ptr VkPhysicalDeviceProperties), sizeOf (nullPtr : Ptr VkPhysicalDeviceLimits))
+  -- The loader answers without a driver.
+  (r, v) <- alloca (\p => do
+    r <- vkEnumerateInstanceVersion p
+    v <- peek p
+    pure (r, v))
+  print (r == VK_SUCCESS, atLeast1 v)
+  -- A struct written to C memory and read back.
+  withCString "bindgen" (\name => do
+    let app = MkVkApplicationInfo VK_STRUCTURE_TYPE_APPLICATION_INFO nullPtr name 1 nullPtr 0 VK_API_VERSION_1_0
+    withValue app (\p => do
+      app2 <- peek p
+      print (app2 == app, VkApplicationInfo.apiVersion app2)))

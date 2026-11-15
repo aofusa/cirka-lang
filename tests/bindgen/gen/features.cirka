@@ -79,6 +79,10 @@ extern "C" where
 
   type Callback = FunPtr (CInt -> Ptr CChar -> IO ())
 
+  "dynamic" dyn_Callback : Callback -> CInt -> Ptr CChar -> IO ()
+
+  "wrapper" wrap_Callback : (CInt -> Ptr CChar -> IO ()) -> IO Callback
+
   type Transform = CInt -> IO CInt
 
   struct Handler where

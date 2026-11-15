@@ -238,7 +238,24 @@ impl Printer<'_> {
                 }
             }
             Def::Alias(t) => {
-                writeln!(o, "  type {} = {}", self.name(&it.key), self.ty(t, false)).ok();
+                let name = self.name(&it.key);
+                writeln!(o, "  type {name} = {}", self.ty(t, false)).ok();
+                // Calling a function pointer of this type, and making one
+                // from a CirkaLang function (spec-v0.0.6.md §1.5).
+                if let Ty::FunPtr(f) = t
+                    && let Some(s) = self.h.sig(f)
+                    && !s.variadic
+                    && s.unsupported().is_none()
+                    && !s
+                        .params
+                        .iter()
+                        .chain([&s.ret])
+                        .any(|t| self.opaque_by_value(t))
+                {
+                    let sig = self.sig(s, &[], false);
+                    writeln!(o, "\n  \"dynamic\" dyn_{name} : {name} -> {sig}").ok();
+                    writeln!(o, "\n  \"wrapper\" wrap_{name} : ({sig}) -> IO {name}").ok();
+                }
             }
             Def::Const(c) => {
                 let ty = match c.value {
