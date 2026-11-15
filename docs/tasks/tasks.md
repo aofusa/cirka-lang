@@ -16,7 +16,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | 共通基盤 | M1 バックエンド基盤 | 7 / 7 |
 | 共通基盤 | M2 Perceus | 3 / 3 |
 | 共通基盤 | M3 共通 Core と Core→MIR | 4 / 4 |
-| 共通基盤 | SX 共通基盤の拡張 (各トラックの必要に応じて) | 29 / 46 |
+| 共通基盤 | SX 共通基盤の拡張 (各トラックの必要に応じて) | 31 / 47 |
 | aCHC | H1 Haskell 最小フロントエンド | 6 / 6 |
 | aCHC | H2 Haskell 実用化 (スコープ縮小版) | 10 / 10 |
 | aCHC | H3 所有権拡張 (.chs) | 9 / 9 |
@@ -28,8 +28,8 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | CirkaLang | CirkaLang v0.0.2 実用 CUI | 7 / 7 |
 | CirkaLang | CirkaLang v0.0.3 借用・リージョン・性能 | 5 / 5 |
 | CirkaLang | CirkaLang v0.0.4 証明と検証 | 6 / 6 |
-| CirkaLang | CirkaLang v0.0.5 並行性・サーバ・syscall | 1 / 5 |
-| CirkaLang | CirkaLang v0.0.6 Vulkan compute・数値計算 | 0 / 4 |
+| CirkaLang | CirkaLang v0.0.5 並行性・サーバ・syscall | 5 / 5 |
+| CirkaLang | CirkaLang v0.0.6 Vulkan compute・数値計算 | 0 / 5 |
 | CirkaLang | CirkaLang v0.0.7 効果・能力・セッション型 | 0 / 4 |
 | CirkaLang | CX 遠隔環境での GUI 検証 (任意) | 0 / 1 |
 | 第二段階 | P2 第二段階 (CirkaLang v0.1.0 以降) | 0 / 2 |
@@ -87,7 +87,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0045](features/FEAT-0045-concurrency-runtime.md) | 並行性ランタイム (スレッド・アトミック RC) | done | P1 | 0031 |
 | [FEAT-0046](features/FEAT-0046-async-io-runtime.md) | 非同期 I/O ランタイム (epoll) | done | P1 | 0045 |
 | [FEAT-0047](features/FEAT-0047-ffi-abi.md) | FFI ABI の完成 (構造体・共用体・可変長引数・コールバック) | done | P1 | 0031 |
-| [FEAT-0048](features/FEAT-0048-bindgen.md) | bindgen (libclang による C ヘッダ取り込み) | todo | P1 | 0047 |
+| [FEAT-0048](features/FEAT-0048-bindgen.md) | bindgen (libclang による C ヘッダ取り込み) | done | P1 | 0047 |
 | [FEAT-0049](features/FEAT-0049-region-arena.md) | リージョン用アリーナのランタイム | done | P2 | 0031 |
 | [FEAT-0050](features/FEAT-0050-smt-infra.md) | SMT 連携基盤 (cirka-smt) | done | P1 | 0005 |
 | [FEAT-0051](features/FEAT-0051-allocator-tuning.md) | アロケータの改善 | todo | P2 | 0043 |
