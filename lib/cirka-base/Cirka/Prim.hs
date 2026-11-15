@@ -140,3 +140,8 @@ foreign import prim "mem_read" primMemRead :: Int -> Int -> IO Int
 foreign import prim "mem_write" primMemWrite :: Int -> Int -> Int -> IO ()
 foreign import prim "mem_read_f" primMemReadF :: Int -> Int -> IO Double
 foreign import prim "mem_write_f" primMemWriteF :: Int -> Int -> Double -> IO ()
+
+-- C function pointers of closures and errno (FEAT-0047).
+foreign import prim "callback_free" primCallbackFree :: Int -> IO ()
+foreign import prim "errno" primErrno :: IO Int
+foreign import prim "strerror" primStrerror :: Int -> [Char]

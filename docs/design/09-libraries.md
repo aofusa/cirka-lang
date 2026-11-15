@@ -23,7 +23,7 @@ lib/cirka-base/
   System/{IO,Exit,Environment}.hs
   Text/{Read,Show,Printf}.hs
   Numeric.hs
-  Foreign/{Ptr,C/Types,C/String,Marshal}.hs
+  Foreign/{Ptr,C/Types,C/String,C/Error,Marshal}.hs
   Cirka/{Ownership,Array,Region,Foreign,Unsafe}.hs   -- aCHC 固有
   Prelude/Linear.hs, Data/Unrestricted/Linear.hs     -- linear-base 互換の最小サブセット
 ```
@@ -63,7 +63,7 @@ lib/cirka-base/
   `Cirka.Base` に一つだけ定義する。GHC の base から移植した部分は `LICENSE-GHC-BASE` に許諾条件を置き、ファイル先頭に記す。
 - 入出力 (FEAT-0113): `Data.IORef`、`System.Exit`、`System.Environment` (`getArgs`・`getProgName`)、
   `System.IO` の `readFile`・`writeFile`・`appendFile`・`isEOF`・`hFlush`・`hPutStr stderr`。
-- FFI (FEAT-0116): `Foreign`、`Foreign.{Ptr,Storable,C,C.Types,C.String,Marshal,Marshal.Alloc,Marshal.Array,Marshal.Utils}`、
+- FFI (FEAT-0116、関数ポインタと errno は FEAT-0047): `Foreign`、`Foreign.{Ptr,Storable,C,C.Types,C.String,C.Error,Marshal,Marshal.Alloc,Marshal.Array,Marshal.Utils}`、
   `Data.{Bits,Int,Word}`。実体は `Cirka.Foreign` (ポインタ・`Bits`・`Storable`)、`Cirka.Foreign.Types` (`Int8`〜`Word64` と C の型。
   インスタンスは機械的な委譲なので `scripts/gen-foreign-types.py` で生成する)、`Cirka.Foreign.Marshal` (割り当て・配列・C 文字列。UTF-8)。
   `alloca` は `malloc`/`free` で実装し、例外 (FEAT-0040) までは例外時に解放しない。`Integer` の `Bits` はまだない。

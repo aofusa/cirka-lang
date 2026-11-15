@@ -1,7 +1,7 @@
 -- | Pointers (base's Foreign.Ptr).
 module Foreign.Ptr
   ( Ptr, FunPtr, nullPtr, castPtr, plusPtr, minusPtr, alignPtr
-  , nullFunPtr, castFunPtr, castFunPtrToPtr, castPtrToFunPtr
+  , nullFunPtr, castFunPtr, castFunPtrToPtr, castPtrToFunPtr, freeHaskellFunPtr
   , IntPtr, WordPtr, ptrToIntPtr, intPtrToPtr, ptrToWordPtr, wordPtrToPtr
   ) where
 

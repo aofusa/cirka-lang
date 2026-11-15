@@ -80,6 +80,12 @@ castFunPtrToPtr (CirkaFunPtr a) = CirkaPtr a
 castPtrToFunPtr :: Ptr a -> FunPtr b
 castPtrToFunPtr (CirkaPtr a) = CirkaFunPtr a
 
+-- | Frees a function pointer made by a `wrapper` import, and the Haskell
+-- function it calls (08-ffi.md §7.2). Calling it afterwards, or freeing
+-- another pointer, is an error (the runtime stops with exit code 251).
+freeHaskellFunPtr :: FunPtr a -> IO ()
+freeHaskellFunPtr (CirkaFunPtr a) = primCallbackFree a
+
 -- ---- bits ----
 
 class Eq a => Bits a where

@@ -71,31 +71,96 @@ impl Base {
     }
 }
 
-/// The C name of `foreign import ccall "[static] [header.h] [name]"`.
-fn c_name(entity: &str, hs_name: &str) -> Result<String, String> {
+/// What a `foreign import ccall` imports (Haskell 2010 §8.5.1).
+#[derive(Debug, PartialEq)]
+enum Entity {
+    /// A C function, called by name.
+    Static(String),
+    /// The address of a C function or variable (`&name`).
+    Addr(String),
+    /// A call through a function pointer (`dynamic`).
+    Dynamic,
+    /// A function pointer made of a Haskell function (`wrapper`).
+    Wrapper,
+}
+
+/// Parses `"dynamic"`, `"wrapper"` or `"[static] [header.h] [&][name]"`
+/// (the name defaults to the Haskell name).
+fn entity(entity: &str, hs_name: &str) -> Result<Entity, String> {
     let mut toks: Vec<&str> = entity.split_whitespace().collect();
+    match toks.as_slice() {
+        ["dynamic"] => return Ok(Entity::Dynamic),
+        ["wrapper"] => return Ok(Entity::Wrapper),
+        _ => {}
+    }
     if toks.first() == Some(&"static") {
         toks.remove(0);
     }
     if toks.first().is_some_and(|t| t.ends_with(".h")) {
         toks.remove(0);
     }
-    match toks.as_slice() {
-        [] => Ok(hs_name.rsplit('.').next().unwrap_or(hs_name).to_string()),
-        ["dynamic"] | ["wrapper"] => Err(format!(
-            "`{}` imports (calling and creating function pointers) are not supported yet",
-            toks[0]
-        )),
-        [n] if n.starts_with('&') => {
-            Err("address imports (`&name`) are not supported yet".to_string())
-        }
-        [n] if n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-            && !n.starts_with(|c: char| c.is_ascii_digit()) =>
-        {
-            Ok(n.to_string())
-        }
-        _ => Err(format!("`{entity}` is not a C function name")),
+    let own = hs_name.rsplit('.').next().unwrap_or(hs_name);
+    let (addr, name) = match toks.as_slice() {
+        [] => (false, own),
+        ["&"] => (true, own),
+        ["&", n] => (true, *n),
+        [n] => match n.strip_prefix('&') {
+            Some(m) => (true, m),
+            None => (false, *n),
+        },
+        _ => return Err(format!("`{entity}` is not a C function name")),
+    };
+    let ident = !name.is_empty()
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && !name.starts_with(|c: char| c.is_ascii_digit());
+    if !ident {
+        return Err(format!("`{entity}` is not a C function name"));
     }
+    Ok(if addr {
+        Entity::Addr(name.to_string())
+    } else {
+        Entity::Static(name.to_string())
+    })
+}
+
+/// The type constructor of C function pointers.
+const FUN_PTR: &str = "Cirka.Foreign.FunPtr";
+
+/// A function type split into its arguments, whether the result is in
+/// `IO`, and the result.
+fn split_fun(t: &Ty) -> (Vec<Ty>, bool, Ty) {
+    let mut args = Vec::new();
+    let mut t = t.clone();
+    while let Ty::Fun(a, r) = t {
+        args.push(*a);
+        t = *r;
+    }
+    match t.spine() {
+        (Ty::Con(h), a) if *h == prim("IO") && a.len() == 1 => (args, true, a[0].clone()),
+        _ => (args, false, t.clone()),
+    }
+}
+
+/// The type `FunPtr ft` points to, if `t` is one.
+fn fun_ptr_target(t: &Ty) -> Option<Ty> {
+    match t.spine() {
+        (Ty::Con(h), a) if h == FUN_PTR && a.len() == 1 => Some(a[0].clone()),
+        _ => None,
+    }
+}
+
+fn ffi_error(f: &tast::Foreign, msg: String) -> Diagnostic {
+    Diagnostic::error(msg)
+        .with_code("E0618")
+        .with_label(f.span, "")
+}
+
+/// C types of the arguments and the result (None for `()`).
+type Marshalled = (Vec<(CTy, Base)>, Option<(CTy, Base)>);
+
+fn scalar_sig((params, ret): &Marshalled, skip: usize) -> c::CSig {
+    let cps: Vec<CTy> = params[skip..].iter().map(|p| p.0).collect();
+    c::CSig::scalars(&cps, ret.map_or(CTy::Void, |r| r.0))
 }
 
 impl Ds {
@@ -136,68 +201,99 @@ impl Ds {
         None
     }
 
-    /// Desugars one `foreign import ccall`.
+    /// The C types of a function's arguments `args` and result `res`.
+    fn marshal_sig(
+        &self,
+        f: &tast::Foreign,
+        args: &[Ty],
+        res: &Ty,
+        datas: &HashMap<&str, &tast::DataDecl>,
+    ) -> Result<Marshalled, Diagnostic> {
+        let mut params = Vec::new();
+        for a in args {
+            match self.marshal(a, datas) {
+                Some(m) => params.push(m),
+                None => {
+                    return Err(ffi_error(
+                        f,
+                        format!("`{}` cannot be passed to a C function", show(a)),
+                    )
+                    .with_note(
+                        "marshallable types are Int, Word, Double, Float, Char, Int8..Word64, \
+                         the C types of Foreign.C.Types, Ptr and FunPtr, and newtypes of them",
+                    ));
+                }
+            }
+        }
+        let ret = if *res == Ty::Con(unit_tc()) {
+            None
+        } else {
+            match self.marshal(res, datas) {
+                Some(m) => Some(m),
+                None => {
+                    return Err(ffi_error(
+                        f,
+                        format!("`{}` cannot be returned from a C function", show(res)),
+                    ));
+                }
+            }
+        };
+        Ok((params, ret))
+    }
+
+    /// Desugars one `foreign import ccall` (08-ffi.md §7.1, §7.2).
     pub(crate) fn ccall(
         &mut self,
         f: &tast::Foreign,
         datas: &HashMap<&str, &tast::DataDecl>,
         out: &mut c::Program,
     ) -> Result<(), Diagnostic> {
-        let fail = |msg: String| {
-            Diagnostic::error(msg)
-                .with_code("E0618")
-                .with_label(f.span, "")
-        };
-        let name = c_name(&f.entity, &f.name).map_err(|m| {
-            fail(m).with_note("only static imports of C functions are available (FEAT-0047)")
-        })?;
-        // Split the type into the arguments and the (IO) result.
-        let mut args = Vec::new();
-        let mut t = f.ty.clone();
-        while let Ty::Fun(a, r) = t {
-            args.push(*a);
-            t = *r;
+        let ent = entity(&f.entity, &f.name).map_err(|m| ffi_error(f, m))?;
+        let (args, io, res) = split_fun(&f.ty);
+        match ent {
+            Entity::Static(name) => self.call_import(f, Some(name), &args, io, &res, datas, out),
+            Entity::Dynamic => self.call_import(f, None, &args, io, &res, datas, out),
+            Entity::Addr(sym) => self.addr_import(f, &sym, &args, io, &res, datas, out),
+            Entity::Wrapper => self.wrapper_import(f, &args, io, &res, datas, out),
         }
-        let (io, res) = match t.spine() {
-            (Ty::Con(h), a) if *h == prim("IO") && a.len() == 1 => (true, a[0].clone()),
-            _ => (false, t.clone()),
-        };
-        let mut params = Vec::new();
-        for a in &args {
-            match self.marshal(a, datas) {
-                Some(m) => params.push(m),
-                None => {
-                    return Err(
-                        fail(format!("`{}` cannot be passed to a C function", show(a))).with_note(
-                            "marshallable types are Int, Word, Double, Float, Char, Int8..Word64, \
-                         the C types of Foreign.C.Types, Ptr and FunPtr, and newtypes of them",
-                        ),
-                    );
-                }
-            }
+    }
+
+    /// A call of the C function `name`, or through the function pointer
+    /// passed first (`dynamic`, `name` None): a Core `extern` with a C
+    /// signature and a wrapper that unboxes the arguments and boxes the
+    /// result.
+    #[allow(clippy::too_many_arguments)]
+    fn call_import(
+        &mut self,
+        f: &tast::Foreign,
+        name: Option<String>,
+        args: &[Ty],
+        io: bool,
+        res: &Ty,
+        datas: &HashMap<&str, &tast::DataDecl>,
+        out: &mut c::Program,
+    ) -> Result<(), Diagnostic> {
+        let m = self.marshal_sig(f, args, res, datas)?;
+        let (params, ret) = (&m.0, m.1);
+        let dynamic = name.is_none();
+        if dynamic && args.first().and_then(fun_ptr_target).is_none() {
+            return Err(ffi_error(
+                f,
+                "a `dynamic` import takes the function pointer (`FunPtr ft`) first".into(),
+            ));
         }
-        let ret = if res == Ty::Con(unit_tc()) {
-            None
-        } else {
-            match self.marshal(&res, datas) {
-                Some(m) => Some(m),
-                None => {
-                    return Err(fail(format!(
-                        "`{}` cannot be returned from a C function",
-                        show(&res)
-                    )));
-                }
-            }
-        };
-        let cps: Vec<CTy> = params.iter().map(|p| p.0).collect();
-        let sig = c::CSig::scalars(&cps, ret.map_or(CTy::Void, |r| r.0));
+        let name = name.unwrap_or_else(|| format!("{}$dynamic", f.name));
         let decl = c::ExternDecl {
             name: name.clone(),
             params: params.iter().map(|p| p.1.unboxed()).collect(),
             ret: ret.map_or(c::Type::unit(), |r| r.1.unboxed()),
-            c_sig: Some(sig),
+            c_sig: Some(scalar_sig(&m, usize::from(dynamic))),
             link: None,
-            kind: c::ExternKind::Call,
+            kind: if dynamic {
+                c::ExternKind::Dynamic
+            } else {
+                c::ExternKind::Call
+            },
         };
         // An extern of the runtime convention (`Int#` = `int64_t`,
         // `Double#` = `double`) is the same function.
@@ -219,16 +315,17 @@ impl Ds {
         match out.externs.iter().find(|e| e.name == name) {
             Some(e) if e.c_sig.is_none() && plain(e) == decl.c_sig => {}
             Some(e) if *e != decl => {
-                return Err(fail(format!(
-                    "`{name}` is imported with two different C types"
-                )));
+                return Err(ffi_error(
+                    f,
+                    format!("`{name}` is imported with two different C types"),
+                ));
             }
             Some(_) => {}
             None => out.externs.push(decl),
         }
         // \a1 .. an -> [\w ->] case a1 of I# x1 -> .. let! r = extern name x1 .. in box r
         let arg_tys: Vec<c::Type> = args.iter().map(|a| self.ty(a)).collect();
-        let res_ty = self.ty(&res);
+        let res_ty = self.ty(res);
         let arg_ids: Vec<c::Id> = (0..args.len()).map(|i| self.id(&format!("a{i}"))).collect();
         let raw: Vec<c::Id> = (0..args.len()).map(|i| self.id(&format!("x{i}"))).collect();
         let call = c::Expr::Extern(name.clone(), raw.iter().map(c::Expr::var).collect());
@@ -295,11 +392,243 @@ impl Ds {
         });
         Ok(())
     }
+
+    /// `foreign import ccall "&sym" p :: FunPtr ft` (or `Ptr t`): the
+    /// address of a C function (with the C signature of `ft` when it has
+    /// one) or of a C variable.
+    #[allow(clippy::too_many_arguments)]
+    fn addr_import(
+        &mut self,
+        f: &tast::Foreign,
+        sym: &str,
+        args: &[Ty],
+        io: bool,
+        res: &Ty,
+        datas: &HashMap<&str, &tast::DataDecl>,
+        out: &mut c::Program,
+    ) -> Result<(), Diagnostic> {
+        let ptr =
+            args.is_empty() && !io && self.marshal(res, datas).is_some_and(|m| m.0 == CTy::Ptr);
+        if !ptr {
+            return Err(ffi_error(
+                f,
+                "an address import (`&name`) has type `Ptr t` or `FunPtr ft`".into(),
+            ));
+        }
+        let sig = fun_ptr_target(res).map(|ft| {
+            let (fa, _, fr) = split_fun(&ft);
+            match self.marshal_sig(f, &fa, &fr, datas) {
+                Ok(m) => scalar_sig(&m, 0),
+                // A function of other types: only its address is used.
+                Err(_) => c::CSig::scalars(&[], CTy::Void),
+            }
+        });
+        let name = format!("{}$addr", f.name);
+        out.externs.push(c::ExternDecl {
+            name: name.clone(),
+            params: Vec::new(),
+            ret: c::Type::int(),
+            c_sig: sig,
+            link: Some(sym.to_string()),
+            kind: c::ExternKind::Addr,
+        });
+        let r = self.id("r");
+        let res_ty = self.ty(res);
+        let body = c::Expr::LetStrict(
+            c::Binder::new(r.clone(), c::Mult::Many, c::Type::int()),
+            Box::new(c::Expr::Extern(name, Vec::new())),
+            Box::new(c::Expr::Cast(
+                Box::new(c::Expr::Con(
+                    "I#".into(),
+                    Vec::new(),
+                    vec![c::Expr::var(&r)],
+                )),
+                res_ty,
+            )),
+        );
+        let expr = self.tylams(&f.tvs, body);
+        let ty = self.scheme(&f.tvs, &f.ty);
+        out.binds.push(c::TopBind {
+            name: f.name.clone(),
+            ty,
+            expr,
+            span: f.span,
+        });
+        Ok(())
+    }
+
+    /// `foreign import ccall "wrapper" mk :: ft -> IO (FunPtr ft)`: a
+    /// Core `:callback` extern whose environment is the Haskell function,
+    /// and its handler, which boxes the C arguments, applies the function,
+    /// runs the action and unboxes the result (08-ffi.md §7.2).
+    #[allow(clippy::too_many_arguments)]
+    fn wrapper_import(
+        &mut self,
+        f: &tast::Foreign,
+        args: &[Ty],
+        io: bool,
+        res: &Ty,
+        datas: &HashMap<&str, &tast::DataDecl>,
+        out: &mut c::Program,
+    ) -> Result<(), Diagnostic> {
+        let shape = || {
+            ffi_error(
+                f,
+                "a `wrapper` import has type `ft -> IO (FunPtr ft)` for a function type `ft`"
+                    .into(),
+            )
+        };
+        let ([ft], true, Some(pointee)) = (args, io, fun_ptr_target(res)) else {
+            return Err(shape());
+        };
+        let ft_core = self.ty(ft);
+        if !ft_core.alpha_eq(&self.ty(&pointee)) {
+            return Err(shape());
+        }
+        if f.tvs.iter().any(|(_, k)| Ds::kind(k) != c::Kind::Type) {
+            return Err(ffi_error(
+                f,
+                "a `wrapper` import cannot abstract over type constructors".into(),
+            ));
+        }
+        // The handler is monomorphic; types are erased, so the type
+        // variables may stand for `()`.
+        let sub: Vec<(String, Ty)> = f
+            .tvs
+            .iter()
+            .map(|(v, _)| (v.clone(), Ty::Con(unit_tc())))
+            .collect();
+        let mono = ft.subst(&sub);
+        let (fargs, fio, fres) = split_fun(&mono);
+        let m = self.marshal_sig(f, &fargs, &fres, datas)?;
+        let (params, ret) = (&m.0, m.1);
+        let name = format!("{}$wrapper", f.name);
+        let handler = format!("{}$handler", f.name);
+        out.externs.push(c::ExternDecl {
+            name: name.clone(),
+            params: vec![c::Type::Any],
+            ret: c::Type::int(),
+            c_sig: Some(scalar_sig(&m, 0)),
+            link: None,
+            kind: c::ExternKind::Callback(handler.clone()),
+        });
+        // handler = \e x1 .. xn -> unbox (run ((cast e ft) (box x1) .. (box xn)))
+        let e = self.id("e");
+        let xs: Vec<c::Id> = (0..fargs.len())
+            .map(|i| self.id(&format!("x{i}")))
+            .collect();
+        let mut call = c::Expr::Cast(Box::new(c::Expr::var(&e)), self.ty(&mono));
+        for ((x, a), p) in xs.iter().zip(&fargs).zip(params) {
+            let boxed = c::Expr::Con(p.1.box_con().into(), Vec::new(), vec![c::Expr::var(x)]);
+            let a_ty = self.ty(a);
+            call = c::Expr::App(
+                Box::new(call),
+                Box::new(c::Expr::Cast(Box::new(boxed), a_ty)),
+            );
+        }
+        let res_m = self.ty(&fres);
+        if fio {
+            call = c::Expr::app(
+                c::Expr::Cast(
+                    Box::new(call),
+                    c::Type::fun(c::Mult::Many, c::Type::unit(), res_m.clone()),
+                ),
+                [c::Expr::Lit(c::Lit::Unit)],
+            );
+        }
+        let s = self.id("s");
+        let (rep, body) = match ret {
+            None => (
+                c::Type::unit(),
+                c::Expr::Case(
+                    Box::new(call),
+                    c::Binder::new(s, c::Mult::Many, res_m),
+                    c::Type::unit(),
+                    vec![c::Alt {
+                        con: c::AltCon::Con("Unit".into(), Vec::new()),
+                        rhs: c::Expr::Lit(c::Lit::Unit),
+                    }],
+                ),
+            ),
+            Some((_, b)) => {
+                let r = self.id("r");
+                (
+                    b.unboxed(),
+                    c::Expr::Case(
+                        Box::new(c::Expr::Cast(Box::new(call), b.core_ty())),
+                        c::Binder::new(s, c::Mult::Many, b.core_ty()),
+                        b.unboxed(),
+                        vec![c::Alt {
+                            con: c::AltCon::Con(
+                                b.box_con().into(),
+                                vec![c::Binder::new(r.clone(), c::Mult::Many, b.unboxed())],
+                            ),
+                            rhs: c::Expr::var(&r),
+                        }],
+                    ),
+                )
+            }
+        };
+        let (mut h_expr, mut h_ty) = (body, rep);
+        for (x, p) in xs.iter().zip(params).rev() {
+            h_expr = c::Expr::Lam(
+                c::Binder::new(x.clone(), c::Mult::Many, p.1.unboxed()),
+                Box::new(h_expr),
+            );
+            h_ty = c::Type::fun(c::Mult::Many, p.1.unboxed(), h_ty);
+        }
+        out.binds.push(c::TopBind {
+            name: handler,
+            ty: c::Type::fun(c::Mult::Many, c::Type::Any, h_ty),
+            expr: c::Expr::Lam(
+                c::Binder::new(e, c::Mult::Many, c::Type::Any),
+                Box::new(h_expr),
+            ),
+            span: f.span,
+        });
+        // mk = \g -> IO (\w -> let! p = extern name (cast g Any) in cast (I# p) (FunPtr ft))
+        let (g, w, p) = (self.id("g"), self.id("w"), self.id("p"));
+        let res_ty = self.ty(res);
+        let make = c::Expr::LetStrict(
+            c::Binder::new(p.clone(), c::Mult::Many, c::Type::int()),
+            Box::new(c::Expr::Extern(
+                name,
+                vec![c::Expr::Cast(Box::new(c::Expr::var(&g)), c::Type::Any)],
+            )),
+            Box::new(c::Expr::Cast(
+                Box::new(c::Expr::Con(
+                    "I#".into(),
+                    Vec::new(),
+                    vec![c::Expr::var(&p)],
+                )),
+                res_ty.clone(),
+            )),
+        );
+        let body = c::Expr::Lam(
+            c::Binder::new(g, c::Mult::Many, ft_core),
+            Box::new(c::Expr::Cast(
+                Box::new(c::Expr::Lam(
+                    c::Binder::new(w, c::Mult::Many, c::Type::unit()),
+                    Box::new(make),
+                )),
+                c::Type::Con("IO".into(), vec![res_ty]),
+            )),
+        );
+        let expr = self.tylams(&f.tvs, body);
+        let ty = self.scheme(&f.tvs, &f.ty);
+        out.binds.push(c::TopBind {
+            name: f.name.clone(),
+            ty,
+            expr,
+            span: f.span,
+        });
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{CTy, c_name, c_type_of};
+    use super::{CTy, Entity, c_type_of, entity};
 
     #[test]
     fn c_types() {
@@ -313,11 +642,19 @@ mod tests {
 
     #[test]
     fn entity_strings() {
-        assert_eq!(c_name("math.h sin", "M.c_sin").unwrap(), "sin");
-        assert_eq!(c_name("static stdlib.h abs", "M.f").unwrap(), "abs");
-        assert_eq!(c_name("", "Main.labs").unwrap(), "labs");
-        assert!(c_name("&free", "M.p").is_err());
-        assert!(c_name("dynamic", "M.p").is_err());
-        assert!(c_name("a b", "M.p").is_err());
+        let st = |n: &str| Ok(Entity::Static(n.into()));
+        let addr = |n: &str| Ok(Entity::Addr(n.into()));
+        assert_eq!(entity("math.h sin", "M.c_sin"), st("sin"));
+        assert_eq!(entity("static stdlib.h abs", "M.f"), st("abs"));
+        assert_eq!(entity("", "Main.labs"), st("labs"));
+        assert_eq!(entity("&free", "M.p"), addr("free"));
+        assert_eq!(entity("stdlib.h & free", "M.p"), addr("free"));
+        assert_eq!(entity("&", "M.environ"), addr("environ"));
+        assert_eq!(entity("dynamic", "M.p"), Ok(Entity::Dynamic));
+        assert_eq!(entity(" wrapper ", "M.p"), Ok(Entity::Wrapper));
+        // `static` names a C function called `dynamic`.
+        assert_eq!(entity("static dynamic", "M.p"), st("dynamic"));
+        assert!(entity("a b", "M.p").is_err());
+        assert!(entity("&1x", "M.p").is_err());
     }
 }

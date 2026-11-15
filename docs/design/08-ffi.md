@@ -206,6 +206,13 @@ aCHC は `Foreign.C.Error.getErrno` がこれを呼ぶ。
 `"wrapper"` は `:callback` と、Haskell の関数を引数の箱に入れて呼ぶ (結果が `IO` なら実行する) ハンドラになる。
 `freeHaskellFunPtr` は `cirka_callback_free` を呼ぶ。
 
+- Core の名前は取り込む Haskell の名前から作る: `M.f$addr`・`M.f$dynamic`・`M.f$wrapper` (extern) と `M.f$handler` (ハンドラ)。
+- `FunPtr ft` のアドレスは、`ft` の型から C シグネチャを作れればそれを付ける (作れなければ `() -> void` の関数として扱う)。`Ptr t` はデータ。
+- `wrapper` の環境は `Any` に cast した Haskell の関数。ハンドラは単相でなければならないので、取り込みの型変数は `()` に置き換えて
+  ハンドラを作る (型は消去されるので値の扱いは変わらない)。`ft -> IO (FunPtr ft)` の形でない型は E0618。
+- `Foreign.C.Error` (縮小版): `Errno`・`getErrno`・`errnoToIOError`・`throwErrno` 系と主な `e…` 定数。`resetErrno` はない
+  (インタプリタはスレッドの errno を C の呼び出しの前後で受け渡すため、C 側の `errno` を直接書き換えられない)。
+
 ## 8. CirkaLang の記法
 
 ```

@@ -1,0 +1,40 @@
+(def Main.pLabs (Cirka.Foreign.FunPtr (-> Int Int))
+  (let! (r Int# (extern Main.pLabs$addr))
+    (cast (con I# () r) (Cirka.Foreign.FunPtr (-> Int Int)))))
+
+(def Main.environ (Cirka.Foreign.Ptr (Cirka.Foreign.Ptr Char))
+  (let! (r Int# (extern Main.environ$addr))
+    (cast (con I# () r) (Cirka.Foreign.Ptr (Cirka.Foreign.Ptr Char)))))
+
+(def Main.callInt (-> (Cirka.Foreign.FunPtr (-> Int Int)) Int Int)
+  (lam ((a~610 (Cirka.Foreign.FunPtr (-> Int Int))) (a~611 Int))
+    (case (cast a~610 Int) (s~616 Int) Int
+      ((I# x~612) (case (cast a~611 Int) (s~615 Int) Int
+          ((I# x~613) (let! (r Int# (extern Main.callInt$dynamic x~612 x~613))
+              (cast (con I# () r) Int))))))))
+
+(def Main.mkStep$handler (-> Any Int# Double# Double#)
+  (lam ((e Any) (x~618 Int#) (x~619 Double#))
+    (case (cast ((cast ((cast e (-> Int Double (IO Double))) (cast (con I# () x~618) Int) (cast (con D# () x~619) Double)) (-> Unit# Double)) unit) Double) (s Double) Double#
+      ((D# r) r))))
+
+(def Main.mkStep (-> (-> Int Double (IO Double)) (IO (Cirka.Foreign.FunPtr (-> Int Double (IO Double)))))
+  (lam ((g (-> Int Double (IO Double))))
+    (cast (lam ((w Unit#))
+        (let! (p Int# (extern Main.mkStep$wrapper (cast g Any)))
+          (cast (con I# () p) (Cirka.Foreign.FunPtr (-> Int Double (IO Double)))))) (IO (Cirka.Foreign.FunPtr (-> Int Double (IO Double)))))))
+
+(def Main.mkAction$handler (-> Any Int# Unit#)
+  (lam ((e Any) (x Int#))
+    (case ((cast ((cast e (-> (Cirka.Foreign.Ptr Unit) (IO Unit))) (cast (con I# () x) (Cirka.Foreign.Ptr Unit))) (-> Unit# Unit)) unit) (s Unit) Unit#
+      ((Unit) unit))))
+
+(def Main.mkAction (forall (a) (-> (-> (Cirka.Foreign.Ptr a) (IO Unit)) (IO (Cirka.Foreign.FunPtr (-> (Cirka.Foreign.Ptr a) (IO Unit))))))
+  (tlam (a)
+    (lam ((g (-> (Cirka.Foreign.Ptr a) (IO Unit))))
+      (cast (lam ((w Unit#))
+          (let! (p Int# (extern Main.mkAction$wrapper (cast g Any)))
+            (cast (con I# () p) (Cirka.Foreign.FunPtr (-> (Cirka.Foreign.Ptr a) (IO Unit)))))) (IO (Cirka.Foreign.FunPtr (-> (Cirka.Foreign.Ptr a) (IO Unit))))))))
+
+(def Main.main (IO Unit)
+  (Cirka.Prim.putStr (prim$unpack "x")))

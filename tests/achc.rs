@@ -407,6 +407,14 @@ fn run_programs(suite: &str, sub: &str, default_levels: &[u8]) {
             }
         }
         let expect_leak = c.header.get("expect-leak").is_some();
+        // `-- skip-backend: interp`: the interpreter cannot run the program
+        // (C callbacks, FEAT-0047); every level is checked natively
+        // against `.stdout`. A `<name>.c` next to the test is linked.
+        let interp = c.header.get("skip-backend") != Some("interp");
+        let link = match cirka_integration::c_helper(&cfg, c, suite) {
+            Ok(l) => l,
+            Err(e) => return Outcome::Fail(e),
+        };
         let mut reference = None;
         // `-- opt-levels: 2` limits a test to optimized builds (e.g. lazy
         // accumulators that need a deep stack at -O0, like GHC -O0).
@@ -438,6 +446,30 @@ fn run_programs(suite: &str, sub: &str, default_levels: &[u8]) {
                     );
                 }
             };
+            if !interp {
+                let r = cirka_mir::interp::RunResult {
+                    stdout: std::fs::read_to_string(c.sibling("stdout")).unwrap_or_default(),
+                    stderr: String::new(),
+                    exit_code: want_code,
+                    stats: Default::default(),
+                    leaked: 0,
+                };
+                match cirka_integration::check_native_linked(
+                    &cfg,
+                    c,
+                    "achc-native",
+                    &out.mir,
+                    &stdin,
+                    &r,
+                    false,
+                    want_code == 0 && !expect_leak,
+                    &link,
+                ) {
+                    Outcome::Pass => continue,
+                    Outcome::Fail(e) => return Outcome::Fail(format!("-O{level}: {e}")),
+                    o => return o,
+                }
+            }
             let r = match cirka_mir::interp::run(&out.mir, &stdin, u64::MAX) {
                 Ok(r) => r,
                 Err(e) => return Outcome::Fail(format!("-O{level}: {e}")),
@@ -467,7 +499,12 @@ fn run_programs(suite: &str, sub: &str, default_levels: &[u8]) {
             }
             reference = Some((out.mir, r));
         }
-        let (m, r) = reference.unwrap();
+        let Some((m, r)) = reference else {
+            if c.header.get("same-cost-as").is_some() {
+                return Outcome::Fail("`same-cost-as` needs the interpreter".into());
+            }
+            return Outcome::Pass;
+        };
         // `-- same-cost-as: hand.hs` (FEAT-0061), compared at -O2.
         if c.header.get("same-cost-as").is_some() {
             if last_level != Some(2) {
@@ -489,7 +526,7 @@ fn run_programs(suite: &str, sub: &str, default_levels: &[u8]) {
                 return Outcome::Fail(e);
             }
         }
-        cirka_integration::check_native_with(
+        cirka_integration::check_native_linked(
             &cfg,
             c,
             "achc-native",
@@ -498,6 +535,7 @@ fn run_programs(suite: &str, sub: &str, default_levels: &[u8]) {
             &r,
             true,
             want_code == 0 && !expect_leak,
+            &link,
         )
     });
 }
