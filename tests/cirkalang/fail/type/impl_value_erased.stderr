@@ -1,0 +1,7 @@
+error[E0304]: erased variable `n` is used at runtime by the instance for `Width (Tagged n Char)`
+  --> tests/cirkalang/fail/type/impl_value_erased.cirka:12:13
+   |
+12 | widthOf t = width t
+   |             ^^^^^
+   = note: the implementation takes this value at run time
+   = help: bind `n` with multiplicity ω (`{ω n : ...}` for an implicit argument)

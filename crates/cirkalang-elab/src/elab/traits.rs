@@ -131,6 +131,27 @@ impl<'r> Elab<'r> {
             }
             Goal::Instance(goal) => match self.search(&p.cx, goal, 0) {
                 Search::Found(t) => {
+                    // An instance may take a value at run time (a variable
+                    // declared `{n : Int}`); it cannot come from an erased
+                    // variable.
+                    if let Some(x) = self.erased_runtime_var(&p.cx, &t) {
+                        self.report(
+                            self.error(
+                                "E0304",
+                                p.span,
+                                format!(
+                                    "erased variable `{x}` is used at runtime by the instance for `{}`",
+                                    self.show(&p.cx, goal)
+                                ),
+                            )
+                            .with_note("the implementation takes this value at run time")
+                            .with_help(format!(
+                                "bind `{x}` with multiplicity ω (`{{ω {x} : ...}}` for an implicit argument)"
+                            )),
+                        );
+                        self.assign(p, &Term::Error);
+                        return true;
+                    }
                     self.assign(p, &t);
                     true
                 }
@@ -154,6 +175,41 @@ impl<'r> Elab<'r> {
                     true
                 }
             },
+        }
+    }
+
+    /// An erased variable of `cx` that the dictionary `t` passes at run
+    /// time (to a binder of multiplicity other than 0).
+    fn erased_runtime_var(&self, cx: &Cxt, t: &Term) -> Option<Name> {
+        let mut args = Vec::new();
+        let mut h = t;
+        while let Term::App(f, a, _) = h {
+            args.push(&**a);
+            h = f;
+        }
+        args.reverse();
+        match h {
+            Term::Var(i) if args.is_empty() => {
+                let l = cx.lvl().checked_sub(1 + i)?;
+                (cx.mults.get(l as usize) == Some(&Mult::Zero))
+                    .then(|| cx.names[l as usize].clone())
+            }
+            Term::Global(g) => {
+                let mut v = self.global_type(*g)?;
+                for a in args {
+                    let Val::Pi(_, m, _, _, c) = self.whnf(&v) else {
+                        return None;
+                    };
+                    if m != Mult::Zero
+                        && let Some(x) = self.erased_runtime_var(cx, a)
+                    {
+                        return Some(x);
+                    }
+                    v = self.ev().inst(&c, self.eval(cx, a));
+                }
+                None
+            }
+            _ => None,
         }
     }
 
@@ -777,8 +833,17 @@ impl<'r> Elab<'r> {
                 None => self.fresh_meta(&cx, *sp),
             };
             let kv = self.eval(&cx, &k);
-            binders.push((n.as_str().into(), Mult::Zero, k));
-            self.push(&mut cx, n, Mult::Zero, &kv, None, *sp, Some(n));
+            // A variable declared with the type of a value (`{n : Int}`)
+            // is passed at run time: the methods may use it
+            // (`impl {n : Int} -> Storable a => Storable (CArray n a)`,
+            // spec-v0.0.6.md §1.2). Types are erased.
+            let m = if i.kinds.get(j).is_some() && !self.is_sort(cx.lvl(), &kv) {
+                Mult::Many
+            } else {
+                Mult::Zero
+            };
+            binders.push((n.as_str().into(), m, k));
+            self.push(&mut cx, n, m, &kv, None, *sp, Some(n));
         }
         for c in &i.context {
             let t = self.check_type(&mut cx, c);

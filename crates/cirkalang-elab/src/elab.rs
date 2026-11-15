@@ -546,6 +546,15 @@ impl<'r> Elab<'r> {
         }
     }
 
+    /// `Type`, `LType` or a function sort ending in one of them.
+    fn is_sort(&self, lvl: u32, sort: &Val) -> bool {
+        match self.whnf(sort) {
+            Val::Type | Val::LType => true,
+            Val::Pi(_, _, _, _, c) => self.is_sort(lvl + 1, &self.ev().inst(&c, Val::var(lvl))),
+            _ => false,
+        }
+    }
+
     /// `Type` or a function sort ending in `Type`.
     fn type_valued(&self, lvl: u32, sort: &Val) -> bool {
         match self.whnf(sort) {

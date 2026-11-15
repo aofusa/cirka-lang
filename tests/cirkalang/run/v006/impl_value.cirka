@@ -1,0 +1,23 @@
+-- A variable of an `impl` declared with the type of a value is passed at
+-- run time (spec-v0.0.6.md §1.2): the methods use it, and a function
+-- whose instance needs it binds it with multiplicity ω.
+data Tagged (n : Int) (a : Type) = MkTagged a
+
+trait Width a where
+  width : a -> Int
+
+impl {n : Int} -> Width (Tagged n a) where
+  width _ = n
+
+-- A list of tagged values is as wide as its elements together.
+impl Width a => Width (List a) where
+  width xs = foldl (\acc => \x => acc + width x) 0 xs
+
+widthOf : {ω n : Int} -> Tagged n Char -> Int
+widthOf t = width t
+
+main : IO ()
+main = do
+  print (width (MkTagged 'x' : Tagged 3 Char))
+  print (widthOf (MkTagged 'y' : Tagged 9 Char))
+  print (width ([MkTagged 1, MkTagged 2, MkTagged 3] : List (Tagged 4 Int)))

@@ -1,0 +1,15 @@
+-- The instance for `Tagged n Char` takes `n` at run time, but `n` is
+-- erased (spec-v0.0.6.md §1.2).
+data Tagged (n : Int) (a : Type) = MkTagged a
+
+trait Width a where
+  width : a -> Int
+
+impl {n : Int} -> Width (Tagged n a) where
+  width _ = n
+
+widthOf : {n : Int} -> Tagged n Char -> Int
+widthOf t = width t
+
+main : IO ()
+main = print (widthOf (MkTagged 'y' : Tagged 9 Char))
