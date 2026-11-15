@@ -1,0 +1,33 @@
+mkdir again: already exists
+the working directory is the new one: True
+symlink: done, again: already exists
+./
+  a.txt (14 bytes)
+  link -> a.txt
+  sub/
+    b.txt (4 bytes)
+    c.log (0 bytes)
+the link leads to a file: True
+a.txt: 3
+sub/b.txt: 2
+sub/c.log: 0
+missing.txt: not found
+map a missing file: not found
+mapped a.txt: 14 bytes, line breaks at Just 3 and Just 7, second line "two", first byte Just 111, past the end Nothing
+sh: Exited 3, output "out\n", error "err\n"
+tr: Exited 0, output "PIPED THROUGH TR\n", error ""
+merged: Exited 0, output "1\n2\n3\n", error ""
+wc: Exited 0, output "3 a.txt\n", error ""
+missing program: not found
+sleep after SIGTERM: Signaled 15
+cat: "through two pipes\n", Exited 0
+write to a child that ended: broken pipe
+-- sh: Exited 0
+waited for SIGUSR1: Just 10, then Nothing
+ignore SIGSEGV: invalid argument
+waited on the pool: Exited 7
+on the loop: signal 12
+uid = euid: True, parent > 0: True, host name: some, output to a terminal: False
+after rename: ["link", "renamed.txt", "sub"]
+rmdir sub: not empty
+after cleanup: not found

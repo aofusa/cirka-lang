@@ -1,10 +1,26 @@
--- The running process (spec-v0.0.2.md §8.3).
+-- The running process (spec-v0.0.2.md §8.3) and child processes
+-- (spec-v0.0.5.md §3.2).
+--
+-- A child is a linear value: `wait` waits for it to end, and dropping it
+-- waits too, so every child is reaped and its process id stays its own
+-- while the value exists (`kill` never reaches another process).
 module Std.Process
 
 import Foreign (CInt, fromCInt)
+import Std.IO (IOError, MkIOError, checked)
+import Std.Fs (File, MkFile)
+import Data.String as S
 
 private extern "C" where
   getpid : IO CInt
+
+private extern "cirka" where
+  cirka_errno : IO Int
+  cirka_os_result : Int -> IO Int
+  cirka_os_spawn : String -> Int -> IO Int
+  cirka_os_wait : Int -> Int -> IO Int
+  cirka_os_kill : Int -> Int -> IO Int
+  cirka_os_communicate : Int -> Int -> Int -> String -> IO String
 
 -- Ends the program with an exit code (objects alive are not released).
 exitWith : Int -> IO a
@@ -21,3 +37,167 @@ processId : IO Int
 processId = do
   p <- getpid
   pure (fromCInt p)
+
+-- ---- child processes ----
+
+-- Where a standard stream of a child goes: the stream of this process, a
+-- pipe this process writes or reads, or nowhere (`/dev/null`).
+data Stdio = Inherit | Piped | Discard deriving (Eq, Show)
+
+-- A program to run: its name (looked up in `PATH` unless it contains a
+-- `/`), its arguments, where its standard input, output and error go,
+-- and whether its error goes where its output goes (`2>&1`).
+data Command = MkCommand String (List String) Stdio Stdio Stdio Bool
+
+-- The program with its arguments; the streams are those of this process.
+command : String -> List String -> Command
+command prog as = MkCommand prog as Inherit Inherit Inherit False
+
+setStdin : Stdio -> Command -> Command
+setStdin s (MkCommand p as i o e m) = MkCommand p as s o e m
+
+setStdout : Stdio -> Command -> Command
+setStdout s (MkCommand p as i o e m) = MkCommand p as i s e m
+
+setStderr : Stdio -> Command -> Command
+setStderr s (MkCommand p as i o e m) = MkCommand p as i o s m
+
+-- The child's error goes where its output goes.
+mergeErrors : Command -> Command
+mergeErrors (MkCommand p as i o e m) = MkCommand p as i o Inherit True
+
+-- How a child ended: its exit code, or the signal that ended it.
+data ExitStatus = Exited Int | Signaled Int deriving (Eq, Show)
+
+-- Whether the child exited with code 0.
+succeeded : ExitStatus -> Bool
+succeeded (Exited c) = c == 0
+succeeded (Signaled _) = False
+
+-- A running child: its process id and the pipes to its standard input,
+-- output and error (for the streams spawned `Piped`, until they are
+-- taken).
+data Child : LType where
+  MkChild : Int -> Maybe File -> Maybe File -> Maybe File -> Child
+
+impl Release Child where
+  release c = do
+    r <- wait c
+    pure ()
+
+-- Starts the command.
+spawn : Command -> IO1 (Result IOError Child)
+spawn (MkCommand p as i o e m) = do
+  pid <- cirka_os_spawn (argv p as) (flags i o e m)
+  if pid < 0 then pure1 (Err (MkIOError (0 - pid))) else spawned pid
+
+private spawned : Int -> IO1 (Result IOError Child)
+spawned pid = do
+  i <- cirka_os_result 0
+  o <- cirka_os_result 1
+  e <- cirka_os_result 2
+  pure1 (Ok (MkChild pid (fileOf i) (fileOf o) (fileOf e)))
+
+private fileOf : Int -> Maybe File
+fileOf fd = if fd < 0 then Nothing else Just (MkFile fd)
+
+-- The program and its arguments, each ended by a NUL.
+private argv : String -> List String -> String
+argv p as = foldl (\acc, a => acc ++ a ++ "\0") (p ++ "\0") as
+
+private flags : Stdio -> Stdio -> Stdio -> Bool -> Int
+flags i o e m = stdioBits i + 4 * stdioBits o + 16 * stdioBits e + (if m then 64 else 0)
+
+private stdioBits : Stdio -> Int
+stdioBits Inherit = 0
+stdioBits Piped = 1
+stdioBits Discard = 2
+
+-- The process id of the child.
+childId : (1 c : Child) -> (Child, Int)
+childId (MkChild pid i o e) = (MkChild pid i o e, pid)
+
+-- Takes the pipe to the child's standard input (`Nothing` if it was not
+-- spawned `Piped` or was taken): closing it ends the child's input.
+takeStdin : (1 c : Child) -> (Child, Maybe File)
+takeStdin (MkChild pid i o e) = (MkChild pid Nothing o e, i)
+
+-- Takes the pipe from the child's standard output.
+takeStdout : (1 c : Child) -> (Child, Maybe File)
+takeStdout (MkChild pid i o e) = (MkChild pid i Nothing e, o)
+
+-- Takes the pipe from the child's standard error.
+takeStderr : (1 c : Child) -> (Child, Maybe File)
+takeStderr (MkChild pid i o e) = (MkChild pid i o Nothing, e)
+
+-- Closes the pipes that were not taken (so a child waiting for more input
+-- sees its end) and waits for the child to end. Blocks the thread: on an
+-- event loop, wait with `Std.Async.blocking`.
+wait : (1 c : Child) -> IO (Result IOError ExitStatus)
+wait (MkChild pid i o e) = do
+  release i
+  release o
+  release e
+  waitFor pid
+
+private waitFor : Int -> IO (Result IOError ExitStatus)
+waitFor pid = do
+  r <- cirka_os_wait pid 0
+  if r < 0 then pure (Err (MkIOError (0 - r))) else exitStatus
+
+private exitStatus : IO (Result IOError ExitStatus)
+exitStatus = do
+  code <- cirka_os_result 0
+  sig <- cirka_os_result 1
+  pure (Ok (if sig /= 0 then Signaled sig else Exited code))
+
+-- Sends the signal (`Std.Os.sigTerm`, ...) to the child.
+kill : (1 c : Child) -> Int -> IO1 (Child, Result IOError ())
+kill (MkChild pid i o e) sig = do
+  r <- cirka_os_kill pid sig
+  pure1 (MkChild pid i o e, checked r)
+
+-- Runs the command and waits for it to end.
+run : Command -> IO (Result IOError ExitStatus)
+run cmd = do
+  r <- spawn cmd
+  case r of
+    Ok c => wait c
+    Err e => pure (Err e)
+
+-- What a command gave: how it ended, its standard output and its standard
+-- error (empty with `mergeErrors`, which puts it in the output).
+data Output = MkOutput ExitStatus String String
+
+-- Runs the command with `input` as its standard input, collects its
+-- output and error, and waits for it to end. Writing the input and
+-- reading the output go on together, so a command that writes much before
+-- it reads all of its input does not stop; a command that does not read
+-- all of its input just loses the rest.
+output : Command -> String -> IO (Result IOError Output)
+output (MkCommand p as i o e m) input = do
+  pid <- cirka_os_spawn (argv p as) (flags Piped Piped (if m then Inherit else Piped) m)
+  if pid < 0 then pure (Err (MkIOError (0 - pid))) else collect pid input
+
+private collect : Int -> String -> IO (Result IOError Output)
+collect pid input = do
+  i <- cirka_os_result 0
+  o <- cirka_os_result 1
+  e <- cirka_os_result 2
+  all <- cirka_os_communicate i o e input
+  n <- cirka_os_result 0
+  err <- cirka_errno
+  w <- waitFor pid
+  pure (outputOf all n err w)
+
+private outputOf : String -> Int -> Int -> Result IOError ExitStatus -> Result IOError Output
+outputOf all n err w = case w of
+  Err e => Err e
+  Ok st => if err /= 0 then Err (MkIOError err) else Ok (MkOutput st (prefix all n) (suffix all n))
+
+-- The first `n` bytes of `s`, and the rest.
+private prefix : String -> Int -> String
+prefix s n = S.fromStr (S.take n (S.toStr s))
+
+private suffix : String -> Int -> String
+suffix s n = S.fromStr (S.drop n (S.toStr s))

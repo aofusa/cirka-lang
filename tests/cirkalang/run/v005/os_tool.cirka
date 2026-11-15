@@ -1,0 +1,374 @@
+-- skip-backend: interp
+-- A command line tool on the OS layer (the sample of spec-v0.0.5.md §3.6).
+--
+--   os_tool tree DIR...      the files under each DIR, with kinds and sizes
+--   os_tool lines FILE...    the number of lines of each file, read through
+--                            a memory mapping
+--   os_tool run PROG ARG...  runs a program and tells how it ended
+--   os_tool signals          waits on the event loop for SIGINT or SIGTERM
+--
+-- Without arguments it tests itself in a new directory under /tmp and
+-- prints what it saw.
+module Main
+
+import Foreign (CInt, CChar, CSize, MkCSize, CSSize, Ptr, withCString, mallocBytes, freeBytes, peekCStringLen)
+import Std.Os
+import Std.Process (processId, exitWith, Stdio, Inherit, Piped, Discard, command, setStdin, setStdout, mergeErrors, ExitStatus, Exited, Signaled, Child, spawn, takeStdin, takeStdout, wait, kill, run, Output, MkOutput, output)
+import Std.Fs (File, write, readAll, close, writeFile, removeFile, listDirectory, FileKind, RegularFile, Directory, SymbolicLink, OtherFile, fileKind, fileSize, fileStatus, linkStatus, makeDirectory, removeDirectory, rename)
+import Std.Env (args, currentDirectory, setCurrentDirectory)
+import Std.Async (runLoop, blocking)
+import Std.IO (IOError, message)
+
+-- System calls the libraries do not wrap, called directly.
+private extern "C" where
+  symlink : Ptr CChar -> Ptr CChar -> IO CInt
+  readlink : Ptr CChar -> Ptr CChar -> CSize -> IO CSSize
+
+say : String -> IO ()
+say s = putStr (s ++ "\n")
+
+-- The name of an error the tool expects, else its description.
+errorName : IOError -> String
+errorName e =
+  if e == notFound then "not found"
+  else if e == alreadyExists then "already exists"
+  else if e == notEmpty then "not empty"
+  else if e == brokenPipe then "broken pipe"
+  else if e == invalidArgument then "invalid argument"
+  else message e
+
+-- `f` of the value of a result, or the name of its error.
+describe : (a -> String) -> Result IOError a -> String
+describe f (Ok x) = f x
+describe f (Err e) = errorName e
+
+-- The value of a result, or `d`.
+okOr : a -> Result e a -> a
+okOr d (Ok x) = x
+okOr d (Err _) = d
+
+-- The result with its value replaced.
+okThen : b -> Result e a -> Result e b
+okThen y (Ok _) = Ok y
+okThen y (Err e) = Err e
+
+done : a -> String
+done _ = "done"
+
+-- ---- symbolic links through `extern "C"` ----
+
+makeLink : String -> String -> IO (Result IOError Int)
+makeLink target path = cResult (withCString target (\t => withCString path (\p => symlink t p)))
+
+readLink : String -> IO (Result IOError String)
+readLink path = do
+  buf <- mallocBytes 4096
+  r <- cResultSize (withCString path (\p => readlink p buf (MkCSize 4096)))
+  s <- peekCStringLen buf (okOr 0 r)
+  freeBytes buf
+  pure (okThen s r)
+
+-- ---- tree ----
+
+tree : String -> IO ()
+tree dir = do
+  say (dir ++ "/")
+  entries "  " dir
+
+entries : String -> String -> IO ()
+entries indent dir = do
+  r <- listDirectory dir
+  case r of
+    Err e => say (indent ++ "(" ++ errorName e ++ ")")
+    Ok names => entryList indent dir names
+
+entryList : String -> String -> List String -> IO ()
+entryList indent dir [] = pure ()
+entryList indent dir (n :: ns) = do
+  entry indent (dir ++ "/" ++ n) n
+  entryList indent dir ns
+
+entry : String -> String -> String -> IO ()
+entry indent path name = do
+  r <- linkStatus path
+  case r of
+    Err e => say (indent ++ name ++ ": " ++ errorName e)
+    Ok st => case fileKind st of
+      Directory => do
+        say (indent ++ name ++ "/")
+        entries (indent ++ "  ") path
+      RegularFile => say (indent ++ name ++ " (" ++ show (fileSize st) ++ " bytes)")
+      SymbolicLink => do
+        t <- readLink path
+        say (indent ++ name ++ " -> " ++ describe id t)
+      OtherFile => say (indent ++ name ++ " (other)")
+
+-- ---- lines ----
+
+-- The number of line breaks in the file, counted in a mapping of it.
+countLines : String -> IO (Result IOError Int)
+countLines path = do
+  r <- mapFile path
+  case r of
+    Err e => pure (Err e)
+    Ok m => do
+      n <- mappingSize m
+      c <- mappingCount m 10 0 n
+      pure (Ok c)
+
+linesOf : List String -> IO ()
+linesOf [] = pure ()
+linesOf (f :: fs) = do
+  r <- countLines f
+  say (f ++ ": " ++ describe show r)
+  linesOf fs
+
+-- ---- run ----
+
+runCmd : String -> List String -> IO ()
+runCmd prog as = do
+  r <- run (command prog as)
+  say ("-- " ++ prog ++ ": " ++ describe show r)
+
+-- ---- signals ----
+
+showSignal : Result IOError Int -> String
+showSignal (Ok s) = if s == sigInt then "SIGINT" else if s == sigTerm then "SIGTERM" else "signal " ++ show s
+showSignal (Err e) = errorName e
+
+waitForStop : IO ()
+waitForStop = runLoop (do
+  r <- signals [sigInt, sigTerm]
+  case r of
+    Err e => say ("signals: " ++ errorName e)
+    Ok s => nextSignal s (\s, got => do
+      closeSignals s
+      say ("stopped by " ++ showSignal got)))
+
+-- ---- the self-test ----
+
+-- Runs an action whose result only matters when it fails.
+check : String -> IO (Result IOError ()) -> IO ()
+check what act = do
+  r <- act
+  failed what r
+
+failed : String -> Result IOError () -> IO ()
+failed what (Ok _) = pure ()
+failed what (Err e) = say (what ++ " failed: " ++ errorName e)
+
+showOutput : String -> Result IOError Output -> IO ()
+showOutput what (Err e) = say (what ++ ": " ++ errorName e)
+showOutput what (Ok (MkOutput st out err)) =
+  say (what ++ ": " ++ show st ++ ", output " ++ show out ++ ", error " ++ show err)
+
+-- Writes `s` to the pipe and closes it.
+writeTo : (1 p : Maybe File) -> String -> IO (Result IOError ())
+writeTo Nothing s = pure (Ok ())
+writeTo (Just f) s = do
+  (f, r) <- write f s
+  c <- close f
+  pure r
+
+-- Reads the pipe to its end.
+drain : (1 p : Maybe File) -> IO String
+drain Nothing = pure ""
+drain (Just f) = do
+  (f, r) <- readAll f
+  c <- close f
+  pure (okOr "" r)
+
+files : String -> IO ()
+files dir = do
+  check "mkdir" (makeDirectory dir)
+  again <- makeDirectory dir
+  say ("mkdir again: " ++ describe done again)
+  check "cd" (setCurrentDirectory dir)
+  cwd <- currentDirectory
+  say ("the working directory is the new one: " ++ show (cwd == Ok dir))
+  check "write" (writeFile "a.txt" "one\ntwo\nthree\n")
+  check "mkdir sub" (makeDirectory "sub")
+  check "write" (writeFile "sub/b.txt" "x\ny\n")
+  check "write" (writeFile "sub/c.log" "")
+  l1 <- makeLink "a.txt" "link"
+  l2 <- makeLink "a.txt" "link"
+  say ("symlink: " ++ describe done l1 ++ ", again: " ++ describe done l2)
+  tree "."
+  st <- fileStatus "link"
+  say ("the link leads to a file: " ++ describe (\s => show (fileKind s == RegularFile)) st)
+  linesOf ["a.txt", "sub/b.txt", "sub/c.log", "missing.txt"]
+
+mapping : IO ()
+mapping = do
+  r <- mapFile "a.txt"
+  m2 <- mapFile "missing.txt"
+  say ("map a missing file: " ++ describe (\_ => "mapped") m2)
+  case r of
+    Err e => say ("map: " ++ errorName e)
+    Ok m => mapped m
+
+mapped : Mapping -> IO ()
+mapped m = do
+  size <- mappingSize m
+  first <- mappingFind m 10 0
+  second <- mappingFind m 10 4
+  line <- mappingSlice m 4 3
+  b <- mappingByte m 0
+  out <- mappingByte m size
+  say ("mapped a.txt: " ++ show size ++ " bytes, line breaks at " ++ show first ++ " and " ++ show second
+    ++ ", second line " ++ show line ++ ", first byte " ++ show b ++ ", past the end " ++ show out)
+
+processes : IO ()
+processes = do
+  o1 <- output (command "sh" ["-c", "echo out; echo err >&2; exit 3"]) ""
+  showOutput "sh" o1
+  o2 <- output (command "tr" ["a-z", "A-Z"]) "piped through tr\n"
+  showOutput "tr" o2
+  o3 <- output (mergeErrors (command "sh" ["-c", "echo 1; echo 2 >&2; echo 3"])) ""
+  showOutput "merged" o3
+  o4 <- output (command "wc" ["-l", "a.txt"]) ""
+  showOutput "wc" o4
+  missing <- run (command "no-such-program-of-os-tool" [])
+  say ("missing program: " ++ describe show missing)
+  sleeper <- spawn (setStdout Discard (command "sleep" ["10"]))
+  withChild "sleep" sleeper killed
+  cat <- spawn (setStdin Piped (setStdout Piped (command "cat" [])))
+  withChild "cat" cat throughCat
+  silent <- spawn (setStdin Piped (command "true" []))
+  withChild "true" silent toEnded
+  runCmd "sh" ["-c", "exit 0"]
+
+-- Runs `k` on the child, or tells why it did not start.
+withChild : String -> (1 r : Result IOError Child) -> ((1 c : Child) -> IO ()) -> IO ()
+withChild what (Ok c) k = k c
+withChild what (Err e) k = say (what ++ ": " ++ errorName e)
+
+killed : (1 c : Child) -> IO ()
+killed c = do
+  (c, k) <- kill c sigTerm
+  st <- wait c
+  say ("sleep after SIGTERM: " ++ describe show st)
+
+-- Feeds `cat` through one pipe and reads it back through another.
+throughCat : (1 c : Child) -> IO ()
+throughCat c = case takeStdin c of
+  (c, i) => case takeStdout c of
+    (c, o) => do
+      w <- writeTo i "through two pipes\n"
+      got <- drain o
+      st <- wait c
+      say ("cat: " ++ show got ++ ", " ++ describe show st)
+
+-- Writes to a child that ended without reading: with SIGPIPE ignored the
+-- write fails instead of ending this program.
+toEnded : (1 c : Child) -> IO ()
+toEnded c = case takeStdin c of
+  (c, i) => do
+    check "ignore SIGPIPE" (ignoreSignal sigPipe)
+    st <- wait c
+    w <- writeTo i "nobody reads this\n"
+    say ("write to a child that ended: " ++ describe done w)
+    check "default SIGPIPE" (defaultSignal sigPipe)
+
+signalsBlocked : IO ()
+signalsBlocked = do
+  check "block" (blockSignals [sigUsr1])
+  check "raise" (raiseSignal sigUsr1)
+  s1 <- waitSignal [sigUsr1] 1000
+  s2 <- waitSignal [sigUsr1] 0
+  check "unblock" (unblockSignals [sigUsr1])
+  say ("waited for SIGUSR1: " ++ show s1 ++ ", then " ++ show s2)
+  k <- ignoreSignal 11
+  say ("ignore SIGSEGV: " ++ describe done k)
+
+-- A child is waited for on the runtime's thread pool, then a signal sent
+-- to the process arrives on the event loop (the pool's threads, started
+-- before the signal was blocked, do not take it).
+signalsOnTheLoop : IO ()
+signalsOnTheLoop = runLoop (do
+  child <- spawn (command "sh" ["-c", "exit 7"])
+  withChild "sh" child waitThenReceive)
+
+waitThenReceive : (1 c : Child) -> IO ()
+waitThenReceive c = blocking (wait c) (\st => do
+  say ("waited on the pool: " ++ describe show st)
+  receive)
+
+receive : IO ()
+receive = do
+  r <- signals [sigUsr2]
+  case r of
+    Err e => say ("signals: " ++ errorName e)
+    Ok s => do
+      pid <- processId
+      check "send" (sendSignal pid sigUsr2)
+      nextSignal s (\s, got => do
+        closeSignals s
+        say ("on the loop: " ++ showSignal got))
+
+facts : IO ()
+facts = do
+  uid <- userId
+  euid <- effectiveUserId
+  ppid <- parentProcessId
+  host <- hostName
+  term <- isTerminal 1
+  say ("uid = euid: " ++ show (uid == euid) ++ ", parent > 0: " ++ show (ppid > 0) ++ ", host name: "
+    ++ describe (\h => if h == "" then "empty" else "some") host ++ ", output to a terminal: " ++ show term)
+
+cleanup : String -> IO ()
+cleanup dir = do
+  check "rename" (rename "a.txt" "renamed.txt")
+  names <- listDirectory "."
+  say ("after rename: " ++ describe show names)
+  full <- removeDirectory "sub"
+  say ("rmdir sub: " ++ describe done full)
+  check "rm" (removeFile "sub/b.txt")
+  check "rm" (removeFile "sub/c.log")
+  check "rm" (removeFile "link")
+  check "rm" (removeFile "renamed.txt")
+  check "rmdir sub" (removeDirectory "sub")
+  check "cd /" (setCurrentDirectory "/")
+  check "rmdir" (removeDirectory dir)
+  gone <- fileStatus dir
+  say ("after cleanup: " ++ describe (\_ => "still there") gone)
+
+selfTest : IO ()
+selfTest = do
+  pid <- processId
+  let dir = "/tmp/cirka-os-tool-" ++ show pid
+  files dir
+  mapping
+  processes
+  signalsBlocked
+  signalsOnTheLoop
+  facts
+  cleanup dir
+
+usage : IO ()
+usage = do
+  say "usage: os_tool [tree DIR... | lines FILE... | run PROG ARG... | signals]"
+  exitWith 2
+
+treeAll : List String -> IO ()
+treeAll [] = pure ()
+treeAll (d :: ds) = do
+  tree d
+  treeAll ds
+
+dispatch : String -> List String -> IO ()
+dispatch cmd rest =
+  if cmd == "tree" then treeAll rest
+  else if cmd == "lines" then linesOf rest
+  else if cmd == "run" then (case rest of
+    (p :: as) => runCmd p as
+    [] => usage)
+  else if cmd == "signals" then waitForStop
+  else usage
+
+main : IO ()
+main = do
+  as <- args
+  case as of
+    [] => selfTest
+    (cmd :: rest) => dispatch cmd rest

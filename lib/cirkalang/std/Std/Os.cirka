@@ -1,0 +1,336 @@
+-- The operating system (spec-v0.0.5.md §3): the errors of C functions as
+-- `Result`, signals, memory-mapped files, and facts about the process and
+-- the host. Child processes are in `Std.Process`, directories in `Std.Fs`.
+module Std.Os
+
+import Foreign (CInt, MkCInt, CUInt, MkCUInt, CLong, MkCLong, CSSize, MkCSSize, Handle, fromCInt)
+import Std.IO (IOError, MkIOError, checked)
+
+private extern "cirka" where
+  cirka_errno : IO Int
+  cirka_os_signal_action : Int -> Int -> IO Int
+  cirka_os_raise : Int -> IO Int
+  cirka_os_kill : Int -> Int -> IO Int
+  cirka_os_signal_mask : Int -> Int -> IO Int
+  cirka_os_signal_wait : Int -> Int -> IO Int
+  cirka_os_signalfd : Int -> IO Int
+  cirka_os_signalfd_read : Handle -> IO Int
+  cirka_os_map_file : String -> IO Handle
+  cirka_os_map_len : Handle -> IO Int
+  cirka_os_map_slice : Handle -> Int -> Int -> IO String
+  cirka_os_map_byte : Handle -> Int -> IO Int
+  cirka_os_map_count : Handle -> Int -> Int -> Int -> IO Int
+  cirka_os_map_find : Handle -> Int -> Int -> IO Int
+  cirka_os_hostname : IO String
+  cirka_fd_handle : Int -> IO Handle
+  cirka_handle_close : Handle -> IO Int
+  cirka_async_watch : Handle -> Int -> Int -> (1 k : IO ()) -> IO Int
+  cirka_async_events : IO Int
+
+private extern "C" where
+  getppid : IO CInt
+  getuid : IO CUInt
+  geteuid : IO CUInt
+  getgid : IO CUInt
+  isatty : CInt -> IO CInt
+
+-- ---- errors ----
+
+-- The result of a C function that returns -1 and sets `errno` when it
+-- fails (`open`, `close`, `kill`, ...), with the error number read right
+-- after the call.
+cResult : IO CInt -> IO (Result IOError Int)
+cResult act = do
+  r <- act
+  e <- cirka_errno
+  pure (failedOr (fromCInt r) e)
+
+-- `cResult` for a function whose result is a `long` (`lseek`, ...).
+cResultLong : IO CLong -> IO (Result IOError Int)
+cResultLong act = do
+  r <- act
+  e <- cirka_errno
+  pure (failedOr (longOf r) e)
+
+-- `cResult` for a function whose result is a `ssize_t` (`read`, `write`).
+cResultSize : IO CSSize -> IO (Result IOError Int)
+cResultSize act = do
+  r <- act
+  e <- cirka_errno
+  pure (failedOr (ssizeOf r) e)
+
+private longOf : CLong -> Int
+longOf (MkCLong n) = n
+
+private ssizeOf : CSSize -> Int
+ssizeOf (MkCSSize n) = n
+
+private failedOr : Int -> Int -> Result IOError Int
+failedOr r e = if r == 0 - 1 then Err (MkIOError e) else Ok r
+
+-- Error numbers of Linux (compare with `==`, or match `errorCode`).
+notPermitted : IOError
+notPermitted = MkIOError 1
+
+notFound : IOError
+notFound = MkIOError 2
+
+noSuchProcess : IOError
+noSuchProcess = MkIOError 3
+
+interrupted : IOError
+interrupted = MkIOError 4
+
+badDescriptor : IOError
+badDescriptor = MkIOError 9
+
+noChild : IOError
+noChild = MkIOError 10
+
+wouldBlock : IOError
+wouldBlock = MkIOError 11
+
+permissionDenied : IOError
+permissionDenied = MkIOError 13
+
+alreadyExists : IOError
+alreadyExists = MkIOError 17
+
+notADirectory : IOError
+notADirectory = MkIOError 20
+
+isADirectory : IOError
+isADirectory = MkIOError 21
+
+invalidArgument : IOError
+invalidArgument = MkIOError 22
+
+brokenPipe : IOError
+brokenPipe = MkIOError 32
+
+notEmpty : IOError
+notEmpty = MkIOError 39
+
+-- ---- the process and the host ----
+
+-- The id of the parent process.
+parentProcessId : IO Int
+parentProcessId = do
+  p <- getppid
+  pure (fromCInt p)
+
+-- The real user id, the effective user id and the real group id.
+userId : IO Int
+userId = do
+  u <- getuid
+  pure (uintOf u)
+
+effectiveUserId : IO Int
+effectiveUserId = do
+  u <- geteuid
+  pure (uintOf u)
+
+groupId : IO Int
+groupId = do
+  g <- getgid
+  pure (uintOf g)
+
+private uintOf : CUInt -> Int
+uintOf (MkCUInt n) = n
+
+-- The name of the host.
+hostName : IO (Result IOError String)
+hostName = do
+  h <- cirka_os_hostname
+  e <- cirka_errno
+  pure (if e /= 0 then Err (MkIOError e) else Ok h)
+
+-- Whether the descriptor (0 standard input, 1 output, 2 error) is a
+-- terminal.
+isTerminal : Int -> IO Bool
+isTerminal fd = do
+  r <- isatty (MkCInt fd)
+  pure (fromCInt r == 1)
+
+-- ---- signals ----
+
+-- Signal numbers of Linux.
+sigHup : Int
+sigHup = 1
+
+sigInt : Int
+sigInt = 2
+
+sigQuit : Int
+sigQuit = 3
+
+sigKill : Int
+sigKill = 9
+
+sigUsr1 : Int
+sigUsr1 = 10
+
+sigUsr2 : Int
+sigUsr2 = 12
+
+sigPipe : Int
+sigPipe = 13
+
+sigAlrm : Int
+sigAlrm = 14
+
+sigTerm : Int
+sigTerm = 15
+
+sigChld : Int
+sigChld = 17
+
+sigCont : Int
+sigCont = 18
+
+sigStop : Int
+sigStop = 19
+
+sigTstp : Int
+sigTstp = 20
+
+sigWinch : Int
+sigWinch = 28
+
+-- The signal is ignored from now on (`sigPipe`: a write to a pipe or
+-- socket nobody reads fails with `brokenPipe` instead of ending the
+-- program). `sigKill`, `sigStop`, and the signals the runtime handles
+-- (`SIGSEGV`, `SIGBUS`) cannot be ignored (`Err invalidArgument`).
+ignoreSignal : Int -> IO (Result IOError ())
+ignoreSignal sig = do
+  r <- cirka_os_signal_action sig 1
+  pure (checked r)
+
+-- The signal does what it does by default again.
+defaultSignal : Int -> IO (Result IOError ())
+defaultSignal sig = do
+  r <- cirka_os_signal_action sig 0
+  pure (checked r)
+
+-- Sends the signal to the calling thread.
+raiseSignal : Int -> IO (Result IOError ())
+raiseSignal sig = do
+  r <- cirka_os_raise sig
+  pure (checked r)
+
+-- Sends the signal to the process with the id (a child: `Std.Process.kill`).
+sendSignal : Int -> Int -> IO (Result IOError ())
+sendSignal pid sig = do
+  r <- cirka_os_kill pid sig
+  pure (checked r)
+
+-- Blocks the signals in the calling thread: they stay pending until they
+-- are unblocked, waited for (`waitSignal`) or read (`signals`). Threads
+-- inherit the blocked signals of the thread that starts them, children
+-- do not.
+blockSignals : List Int -> IO (Result IOError ())
+blockSignals sigs = do
+  r <- cirka_os_signal_mask 0 (maskOf sigs)
+  pure (checked r)
+
+unblockSignals : List Int -> IO (Result IOError ())
+unblockSignals sigs = do
+  r <- cirka_os_signal_mask 1 (maskOf sigs)
+  pure (checked r)
+
+-- Waits for one of the signals, which must be blocked, for at most `ms`
+-- milliseconds (for ever if `ms` < 0): the signal, or `Nothing` when the
+-- time passed. Blocks the thread (on the event loop use `signals`).
+waitSignal : List Int -> Int -> IO (Maybe Int)
+waitSignal sigs ms = do
+  r <- cirka_os_signal_wait (maskOf sigs) ms
+  pure (if r > 0 then Just r else Nothing)
+
+-- The set of signals 1 to 63 as a mask (bit `s - 1`).
+private maskOf : List Int -> Int
+maskOf sigs = foldl (\m, s => if s >= 1 && s <= 63 then primOrInt m (primShlInt 1 (s - 1)) else m) 0 sigs
+
+-- Signals received on the event loop: a linear value. Dropping it stops
+-- receiving them (they stay blocked).
+data Signals : LType where
+  MkSignals : Handle -> Signals
+
+-- Blocks the signals in the calling thread and receives them with
+-- `nextSignal`. Call it before starting threads, so that they block the
+-- signals too: a signal that some thread does not block may be delivered
+-- to that thread and do what it does by default (end the program).
+signals : List Int -> IO1 (Result IOError Signals)
+signals sigs = do
+  fd <- cirka_os_signalfd (maskOf sigs)
+  if fd < 0 then pure1 (Err (MkIOError (0 - fd))) else signalsOf fd
+
+private signalsOf : Int -> IO1 (Result IOError Signals)
+signalsOf fd = do
+  h <- cirka_fd_handle fd
+  pure1 (Ok (MkSignals h))
+
+-- Waits on the event loop for the next signal and passes it to `k`.
+nextSignal : (1 s : Signals) -> (1 k : (1 s : Signals) -> Result IOError Int -> IO ()) -> IO ()
+nextSignal (MkSignals h) k = do
+  r <- cirka_os_signalfd_read h
+  if r == 0 - 11
+    then waitRead h (\e => if e == 0 then nextSignal (MkSignals h) k else k (MkSignals h) (Err (MkIOError e)))
+    else k (MkSignals h) (if r < 0 then Err (MkIOError (0 - r)) else Ok r)
+
+-- Stops receiving the signals now (they stay blocked).
+closeSignals : (1 s : Signals) -> IO ()
+closeSignals (MkSignals h) = do
+  r <- cirka_handle_close h
+  pure ()
+
+-- Waits on the loop until `h` can be read, then runs `go` with 0 or the
+-- error number of a watch that failed.
+private waitRead : Handle -> (1 go : Int -> IO ()) -> IO ()
+waitRead h go = do
+  r <- cirka_async_watch h 1 (0 - 1) (readyThen go)
+  pure ()
+
+private readyThen : (1 go : Int -> IO ()) -> IO ()
+readyThen go = do
+  e <- cirka_async_events
+  go (if e < 0 then 0 - e else 0)
+
+-- ---- memory-mapped files ----
+
+-- A file mapped into memory, read-only: reading it reads the file without
+-- copying it into a string. The mapping is shared like other values and
+-- unmapped when the last reference goes. Another process that changes
+-- the file while it is mapped may change what is read; one that makes it
+-- shorter ends this process with `SIGBUS` when the lost part is read.
+data Mapping = MkMapping Handle
+
+-- Maps the file at `path`.
+mapFile : String -> IO (Result IOError Mapping)
+mapFile path = do
+  h <- cirka_os_map_file path
+  e <- cirka_errno
+  pure (if e /= 0 then Err (MkIOError e) else Ok (MkMapping h))
+
+-- The size of the mapping in bytes.
+mappingSize : Mapping -> IO Int
+mappingSize (MkMapping h) = cirka_os_map_len h
+
+-- A copy of `n` bytes from `off` (clamped to the mapping).
+mappingSlice : Mapping -> Int -> Int -> IO String
+mappingSlice (MkMapping h) off n = cirka_os_map_slice h off n
+
+-- The byte at `i` (0..255), or `Nothing` outside the mapping.
+mappingByte : Mapping -> Int -> IO (Maybe Int)
+mappingByte (MkMapping h) i = do
+  b <- cirka_os_map_byte h i
+  pure (if b < 0 then Nothing else Just b)
+
+-- How many bytes in `[from, to)` equal `byte`.
+mappingCount : Mapping -> Int -> Int -> Int -> IO Int
+mappingCount (MkMapping h) byte from to = cirka_os_map_count h byte from to
+
+-- The index of the first byte at or after `from` that equals `byte`.
+mappingFind : Mapping -> Int -> Int -> IO (Maybe Int)
+mappingFind (MkMapping h) byte from = do
+  i <- cirka_os_map_find h byte from
+  pure (if i < 0 then Nothing else Just i)

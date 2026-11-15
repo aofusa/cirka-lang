@@ -1,4 +1,4 @@
--- Files (spec-v0.0.2.md §8.3).
+-- Files (spec-v0.0.2.md §8.3) and directories (spec-v0.0.5.md §3.4).
 --
 -- `readFile` / `writeFile` / `appendFile` work on whole files. A `File`
 -- is an open file: a linear value that is closed when it is dropped
@@ -7,6 +7,7 @@ module Std.Fs
 
 import Std.IO (IOError, MkIOError, checked)
 import Data.Borrow
+import Data.String as S
 
 private extern "cirka" where
   cirka_errno : IO Int
@@ -15,6 +16,12 @@ private extern "cirka" where
   cirka_fd_write : Int -> String -> IO Int
   cirka_fd_close : Int -> IO Int
   cirka_fs_remove : String -> IO Int
+  cirka_fs_list : String -> IO String
+  cirka_fs_stat : String -> Int -> IO Int
+  cirka_fs_mkdir : String -> Int -> IO Int
+  cirka_fs_rmdir : String -> IO Int
+  cirka_fs_rename : String -> String -> IO Int
+  cirka_os_result : Int -> IO Int
 
 -- An open file.
 data File : LType where
@@ -104,6 +111,102 @@ writeClose fd s = do
 removeFile : String -> IO (Result IOError ())
 removeFile path = do
   r <- cirka_fs_remove path
+  pure (checked r)
+
+-- ---- directories and metadata (spec-v0.0.5.md §3.4) ----
+
+-- The names in the directory (without `.` and `..`), sorted.
+listDirectory : String -> IO (Result IOError (List String))
+listDirectory path = do
+  names <- cirka_fs_list path
+  e <- cirka_errno
+  pure (if e /= 0 then Err (MkIOError e) else Ok (sortNames (namesOf names)))
+
+-- The names of the runtime's list, each ended by a NUL.
+private namesOf : String -> List String
+namesOf s = map S.fromStr (filter (\n => not (S.isEmpty n)) (S.splitOn "\0" (S.toStr s)))
+
+-- A merge sort.
+private sortNames : List String -> List String
+sortNames xs = mergeAll (map (\x => x :: Nil) xs)
+
+private mergeAll : List (List String) -> List String
+mergeAll Nil = Nil
+mergeAll (x :: Nil) = x
+mergeAll xs = mergeAll (mergePairs xs)
+
+private mergePairs : List (List String) -> List (List String)
+mergePairs (a :: b :: rest) = merge a b :: mergePairs rest
+mergePairs xs = xs
+
+private merge : List String -> List String -> List String
+merge Nil ys = ys
+merge xs Nil = xs
+merge (x :: xs) (y :: ys) = if x <= y then x :: merge xs (y :: ys) else y :: merge (x :: xs) ys
+
+-- What a path names.
+data FileKind = RegularFile | Directory | SymbolicLink | OtherFile deriving (Eq, Show)
+
+-- The metadata of a file: its kind, its size in bytes, its permission
+-- bits (`493` = `0o755`, ...) and the time of its last change (seconds
+-- since 1970).
+data FileStatus = MkFileStatus FileKind Int Int Int
+
+fileKind : FileStatus -> FileKind
+fileKind (MkFileStatus k _ _ _) = k
+
+fileSize : FileStatus -> Int
+fileSize (MkFileStatus _ n _ _) = n
+
+filePermissions : FileStatus -> Int
+filePermissions (MkFileStatus _ _ p _) = p
+
+modifiedTime : FileStatus -> Int
+modifiedTime (MkFileStatus _ _ _ t) = t
+
+-- The metadata of what `path` names (following symbolic links).
+fileStatus : String -> IO (Result IOError FileStatus)
+fileStatus path = statusOf path 1
+
+-- The metadata of `path` itself (a symbolic link is not followed).
+linkStatus : String -> IO (Result IOError FileStatus)
+linkStatus path = statusOf path 0
+
+private statusOf : String -> Int -> IO (Result IOError FileStatus)
+statusOf path follow = do
+  r <- cirka_fs_stat path follow
+  if r < 0 then pure (Err (MkIOError (0 - r))) else statusFields
+
+private statusFields : IO (Result IOError FileStatus)
+statusFields = do
+  size <- cirka_os_result 0
+  kind <- cirka_os_result 1
+  perms <- cirka_os_result 2
+  time <- cirka_os_result 3
+  pure (Ok (MkFileStatus (kindOf kind) size perms time))
+
+private kindOf : Int -> FileKind
+kindOf 1 = RegularFile
+kindOf 2 = Directory
+kindOf 3 = SymbolicLink
+kindOf _ = OtherFile
+
+-- Creates the directory (permissions `0o777` less the umask).
+makeDirectory : String -> IO (Result IOError ())
+makeDirectory path = do
+  r <- cirka_fs_mkdir path 511
+  pure (checked r)
+
+-- Removes the directory, which must be empty.
+removeDirectory : String -> IO (Result IOError ())
+removeDirectory path = do
+  r <- cirka_fs_rmdir path
+  pure (checked r)
+
+-- Renames (moves) `from` to `to`, replacing a file at `to`.
+rename : String -> String -> IO (Result IOError ())
+rename from to = do
+  r <- cirka_fs_rename from to
   pure (checked r)
 
 -- ---- borrowed (spec-v0.0.3.md §2.3) ----
