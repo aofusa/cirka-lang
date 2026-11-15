@@ -12,6 +12,8 @@ use cirka_core::Program;
 use cirka_diagnostics::{Diagnostic, SourceMap, Style, render};
 use cirka_driver::pipeline::{Options, SourceTests, dump_frontend};
 use cirkalang_resolve::TestMode;
+use cirkalang_resolve::rast;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 /// The version of the language implemented (`edition` in `cirka.toml`).
@@ -73,7 +75,49 @@ pub fn compile(
     name: &str,
 ) -> Result<Compiled, Vec<Diagnostic>> {
     let rp = cirkalang_resolve::resolve_file(sm, main_file, roots, &resolve_options(opts))?;
-    compile_resolved(rp, opts, name)
+    let libs = library_modules(sm, &rp);
+    compile_resolved(rp, &libs, opts, name)
+}
+
+/// The modules read from the libraries of the compiler (`lib_dir()`): the
+/// core library and the standard library.
+pub fn library_modules(sm: &SourceMap, rp: &rast::Program) -> HashSet<String> {
+    let Ok(lib) = std::fs::canonicalize(lib_dir()) else {
+        return HashSet::new();
+    };
+    rp.modules
+        .iter()
+        .filter(|m| std::fs::canonicalize(&sm.file(m.file).name).is_ok_and(|p| p.starts_with(&lib)))
+        .map(|m| m.name.clone())
+        .collect()
+}
+
+/// Declarations that only the libraries of the compiler may contain
+/// (spec-v0.0.1.md §5.6, BUG-0023): `prim`, whose implementation the
+/// compiler gives. Some primitives rely on what the library proved before
+/// calling them (`primArrayIndexProved` reads without a bounds check), so
+/// a program declaring them could break memory safety.
+fn library_only(rp: &rast::Program, libs: &HashSet<String>) -> Vec<Diagnostic> {
+    let mut out = Vec::new();
+    for m in rp.modules.iter().filter(|m| !libs.contains(&m.name)) {
+        for it in &m.items {
+            if let rast::Item::Prim(g, _) = it {
+                out.push(
+                    Diagnostic::error(format!(
+                        "the primitive `{}` is declared outside the libraries",
+                        rp.info(*g).name
+                    ))
+                    .with_code("E1009")
+                    .with_label(
+                        rp.info(*g).span,
+                        "only `lib/cirkalang` may declare primitives",
+                    )
+                    .with_help("declare a function of another language in an `extern` block"),
+                );
+            }
+        }
+    }
+    out
 }
 
 /// Compiles the package at `path` (a directory or its `cirka.toml`) and its
@@ -109,7 +153,8 @@ pub fn compile_package(
         );
         cirkalang_resolve::resolve_program(sm, id, &text, &mut loader, &resolve_options(opts))?
     };
-    compile_resolved(rp, opts, &w.root.name)
+    let libs = library_modules(sm, &rp);
+    compile_resolved(rp, &libs, opts, &w.root.name)
 }
 
 /// `--contracts=off|check|verify` (spec-v0.0.4.md §4.3); other frontend
@@ -136,10 +181,15 @@ fn contracts_mode(opts: &Options) -> Result<cirkalang_check::Contracts, Diagnost
 }
 
 fn compile_resolved(
-    rp: cirkalang_resolve::rast::Program,
+    rp: rast::Program,
+    libs: &HashSet<String>,
     opts: &Options,
     name: &str,
 ) -> Result<Compiled, Vec<Diagnostic>> {
+    let errs = library_only(&rp, libs);
+    if !errs.is_empty() {
+        return Err(errs);
+    }
     dump_frontend(
         opts,
         "rn",

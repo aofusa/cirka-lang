@@ -1,0 +1,6 @@
+error[E1009]: the primitive `primArrayIndexProved` is declared outside the libraries
+ --> tests/cirkalang/fail/type/prim_outside_library.cirka:5:6
+  |
+5 | prim primArrayIndexProved : {a : Type} -> A.Array a -> Int -> a
+  |      ^^^^^^^^^^^^^^^^^^^^ only `lib/cirkalang` may declare primitives
+  = help: declare a function of another language in an `extern` block

@@ -1,0 +1,10 @@
+-- Only the libraries of the compiler may declare primitives (BUG-0023):
+-- this one reads an array without a bounds check.
+import Data.Array as A
+
+prim primArrayIndexProved : {a : Type} -> A.Array a -> Int -> a
+
+main : IO ()
+main = do
+  let xs = A.fromList [1, 2, 3]
+  printInt (primArrayIndexProved xs 100000)
