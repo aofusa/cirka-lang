@@ -1,0 +1,11 @@
+; C aggregates are checked (FEAT-0047): a structure containing itself, an
+; unknown field type, no fields, the name of a scalar type, a name defined
+; twice and a void field.
+(cstruct node (i64 node))
+(cstruct holder (i64 missing))
+(cstruct empty ())
+(cstruct i32 (i64))
+(cstruct pair (i64 i64))
+(cunion pair (i64))
+(cstruct hole (void))
+(def main Int# 0)

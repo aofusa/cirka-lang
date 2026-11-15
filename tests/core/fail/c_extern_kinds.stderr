@@ -1,0 +1,8 @@
+error[C0100]: Core Lint: in extern `mk`: the C signature has a different number of parameters
+error[C0100]: Core Lint: in extern `mk2`: result `Int#` cannot be returned as C `big`
+error[C0100]: Core Lint: in extern `dyn`: the C signature has a different number of parameters
+error[C0100]: Core Lint: in extern `addr`: an address takes no parameters and is `Int#`
+error[C0100]: Core Lint: in extern `cb`: handler `h1` must be a function of 2 parameters of type `(-> Env (-> Int# Int#))`
+error[C0100]: Core Lint: in extern `cb2`: the environment `Int#` of a callback is not a shareable boxed value
+error[C0100]: Core Lint: in extern `cb3`: unknown handler `nowhere`
+error[C0100]: Core Lint: in extern `cb4`: handler `h4` must be a function of 2 parameters of type `(-> Env (-> Int# Int#))`

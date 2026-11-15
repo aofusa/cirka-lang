@@ -1,0 +1,11 @@
+; Externs sharing a C symbol agree on it (FEAT-0047): one signature for a
+; function (the fixed part for a variadic one), data is not a function,
+; and a link name needs a C signature.
+(extern abs32 (Int#) Int# (c (i32) i32) :link abs)
+(extern abs64 (Int#) Int# (c (i64) i64) :link abs)
+(extern fmt1 (Int# Int#) Int# (c (ptr ... i64) i32) :link printf)
+(extern fmt2 (Int# Int# Int#) Int# (c (ptr i64 ... i64) i32) :link printf)
+(extern env_data () Int# :addr :link environ)
+(extern env_call () Int# (c () ptr) :link environ)
+(extern lk (Int#) Int# :link labs)
+(def main Int# 0)

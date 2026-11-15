@@ -1,0 +1,6 @@
+error[C0100]: Core Lint: in C type `node`: contains itself
+error[C0100]: Core Lint: in C type `holder`: unknown C type `missing`
+error[C0100]: Core Lint: in C type `empty`: has no fields
+error[C0100]: Core Lint: in C type `i32`: is the name of a C scalar type
+error[C0100]: Core Lint: in C type `pair`: defined twice
+error[C0100]: Core Lint: in C type `hole`: a field cannot be `void`

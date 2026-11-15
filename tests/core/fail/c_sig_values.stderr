@@ -1,0 +1,5 @@
+error[C0100]: Core Lint: in extern `by_array`: an array `(array i32 4)` cannot be passed by value (pass a pointer)
+error[C0100]: Core Lint: in extern `printf_f`: a variadic argument cannot be `f32` (C promotes it to `f64`)
+error[C0100]: Core Lint: in extern `printf_c`: a variadic argument cannot be `u8` (C promotes it to `i32`)
+error[C0100]: Core Lint: in extern `cb`: a callback cannot be variadic
+error[C0100]: Core Lint: in extern `unknown`: unknown C type `thing`

@@ -1,0 +1,4 @@
+error[C0100]: Core Lint: in extern `lk`: a link name needs a C signature
+error[C0100]: Core Lint: in extern `abs64`: C function `abs` is declared with another signature by `abs32`
+error[C0100]: Core Lint: in extern `fmt2`: C function `printf` is declared with another signature by `fmt1`
+error[C0100]: Core Lint: in extern `env_call`: `environ` is used both as data and as a function

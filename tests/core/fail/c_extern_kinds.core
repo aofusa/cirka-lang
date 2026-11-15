@@ -1,0 +1,18 @@
+; The Core types of externs of every kind (FEAT-0047): an aggregate result
+; is written to an address passed first, `:dynamic` takes the function's
+; address first, `:addr` is a constant `Int#`, a callback takes its
+; environment (a boxed value) and has a handler of the C signature.
+(data Env () (Env Int#))
+(cstruct big (i64 i64 i64))
+(extern mk (Int# Int#) Int# (c (i64 i64) big))
+(extern mk2 (Int# Int# Int#) Int# (c (i64 i64) big))
+(extern dyn (Int#) Int# (c (i64) i64) :dynamic)
+(extern addr (Int#) Int# (c (i64) i64) :addr :link labs)
+(extern cb (Env) Int# (c (i64) i64) :callback h1)
+(def h1 (-> Env Int#) (lam ((e Env)) 0))
+(extern cb2 (Int#) Int# (c (i64) i64) :callback h2)
+(def h2 (-> Int# Int# Int#) (lam ((e Int#) (x Int#)) x))
+(extern cb3 (Env) Int# (c (i64) i64) :callback nowhere)
+(extern cb4 (Env) Int# (c (big) i64) :callback h4)
+(def h4 (-> Env Int# Double#) (lam ((e Env) (b Int#)) 0.0))
+(def main Int# 0)

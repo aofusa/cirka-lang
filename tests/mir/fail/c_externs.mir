@@ -1,0 +1,19 @@
+// The MIR types of externs agree with their C signatures and kinds
+// (FEAT-0047, 08-ffi.md §7.2), and C aggregates do not contain themselves.
+cstruct big { i64, i64, i64 }
+cstruct loop { i64, loop }
+extern fn mk(i64, i64) -> i64 as c(i64, i64) -> big
+extern fn dyn(i64) -> i64 as c(i64) -> i64 dynamic
+extern fn sym(i64) -> i64 addr
+extern fn cb(ptr @owned) -> i64 as c(i64) -> i64 callback handler
+extern fn cb2(ptr) -> i64 as c(i64) -> i64 callback handler
+extern fn lk(i64) -> i64 link labs
+extern fn f32_va(i64, f64) -> i64 as c(ptr, ..., f32) -> i32 link printf
+fn handler(e: ptr @borrowed, x: f64) -> i64 {
+entry:
+  ret 0
+}
+fn main() -> i64 {
+entry:
+  ret 0
+}

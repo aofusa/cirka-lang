@@ -71,9 +71,20 @@ fn core_lint_failures() {
     });
 }
 
+/// The exit code of a run test (`.exitcode`, 0 without one).
+fn expected_exit(c: &cirka_testkit::Case) -> i32 {
+    std::fs::read_to_string(c.sibling("exitcode"))
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0)
+}
+
 /// Core → MIR → Perceus for every program in tests/core/run: the MIR
 /// verifies, the interpreter prints `.stdout` without leaks, and native code
 /// (debug and release runtimes) agrees with the interpreter (FEAT-0031).
+/// A test with a `<name>.c` is linked with it (FEAT-0047); one the
+/// interpreter cannot run (`; skip-backend: interp`, C callbacks) is
+/// checked against `.stdout` natively only.
 #[test]
 fn core_run() {
     cirka_testkit::init();
@@ -83,6 +94,10 @@ fn core_run() {
     run_suite("core-run", &cases, |c| {
         let p = match parse(c) {
             Ok(p) => p,
+            Err(e) => return Outcome::Fail(e),
+        };
+        let link = match cirka_integration::c_helper(&cfg, c, "core-native") {
+            Ok(l) => l,
             Err(e) => return Outcome::Fail(e),
         };
         let mut m = match cirka_mir::lower::lower_program(&p) {
@@ -99,6 +114,26 @@ fn core_run() {
             ));
         }
         let stdin = std::fs::read(c.sibling("stdin")).unwrap_or_default();
+        if c.header.get("skip-backend") == Some("interp") {
+            let r = cirka_mir::interp::RunResult {
+                stdout: std::fs::read_to_string(c.sibling("stdout")).unwrap_or_default(),
+                stderr: String::new(),
+                exit_code: expected_exit(c),
+                stats: Default::default(),
+                leaked: 0,
+            };
+            return cirka_integration::check_native_linked(
+                &cfg,
+                c,
+                "core-native",
+                &m,
+                &stdin,
+                &r,
+                false,
+                true,
+                &link,
+            );
+        }
         let r = match cirka_mir::interp::run(&m, &stdin, u64::MAX) {
             Ok(r) => r,
             Err(e) => return Outcome::Fail(format!("{e}\n{}", cirka_mir::print_module(&m))),
@@ -113,7 +148,53 @@ fn core_run() {
                 cirka_mir::print_module(&m)
             ));
         }
-        cirka_integration::check_native(&cfg, c, "core-native", &m, &stdin, &r, true)
+        cirka_integration::check_native_linked(
+            &cfg,
+            c,
+            "core-native",
+            &m,
+            &stdin,
+            &r,
+            true,
+            true,
+            &link,
+        )
+    });
+}
+
+/// The MIR of every program in tests/core/run survives print → parse →
+/// print unchanged and verifies after parsing: the MIR text covers what
+/// Core produces (C aggregates, signatures and extern kinds, FEAT-0047).
+#[test]
+fn core_mir_roundtrip() {
+    let cases = discover(&repo_root().join("tests/core/run"), &["core"]);
+    run_suite("core-mir-roundtrip", &cases, |c| {
+        let p = match parse(c) {
+            Ok(p) => p,
+            Err(e) => return Outcome::Fail(e),
+        };
+        let mut m = match cirka_mir::lower::lower_program(&p) {
+            Ok(m) => m,
+            Err(errs) => return Outcome::Fail(cirka_core::lint::render_errors(&errs)),
+        };
+        cirka_mir::perceus::run(&mut m);
+        let text = cirka_mir::print_module(&m);
+        let m2 = match cirka_mir::parse(FileId(0), &text) {
+            Ok(m) => m,
+            Err(e) => return Outcome::Fail(format!("reparse: {}\n{text}", e.message)),
+        };
+        let errs = cirka_mir::verify::verify_module(&m2);
+        if !errs.is_empty() {
+            return Outcome::Fail(format!(
+                "{}\n{text}",
+                cirka_mir::verify::render_errors(&errs)
+            ));
+        }
+        let text2 = cirka_mir::print_module(&m2);
+        if text != text2 {
+            return Outcome::Fail(cirka_testkit::line_diff(&text, &text2));
+        }
+        Outcome::Pass
     });
 }
 
@@ -122,6 +203,12 @@ fn interp_core(
     p: &cirka_core::Program,
     stdin: &[u8],
 ) -> Result<cirka_mir::interp::RunResult, String> {
+    let m = mir_of(p)?;
+    cirka_mir::interp::run(&m, stdin, u64::MAX).map_err(|e| e.to_string())
+}
+
+/// The verified MIR of `p` after Core→MIR and Perceus.
+fn mir_of(p: &cirka_core::Program) -> Result<cirka_mir::Module, String> {
     let mut m =
         cirka_mir::lower::lower_program(p).map_err(|e| cirka_core::lint::render_errors(&e))?;
     cirka_mir::perceus::run(&mut m);
@@ -129,15 +216,20 @@ fn interp_core(
     if !errs.is_empty() {
         return Err(cirka_mir::verify::render_errors(&errs));
     }
-    cirka_mir::interp::run(&m, stdin, u64::MAX).map_err(|e| e.to_string())
+    Ok(m)
 }
 
 /// The Core simplifier (FEAT-0033) keeps the results of every program in
 /// tests/core/run (stdout, exit code, no leaks, Lint after each pass) and
 /// never increases the number of allocations; `opt_inline` must get
 /// strictly fewer. The counts are written to `_build/core-opt-allocs.txt`.
+/// A program the interpreter cannot run (C callbacks) is checked natively
+/// after optimization instead.
 #[test]
 fn core_opt_reduces_allocations() {
+    cirka_testkit::init();
+    cirka_driver::native::ensure_runtime_built().unwrap();
+    let cfg = cirka_driver::Config::from_env();
     let cases = discover(&repo_root().join("tests/core/run"), &["core"]);
     let table = std::sync::Mutex::new(Vec::new());
     run_suite("core-opt", &cases, |c| {
@@ -145,7 +237,39 @@ fn core_opt_reduces_allocations() {
             Ok(p) => p,
             Err(e) => return Outcome::Fail(e),
         };
+        let link = match cirka_integration::c_helper(&cfg, c, "core-opt") {
+            Ok(l) => l,
+            Err(e) => return Outcome::Fail(e),
+        };
         let stdin = std::fs::read(c.sibling("stdin")).unwrap_or_default();
+        if c.header.get("skip-backend") == Some("interp") {
+            let mut q = p.clone();
+            if let Err(e) = cirka_core::opt::optimize_with_stats(&mut q) {
+                return Outcome::Fail(e.message);
+            }
+            let m = match mir_of(&q) {
+                Ok(m) => m,
+                Err(e) => return Outcome::Fail(format!("{e}\n{}", cirka_core::print_program(&q))),
+            };
+            let r = cirka_mir::interp::RunResult {
+                stdout: std::fs::read_to_string(c.sibling("stdout")).unwrap_or_default(),
+                stderr: String::new(),
+                exit_code: expected_exit(c),
+                stats: Default::default(),
+                leaked: 0,
+            };
+            return cirka_integration::check_native_linked(
+                &cfg,
+                c,
+                "core-opt-native",
+                &m,
+                &stdin,
+                &r,
+                false,
+                true,
+                &link,
+            );
+        }
         let before = match interp_core(&p, &stdin) {
             Ok(r) => r,
             Err(e) => return Outcome::Fail(e),

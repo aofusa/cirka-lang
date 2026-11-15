@@ -1,0 +1,10 @@
+; What C can pass by value (FEAT-0047): no arrays, no variadic `f32` or
+; narrow integers (C promotes them), no variadic callbacks, known types.
+(data Env () (Env Int#))
+(extern by_array (Int#) Unit# (c ((array i32 4)) void))
+(extern printf_f (Int# Double#) Int# (c (ptr ... f32) i32) :link printf)
+(extern printf_c (Int# Int#) Int# (c (ptr ... u8) i32) :link printf)
+(extern cb (Env) Int# (c (i32 ...) i32) :callback h)
+(def h (-> Env Int# Int#) (lam ((e Env) (x Int#)) x))
+(extern unknown (Int#) Unit# (c (thing) void))
+(def main Int# 0)

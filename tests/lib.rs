@@ -72,6 +72,65 @@ pub fn check_native_with(
     interp_ok: bool,
     leak_check: bool,
 ) -> Outcome {
+    check_native_linked(
+        cfg,
+        c,
+        suite,
+        m,
+        stdin,
+        reference,
+        interp_ok,
+        leak_check,
+        &[],
+    )
+}
+
+/// The C helper of a test (FEAT-0047): `<name>.c` next to it, compiled into
+/// a shared library that the interpreter loads (`dlopen`, so that its
+/// foreign calls find the functions) and that native programs link with
+/// the returned arguments (none without a `.c` file).
+pub fn c_helper(cfg: &cirka_driver::Config, c: &Case, suite: &str) -> Result<Vec<String>, String> {
+    let src = c.sibling("c");
+    if !src.exists() {
+        return Ok(Vec::new());
+    }
+    let dir = cirka_testkit::work_dir(suite, &c.name);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    let lib = dir.join(format!("lib{}.so", c.name));
+    let out = std::process::Command::new(&cfg.clang)
+        .args(["-O2", "-shared", "-fPIC", "-Wall", "-Werror", "-o"])
+        .arg(&lib)
+        .arg(&src)
+        .output()
+        .map_err(|e| format!("cannot run {}: {e}", cfg.clang))?;
+    if !out.status.success() {
+        return Err(format!(
+            "compiling {} failed:\n{}",
+            src.display(),
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+    cirka_mir::ffi::load_library(&lib)?;
+    Ok(vec![
+        lib.display().to_string(),
+        format!("-Wl,-rpath,{}", dir.display()),
+    ])
+}
+
+/// [`check_native_with`], linking native programs with `link_args` (the
+/// libraries of [`c_helper`]).
+#[allow(clippy::too_many_arguments)]
+pub fn check_native_linked(
+    cfg: &cirka_driver::Config,
+    c: &Case,
+    suite: &str,
+    m: &cirka_mir::Module,
+    stdin: &[u8],
+    reference: &cirka_mir::interp::RunResult,
+    interp_ok: bool,
+    leak_check: bool,
+    link_args: &[String],
+) -> Outcome {
     use cirka_driver::native::RuntimeKind;
     let work = cirka_testkit::work_dir(suite, &c.name);
     let mut runs = vec![
@@ -92,6 +151,7 @@ pub fn check_native_with(
         let exe = work.join(format!("prog-{name}"));
         let opts = cirka_driver::native::NativeOptions {
             runtime: rt,
+            link_args: link_args.to_vec(),
             ..Default::default()
         };
         let ir = match cirka_driver::native::build_mir(cfg, m, &work, &exe, &opts) {

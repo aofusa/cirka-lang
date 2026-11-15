@@ -1,0 +1,8 @@
+error[M0102]: extern `mk`: does not match its C signature
+error[M0102]: extern `dyn`: does not match its C signature
+error[M0102]: extern `sym`: an address takes no parameters and is i64
+error[M0102]: extern `cb`: handler `handler` must take (ptr, i64) and return i64
+error[M0102]: extern `cb2`: a callback takes its environment (ptr @owned) and is i64
+error[M0102]: extern `lk`: a link name needs a C signature
+error[M0102]: extern `f32_va`: a variadic argument cannot be `f32` (C promotes it to `f64`)
+error[M0102]: C type `loop`: contains itself
