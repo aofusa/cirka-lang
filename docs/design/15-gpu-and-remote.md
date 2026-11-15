@@ -17,8 +17,8 @@
 
 - Mesa の **lavapipe** (CPU で動くソフトウェア Vulkan 実装) を使い、GPU なしで Docker 内でテストできるようにする。
 - ホストに GPU がある場合は、デバイス (`/dev/dri`) をコンテナに渡して実機の Vulkan ドライバでも動かせる (任意。`CIRKA_VULKAN_ICD` で ICD を選ぶ)。
-- Docker イメージへの追加パッケージ (FEAT-0251 で追加する): `libvulkan-dev`、`mesa-vulkan-drivers`、`vulkan-tools`、
-  `vulkan-validationlayers`、`glslc` (GLSL → SPIR-V)、`spirv-tools`。
+- Docker イメージへの追加パッケージ: `libvulkan-dev` (ヘッダとローダ。bindgen のテストが使うので FEAT-0048 で追加済み)。
+  FEAT-0251 で `mesa-vulkan-drivers`、`vulkan-tools`、`vulkan-validationlayers`、`glslc` (GLSL → SPIR-V)、`spirv-tools` を加える。
 
 ### 2.2 構成
 

@@ -36,6 +36,18 @@ else
     exit 1
 fi
 
+stage "Vulkan headers"
+# The bindgen tests read vulkan_core.h (FEAT-0048) and skip without it;
+# CI requires it (libvulkan-dev in the Dockerfile).
+if printf '#include <vulkan/vulkan_core.h>\n' \
+    | "${CIRKA_CLANG:-clang}" -fsyntax-only -x c - 2>/dev/null; then
+    echo "ci: vulkan_core.h is installed: the Vulkan bindgen tests run"
+else
+    echo "ci: ERROR: vulkan/vulkan_core.h is not installed; rebuild the image"
+    echo "ci:        (docker compose build) to get libvulkan-dev"
+    exit 1
+fi
+
 stage "cargo test"
 cargo test --workspace
 

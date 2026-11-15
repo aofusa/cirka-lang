@@ -51,6 +51,13 @@ RUN (userdel -r ubuntu 2>/dev/null || true) \
 # (Named volumes mounted on /work/target and the cargo registry inherit the
 #  ownership above, so the non-root user can write to them.)
 
+# Vulkan headers and loader: `bindgen` reads vulkan_core.h in its tests
+# (FEAT-0048). A separate layer, so that adding it keeps the toolchain
+# layers above cached.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libvulkan-dev \
+    && rm -rf /var/lib/apt/lists/*
+
 USER ${USERNAME}
 WORKDIR /work
 CMD ["bash"]
