@@ -1,0 +1,12 @@
+-- `i <= n` lets `i` be the size itself, one past the last element
+-- (FEAT-0244): the index is not proved in bounds.
+import Data.Array as A
+
+lastOf : (n : Int) -> (i : Int) -> Int
+  requires 0 <= i && i <= n
+lastOf n i =
+  let xs = A.generate n (\k => k)
+  in A.index xs i
+
+main : IO ()
+main = printInt (lastOf 3 2)

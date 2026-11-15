@@ -91,7 +91,11 @@ index arr i = primArrayIndexProved arr i
 get : Array a -> Int -> Maybe a
 get arr i = if i >= 0 && i < size arr then Just (arr ! i) else Nothing
 
-fromList : List a -> Array a
+-- The array of the elements of a list. Its size is the length of the
+-- list: trusted (spec-v0.0.5.md §4.2), as the array is built unique.
+trusted total
+fromList : (xs : List a) -> Array a
+  ensures \r => size r == Prelude.length xs
 fromList xs = freeze (fromListU xs)
 
 toList : Array a -> List a
@@ -100,16 +104,25 @@ toList arr = toListFrom arr (size arr - 1) Nil
 private toListFrom : Array a -> Int -> List a -> List a
 toListFrom arr i acc = if i < 0 then acc else toListFrom arr (i - 1) (arr ! i :: acc)
 
--- The array of `f 0`, ..., `f (n - 1)`.
-generate : Int -> (Int -> a) -> Array a
+-- The array of `f 0`, ..., `f (n - 1)`; empty when `n` is negative. `f`
+-- may assume its index is in bounds. The size is trusted (spec-v0.0.5.md
+-- §4.2): the array is built unique, and the loop stops by the measure
+-- `n - i`, which needs Z3 to be shown.
+trusted total
+generate : (n : Int) -> ({i : Int | 0 <= i && i < n} -> a) -> Array a
+  ensures \r => size r == (if n < 0 then 0 else n)
 generate n f =
   if n <= 0 then freeze (empty ())
   else freeze (generateFrom n f (new n (f 0)) 1)
 
-private generateFrom : Int -> (Int -> a) -> (1 u : Unique (Array a)) -> Int -> Unique (Array a)
+private generateFrom : (n : Int) -> ({i : Int | 0 <= i && i < n} -> a) -> (1 u : Unique (Array a)) -> (i : Int) -> Unique (Array a)
+  requires 0 <= i
 generateFrom n f u i = if i >= n then u else generateFrom n f (write u i (f i)) (i + 1)
 
-map : (a -> b) -> Array a -> Array b
+-- The array of `f` applied to each element: of the same size.
+total
+map : (a -> b) -> (arr : Array a) -> Array b
+  ensures \r => size r == size arr
 map f arr = generate (size arr) (\i => f (arr ! i))
 
 foldl : (b -> a -> b) -> b -> Array a -> b

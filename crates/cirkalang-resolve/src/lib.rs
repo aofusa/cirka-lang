@@ -567,6 +567,7 @@ impl<'s> Resolver<'s> {
             }],
             span: sp,
             totality: None,
+            trusted: None,
         };
         if let Some(m) = prog.modules.iter_mut().find(|m| m.name == root) {
             m.items.push(Item::Def(def));
@@ -934,6 +935,7 @@ impl<'s> Resolver<'s> {
                     names,
                     ty,
                     totality,
+                    trusted,
                 } => {
                     let sig = self.signature(ty);
                     for (n, sp) in names {
@@ -948,6 +950,7 @@ impl<'s> Resolver<'s> {
                             clauses: Vec::new(),
                             span: *sp,
                             totality: *totality,
+                            trusted: *trusted,
                         });
                     }
                 }
@@ -974,6 +977,7 @@ impl<'s> Resolver<'s> {
                                 clauses: vec![c],
                                 span: d.span,
                                 totality: None,
+                                trusted: None,
                             });
                         }
                     }

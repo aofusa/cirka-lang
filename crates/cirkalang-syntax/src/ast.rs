@@ -98,6 +98,9 @@ pub enum DeclKind {
         /// `total` / `covering` / `partial` before the signature
         /// (spec-v0.0.4.md §1).
         totality: Option<(Totality, Span)>,
+        /// `trusted` before the signature (spec-v0.0.5.md §4.2): the
+        /// refinements of the result and `total` are assumed, not proved.
+        trusted: Option<Span>,
     },
     Clause {
         name: String,

@@ -1,7 +1,7 @@
-use crate::check;
+use crate::{Contracts, check, check_with};
 use cirka_diagnostics::SourceMap;
 use cirkalang_resolve::{MemLoader, Options, resolve_program};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 const PRELUDE: &str = r#"module Prelude
 
@@ -21,6 +21,8 @@ prim primAddInt : Int -> Int -> Int
 prim primSubInt : Int -> Int -> Int
 prim primLeInt : Int -> Int -> Bool
 prim panic : {a : LType} -> String -> a
+prim subsetOf : (a : Type) -> (a -> Bool) -> Type
+prim primRefine : {a : Type} -> (0 p : a -> Bool) -> (0 site : Int) -> a -> a
 
 (+) : Int -> Int -> Int
 x + y = primAddInt x y
@@ -31,8 +33,17 @@ x - y = primSubInt x y
 
 /// The codes of the totality errors of `src`.
 fn totality(src: &str) -> Vec<String> {
+    checked(src, &[], &HashSet::new())
+}
+
+/// The diagnostics of `src` whose imports `modules` are given, without
+/// checking the obligations of the modules in `verified`.
+fn checked(src: &str, modules: &[(&str, &str)], verified: &HashSet<String>) -> Vec<String> {
     let mut files: HashMap<String, String> = HashMap::new();
     files.insert("Prelude".into(), PRELUDE.into());
+    for (name, text) in modules {
+        files.insert(name.to_string(), text.to_string());
+    }
     let mut sm = SourceMap::new();
     let id = sm.add("Main.cirka", src.to_string());
     let mut loader = MemLoader(files);
@@ -50,10 +61,59 @@ fn totality(src: &str) -> Vec<String> {
             el.diags.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
     };
-    check(&rp, &prog, None)
+    let diags = if verified.is_empty() {
+        check(&rp, &prog, None)
+    } else {
+        check_with(&rp, &prog, None, Contracts::Verify, verified).diags
+    };
+    diags
         .iter()
         .map(|d| format!("{}: {}", d.code.clone().unwrap_or_default(), d.message))
         .collect()
+}
+
+/// A trusted `total` (spec-v0.0.5.md §4.2) is assumed: the body of `spin`
+/// is not looked at, and functions using it are total.
+#[test]
+fn trusted_totality_is_assumed() {
+    let src = |trusted: &str| {
+        format!(
+            "module Main\n\
+             {trusted}total\n\
+             spin : Nat -> Nat\n\
+             spin n = spin n\n\
+             total\n\
+             next : Nat -> Nat\n\
+             next n = S (spin n)\n"
+        )
+    };
+    let e = totality(&src("trusted "));
+    assert!(e.is_empty(), "{e:?}");
+    let e = totality(&src(""));
+    assert_eq!(
+        e,
+        vec![
+            "E0502: cannot show that `spin` terminates",
+            "E0504: `next` is declared `total` but is not total"
+        ]
+    );
+}
+
+/// The obligations of the libraries are verified by their own tests
+/// (spec-v0.0.5.md §4.3): those of a module given as verified are not
+/// checked.
+#[test]
+fn obligations_of_verified_modules_are_not_checked() {
+    let lib = "module Lib\n\
+               small : {x : Int | primLeInt x 3} -> Int\n\
+               small x = x\n\
+               five : Int\n\
+               five = small 5\n";
+    let main = "module Main\nimport Lib\nsix : Int\nsix = five + 1\n";
+    let e = checked(main, &[("Lib", lib)], &HashSet::new());
+    assert!(e.iter().any(|d| d.starts_with("E0501")), "{e:?}");
+    let e = checked(main, &[("Lib", lib)], &HashSet::from(["Lib".to_string()]));
+    assert!(e.is_empty(), "{e:?}");
 }
 
 #[test]

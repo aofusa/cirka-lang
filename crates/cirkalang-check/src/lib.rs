@@ -78,7 +78,7 @@ pub struct Checked {
 /// diagnostics. Decided SMT queries are remembered in `cache` (a
 /// directory) when given.
 pub fn check(rp: &rast::Program, prog: &Program, cache: Option<PathBuf>) -> Vec<Diagnostic> {
-    check_with(rp, prog, cache, Contracts::Verify).diags
+    check_with(rp, prog, cache, Contracts::Verify, &HashSet::new()).diags
 }
 
 /// Replaces the refinement marks of `sites` by run-time checks:
@@ -108,12 +108,15 @@ pub fn insert_checks(prog: &mut Program, sites: &[(usize, String)]) {
     }
 }
 
-/// Checks totality and refinements.
+/// Checks totality and refinements. The proof obligations of the modules
+/// in `verified` are not checked: they are the libraries of the compiler,
+/// which their own tests verify (spec-v0.0.5.md §4.3).
 pub fn check_with(
     rp: &rast::Program,
     prog: &Program,
     cache: Option<PathBuf>,
     contracts: Contracts,
+    verified: &HashSet<String>,
 ) -> Checked {
     let mut wanted: Vec<GName> = prog
         .totality
@@ -148,7 +151,8 @@ pub fn check_with(
     let mut diags = Vec::new();
     let mut unproved = Vec::new();
     if refined {
-        t.refinements(contracts, &mut diags, &mut unproved);
+        let skip = |g: GName| verified.contains(&rp.info(g).module);
+        t.refinements(contracts, &skip, &mut diags, &mut unproved);
     }
     let roots: Vec<GName> = wanted
         .iter()
@@ -294,6 +298,7 @@ impl Totality_<'_> {
     fn refinements(
         &mut self,
         mode: Contracts,
+        skip: &dyn Fn(GName) -> bool,
         diags: &mut Vec<Diagnostic>,
         unproved: &mut Vec<(usize, String)>,
     ) {
@@ -304,7 +309,7 @@ impl Totality_<'_> {
             let Global::Def { body: Some(b), .. } = self.prog.get(g) else {
                 continue;
             };
-            if !refine::mentions_refine(b, refine) {
+            if !refine::mentions_refine(b, refine) || skip(g) {
                 continue;
             }
             let mut w = Walker::new(self.ev, &self.sels, &self.dict_cons, g);
@@ -330,6 +335,14 @@ impl Totality_<'_> {
             let Global::Def { body: Some(b), .. } = self.prog.get(g) else {
                 continue;
             };
+            // A trusted `total` (spec-v0.0.5.md §4.2) is assumed: its body
+            // is not looked at.
+            if self.prog.trusted.contains(&g)
+                && matches!(self.prog.totality.get(&g), Some((Totality::Total, _)))
+            {
+                self.facts.insert(g, Facts::default());
+                continue;
+            }
             let mut w = Walker::new(self.ev, &self.sels, &self.dict_cons, g);
             w.run(b);
             let facts = w.facts;

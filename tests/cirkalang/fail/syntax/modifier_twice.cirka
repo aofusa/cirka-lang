@@ -1,0 +1,9 @@
+-- A signature has one totality and is trusted at most once (spec-v0.0.5.md
+-- §4.2).
+total partial
+f : Int -> Int
+f x = x
+
+trusted trusted
+g : Int -> Int
+g x = x

@@ -1,0 +1,12 @@
+-- Only the libraries may state trusted specifications (FEAT-0244,
+-- spec-v0.0.5.md §4.2): this one claims a size that does not hold, and
+-- the index it proves would be read without a bounds check.
+import Data.Array as A
+
+trusted
+sized : (n : Int) -> A.Array Int
+  ensures \r => A.size r == n
+sized n = A.fromList [1]
+
+main : IO ()
+main = printInt (A.index (sized 100) 50)

@@ -6,7 +6,7 @@ use cirka_diagnostics::Span;
 pub use cirkalang_resolve::rast::Abi;
 pub use cirkalang_resolve::rast::GName;
 pub use cirkalang_resolve::rast::Totality;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 use std::rc::Rc;
 
@@ -624,6 +624,9 @@ pub struct Program {
     /// Declared totality of definitions (spec-v0.0.4.md §1); absent is
     /// `covering`.
     pub totality: HashMap<GName, (Totality, Span)>,
+    /// Definitions declared `trusted` (spec-v0.0.5.md §4.2): the
+    /// refinements of their result and their `total` are assumed.
+    pub trusted: HashSet<GName>,
     /// `decreasing` measures of definitions.
     pub measures: HashMap<GName, Measure>,
     /// Where values are checked against refinement types: the `site` of

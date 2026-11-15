@@ -155,6 +155,9 @@ pub struct Def {
     /// `total` / `covering` / `partial` (spec-v0.0.4.md §1); `None` is
     /// `covering`.
     pub totality: Option<(Totality, Span)>,
+    /// `trusted` (spec-v0.0.5.md §4.2): the refinements of the result and
+    /// `total` are assumed, not proved. Only in the libraries.
+    pub trusted: Option<Span>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

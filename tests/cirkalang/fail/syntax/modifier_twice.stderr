@@ -1,0 +1,10 @@
+error[E1005]: `partial` repeats a modifier
+ --> modifier_twice.cirka:3:7
+  |
+3 | total partial
+  |       ^^^^^^^ a signature has one totality and is trusted at most once
+error[E1005]: `trusted` repeats a modifier
+ --> modifier_twice.cirka:7:9
+  |
+7 | trusted trusted
+  |         ^^^^^^^ a signature has one totality and is trusted at most once

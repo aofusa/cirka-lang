@@ -112,6 +112,11 @@ impl<'a> Tr<'a> {
     }
 
     pub fn opaque(&mut self, v: &Val, s: cirka_smt::Sort) -> Expr {
+        self.opaque_shown(v, s, None)
+    }
+
+    /// An opaque value, shown in counterexamples as `shown` when given.
+    fn opaque_shown(&mut self, v: &Val, s: cirka_smt::Sort, shown: Option<&Val>) -> Expr {
         let refine = self.prog.builtins.refine;
         let key = format!(
             "{:?}{:?}",
@@ -124,13 +129,21 @@ impl<'a> Tr<'a> {
             .entry(key)
             .or_insert_with(|| format!("t${n}"))
             .clone();
-        let shown = match v {
-            Val::Neutral(Head::Var(l), sp) if sp.is_empty() => self.stand_in_calls.get(l),
-            _ => None,
-        };
-        self.opaque_vals
-            .entry(name.clone())
-            .or_insert_with(|| shown.unwrap_or(v).clone());
+        match shown {
+            Some(shown) => {
+                self.opaque_vals.insert(name.clone(), shown.clone());
+            }
+            None => {
+                let shown = match v {
+                    Val::Neutral(Head::Var(l), sp) if sp.is_empty() => self.stand_in_calls.get(l),
+                    _ => None,
+                }
+                .unwrap_or(v);
+                self.opaque_vals
+                    .entry(name.clone())
+                    .or_insert_with(|| shown.clone());
+            }
+        }
         Expr::Var(name, s)
     }
 
@@ -171,6 +184,16 @@ impl<'a> Tr<'a> {
             (Val::Neutral(Head::Global(g), sp), _)
                 if sp.iter().all(|e| matches!(e, Elim::App(..))) =>
             {
+                // A call that evaluation reduces to an integer (`length [4,
+                // -1, 3]`): that integer (unfolding it step by step would stop
+                // at the depth limit).
+                if want == S::Int
+                    && !sp.is_empty()
+                    && matches!(self.prog.get(*g), Global::Def { body: Some(_), .. })
+                    && let Some(n) = self.evaluated_int(&v)
+                {
+                    return Expr::Int(n as i128);
+                }
                 if let Global::Prim { prim, .. } = self.prog.get(*g) {
                     if *prim == Prim::Refine
                         && let Some(Elim::App(x, _)) = sp.last()
@@ -184,8 +207,13 @@ impl<'a> Tr<'a> {
                     if want == S::Int
                         && matches!(prim, Prim::ArraySize | Prim::StrLength | Prim::UArraySize)
                     {
+                        let sized = self.size_of_stand_in(*g, sp, depth);
                         let before = self.opaque.len();
-                        let e = self.opaque(&v, want);
+                        let e = match &sized {
+                            // Shown as the size of the call.
+                            Some(x) => self.opaque_shown(x, want, Some(&v)),
+                            None => self.opaque(&v, want),
+                        };
                         if self.opaque.len() > before {
                             self.extra.push(Expr::le(Expr::Int(0), e.clone()));
                         }
@@ -211,6 +239,15 @@ impl<'a> Tr<'a> {
             return self.tr(&u, want, depth + 1);
         }
         self.opaque(&v, want)
+    }
+
+    /// The value of `v` when evaluation reaches an integer.
+    fn evaluated_int(&self, v: &Val) -> Option<i64> {
+        self.ev.fuel.set(100_000);
+        match self.ev.whnf(v.clone()) {
+            Val::Lit(Lit::Int(n)) => Some(n),
+            _ => None,
+        }
     }
 
     fn unfold(&self, v: &Val) -> Option<Val> {
@@ -384,6 +421,29 @@ impl<'a> Tr<'a> {
             self.extra.push(h);
         }
         Some(x)
+    }
+
+    /// `size (f a)` where `f` is total and its result is refined
+    /// (`A.size (A.generate n g)`, spec-v0.0.5.md §4.1): the size of the
+    /// stand-in of the call, whose refinements are hypotheses. Only for
+    /// total functions: the call may be in an erased position (a
+    /// predicate), where a call that never returns would give a false fact
+    /// (as a `let`, spec-v0.0.4.md §5).
+    fn size_of_stand_in(&mut self, size: GName, sp: &[Elim], depth: u32) -> Option<Val> {
+        let (Elim::App(a, i), rest) = sp.split_last()? else {
+            return None;
+        };
+        let a = self.ev.force(a.clone());
+        let Val::Neutral(Head::Global(f), _) = &a else {
+            return None;
+        };
+        if !matches!(self.prog.totality.get(f), Some((Totality::Total, _))) {
+            return None;
+        }
+        let x = self.stand_in(&a, depth)?;
+        let mut sp2 = rest.to_vec();
+        sp2.push(Elim::App(x, *i));
+        Some(Val::Neutral(Head::Global(size), sp2))
     }
 
     /// `v` matched the only constructor of its type: each field of a

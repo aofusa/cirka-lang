@@ -1,0 +1,7 @@
+error[E0501]: cannot prove the refinement `(0 <= i) && (i < (size (generate n \k1 => k1)))`
+ --> tests/cirkalang/verify/fail/array_size_off_by_one.cirka:9:17
+  |
+9 |   in A.index xs i
+  |                 ^ in `Main.lastOf`
+  = note: counterexample: i = 0, n = 0, primArraySize (generate n \k1 => k1) = 0
+  = help: check the value, add a condition (`if`), or refine the type of what it is computed from

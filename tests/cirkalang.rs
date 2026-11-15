@@ -414,6 +414,59 @@ fn cirkalang_proofs_remove_checks() {
     assert!(!func(&off, "").contains("div_nz("));
 }
 
+/// The proof obligations of the libraries are not checked when a program
+/// is compiled (FEAT-0244, spec-v0.0.5.md §4.3): they are checked here,
+/// with `--libraries=verify`, on a program that imports every module of
+/// the libraries. Skipped when Z3 is not installed (it is in the Docker
+/// image).
+#[test]
+fn cirkalang_verify_libraries() {
+    if cirka_smt::Solver::from_env().is_none() {
+        eprintln!("z3 not found (CIRKA_Z3): skipped");
+        return;
+    }
+    fn modules(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<String>) {
+        for e in std::fs::read_dir(dir).unwrap().filter_map(|e| e.ok()) {
+            let p = e.path();
+            if p.is_dir() {
+                modules(root, &p, out);
+            } else if p.extension().is_some_and(|x| x == "cirka") {
+                let rel = p.strip_prefix(root).unwrap().with_extension("");
+                let segs: Vec<String> = rel
+                    .components()
+                    .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                    .collect();
+                out.push(segs.join("."));
+            }
+        }
+    }
+    let mut all = Vec::new();
+    for root in cirka::lib_roots() {
+        modules(&root, &root, &mut all);
+    }
+    all.sort();
+    assert!(all.iter().any(|m| m == "Data.Array"), "{all:?}");
+    let mut src = String::new();
+    for (k, m) in all.iter().enumerate() {
+        if m != "Prelude" {
+            src.push_str(&format!("import {m} as L{k}\n"));
+        }
+    }
+    src.push_str("\nmain : IO ()\nmain = pure ()\n");
+    let dir = cirka_testkit::work_dir("cirkalang-verify-libraries", "all");
+    let path = dir.join("Libraries.cirka");
+    std::fs::write(&path, src).unwrap();
+    let r = compile_cirka_with(
+        &path,
+        cirka_driver::pipeline::SourceTests::Strip,
+        &["--libraries=verify"],
+    );
+    match r {
+        Ok((_, warnings)) => assert!(warnings.is_empty(), "{warnings}"),
+        Err(e) => panic!("the libraries' obligations do not hold:\n{e}"),
+    }
+}
+
 /// Termination by measures, decided by Z3 (FEAT-0230): the programs under
 /// tests/cirkalang/verify/pass/ are accepted and print `.stdout`; those
 /// under verify/fail/ report the diagnostics in `.stderr`. Skipped when Z3

@@ -13,3 +13,17 @@ gcd : Int -> Int -> Int
 gcd a 0 = a
 gcd a b = gcd b (a % b)
   decreasing abs b
+
+-- `trusted` (spec-v0.0.5.md §4.2), before or after the totality.
+trusted total
+sized : (n : Int) -> List Int
+  ensures \r => len r == n
+sized n = []
+
+total trusted
+private sized2 : Int -> Int
+sized2 n = n
+
+trusted
+private sized3 : Int -> Int
+sized3 n = n

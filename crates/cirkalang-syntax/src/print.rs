@@ -57,6 +57,7 @@ fn decl(d: &Decl) -> String {
             names: ns,
             ty,
             totality,
+            trusted,
         } => {
             let t = match totality {
                 Some((crate::ast::Totality::Total, _)) => "total ",
@@ -64,7 +65,8 @@ fn decl(d: &Decl) -> String {
                 Some((crate::ast::Totality::Partial, _)) => "partial ",
                 None => "",
             };
-            format!("({p}{t}sig ({}) {})", names(ns), expr(ty))
+            let tr = if trusted.is_some() { "trusted " } else { "" };
+            format!("({p}{tr}{t}sig ({}) {})", names(ns), expr(ty))
         }
         DeclKind::Clause {
             name,

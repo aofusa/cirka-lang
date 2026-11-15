@@ -119,6 +119,7 @@ fn test(out: &mut Expanded, seen: &mut HashMap<String, Span>, decls: &mut Vec<De
             names: vec![(def.clone(), name_span)],
             ty: io_unit,
             totality: None,
+            trusted: None,
         },
         span: sp,
     });

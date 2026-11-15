@@ -199,6 +199,7 @@ impl<'r> Elab<'r> {
             traits: HashMap::new(),
             impls: HashMap::new(),
             totality: HashMap::new(),
+            trusted: HashSet::new(),
             measures: HashMap::new(),
             refine_sites: Vec::new(),
             proofs_trusted: false,
@@ -4414,6 +4415,27 @@ impl<'r> Elab<'r> {
         self.prog.globals[d.name.0 as usize] = Global::Def { ty, body: None };
     }
 
+    /// The type of a function with the refinements of its result removed:
+    /// `(x : A) -> {r : B | q}` is `(x : A) -> B`.
+    fn unrefined_result(&self, ty: &Term) -> Term {
+        match ty {
+            Term::Pi(x, m, i, a, b) => Term::Pi(
+                x.clone(),
+                *m,
+                *i,
+                a.clone(),
+                Rc::new(self.unrefined_result(b)),
+            ),
+            Term::App(f, _, _)
+                if let Term::App(h, a, _) = f.as_ref()
+                    && matches!(h.as_ref(), Term::Global(g) if Some(*g) == self.prog.builtins.subset_of) =>
+            {
+                self.unrefined_result(a)
+            }
+            _ => ty.clone(),
+        }
+    }
+
     fn def_body(&mut self, d: &rast::Def) {
         let name = self.prog.name(d.name).to_string();
         self.begin(name.clone());
@@ -4425,10 +4447,18 @@ impl<'r> Elab<'r> {
         }
         let before = self.error_count();
         let tv = self.ev().eval(&Vec::new(), &ty);
+        // A trusted definition (spec-v0.0.5.md §4.2): its body is checked
+        // against the result without its refinements, which are assumed.
+        let body_ty = if d.trusted.is_some() {
+            self.prog.trusted.insert(d.name);
+            self.ev().eval(&Vec::new(), &self.unrefined_result(&ty))
+        } else {
+            tv.clone()
+        };
         let mut cx = Cxt::default();
         self.partial
             .set(matches!(d.totality, Some((rast::Totality::Partial, _))));
-        let body = self.elab_clauses(&mut cx, &name, &d.clauses, &tv, d.span);
+        let body = self.elab_clauses(&mut cx, &name, &d.clauses, &body_ty, d.span);
         self.partial.set(false);
         self.def_measure(d, &tv);
         let body = self.finish(&cx, &body);

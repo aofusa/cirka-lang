@@ -94,15 +94,17 @@ pub fn library_modules(sm: &SourceMap, rp: &rast::Program) -> HashSet<String> {
 
 /// Declarations that only the libraries of the compiler may contain
 /// (spec-v0.0.1.md §5.6, BUG-0023): `prim`, whose implementation the
-/// compiler gives. Some primitives rely on what the library proved before
+/// compiler gives, and `trusted` (spec-v0.0.5.md §4.2), whose result is
+/// assumed. Some primitives rely on what the library proved before
 /// calling them (`primArrayIndexProved` reads without a bounds check), so
-/// a program declaring them could break memory safety.
+/// a program declaring them, or assuming a false size, could break memory
+/// safety.
 fn library_only(rp: &rast::Program, libs: &HashSet<String>) -> Vec<Diagnostic> {
     let mut out = Vec::new();
     for m in rp.modules.iter().filter(|m| !libs.contains(&m.name)) {
         for it in &m.items {
-            if let rast::Item::Prim(g, _) = it {
-                out.push(
+            match it {
+                rast::Item::Prim(g, _) => out.push(
                     Diagnostic::error(format!(
                         "the primitive `{}` is declared outside the libraries",
                         rp.info(*g).name
@@ -113,7 +115,20 @@ fn library_only(rp: &rast::Program, libs: &HashSet<String>) -> Vec<Diagnostic> {
                         "only `lib/cirkalang` may declare primitives",
                     )
                     .with_help("declare a function of another language in an `extern` block"),
-                );
+                ),
+                rast::Item::Def(d) if d.trusted.is_some() => out.push(
+                    Diagnostic::error(format!(
+                        "`{}` is trusted outside the libraries",
+                        rp.info(d.name).name
+                    ))
+                    .with_code("E1009")
+                    .with_label(
+                        d.trusted.unwrap_or(d.span),
+                        "only `lib/cirkalang` may assume what it does not prove",
+                    )
+                    .with_help("prove the contract, or check it at run time (`--contracts=check`)"),
+                ),
+                _ => {}
             }
         }
     }
@@ -157,16 +172,41 @@ pub fn compile_package(
     compile_resolved(rp, &libs, opts, &w.root.name)
 }
 
-/// `--contracts=off|check|verify` (spec-v0.0.4.md §4.3); other frontend
-/// options are unknown.
-fn contracts_mode(opts: &Options) -> Result<cirkalang_check::Contracts, Diagnostic> {
-    let mut mode = cirkalang_check::Contracts::default();
+/// The frontend options.
+struct Flags {
+    /// `--contracts=off|check|verify` (spec-v0.0.4.md §4.3).
+    contracts: cirkalang_check::Contracts,
+    /// `--libraries=verify` (spec-v0.0.5.md §4.3): the proof obligations of
+    /// the libraries are checked too (`--libraries=trust`, the default:
+    /// their own tests verify them).
+    verify_libraries: bool,
+}
+
+/// Parses the frontend options; others are unknown.
+fn frontend_flags(opts: &Options) -> Result<Flags, Diagnostic> {
+    let mut flags = Flags {
+        contracts: cirkalang_check::Contracts::default(),
+        verify_libraries: false,
+    };
     for f in &opts.frontend_flags {
+        if let Some(v) = f.strip_prefix("--libraries=") {
+            flags.verify_libraries = match v {
+                "verify" => true,
+                "trust" => false,
+                _ => {
+                    return Err(
+                        Diagnostic::error(format!("unknown libraries mode in `{f}`"))
+                            .with_help("use `--libraries=trust` or `--libraries=verify`"),
+                    );
+                }
+            };
+            continue;
+        }
         let parsed = f
             .strip_prefix("--contracts=")
             .and_then(cirkalang_check::Contracts::parse);
         match parsed {
-            Some(m) => mode = m,
+            Some(m) => flags.contracts = m,
             None if f.starts_with("--contracts=") => {
                 return Err(
                     Diagnostic::error(format!("unknown contracts mode in `{f}`")).with_help(
@@ -177,7 +217,7 @@ fn contracts_mode(opts: &Options) -> Result<cirkalang_check::Contracts, Diagnost
             None => return Err(Diagnostic::error(format!("unknown option `{f}`"))),
         }
     }
-    Ok(mode)
+    Ok(flags)
 }
 
 fn compile_resolved(
@@ -212,9 +252,22 @@ fn compile_resolved(
         "tt",
         &cirkalang_elab::tt::print_program(&tt),
     )?;
-    // Totality and refinements (spec-v0.0.4.md §1, §3, §4).
-    let mode = contracts_mode(opts).map_err(|d| vec![d])?;
-    let checked = cirkalang_check::check_with(&rp, &tt, Some(opts.build_dir.join("verify")), mode);
+    // Totality and refinements (spec-v0.0.4.md §1, §3, §4). The libraries'
+    // obligations are verified by their own tests (spec-v0.0.5.md §4.3).
+    let flags = frontend_flags(opts).map_err(|d| vec![d])?;
+    let mode = flags.contracts;
+    let verified = if flags.verify_libraries {
+        HashSet::new()
+    } else {
+        libs.clone()
+    };
+    let checked = cirkalang_check::check_with(
+        &rp,
+        &tt,
+        Some(opts.build_dir.join("verify")),
+        mode,
+        &verified,
+    );
     let (errors, more): (Vec<Diagnostic>, Vec<Diagnostic>) =
         checked.diags.into_iter().partition(|d| d.is_error());
     let mut warnings = warnings;
@@ -263,7 +316,7 @@ pub fn frontend(
             DUMPS.join(", ")
         ))]));
     }
-    if let Err(d) = contracts_mode(opts) {
+    if let Err(d) = frontend_flags(opts) {
         return Some(Err(vec![d]));
     }
     let compiled = if path.is_dir() || path.file_name().is_some_and(|f| f == "cirka.toml") {

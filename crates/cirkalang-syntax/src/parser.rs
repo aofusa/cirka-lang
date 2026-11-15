@@ -453,27 +453,52 @@ impl Parser {
                 }
                 DeclKind::Impl(self.impl_decl()?)
             }
-            Tok::Kw(k @ (Kw::Total | Kw::Partial | Kw::Covering)) => {
-                // `total` (on its own line or before the signature) applies
-                // to the signature that follows (spec-v0.0.4.md §1).
-                let sp = self.bump().span;
-                let t = match k {
-                    Kw::Total => Totality::Total,
-                    Kw::Partial => Totality::Partial,
-                    _ => Totality::Covering,
-                };
-                while matches!(self.peek(), Tok::VSemi | Tok::Semi) {
-                    self.bump();
+            Tok::Kw(Kw::Total | Kw::Partial | Kw::Covering | Kw::Trusted) => {
+                // `total` and `trusted` (on their own lines or before the
+                // signature, in either order) apply to the signature that
+                // follows (spec-v0.0.4.md §1, spec-v0.0.5.md §4.2).
+                let mut totality = None;
+                let mut trusted = None;
+                let mut last = (Kw::Total, self.span());
+                while let Tok::Kw(k @ (Kw::Total | Kw::Partial | Kw::Covering | Kw::Trusted)) =
+                    self.peek().clone()
+                {
+                    let sp = self.bump().span;
+                    let twice = match k {
+                        Kw::Trusted => trusted.replace(sp).is_some(),
+                        _ => {
+                            let t = match k {
+                                Kw::Total => Totality::Total,
+                                Kw::Partial => Totality::Partial,
+                                _ => Totality::Covering,
+                            };
+                            totality.replace((t, sp)).is_some()
+                        }
+                    };
+                    if twice {
+                        self.errs.push(
+                            Diagnostic::error(format!("`{}` repeats a modifier", k.name()))
+                                .with_code("E1005")
+                                .with_label(
+                                    sp,
+                                    "a signature has one totality and is trusted at most once",
+                                ),
+                        );
+                    }
+                    last = (k, sp);
+                    while matches!(self.peek(), Tok::VSemi | Tok::Semi) {
+                        self.bump();
+                    }
+                    private |= self.eat(&Tok::Kw(Kw::Private));
                 }
-                private |= self.eat(&Tok::Kw(Kw::Private));
                 if !self.is_sig_start() {
                     self.errs.push(
                         Diagnostic::error(format!(
                             "`{}` must be followed by a type signature",
-                            k.name()
+                            last.0.name()
                         ))
                         .with_code("E1005")
-                        .with_label(sp, "write `name : type` after it"),
+                        .with_label(last.1, "write `name : type` after it"),
                     );
                     return Err(());
                 }
@@ -487,7 +512,8 @@ impl Parser {
                 DeclKind::Sig {
                     names,
                     ty,
-                    totality: Some((t, sp)),
+                    totality,
+                    trusted,
                 }
             }
             Tok::Kw(k @ Kw::Mutual) => {
@@ -555,6 +581,7 @@ impl Parser {
                         names,
                         ty,
                         totality: None,
+                        trusted: None,
                     }
                 } else {
                     self.clause()?
@@ -878,6 +905,16 @@ impl Parser {
                     )
                     .with_code("E1006")
                     .with_label(d.span, "not allowed in a `trait` block"),
+                );
+            }
+            if let DeclKind::Sig {
+                trusted: Some(sp), ..
+            } = d.kind
+            {
+                self.errs.push(
+                    Diagnostic::error("a trait method cannot be `trusted`")
+                        .with_code("E1006")
+                        .with_label(sp, "not allowed in a `trait` block"),
                 );
             }
         }

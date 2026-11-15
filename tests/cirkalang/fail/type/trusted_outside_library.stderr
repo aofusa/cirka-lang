@@ -1,0 +1,6 @@
+error[E1009]: `sized` is trusted outside the libraries
+ --> tests/cirkalang/fail/type/trusted_outside_library.cirka:6:1
+  |
+6 | trusted
+  | ^^^^^^^ only `lib/cirkalang` may assume what it does not prove
+  = help: prove the contract, or check it at run time (`--contracts=check`)

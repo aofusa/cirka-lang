@@ -1,0 +1,21 @@
+-- The sizes `Data.Array` promises (FEAT-0244, spec-v0.0.5.md §4.1) hold:
+-- the trusted specifications of `generate` and `fromList` are checked
+-- here at run time, with sizes below, at and above zero.
+import Data.Array as A
+
+sizes : List Int -> List Int
+sizes ns = map (\n => A.size (A.generate n (\i => i))) ns
+
+main : IO ()
+main = do
+  -- `generate n f`: `n` elements, none when `n` is negative.
+  putStrLn (show (sizes [0 - 3, 0, 1, 5]))
+  -- `f` gets the indices in bounds, in order.
+  putStrLn (show (A.toList (A.generate 4 (\i => 10 * i))))
+  -- `fromList xs`: the length of `xs`.
+  let none : List Int = Nil
+  printInt (A.size (A.fromList none))
+  printInt (A.size (A.fromList [7, 8, 9]))
+  -- `map f arr`: the size of `arr`.
+  printInt (A.size (A.map (\x => x + 1) (A.generate 6 (\i => i))))
+  printInt (A.size (A.map (\x => x + 1) (A.fromList none)))

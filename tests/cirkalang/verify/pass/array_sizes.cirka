@@ -1,0 +1,45 @@
+-- The sizes of the arrays that `Data.Array` builds (FEAT-0244,
+-- spec-v0.0.5.md §4.1): the results of `generate`, `fromList` and `map`
+-- have known sizes, so `A.index` on them is proved in bounds without
+-- checking the size again.
+import Data.Array as A
+
+-- An index below `n` is in bounds of the array generated with `n`.
+squareAt : (n : Int) -> (i : Int) -> Int
+  requires 0 <= i && i < n
+squareAt n i =
+  let xs = A.generate n (\k => k * k)
+  in A.index xs i
+
+-- The function given to `generate` gets indices in bounds: it may read an
+-- array of that size. Total, so that the size of its result is known
+-- where it is bound with `let`.
+total
+reversed : (xs : A.Array Int) -> A.Array Int
+  ensures \r => A.size r == A.size xs
+reversed xs = A.generate (A.size xs) (\i => A.index xs (A.size xs - 1 - i))
+
+-- `map` keeps the size.
+lastDoubled : (xs : A.Array Int) -> Int
+  requires 0 < A.size xs
+lastDoubled xs =
+  let ys = A.map (\x => 2 * x) xs
+  in A.index ys (A.size xs - 1)
+
+-- A list written out has a known length; the size of a call's result is
+-- known without binding it.
+third : Int
+third = A.index (A.fromList [10, 20, 30, 40]) 2
+
+generated : (n : Int) -> (i : Int) -> Int
+  requires 0 <= i && i < n
+generated n i = A.index (A.generate n (\k => k + 1)) i
+
+main : IO ()
+main = do
+  printInt (squareAt 10 7)
+  let r = reversed (A.fromList [1, 2, 3])
+  printInt (A.index r 0)
+  printInt (lastDoubled r)
+  printInt third
+  printInt (generated 5 4)
