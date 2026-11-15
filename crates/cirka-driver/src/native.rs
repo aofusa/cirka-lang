@@ -254,8 +254,15 @@ pub fn build_mir(
         ));
     }
     let ir = cirka_codegen_llvm::emit(m, opts.runtime.codegen_options());
-    link_ir(cfg, &ir, work, exe, opts)?;
+    let mut opts = opts.clone();
+    opts.link_args.extend(lib_args(&m.libs));
+    link_ir(cfg, &ir, work, exe, &opts)?;
     Ok(ir)
+}
+
+/// The linker arguments of the C libraries of a program (`-l<lib>`).
+pub fn lib_args(libs: &[String]) -> Vec<String> {
+    libs.iter().map(|l| format!("-l{l}")).collect()
 }
 
 /// Runs `opt -passes=verify` on IR text (tests).

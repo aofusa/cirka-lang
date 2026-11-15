@@ -1975,6 +1975,14 @@ pub fn run_with_args(
     stdin: &[u8],
     fuel: u64,
 ) -> Result<RunResult, String> {
+    // The C libraries of the program, as linking would (08-ffi.md §7.3);
+    // the C library's own parts are in the interpreter already (and their
+    // `.so` files are linker scripts).
+    for l in &m.libs {
+        if !matches!(l.as_str(), "c" | "m" | "pthread" | "dl" | "rt") {
+            crate::ffi::load_library(std::path::Path::new(&format!("lib{l}.so")))?;
+        }
+    }
     std::thread::scope(|s| {
         std::thread::Builder::new()
             .stack_size(1 << 30)

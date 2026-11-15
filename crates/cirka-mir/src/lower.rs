@@ -30,6 +30,7 @@ pub fn lower_program(p: &Program) -> Result<Module, Vec<Diagnostic>> {
     let mut l = Lowerer::new(p);
     l.run();
     l.m.collect_cycles = p.collect_cycles;
+    l.m.libs = p.libs.clone();
     if l.errors.is_empty() {
         Ok(l.m)
     } else {

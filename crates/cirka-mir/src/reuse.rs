@@ -28,6 +28,7 @@ pub fn optimize(m: &mut Module) {
         globals: Vec::new(),
         funcs: Vec::new(),
         collect_cycles: false,
+        libs: Vec::new(),
     };
     for f in &mut m.funcs {
         fuse(&sigs, f);

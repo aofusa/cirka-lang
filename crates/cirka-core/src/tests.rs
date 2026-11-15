@@ -93,6 +93,7 @@ fn dsl_builds_linted_programs() {
         caggs: vec![],
         externs: vec![],
         collect_cycles: false,
+        libs: vec![],
         binds: vec![
             TopBind {
                 name: "close".into(),

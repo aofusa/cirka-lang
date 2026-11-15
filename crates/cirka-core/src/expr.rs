@@ -588,6 +588,10 @@ pub struct Program {
     /// Collect garbage cycles at run time (`--cycles=collect`,
     /// 04-memory-model.md §5). Set by the frontend; not part of the text form.
     pub collect_cycles: bool,
+    /// The C libraries the program uses (`-l<lib>` when linking; loaded
+    /// by the interpreter, 08-ffi.md §7.3). Set by the frontend; not part
+    /// of the text form.
+    pub libs: Vec<String>,
 }
 
 impl Program {

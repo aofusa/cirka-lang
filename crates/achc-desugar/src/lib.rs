@@ -369,6 +369,7 @@ impl Ds {
             externs: prims.externs.clone(),
             binds: Vec::new(),
             collect_cycles: false,
+            libs: prims.libs.clone(),
         };
         let builtin = |n: &str| {
             matches!(

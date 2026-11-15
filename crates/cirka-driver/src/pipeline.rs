@@ -192,7 +192,12 @@ pub fn link(cfg: &Config, out: &Output, opts: &Options, exe: &Path) -> Result<()
     let nopts = NativeOptions {
         opt_level: opts.opt_level.min(3),
         runtime: opts.runtime,
-        link_args: opts.link_args.clone(),
+        link_args: opts
+            .link_args
+            .iter()
+            .cloned()
+            .chain(crate::native::lib_args(&out.mir.libs))
+            .collect(),
     };
     link_ir(cfg, &out.llvm, &opts.build_dir, exe, &nopts).map_err(|e| vec![Diagnostic::error(e)])
 }

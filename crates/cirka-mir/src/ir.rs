@@ -439,6 +439,8 @@ pub struct Module {
     /// Run the cycle collector (`--cycles=collect`, 04-memory-model.md §5):
     /// otherwise `cycle_candidate` does nothing.
     pub collect_cycles: bool,
+    /// The C libraries of the program (`-l<lib>`; `Program::libs`).
+    pub libs: Vec<String>,
 }
 
 impl Module {
