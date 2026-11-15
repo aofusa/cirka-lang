@@ -1,7 +1,8 @@
 ; C structs and unions by value (FEAT-0047, 08-ffi.md §7.2): aggregates in
 ; integer and SSE registers, in memory (`byval` arguments, `sret` results),
 ; aggregates that do not fit in the registers left, a packed struct, a
-; union, and calls through function pointers. The C side is c_structs.c.
+; union, calls through function pointers, and `clock_gettime` filling a
+; `struct timespec`. The C side is c_structs.c.
 (cstruct pair_i (i32 i32))
 (cstruct pair_l (i64 i64))
 (cstruct vec2 (f64 f64))
@@ -30,6 +31,7 @@
 (extern cs_three (Int#) Int# (c (three) i64))
 (extern cs_clear_bits (Int#) Int# (c (clear) i64))
 (extern cs_packed_v (Int#) Int# (c (packed) u32))
+(extern clock_gettime (Int# Int#) Int# (c (i32 ptr) i32))
 (extern cs_many (Int# Int# Int# Int# Int# Int# Int#) Int# (c (i64 i64 i64 i64 i64 pair_l i64) i64))
 (extern cs_many_f (Double# Double# Double# Double# Double# Double# Double# Int# Double#) Double#
   (c (f64 f64 f64 f64 f64 f64 f64 vec2 f64) f64))
@@ -118,5 +120,11 @@
   (let! (s57 Unit# (wf 1 a 0 2.0))
   (let! (s58 Unit# (wf 1 a 8 3.0))
   (let! (s59 Unit# (pf (extern cs_many_f 1.0 2.0 3.0 4.0 5.0 6.0 7.0 a 0.5)))
+  ; struct timespec through a pointer: CLOCK_MONOTONIC (1) twice, in order
+  (let! (k0 Unit# (pi (extern clock_gettime 1 o)))
+  (let! (k1 Unit# (pi (prim lt (r 6 o 8) 1000000000)))
+  (let! (t0 Int# (prim add (prim mul (r 6 o 0) 1000000000) (r 6 o 8)))
+  (let! (k2 Unit# (pi (extern clock_gettime 1 o)))
+  (let! (k3 Unit# (pi (prim ge (prim add (prim mul (r 6 o 0) 1000000000) (r 6 o 8)) t0)))
   (let! (s60 Unit# (extern free b))
-  0))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))
+  0)))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))
