@@ -1,6 +1,6 @@
 # FEAT-0250: FFI の完成と bindgen の利用
 
-- 状態: todo
+- 状態: in-progress
 - トラック: CirkaLang
 - マイルストーン: CirkaLang v0.0.6 Vulkan compute・数値計算
 - 優先度: P0

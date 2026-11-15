@@ -270,7 +270,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 
 | ID | タイトル | 状態 | 優先度 | 依存 |
 |---|---|---|---|---|
-| [FEAT-0250](features/FEAT-0250-cl-ffi-complete.md) | FFI の完成と bindgen の利用 | todo | P0 | 0243, 0047, 0048 |
+| [FEAT-0250](features/FEAT-0250-cl-ffi-complete.md) | FFI の完成と bindgen の利用 | in-progress | P0 | 0243, 0047, 0048 |
 | [FEAT-0251](features/FEAT-0251-cl-vulkan-compute.md) | Vulkan コンピュートシェーダ (Docker / lavapipe) | todo | P0 | 0250 |
 | [FEAT-0252](features/FEAT-0252-cl-math-linalg.md) | 数学・線形代数ラッパー | todo | P2 | 0250 |
 | [FEAT-0254](features/FEAT-0254-cl-unique-array-sizes.md) | 一意な配列と文字列のビューの大きさを証明で追う | todo | P2 | 0244 |
