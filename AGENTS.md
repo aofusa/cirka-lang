@@ -183,7 +183,7 @@ Docker 内には GPU も表示装置もないため、**GPU は Vulkan のコン
 |------|------|------|
 | ユニットテスト | 各クレートの `#[cfg(test)]` | 関数単位 |
 | スナップショット | 各クレート `tests/snapshots` (insta) | パース結果・Core・MIR・LLVM IR のダンプ |
-| 共通基盤 | `tests/mir/`, `tests/core/` | 手書き MIR / Core の実行 (インタプリタとネイティブの一致) |
+| 共通基盤 | `tests/mir/`, `tests/core/`, `tests/bindgen/` | 手書き MIR / Core の実行 (インタプリタとネイティブの一致)・C ヘッダからの宣言の生成 |
 | aCHC | `tests/achc/{run,fail,diff,compat,verify}/` | 実行・診断・GHC との差分・互換計測・検証 (verify は後期 H6〜、Z3 が必要) |
 | CirkaLang | `tests/cirkalang/{run,fail,verify}/` | 実行 (版ごとのディレクトリ)・診断・証明の検証 (Z3 が必要) |
 | メモリ | 実行テスト全体 | `CIRKA_LEAK_CHECK=1` でリーク 0、`CIRKA_ALLOC=system` + valgrind でエラー 0 |

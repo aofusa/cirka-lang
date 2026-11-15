@@ -1,0 +1,2 @@
+tests/bindgen/gen/errors.h:5:19: error: expected ';' after struct
+tests/bindgen/gen/errors.h:6:1: error: unknown type name 'unknown_t'

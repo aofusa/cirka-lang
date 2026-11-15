@@ -1,0 +1,12 @@
+(65538,0.25)
+shapes
+[ShapeKind (-1),ShapeKind 1,ShapeKind 2]
+(48,8)
+12.0
+Vec2 {vec2_x = 1.5, vec2_y = -1.0}
+True
+box
+2
+(3,8)
+1.5
+(16909060,[4,3,2,1])

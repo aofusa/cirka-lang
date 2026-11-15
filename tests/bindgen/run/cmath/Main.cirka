@@ -1,0 +1,21 @@
+-- The module Cmath is written by `cirka bindgen cmath.h` (the C library's
+-- math.h): functions declared pure and an output parameter. Its names
+-- `sqrt` and `floor` are also in the Prelude, so they are qualified.
+module Main
+
+import Foreign
+import Cmath
+
+main : IO ()
+main = do
+  print (fromCDouble (Cmath.sqrt (MkCDouble 2.0)))
+  print (fromCDouble (Cmath.pow (MkCDouble 2.0) (MkCDouble 10.0)))
+  print (fromCDouble (Cmath.floor (MkCDouble (0.0 - 1.5))))
+  x <- ldexp (MkCDouble 1.0) (MkCInt 10)
+  print (fromCDouble x)
+  e <- mallocBytes 4
+  m <- frexp (MkCDouble 8.0) e
+  k <- peekInt32 e 0
+  freeBytes e
+  print (fromCDouble m)
+  print k

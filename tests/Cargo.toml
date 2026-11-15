@@ -22,6 +22,7 @@ cirka-mir.workspace = true
 cirka-smt.workspace = true
 cirka-driver.workspace = true
 cirka-codegen-llvm.workspace = true
+cirka-bindgen.workspace = true
 cirka.workspace = true
 achc-syntax.workspace = true
 achc-rename.workspace = true
@@ -64,3 +65,7 @@ path = "achc_compat.rs"
 [[test]]
 name = "bench"
 path = "bench.rs"
+
+[[test]]
+name = "bindgen"
+path = "bindgen.rs"

@@ -12,6 +12,7 @@
 | スナップショット | 各クレート `tests/` + `insta` | 全部 | AST / TT / Core / MIR / LLVM IR のダンプが期待どおり |
 | MIR 実行 | `tests/mir/*.mir` + `.stdout` | 共通基盤 | インタプリタとネイティブの出力・確保/解放回数が一致 |
 | Core 実行 | `tests/core/*.core` + `.stdout` | 共通基盤 | 手書き Core が共通ドライバで動く |
+| bindgen | `tests/bindgen/gen/*.h` + `.hs`・`.cirka` (`.stderr`)、`tests/bindgen/run/<ケース>/` (ヘッダ・C のライブラリ・`Main.hs`/`Main.cirka`・`Main.stdout`)、`math.h` と `vulkan_core.h` の全体 | 共通基盤 (FEAT-0048) | 生成した宣言が期待どおりで aCHC のフロントエンドを通る。生成したモジュールを使うプログラムが両 CLI の -O0/-O2 (と GHC) で期待どおりに動きリーク 0。システムのヘッダ全体を不透明型への後退なしに変換できる。`requires: <ヘッダ>` のケースはそのヘッダがなければスキップする (Vulkan のヘッダは Docker イメージにあり、`scripts/ci.sh` はそれを要求する) |
 | aCHC 実行 | `tests/achc/run/**/*.{hs,chs}` + `.stdout` (`.stdin`, `.args`, `.exitcode`, `.stderr`, `.warn`)。`Main.hs` のあるディレクトリは複数モジュールの一つのプログラム (他のモジュールはテストにしない) | aCHC | 出力一致、debug ランタイムでリーク 0 |
 | aCHC エラー | `tests/achc/fail/**/*.{hs,chs}` + `.stderr` | aCHC | 診断コードとメッセージが一致 |
 | aCHC 差分 | `tests/achc/diff/**/*.hs` + `.stdout` (`.exitcode`) | aCHC | 期待値は GHC 9.4 (`-O0`) の出力。実行テストと同じ検査 (リーク 0・ネイティブとの一致) を -O2 だけで行い、`CIRKA_GHC` があれば GHC とも比べる (FEAT-0117) |
@@ -123,7 +124,8 @@ bench/binary-trees/
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo build -p cirka-runtime --profile release   (+ debug runtime)
-cargo test --workspace                           (ユニット・スナップショット・mir・core・achc run/fail・cirkalang run/fail)
+ThreadSanitizer と vulkan_core.h があることの確認 (ないと失敗。テスト側はなければスキップする)
+cargo test --workspace                           (ユニット・スナップショット・mir・core・bindgen・achc run/fail・cirkalang run/fail)
 cargo test --release -p cirka-runtime --lib      (ランタイムの単体テストを最適化ビルドでも。BUG-0025)
 cargo test --workspace の achc_diff               (GHC との比較は CIRKA_GHC があれば)
 cargo test --test cirkalang_verify               (CIRKA_Z3 があれば)

@@ -117,6 +117,7 @@ dependencies = [
  "achc-syntax",
  "achc-typeck",
  "cirka",
+ "cirka-bindgen",
  "cirka-codegen-llvm",
  "cirka-core",
  "cirka-diagnostics",
