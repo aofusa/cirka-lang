@@ -58,6 +58,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libvulkan-dev \
     && rm -rf /var/lib/apt/lists/*
 
+# zlib headers and the link library: the C library that CirkaLang's FFI
+# sample wraps (FEAT-0250, spec-v0.0.6.md §1.8).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
+
 USER ${USERNAME}
 WORKDIR /work
 CMD ["bash"]
