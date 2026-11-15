@@ -365,6 +365,7 @@ impl Ds {
     fn program(&mut self, p: &tast::Program, prims: c::Program) -> c::Program {
         let mut out = c::Program {
             datas: prims.datas.clone(),
+            caggs: prims.caggs.clone(),
             externs: prims.externs.clone(),
             binds: Vec::new(),
             collect_cycles: false,

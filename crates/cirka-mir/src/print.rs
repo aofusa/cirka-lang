@@ -23,6 +23,17 @@ pub fn print_module(m: &Module) -> String {
         }
         s.push_str(" }\n");
     }
+    for a in &m.caggs {
+        let fs: Vec<String> = a.fields.iter().map(c_ty).collect();
+        let _ = writeln!(
+            s,
+            "{} {}{} {{ {} }}",
+            if a.union { "cunion" } else { "cstruct" },
+            a.name,
+            if a.packed { " packed" } else { "" },
+            fs.join(", ")
+        );
+    }
     for e in &m.externs {
         let _ = write!(s, "extern fn {}(", e.name);
         for (i, (t, o)) in e.params.iter().enumerate() {
@@ -36,8 +47,22 @@ pub fn print_module(m: &Module) -> String {
         }
         let _ = write!(s, ") -> {}", e.ret.map(|t| t.name()).unwrap_or("void"));
         if let Some(c) = &e.c_sig {
-            let ps: Vec<&str> = c.params.iter().map(|t| t.name()).collect();
-            let _ = write!(s, " as c({}) -> {}", ps.join(", "), c.ret.name());
+            let mut ps: Vec<String> = c.params.iter().map(c_ty).collect();
+            if let Some(n) = c.variadic {
+                ps.insert(n, "...".into());
+            }
+            let _ = write!(s, " as c({}) -> {}", ps.join(", "), c_ty(&c.ret));
+        }
+        if let Some(l) = &e.link {
+            let _ = write!(s, " link {l}");
+        }
+        match &e.kind {
+            cirka_core::ExternKind::Call => {}
+            cirka_core::ExternKind::Dynamic => s.push_str(" dynamic"),
+            cirka_core::ExternKind::Addr => s.push_str(" addr"),
+            cirka_core::ExternKind::Callback(h) => {
+                let _ = write!(s, " callback {h}");
+            }
         }
         s.push('\n');
     }
@@ -51,6 +76,15 @@ pub fn print_module(m: &Module) -> String {
         s.push_str(&print_function(m, f));
     }
     s
+}
+
+/// A C type in the MIR text form (`i32`, `timespec`, `array(f32, 4)`).
+fn c_ty(t: &cirka_core::CType) -> String {
+    match t {
+        cirka_core::CType::Scalar(s) => s.name().to_string(),
+        cirka_core::CType::Agg(n) => n.clone(),
+        cirka_core::CType::Array(e, n) => format!("array({}, {n})", c_ty(e)),
+    }
 }
 
 pub fn print_function(m: &Module, f: &Function) -> String {

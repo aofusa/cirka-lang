@@ -1021,13 +1021,15 @@ fn components(succ: &[Vec<usize>], set: &[usize]) -> Vec<Vec<usize>> {
     out
 }
 
-/// Removes top-level bindings unreachable from `main` (when there is one).
+/// Removes top-level bindings unreachable from `main` (when there is one)
+/// and from the handlers of callbacks.
 pub fn dce_globals(p: &mut Program) -> usize {
     if p.bind("main").is_none() {
         return 0;
     }
     let mut live: HashSet<String> = HashSet::new();
     let mut stack = vec!["main".to_string()];
+    stack.extend(p.callback_handlers().map(str::to_string));
     while let Some(g) = stack.pop() {
         if !live.insert(g.clone()) {
             continue;

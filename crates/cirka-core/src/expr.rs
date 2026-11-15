@@ -1,5 +1,6 @@
 //! Expressions and programs of the common Core (06-ir.md §1).
 
+use crate::ctype::{CAgg, CType, CTypes};
 use crate::ty::*;
 use cirka_diagnostics::Span;
 
@@ -436,20 +437,63 @@ pub struct ExternDecl {
     /// The C signature of a foreign function (FFI), when it differs from
     /// the runtime's convention (`Int#` = `int64_t`, `Double#` = `double`,
     /// `Bytes` = object pointer, `Unit#` result = `void`). The Core types
-    /// are then `Int#` (integers and pointers), `Double#` (floating point)
-    /// and `Unit#` (`void`); the backend converts at the call.
+    /// are then `Int#` (integers, pointers and the addresses of aggregates),
+    /// `Double#` (floating point) and `Unit#` (`void`); the backend converts
+    /// at the call. An aggregate result is written to an address passed
+    /// before the arguments (08-ffi.md §7.2).
     pub c_sig: Option<CSig>,
+    /// The C symbol when other than `name`: several externs may call one
+    /// variadic function with different arguments.
+    pub link: Option<String>,
+    pub kind: ExternKind,
+}
+
+impl ExternDecl {
+    /// The C symbol called or referred to.
+    pub fn symbol(&self) -> &str {
+        self.link.as_deref().unwrap_or(&self.name)
+    }
+}
+
+/// How an extern reaches C (08-ffi.md §7.2).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub enum ExternKind {
+    /// Calls the C function.
+    #[default]
+    Call,
+    /// Calls the function at the address given as the first argument.
+    Dynamic,
+    /// The address of the symbol: a function when there is a C signature,
+    /// data otherwise.
+    Addr,
+    /// A fresh C function pointer calling the top-level function `handler`
+    /// with the environment, the only argument (owned by the pointer until
+    /// `cirka_callback_free`).
+    Callback(String),
 }
 
 /// A C signature: parameter and result types.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CSig {
-    pub params: Vec<CTy>,
-    pub ret: CTy,
+    pub params: Vec<CType>,
+    pub ret: CType,
+    /// The number of fixed parameters of a variadic function (`...`).
+    pub variadic: Option<usize>,
+}
+
+impl CSig {
+    /// A signature of scalars.
+    pub fn scalars(params: &[CTy], ret: CTy) -> CSig {
+        CSig {
+            params: params.iter().map(|t| CType::Scalar(*t)).collect(),
+            ret: CType::Scalar(ret),
+            variadic: None,
+        }
+    }
 }
 
 /// A C scalar type at the FFI boundary (x86_64 System V).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum CTy {
     I8,
     U8,
@@ -537,6 +581,8 @@ pub struct TopBind {
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct Program {
     pub datas: Vec<DataDecl>,
+    /// C structs and unions (FFI, 08-ffi.md §7.2).
+    pub caggs: Vec<CAgg>,
     pub externs: Vec<ExternDecl>,
     pub binds: Vec<TopBind>,
     /// Collect garbage cycles at run time (`--cycles=collect`,
@@ -562,6 +608,19 @@ impl Program {
 
     pub fn extern_decl(&self, name: &str) -> Option<&ExternDecl> {
         self.externs.iter().find(|e| e.name == name)
+    }
+
+    pub fn ctypes(&self) -> CTypes<'_> {
+        CTypes(&self.caggs)
+    }
+
+    /// The top-level functions called from C through callbacks: they are
+    /// used as values, with every signature as declared.
+    pub fn callback_handlers(&self) -> impl Iterator<Item = &str> {
+        self.externs.iter().filter_map(|e| match &e.kind {
+            ExternKind::Callback(h) => Some(h.as_str()),
+            _ => None,
+        })
     }
 
     /// Largest variable number used (for generating fresh ids).

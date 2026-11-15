@@ -14,6 +14,7 @@
 //! - `cast` only between boxed types of compatible kinds; function types
 //!   must agree on unboxed argument/result positions.
 
+use crate::ctype::CType;
 use crate::expr::*;
 use crate::ty::*;
 use cirka_diagnostics::Diagnostic;
@@ -182,40 +183,27 @@ impl<'p> Linter<'p> {
                         return Err(format!("`{t}` is not a type of values"));
                     }
                 }
-                if let Some(c) = &e.c_sig {
-                    if c.params.len() != e.params.len() {
-                        return Err("the C signature has a different number of parameters".into());
-                    }
-                    let rep = |c: CTy| {
-                        if c.is_float() {
-                            Type::double()
-                        } else if c == CTy::Void {
-                            Type::unit()
-                        } else {
-                            Type::int()
-                        }
-                    };
-                    for (t, c) in e.params.iter().zip(&c.params) {
-                        if *c == CTy::Void || !t.alpha_eq(&rep(*c)) {
-                            return Err(format!(
-                                "parameter `{t}` cannot be passed as C `{}`",
-                                c.name()
-                            ));
-                        }
-                    }
-                    if !e.ret.alpha_eq(&rep(c.ret)) {
-                        return Err(format!(
-                            "result `{}` cannot be returned as C `{}`",
-                            e.ret,
-                            c.ret.name()
-                        ));
-                    }
-                }
-                Ok(())
+                self.extern_shape(e)
             })();
             if let Err(m) = r {
                 self.error(&format!("extern `{}`", e.name), m);
             }
+        }
+        for (what, m) in p.ctypes().check_decls() {
+            self.error(&what, m);
+        }
+        let uses: Vec<crate::ctype::LinkUse<'_>> = p
+            .externs
+            .iter()
+            .map(|e| crate::ctype::LinkUse {
+                name: &e.name,
+                symbol: e.symbol(),
+                kind: &e.kind,
+                sig: e.c_sig.as_ref(),
+            })
+            .collect();
+        for (what, m) in crate::ctype::check_links(&uses) {
+            self.error(&what, m);
         }
         let mut names = HashSet::new();
         for b in &p.binds {
@@ -257,6 +245,105 @@ impl<'p> Linter<'p> {
         if let Err(m) = r {
             self.error(&format!("`{}`", b.name), m);
         }
+    }
+
+    /// The Core types of an extern agree with its C signature and kind
+    /// (08-ffi.md §7.2): integers, pointers and the addresses of aggregates
+    /// are `Int#`, floating point `Double#`, `void` `Unit#`; an aggregate
+    /// result is written to an address before the arguments, and a
+    /// dynamic call takes the function's address first.
+    fn extern_shape(&self, e: &ExternDecl) -> R<()> {
+        let rep = |c: &CType| match c {
+            CType::Scalar(s) if s.is_float() => Type::double(),
+            CType::Scalar(CTy::Void) => Type::unit(),
+            _ => Type::int(),
+        };
+        let ct = self.p.ctypes();
+        if e.link.is_some() && e.c_sig.is_none() && e.kind != ExternKind::Addr {
+            return Err("a link name needs a C signature".into());
+        }
+        let sig = match (&e.kind, &e.c_sig) {
+            (ExternKind::Call, None) => return Ok(()),
+            (ExternKind::Addr, sig) => {
+                if let Some(s) = sig {
+                    ct.check_sig(s, &e.kind)?;
+                }
+                if !e.params.is_empty() || !e.ret.alpha_eq(&Type::int()) {
+                    return Err("an address takes no parameters and is `Int#`".into());
+                }
+                return Ok(());
+            }
+            (_, None) => return Err("needs a C signature".into()),
+            (_, Some(s)) => s,
+        };
+        ct.check_sig(sig, &e.kind)?;
+        let agg_ret = sig.ret.is_agg();
+        let ret = if agg_ret { Type::unit() } else { rep(&sig.ret) };
+        if let ExternKind::Callback(h) = &e.kind {
+            if e.params.len() != 1 || !e.ret.alpha_eq(&Type::int()) {
+                return Err("a callback takes its environment and is `Int#`".into());
+            }
+            let env = &e.params[0];
+            if self.kind(env)? != Kind::Type {
+                return Err(format!(
+                    "the environment `{env}` of a callback is not a shareable boxed value"
+                ));
+            }
+            let mut want = vec![env.clone()];
+            if agg_ret {
+                want.push(Type::int());
+            }
+            want.extend(sig.params.iter().map(rep));
+            let shown = want
+                .iter()
+                .rev()
+                .fold(ret.clone(), |t, a| Type::fun(Mult::Many, a.clone(), t));
+            let Some(b) = self.p.bind(h) else {
+                return Err(format!("unknown handler `{h}`"));
+            };
+            let (args, res) = b.ty.split_fun();
+            let lams = crate::ww::split_fun(&b.expr);
+            if args.len() != want.len()
+                || !args
+                    .iter()
+                    .zip(&want)
+                    .all(|((m, a), w)| *m == Mult::Many && a.alpha_eq(w))
+                || !res.alpha_eq(&ret)
+                || !lams.0.is_empty()
+                || lams.1.len() != want.len()
+            {
+                return Err(format!(
+                    "handler `{h}` must be a function of {} parameters of type `{shown}`",
+                    want.len()
+                ));
+            }
+            return Ok(());
+        }
+        let mut want: Vec<(Type, String)> = Vec::new();
+        if e.kind == ExternKind::Dynamic {
+            want.push((Type::int(), "the function's address".into()));
+        }
+        if agg_ret {
+            want.push((Type::int(), "the address of the result".into()));
+        }
+        for c in &sig.params {
+            want.push((rep(c), format!("C `{c}`")));
+        }
+        if e.params.len() != want.len() {
+            return Err("the C signature has a different number of parameters".into());
+        }
+        for (t, (w, what)) in e.params.iter().zip(&want) {
+            if !t.alpha_eq(w) {
+                return Err(format!("parameter `{t}` cannot be passed as {what}"));
+            }
+        }
+        if !e.ret.alpha_eq(&ret) {
+            return Err(format!(
+                "result `{}` cannot be returned as C `{}`",
+                e.ret, sig.ret
+            ));
+        }
+        Ok(())
     }
 
     fn data(&mut self, d: &DataDecl) -> R<()> {

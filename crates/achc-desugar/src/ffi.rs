@@ -189,15 +189,15 @@ impl Ds {
                 }
             }
         };
-        let sig = c::CSig {
-            params: params.iter().map(|p| p.0).collect(),
-            ret: ret.map_or(CTy::Void, |r| r.0),
-        };
+        let cps: Vec<CTy> = params.iter().map(|p| p.0).collect();
+        let sig = c::CSig::scalars(&cps, ret.map_or(CTy::Void, |r| r.0));
         let decl = c::ExternDecl {
             name: name.clone(),
             params: params.iter().map(|p| p.1.unboxed()).collect(),
             ret: ret.map_or(c::Type::unit(), |r| r.1.unboxed()),
             c_sig: Some(sig),
+            link: None,
+            kind: c::ExternKind::Call,
         };
         // An extern of the runtime convention (`Int#` = `int64_t`,
         // `Double#` = `double`) is the same function.
@@ -214,10 +214,7 @@ impl Ds {
                 }
             };
             let ps: Option<Vec<CTy>> = e.params.iter().map(conv).collect();
-            Some(c::CSig {
-                params: ps?,
-                ret: conv(&e.ret)?,
-            })
+            Some(c::CSig::scalars(&ps?, conv(&e.ret)?))
         };
         match out.externs.iter().find(|e| e.name == name) {
             Some(e) if e.c_sig.is_none() && plain(e) == decl.c_sig => {}

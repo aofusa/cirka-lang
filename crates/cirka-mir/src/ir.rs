@@ -404,9 +404,20 @@ pub struct ExternDecl {
     /// `None` = `void`.
     pub ret: Option<Ty>,
     /// The C signature of a foreign function: the parameters are `i64`
-    /// (integers, pointers) or `f64`, and the backend converts them to
-    /// these C types at the call (and the result back).
+    /// (integers, pointers, addresses of aggregates) or `f64`, and the
+    /// backend converts them to these C types at the call (and the result
+    /// back; an aggregate result goes to an address before the arguments).
     pub c_sig: Option<cirka_core::CSig>,
+    /// The C symbol when other than `name` (08-ffi.md §7.2).
+    pub link: Option<String>,
+    pub kind: cirka_core::ExternKind,
+}
+
+impl ExternDecl {
+    /// The C symbol called or referred to.
+    pub fn symbol(&self) -> &str {
+        self.link.as_deref().unwrap_or(&self.name)
+    }
 }
 
 /// A static immortal thunk evaluated on first use (a CAF).
@@ -420,6 +431,8 @@ pub struct GlobalDecl {
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct Module {
     pub types: Vec<TypeDef>,
+    /// C structs and unions of the FFI (08-ffi.md §7.2).
+    pub caggs: Vec<cirka_core::CAgg>,
     pub externs: Vec<ExternDecl>,
     pub globals: Vec<GlobalDecl>,
     pub funcs: Vec<Function>,
@@ -429,6 +442,10 @@ pub struct Module {
 }
 
 impl Module {
+    pub fn ctypes(&self) -> cirka_core::CTypes<'_> {
+        cirka_core::CTypes(&self.caggs)
+    }
+
     pub fn ctor(&self, c: CtorRef) -> &CtorDef {
         &self.types[c.ty as usize].ctors[c.ctor as usize]
     }

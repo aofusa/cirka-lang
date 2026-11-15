@@ -35,12 +35,104 @@ pub fn verify_module(m: &Module) -> Vec<Diagnostic> {
             ),
         }
     }
+    for e in &m.externs {
+        if let Err(msg) = extern_shape(m, e, &sigs) {
+            errs.push(Diagnostic::error(format!("extern `{}`: {msg}", e.name)).with_code("M0102"));
+        }
+    }
+    for (what, msg) in m.ctypes().check_decls() {
+        errs.push(Diagnostic::error(format!("{what}: {msg}")).with_code("M0102"));
+    }
+    let uses: Vec<cirka_core::ctype::LinkUse<'_>> = m
+        .externs
+        .iter()
+        .map(|e| cirka_core::ctype::LinkUse {
+            name: &e.name,
+            symbol: e.symbol(),
+            kind: &e.kind,
+            sig: e.c_sig.as_ref(),
+        })
+        .collect();
+    for (what, msg) in cirka_core::ctype::check_links(&uses) {
+        errs.push(Diagnostic::error(format!("{what}: {msg}")).with_code("M0102"));
+    }
     for f in &m.funcs {
         let mut v = FnVerifier::new(m, f, &sigs);
         v.run();
         errs.extend(v.errs);
     }
     errs
+}
+
+/// The MIR types of an extern agree with its C signature and kind
+/// (08-ffi.md §7.2): `i64` for integers, pointers and the addresses of
+/// aggregates, `f64` for floating point, no result for `void` and for an
+/// aggregate result (written to the address before the arguments).
+fn extern_shape(m: &Module, e: &ExternDecl, sigs: &HashMap<&str, &Function>) -> Result<(), String> {
+    use cirka_core::{CTy, CType, ExternKind};
+    let rep = |c: &CType| match c {
+        CType::Scalar(s) if s.is_float() => Ty::F64,
+        _ => Ty::I64,
+    };
+    if e.link.is_some() && e.c_sig.is_none() && e.kind != ExternKind::Addr {
+        return Err("a link name needs a C signature".into());
+    }
+    let sig = match (&e.kind, &e.c_sig) {
+        (ExternKind::Call, None) => return Ok(()),
+        (ExternKind::Addr, sig) => {
+            if let Some(s) = sig {
+                m.ctypes().check_sig(s, &e.kind)?;
+            }
+            if !e.params.is_empty() || e.ret != Some(Ty::I64) {
+                return Err("an address takes no parameters and is i64".into());
+            }
+            return Ok(());
+        }
+        (_, None) => return Err("needs a C signature".into()),
+        (_, Some(s)) => s,
+    };
+    m.ctypes().check_sig(sig, &e.kind)?;
+    let agg_ret = sig.ret.is_agg();
+    let ret = match &sig.ret {
+        CType::Scalar(CTy::Void) => None,
+        _ if agg_ret => None,
+        r => Some(rep(r)),
+    };
+    let mut want = Vec::new();
+    if e.kind == ExternKind::Dynamic {
+        want.push(Ty::I64);
+    }
+    if agg_ret {
+        want.push(Ty::I64);
+    }
+    want.extend(sig.params.iter().map(rep));
+    if let ExternKind::Callback(h) = &e.kind {
+        if e.params != [(Ty::Ptr, Own::Owned)] || e.ret != Some(Ty::I64) {
+            return Err("a callback takes its environment (ptr @owned) and is i64".into());
+        }
+        let Some(f) = sigs.get(h.as_str()) else {
+            return Err(format!("unknown handler `{h}`"));
+        };
+        let mut params = vec![Ty::Ptr];
+        params.extend(want);
+        let res = ret.unwrap_or(Ty::I64);
+        if f.param_tys() != params || f.results() != [res] {
+            return Err(format!(
+                "handler `{h}` must take ({}) and return {res}",
+                params
+                    .iter()
+                    .map(|t| t.name())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        return Ok(());
+    }
+    let have: Vec<Ty> = e.params.iter().map(|p| p.0).collect();
+    if have != want || e.ret != ret {
+        return Err("does not match its C signature".into());
+    }
+    Ok(())
 }
 
 /// `i64` or `(ptr, i64)`.
@@ -666,26 +758,6 @@ impl<'a> FnVerifier<'a> {
                         d.params.len(),
                         args.len()
                     ));
-                }
-                if let Some(c) = &d.c_sig {
-                    let rep = |c: cirka_core::CTy| {
-                        if c.is_float() {
-                            Some(Ty::F64)
-                        } else if c == cirka_core::CTy::Void {
-                            None
-                        } else {
-                            Some(Ty::I64)
-                        }
-                    };
-                    let ok = c.params.len() == d.params.len()
-                        && c.params
-                            .iter()
-                            .zip(&d.params)
-                            .all(|(c, p)| rep(*c) == Some(p.0))
-                        && rep(c.ret) == d.ret;
-                    if !ok {
-                        self.error(format!("extern `{func}` does not match its C signature"));
-                    }
                 }
                 let tys: Vec<Ty> = d.params.iter().map(|p| p.0).collect();
                 let owns: Vec<Own> = d.params.iter().map(|p| p.1).collect();

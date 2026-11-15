@@ -525,6 +525,13 @@ fn params_at_calls(p: &Program, values: bool) -> HashMap<String, Vec<bool>> {
         .iter()
         .map(|(n, k)| (n.to_string(), vec![true; *k]))
         .collect();
+    // C calls the handlers of callbacks (08-ffi.md §7.2): no Core call
+    // shows what they are passed.
+    for h in p.callback_handlers() {
+        if let Some(e) = ev.get_mut(h) {
+            e.fill(false);
+        }
+    }
     loop {
         let mut changed = false;
         for b in &p.binds {

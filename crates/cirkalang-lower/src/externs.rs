@@ -59,9 +59,9 @@ fn foreign_cty(name: &str) -> Option<c::CTy> {
 /// declaration without a C signature uses the runtime convention:
 /// `Int#` is `int64_t`, `Double#` is `double`, `Unit#` is `void`).
 pub(crate) fn same_call(a: &c::ExternDecl, b: &c::ExternDecl) -> bool {
-    fn sig(d: &c::ExternDecl) -> Option<(Vec<c::CTy>, c::CTy)> {
+    fn sig(d: &c::ExternDecl) -> Option<(Vec<c::CType>, c::CType)> {
         if let Some(s) = &d.c_sig {
-            return Some((s.params.clone(), s.ret));
+            return Some((s.params.clone(), s.ret.clone()));
         }
         let one = |t: &c::Type| {
             if *t == c::Type::int() {
@@ -74,8 +74,12 @@ pub(crate) fn same_call(a: &c::ExternDecl, b: &c::ExternDecl) -> bool {
                 None
             }
         };
-        let ps = d.params.iter().map(one).collect::<Option<Vec<_>>>()?;
-        Some((ps, one(&d.ret)?))
+        let ps = d
+            .params
+            .iter()
+            .map(|t| one(t).map(c::CType::Scalar))
+            .collect::<Option<Vec<_>>>()?;
+        Some((ps, c::CType::Scalar(one(&d.ret)?)))
     }
     a == b || (sig(a).is_some() && sig(a) == sig(b))
 }
@@ -322,10 +326,12 @@ impl Lower<'_> {
             name: sym.clone(),
             params: params.iter().map(core_param).collect(),
             ret: ret.as_ref().map_or(c::Type::unit(), core_param),
-            c_sig: c_abi.then(|| c::CSig {
-                params: params.iter().map(|p| p.cty).collect(),
-                ret: ret.as_ref().map_or(c::CTy::Void, |p| p.cty),
+            c_sig: c_abi.then(|| {
+                let ps: Vec<c::CTy> = params.iter().map(|p| p.cty).collect();
+                c::CSig::scalars(&ps, ret.as_ref().map_or(c::CTy::Void, |p| p.cty))
             }),
+            link: None,
+            kind: c::ExternKind::Call,
         };
         let n = params.len();
         let params = Rc::new(params);

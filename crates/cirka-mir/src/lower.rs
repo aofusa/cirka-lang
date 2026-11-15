@@ -289,7 +289,11 @@ impl<'p> Lowerer<'p> {
                 l.box_f = r;
             }
         }
+        m.caggs = p.caggs.clone();
         for e in &p.externs {
+            // A callback keeps its environment (08-ffi.md §7.2); other
+            // externs borrow their objects.
+            let keeps = matches!(e.kind, core::ExternKind::Callback(_));
             m.externs.push(ir::ExternDecl {
                 name: e.name.clone(),
                 params: e
@@ -299,7 +303,7 @@ impl<'p> Lowerer<'p> {
                         let r = l.rep(t);
                         (
                             r,
-                            if r.is_ptr() {
+                            if r.is_ptr() && !keeps {
                                 Own::Borrowed
                             } else {
                                 Own::Owned
@@ -313,6 +317,8 @@ impl<'p> Lowerer<'p> {
                     Some(l.rep(&e.ret))
                 },
                 c_sig: e.c_sig.clone(),
+                link: e.link.clone(),
+                kind: e.kind.clone(),
             });
         }
         l.m = m;

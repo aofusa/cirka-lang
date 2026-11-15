@@ -165,7 +165,8 @@ impl<'a> Lexer<'a> {
                 }
                 Tok::Str(bytes)
             } else {
-                let syms: &[&'static str] = &["=>", "->", "{", "}", "(", ")", ",", ":", "=", "."];
+                let syms: &[&'static str] =
+                    &["=>", "->", "{", "}", "(", ")", ",", ":", "=", "...", "."];
                 let s = syms
                     .iter()
                     .find(|s| self.src[self.pos..].starts_with(s.as_bytes()))
@@ -317,15 +318,45 @@ impl Parser {
             }
         }
     }
-    fn c_ty(&mut self) -> PResult<cirka_core::CTy> {
+    /// A C type: a scalar (`i32`), an aggregate's name or `array(T, n)`.
+    fn c_ty(&mut self) -> PResult<cirka_core::CType> {
         let (s, _) = self.ident()?;
-        match cirka_core::CTy::from_name(&s) {
-            Some(t) => Ok(t),
-            None => {
-                self.pos -= 1;
-                self.err(format!("unknown C type `{s}`"))
-            }
+        if s == "array" && self.is_sym("(") {
+            self.bump();
+            let t = self.c_ty()?;
+            self.expect_sym(",")?;
+            let n = match self.bump().0 {
+                Tok::Int(n) if n > 0 => u32::try_from(n).unwrap_or(u32::MAX),
+                _ => {
+                    self.pos -= 1;
+                    return self.err("expected the length of the array");
+                }
+            };
+            self.expect_sym(")")?;
+            return Ok(cirka_core::CType::Array(Box::new(t), n));
         }
+        Ok(match cirka_core::CTy::from_name(&s) {
+            Some(t) => cirka_core::CType::Scalar(t),
+            None => cirka_core::CType::Agg(s),
+        })
+    }
+
+    /// `cstruct name [packed] { C types }` / `cunion ...`.
+    fn caggdecl(&mut self, m: &mut Module) -> PResult<()> {
+        let (k, _) = self.ident()?;
+        let (name, _) = self.ident()?;
+        let packed = self.is_kw("packed");
+        if packed {
+            self.bump();
+        }
+        let fields = self.comma_list("{", "}", |p| p.c_ty())?;
+        m.caggs.push(cirka_core::CAgg {
+            name,
+            union: k == "cunion",
+            packed,
+            fields,
+        });
+        Ok(())
     }
     fn own(&mut self) -> PResult<Own> {
         match self.peek().clone() {
@@ -392,6 +423,7 @@ impl Parser {
                 Tok::Eof => return Ok(()),
                 Tok::Ident(k) if k == "type" => self.typedef(m)?,
                 Tok::Ident(k) if k == "extern" => self.externdecl(m)?,
+                Tok::Ident(k) if k == "cstruct" || k == "cunion" => self.caggdecl(m)?,
                 Tok::Ident(k) if k == "global" => {
                     self.bump();
                     let (name, _) = self.ident()?;
@@ -402,7 +434,7 @@ impl Parser {
                 Tok::Ident(k) if k == "fn" || k == "cold" => funcs.push(self.function()?),
                 t => {
                     return self.err(format!(
-                        "expected `type`, `extern`, `global` or `fn`, found {}",
+                        "expected `type`, `cstruct`, `cunion`, `extern`, `global` or `fn`, found {}",
                         describe(&t)
                     ));
                 }
@@ -462,22 +494,63 @@ impl Parser {
         } else {
             Some(self.ty()?)
         };
-        // `as c(i32, ptr) -> i32`: the C signature of a foreign function.
+        // `as c(ptr, ..., i32) -> i32`: the C signature of a foreign function.
         let c_sig = if self.is_kw("as") {
             self.bump();
             self.expect_kw("c")?;
-            let ps = self.comma_list("(", ")", |p| p.c_ty())?;
+            let mut variadic = None;
+            let ps = self.comma_list("(", ")", |p| {
+                if p.is_sym("...") {
+                    p.bump();
+                    Ok(None)
+                } else {
+                    p.c_ty().map(Some)
+                }
+            })?;
+            let mut params = Vec::new();
+            for t in ps {
+                match t {
+                    Some(t) => params.push(t),
+                    None if variadic.is_none() => variadic = Some(params.len()),
+                    None => return self.err("`...` twice"),
+                }
+            }
             self.expect_sym("->")?;
             let ret = self.c_ty()?;
-            Some(cirka_core::CSig { params: ps, ret })
+            Some(cirka_core::CSig {
+                params,
+                ret,
+                variadic,
+            })
         } else {
             None
+        };
+        // `link printf`, then one of `dynamic`, `addr`, `callback handler`.
+        let link = if self.is_kw("link") {
+            self.bump();
+            Some(self.ident()?.0)
+        } else {
+            None
+        };
+        let kind = if self.is_kw("dynamic") {
+            self.bump();
+            cirka_core::ExternKind::Dynamic
+        } else if self.is_kw("addr") {
+            self.bump();
+            cirka_core::ExternKind::Addr
+        } else if self.is_kw("callback") {
+            self.bump();
+            cirka_core::ExternKind::Callback(self.ident()?.0)
+        } else {
+            cirka_core::ExternKind::Call
         };
         m.externs.push(ExternDecl {
             name,
             params,
             ret,
             c_sig,
+            link,
+            kind,
         });
         Ok(())
     }

@@ -90,6 +90,7 @@ fn dsl_builds_linted_programs() {
     let bad = mk(&mut b, Mult::Many);
     let prog = |e: Expr, m: Mult| Program {
         datas: vec![handle.clone()],
+        caggs: vec![],
         externs: vec![],
         collect_cycles: false,
         binds: vec![

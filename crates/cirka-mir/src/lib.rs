@@ -16,7 +16,7 @@ pub mod reuse;
 pub mod uniq;
 pub mod verify;
 
-pub use cirka_core::{CSig, CTy};
+pub use cirka_core::{CAgg, CSig, CTy, CType, CTypes, ExternKind, Pass, Piece};
 pub use ir::*;
 pub use parse::parse;
 pub use print::print_module;

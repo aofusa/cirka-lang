@@ -4,6 +4,7 @@
 
 pub mod build;
 pub mod cpr;
+pub mod ctype;
 pub mod expr;
 pub mod io;
 pub mod lint;
@@ -19,6 +20,7 @@ pub mod uniq;
 pub mod unpack;
 pub mod ww;
 
+pub use ctype::{CAgg, CType, CTypes, Layout, Pass, Piece};
 pub use expr::*;
 pub use parse::parse_program;
 pub use print::print_program;

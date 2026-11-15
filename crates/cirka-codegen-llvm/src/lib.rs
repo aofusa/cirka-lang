@@ -7,6 +7,9 @@
 //! - closures and thunks get generated entry stubs, and the generic
 //!   eval/apply helpers `cirka_apply_1..8` are emitted into every module.
 
+mod ffi;
+
+use cirka_mir::ExternKind;
 use cirka_mir::ir::*;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::Write;
@@ -103,6 +106,7 @@ const RUNTIME_DECLS: &[(&str, &str)] = &[
     ("cirka_cycle_candidate", "void @cirka_cycle_candidate(ptr)"),
     ("cirka_cycles_enable", "void @cirka_cycles_enable()"),
     ("cirka_mark_shared", "void @cirka_mark_shared(ptr)"),
+    ("cirka_callback_new", "i64 @cirka_callback_new(ptr, ptr)"),
     (
         "llvm.fptosi.sat.i64.f64",
         "i64 @llvm.fptosi.sat.i64.f64(double)",
@@ -152,29 +156,47 @@ pub fn emit(m: &Module, opts: Options) -> String {
         externs: BTreeMap::new(),
         label_counter: 0,
     };
-    for e in &m.externs {
-        if RUNTIME_DECLS.iter().any(|(n, _)| *n == e.name) {
-            continue;
+    // One declaration per C symbol (08-ffi.md §7.2): the first call's,
+    // else an address's (a function with its signature, or data).
+    for addr in [false, true] {
+        for e in &m.externs {
+            let sym = e.symbol();
+            if RUNTIME_DECLS.iter().any(|(n, _)| *n == sym) || g.externs.contains_key(sym) {
+                continue;
+            }
+            let decl = match (&e.kind, &e.c_sig) {
+                (ExternKind::Call, Some(c)) if !addr => ffi::declaration(m.ctypes(), sym, c),
+                (ExternKind::Call, None) if !addr => {
+                    let params: Vec<&str> = e.params.iter().map(|p| llty(p.0)).collect();
+                    format!(
+                        "declare {} @{sym}({})",
+                        e.ret.map(llty).unwrap_or("void"),
+                        params.join(", ")
+                    )
+                }
+                (ExternKind::Addr, Some(c)) if addr => ffi::declaration(m.ctypes(), sym, c),
+                (ExternKind::Addr, None) if addr => format!("@{sym} = external global i8"),
+                _ => continue,
+            };
+            g.externs.insert(sym.to_string(), decl);
         }
-        let decl = match &e.c_sig {
-            Some(c) => {
-                let params: Vec<String> = c.params.iter().map(|t| c_param(*t)).collect();
-                format!("{} @{}({})", c_ll(c.ret), e.name, params.join(", "))
-            }
-            None => {
-                let params: Vec<&str> = e.params.iter().map(|p| llty(p.0)).collect();
-                format!(
-                    "{} @{}({})",
-                    e.ret.map(llty).unwrap_or("void"),
-                    e.name,
-                    params.join(", ")
-                )
-            }
-        };
-        g.externs.insert(e.name.clone(), decl);
     }
     for f in &m.funcs {
         g.function(f);
+    }
+    for e in &m.externs {
+        if let (ExternKind::Callback(h), Some(sig)) = (&e.kind, &e.c_sig) {
+            let hf = g.funcs[h.as_str()];
+            let t = ffi::trampoline(
+                m.ctypes(),
+                &e.name,
+                sig,
+                &mangle(h),
+                llty(hf.ret),
+                hf.params[0].own == Own::Owned,
+            );
+            g.out.push_str(&t);
+        }
     }
     for gl in &m.globals {
         g.thunk_stubs.insert(gl.init.clone(), ());
@@ -199,7 +221,7 @@ pub fn emit(m: &Module, opts: Options) -> String {
         let _ = writeln!(s, "declare {d}");
     }
     for d in g.externs.values() {
-        let _ = writeln!(s, "declare {d}");
+        let _ = writeln!(s, "{d}");
     }
     s.push('\n');
     s.push_str(&g.globals);
@@ -1011,9 +1033,23 @@ impl<'m> Gen<'m> {
             }
             Rhs::Extern { func, args } => {
                 let d = m.extern_decl(func).expect("ICE: undeclared extern");
-                if let Some(sig) = &d.c_sig {
-                    self.c_call(c, dst, func, sig, args, bound);
-                    return;
+                match (&d.kind, &d.c_sig) {
+                    (ExternKind::Addr, _) => {
+                        c.line(&format!("{dst} = ptrtoint ptr @{} to i64", d.symbol()));
+                        return;
+                    }
+                    (ExternKind::Callback(_), _) => {
+                        let env = self.operand(&args[0]);
+                        c.line(&format!(
+                            "{dst} = call i64 @cirka_callback_new(ptr @\"cb.{func}\", ptr {env})"
+                        ));
+                        return;
+                    }
+                    (_, Some(sig)) => {
+                        self.c_call(c, dst, d, sig, args, bound);
+                        return;
+                    }
+                    (_, None) => {}
                 }
                 let tys: Vec<Ty> = d.params.iter().map(|p| p.0).collect();
                 let a = self.typed_args(f, args, Some(&tys));
@@ -1041,67 +1077,46 @@ impl<'m> Gen<'m> {
     }
 
     /// A call of a foreign function: converts the `i64` / `f64` arguments
-    /// to the C types and the result back.
+    /// to the C types (aggregates from their addresses) and the result
+    /// back (08-ffi.md §7.2).
     fn c_call(
         &mut self,
         c: &mut FnCtx<'_>,
         dst: &str,
-        func: &str,
+        d: &cirka_mir::ExternDecl,
         sig: &cirka_mir::CSig,
         args: &[Operand],
         bound: bool,
     ) {
-        use cirka_mir::CTy;
-        let mut parts = Vec::new();
-        for (a, t) in args.iter().zip(&sig.params) {
-            let o = self.operand(a);
-            let v = match t {
-                CTy::I64 | CTy::U64 | CTy::F64 => o,
-                CTy::Ptr => {
-                    let x = c.t();
-                    c.line(&format!("{x} = inttoptr i64 {o} to ptr"));
-                    x
-                }
-                CTy::F32 => {
-                    let x = c.t();
-                    c.line(&format!("{x} = fptrunc double {o} to float"));
-                    x
-                }
-                t => {
-                    let x = c.t();
-                    c.line(&format!("{x} = trunc i64 {o} to {}", c_ll(*t)));
-                    x
-                }
-            };
-            parts.push(format!("{} {v}", c_param(*t)));
-        }
-        let func = if sig.params == [CTy::F64] && sig.ret == CTy::F64 {
-            libm_intrinsic(func)
+        let mut ops: Vec<String> = args.iter().map(|a| self.operand(a)).collect();
+        let dynamic = d.kind == ExternKind::Dynamic;
+        let callee = if dynamic {
+            let fp = ops.remove(0);
+            let x = c.t();
+            c.line(&format!("{x} = inttoptr i64 {fp} to ptr"));
+            x
+        } else if sig.variadic.is_none()
+            && sig.params == [cirka_mir::CType::Scalar(cirka_mir::CTy::F64)]
+            && sig.ret == cirka_mir::CType::Scalar(cirka_mir::CTy::F64)
+        {
+            format!("@{}", libm_intrinsic(d.symbol()))
         } else {
-            func.to_string()
+            format!("@{}", d.symbol())
         };
-        let call = format!("@{func}({})", parts.join(", "));
-        match sig.ret {
-            CTy::Void => {
-                c.line(&format!("call void {call}"));
-                if bound {
-                    c.line(&format!("{dst} = add i64 0, 0"));
-                }
-            }
-            CTy::I64 | CTy::U64 | CTy::F64 => {
-                c.line(&format!("{dst} = call {} {call}", c_ll(sig.ret)));
-            }
-            r => {
-                let x = c.t();
-                c.line(&format!("{x} = call {} {call}", c_ll(r)));
-                let conv = match r {
-                    CTy::Ptr => format!("ptrtoint ptr {x} to i64"),
-                    CTy::F32 => format!("fpext float {x} to double"),
-                    r if r.is_signed() => format!("sext {} {x} to i64", c_ll(r)),
-                    r => format!("zext {} {x} to i64", c_ll(r)),
-                };
-                c.line(&format!("{dst} = {conv}"));
-            }
+        let mut lines = Vec::new();
+        let defined = {
+            let mut fresh = || c.t();
+            let mut e = ffi::Emit {
+                lines: &mut lines,
+                fresh: &mut fresh,
+            };
+            ffi::call(self.m.ctypes(), &mut e, dst, &callee, sig, dynamic, &ops)
+        };
+        for l in &lines {
+            c.line(l);
+        }
+        if bound && !defined {
+            c.line(&format!("{dst} = add i64 0, 0"));
         }
     }
 
@@ -1785,38 +1800,12 @@ fn capture_slot(tys: &[Ty], i: usize) -> usize {
     }
 }
 
-/// The LLVM type of a C scalar.
-fn c_ll(t: cirka_mir::CTy) -> &'static str {
-    use cirka_mir::CTy::*;
-    match t {
-        I8 | U8 => "i8",
-        I16 | U16 => "i16",
-        I32 | U32 => "i32",
-        I64 | U64 => "i64",
-        F32 => "float",
-        F64 => "double",
-        Ptr => "ptr",
-        Void => "void",
-    }
-}
-
 /// The LLVM intrinsic for a pure libm function on doubles (one instruction
 /// for `sqrt`, and no `errno`: FEAT-0063), or the function itself.
 fn libm_intrinsic(func: &str) -> String {
     match func {
         "sqrt" | "fabs" | "floor" | "ceil" | "trunc" => format!("llvm.{func}.f64"),
         f => f.to_string(),
-    }
-}
-
-/// A C parameter or result type with the extension attribute that the
-/// System V ABI (as implemented by clang and gcc) expects for small integers.
-fn c_param(t: cirka_mir::CTy) -> String {
-    use cirka_mir::CTy::*;
-    match t {
-        I8 | I16 => format!("{} signext", c_ll(t)),
-        U8 | U16 => format!("{} zeroext", c_ll(t)),
-        _ => c_ll(t).to_string(),
     }
 }
 

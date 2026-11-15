@@ -117,6 +117,8 @@ fn random_module(rng: &mut Rng) -> Module {
             Some(Ty::I64)
         },
         c_sig: None,
+        link: None,
+        kind: crate::ExternKind::Call,
     });
     let nf = 1 + rng.below(3);
     for fi in 0..nf {
@@ -393,7 +395,10 @@ fn c_signatures_round_trip_and_run() {
     let d = m.extern_decl("ldexpf").unwrap();
     assert_eq!(
         d.c_sig.as_ref().unwrap().params,
-        vec![crate::CTy::F32, crate::CTy::I32]
+        vec![
+            crate::CType::Scalar(crate::CTy::F32),
+            crate::CType::Scalar(crate::CTy::I32)
+        ]
     );
     let printed = print_module(&m);
     assert!(printed.contains("as c(f32, i32) -> f32"), "{printed}");

@@ -10,6 +10,7 @@
 //!       ((Cons y ys) (con Cons (b) (f y) (map @ ...)))))))
 //! ```
 
+use crate::ctype::{CAgg, CType};
 use crate::expr::*;
 use crate::sexp::{Sexp, read};
 use crate::ty::*;
@@ -72,9 +73,15 @@ pub fn parse_program(file: FileId, src: &str) -> R<Program> {
     for f in &forms {
         match f.head() {
             Some("data") => {}
+            Some("cstruct") | Some("cunion") => prog.caggs.push(p.cagg(f)?),
             Some("extern") => prog.externs.push(p.extern_decl(f)?),
             Some("def") => prog.binds.push(p.def(f)?),
-            _ => return err(f.span(), "expected `data`, `extern` or `def`"),
+            _ => {
+                return err(
+                    f.span(),
+                    "expected `data`, `cstruct`, `cunion`, `extern` or `def`",
+                );
+            }
         }
     }
     Ok(prog)
@@ -292,13 +299,59 @@ impl Parser {
         Ok(d)
     }
 
-    fn extern_decl(&mut self, f: &Sexp) -> R<ExternDecl> {
+    /// `(cstruct name [:packed] (field-types))` / `(cunion ...)`.
+    fn cagg(&mut self, f: &Sexp) -> R<CAgg> {
         let l = f.list().unwrap();
-        if l.len() != 4 && l.len() != 5 {
+        let union = f.head() == Some("cunion");
+        let packed = matches!(l.get(2), Some(Sexp::Sym(k, _)) if k == ":packed");
+        let rest = &l[1..];
+        if rest.len() != 2 + usize::from(packed) {
             return err(
                 f.span(),
-                "expected (extern name (param types) result-type [(c (c types) c-type)])",
+                "expected (cstruct name [:packed] (field C types))",
             );
+        }
+        let name = self.sym(&rest[0], "a C type name")?.to_string();
+        let mut fields = Vec::new();
+        for x in self.list(&rest[rest.len() - 1], "field C types")? {
+            fields.push(Self::c_type(x)?);
+        }
+        Ok(CAgg {
+            name,
+            union,
+            packed,
+            fields,
+        })
+    }
+
+    /// A C type: a scalar (`i32`), an aggregate's name or `(array T n)`.
+    fn c_type(x: &Sexp) -> R<CType> {
+        match x {
+            Sexp::Sym(n, _) => Ok(match CTy::from_name(n) {
+                Some(t) => CType::Scalar(t),
+                None => CType::Agg(n.clone()),
+            }),
+            Sexp::List(l, _) => match l.as_slice() {
+                [Sexp::Sym(a, _), t, Sexp::Int(n, _)] if a == "array" && *n > 0 => {
+                    Ok(CType::Array(
+                        Box::new(Self::c_type(t)?),
+                        u32::try_from(*n).unwrap_or(u32::MAX),
+                    ))
+                }
+                _ => err(x.span(), "expected (array C-type length)"),
+            },
+            _ => err(x.span(), "expected a C type (i32, f64, ptr, a struct, ...)"),
+        }
+    }
+
+    /// `(extern name (param types) result-type [(c (C types) C-type)]
+    /// [:link symbol] [:dynamic | :addr | :callback handler])`.
+    fn extern_decl(&mut self, f: &Sexp) -> R<ExternDecl> {
+        let l = f.list().unwrap();
+        const SHAPE: &str = "expected (extern name (param types) result-type \
+             [(c (C types) C-type)] [:link symbol] [:dynamic | :addr | :callback handler])";
+        if l.len() < 4 {
+            return err(f.span(), SHAPE);
         }
         let name = self.sym(&l[1], "an extern name")?.to_string();
         let mut params = Vec::new();
@@ -306,37 +359,66 @@ impl Parser {
             params.push(self.ty(p)?);
         }
         let ret = self.ty(&l[3])?;
-        let c_sig = match l.get(4) {
-            None => None,
-            Some(s) => {
+        let mut rest = &l[4..];
+        let c_sig = match rest.first() {
+            Some(s @ Sexp::List(..)) => {
+                rest = &rest[1..];
                 let parts = self.list(s, "a C signature")?;
-                let cty = |x: &Sexp| -> R<CTy> {
-                    match x {
-                        Sexp::Sym(n, _) => CTy::from_name(n).map_or_else(
-                            || err(x.span(), "expected a C type (i32, f64, ptr, ...)"),
-                            Ok,
-                        ),
-                        _ => err(x.span(), "expected a C type (i32, f64, ptr, ...)"),
-                    }
-                };
                 if parts.len() != 3 || !matches!(&parts[0], Sexp::Sym(k, _) if k == "c") {
                     return err(s.span(), "expected (c (param C types) result C type)");
                 }
                 let mut ps = Vec::new();
+                let mut variadic = None;
                 for p in self.list(&parts[1], "C parameter types")? {
-                    ps.push(cty(p)?);
+                    if matches!(p, Sexp::Sym(d, _) if d == "...") {
+                        if variadic.is_some() {
+                            return err(p.span(), "`...` twice");
+                        }
+                        variadic = Some(ps.len());
+                    } else {
+                        ps.push(Self::c_type(p)?);
+                    }
                 }
                 Some(CSig {
                     params: ps,
-                    ret: cty(&parts[2])?,
+                    ret: Self::c_type(&parts[2])?,
+                    variadic,
                 })
             }
+            _ => None,
         };
+        let mut link = None;
+        let mut kind = ExternKind::Call;
+        while let Some(o) = rest.first() {
+            let opt = self.sym(o, "an extern option")?;
+            let mut arg = || match rest.get(1) {
+                Some(a) => {
+                    let v = self.sym(a, "a name")?.to_string();
+                    rest = &rest[1..];
+                    Ok(v)
+                }
+                None => err(o.span(), format!("`{opt}` needs a name")),
+            };
+            match opt {
+                ":link" if link.is_none() => link = Some(arg()?),
+                ":dynamic" | ":addr" | ":callback" if kind == ExternKind::Call => {
+                    kind = match opt {
+                        ":dynamic" => ExternKind::Dynamic,
+                        ":addr" => ExternKind::Addr,
+                        _ => ExternKind::Callback(arg()?),
+                    }
+                }
+                _ => return err(o.span(), SHAPE),
+            }
+            rest = &rest[1..];
+        }
         Ok(ExternDecl {
             name,
             params,
             ret,
             c_sig,
+            link,
+            kind,
         })
     }
 

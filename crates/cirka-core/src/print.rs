@@ -46,19 +46,44 @@ pub fn print_program(p: &Program) -> String {
         }
         s.push_str(")\n");
     }
+    for a in &p.caggs {
+        let fs: Vec<String> = a.fields.iter().map(|t| t.to_string()).collect();
+        let _ = writeln!(
+            s,
+            "({} {}{} ({}))",
+            if a.union { "cunion" } else { "cstruct" },
+            a.name,
+            if a.packed { " :packed" } else { "" },
+            fs.join(" ")
+        );
+    }
     for e in &p.externs {
         let names = Names::default();
         let ps: Vec<String> = e.params.iter().map(|t| names.ty(t)).collect();
-        let csig = match &e.c_sig {
+        let mut tail = match &e.c_sig {
             Some(c) => {
-                let cs: Vec<&str> = c.params.iter().map(|t| t.name()).collect();
-                format!(" (c ({}) {})", cs.join(" "), c.ret.name())
+                let mut cs: Vec<String> = c.params.iter().map(|t| t.to_string()).collect();
+                if let Some(n) = c.variadic {
+                    cs.insert(n, "...".into());
+                }
+                format!(" (c ({}) {})", cs.join(" "), c.ret)
             }
             None => String::new(),
         };
+        if let Some(l) = &e.link {
+            let _ = write!(tail, " :link {l}");
+        }
+        match &e.kind {
+            ExternKind::Call => {}
+            ExternKind::Dynamic => tail.push_str(" :dynamic"),
+            ExternKind::Addr => tail.push_str(" :addr"),
+            ExternKind::Callback(h) => {
+                let _ = write!(tail, " :callback {h}");
+            }
+        }
         let _ = writeln!(
             s,
-            "(extern {} ({}) {}{csig})",
+            "(extern {} ({}) {}{tail})",
             e.name,
             ps.join(" "),
             names.ty(&e.ret)

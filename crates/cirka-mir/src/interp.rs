@@ -817,27 +817,52 @@ impl<'m> Interp<'m> {
                 }
             }
             Rhs::Extern { func, args } => {
+                use cirka_core::ExternKind;
                 let vals = self.operands(frame, args);
-                match m.extern_decl(func).and_then(|d| d.c_sig.as_ref()) {
-                    Some(sig) => {
+                let Some(d) = m.extern_decl(func) else {
+                    return fault(format!("undeclared extern {func}"));
+                };
+                match (&d.kind, &d.c_sig) {
+                    (ExternKind::Call, None) => self.external(func, &vals)?,
+                    (ExternKind::Addr, _) => match crate::ffi::symbol(d.symbol()) {
+                        Ok(a) => Val::I(a),
+                        Err(e) => return fault(e),
+                    },
+                    (ExternKind::Callback(_), _) => {
+                        return fault(
+                            "C callbacks are not available in the interpreter (run the native program)",
+                        );
+                    }
+                    (_, None) => return fault(format!("extern {func} without a C signature")),
+                    (kind, Some(sig)) => {
                         let a: Vec<crate::ffi::Arg> = vals
                             .iter()
-                            .zip(&sig.params)
-                            .map(|(v, t)| {
-                                if t.is_float() {
+                            .zip(&d.params)
+                            .map(|(v, (t, _))| {
+                                if *t == Ty::F64 {
                                     crate::ffi::Arg::F(v.float())
                                 } else {
                                     crate::ffi::Arg::I(v.int())
                                 }
                             })
                             .collect();
-                        match crate::ffi::call(func, &sig.params, sig.ret, &a) {
+                        let ct = m.ctypes();
+                        // The C function sees and leaves the thread's
+                        // `errno` as in a native program (`cirka_errno`).
+                        crate::ffi::set_errno(self.errno);
+                        let r = if *kind == ExternKind::Dynamic {
+                            let f = vals.first().map_or(0, |v| v.int());
+                            crate::ffi::call_at(f, func, ct, sig, &a[1..])
+                        } else {
+                            crate::ffi::call(d.symbol(), ct, sig, &a)
+                        };
+                        self.errno = crate::ffi::errno();
+                        match r {
                             Ok(crate::ffi::Ret::I(i)) => Val::I(i),
                             Ok(crate::ffi::Ret::F(x)) => Val::F(x),
                             Err(e) => return fault(e),
                         }
                     }
-                    None => self.external(func, &vals)?,
                 }
             }
             Rhs::Global(g) => {
@@ -1807,8 +1832,8 @@ impl Interp<'_> {
                 b.push(0);
                 let p = match crate::ffi::call(
                     "malloc",
-                    &[crate::CTy::U64],
-                    crate::CTy::Ptr,
+                    cirka_core::CTypes(&[]),
+                    &cirka_core::CSig::scalars(&[crate::CTy::U64], crate::CTy::Ptr),
                     &[crate::ffi::Arg::I(b.len() as i64)],
                 ) {
                     Ok(crate::ffi::Ret::I(p)) => p,

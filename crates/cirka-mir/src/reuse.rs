@@ -23,6 +23,7 @@ pub fn optimize(m: &mut Module) {
     let types = m.types.clone();
     let tm = Module {
         types,
+        caggs: Vec::new(),
         externs: Vec::new(),
         globals: Vec::new(),
         funcs: Vec::new(),
