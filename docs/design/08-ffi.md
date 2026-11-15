@@ -274,6 +274,31 @@ aCHC は `Foreign.C.Error.getErrno` がこれを呼ぶ。
 - `Foreign.C.Error` (縮小版): `Errno`・`getErrno`・`errnoToIOError`・`throwErrno` 系と主な `e…` 定数。`resetErrno` はない
   (インタプリタはスレッドの errno を C の呼び出しの前後で受け渡すため、C 側の `errno` を直接書き換えられない)。
 
+### 7.3 リンクするライブラリと CirkaLang の extern ブロック (FEAT-0250)
+
+**リンクするライブラリ。** 共通 Core の `Program` と MIR の `Module` に、プログラムが使う C のライブラリの名前の並び `libs` を持たせる
+(フロントエンドが設定する。テキスト形式には含めない)。
+
+- ネイティブでは、ドライバが CLI のリンカのフラグ (`-L`・`-l`・`-Wl,`) の後に `-l名前` を並べる (`native::lib_args`)。
+- インタプリタは実行の前に `lib名前.so` を読み込む (`ffi::load_library`)。C ライブラリの一部 (`c`・`m`・`pthread`・`dl`・`rt`) は
+  インタプリタのプロセスに読み込み済みで、その `.so` はリンカスクリプトなので飛ばす。
+- CirkaLang は extern の関数のブロックの `link "名前"` を最初に現れた順に重複なく集める ([spec-v0.0.6.md](cirkalang/spec-v0.0.6.md) §1.6)。
+  aCHC の `libs` は空 (リンクするライブラリは CLI の `-l` で指定する)。
+
+**CirkaLang の extern ブロックから共通基盤へ。** 宣言の意味は spec-v0.0.6.md §1。共通基盤への写し方は次のとおり。
+
+- 構造体・共用体・列挙・定数・型の別名は、構文解析の後に AST の上で通常のデータ型・定義・`impl Storable` に展開する (`cirkalang-syntax` の `cextern`)。
+  構造体・共用体には C のメモリとの間で値を読み書きする `S.$peek : Int -> IO S` と `S.$poke : Int -> S -> IO ()` を生成し、
+  フィールドの位置は `Foreign.primCLayout (nullPtr : Ptr S) k` (0 は大きさ、1 は境界、`2 + i` はフィールド `i` の位置) で書く。
+  lowering はプログラムの構造体・共用体を §7.2 の C の集成型の表に入れ、`cirka_core::CTypes::layout` で求めた値で `primCLayout` を定数に畳む。
+- 値渡しの集成型の引数は、呼び出しの前に `malloc` した領域へ `$poke` で書き、そのアドレスを §7.2 の規則で渡して、呼び出しの後に `free` する。
+  集成型の結果は確保した領域に受けて `$peek` で読む。列挙は表現の整数で渡る。
+- 種類は §7.2 の表に写す: `"dynamic"` は `:dynamic`、`"&sym"` は `:addr`、`"wrapper"` は `:callback h` で、ハンドラ `h` は
+  `{名前}$handler` (CirkaLang の関数を環境として呼び、結果が `IO` なら実行する)。記号名や種類のある宣言の Core の名前は `{名前}$c`。
+  同じ記号の宣言は 1 つの C の宣言にまとめ、型が違えば E1271 (可変長の関数は固定部と結果を比べる)。
+- C のポインタが指す値の読み書き・`alloca` 系は `Foreign` (core) の `Storable` で、新しい Core の構文は要らない。
+  コールバックの解放は `Foreign.freeFunPtr` (`cirka_callback_free`)。
+
 ## 8. CirkaLang の記法
 
 ```
@@ -299,10 +324,13 @@ impl Release File where
 ```
 
 - 型の対応・所有権の考え方 (§2〜§5) は aCHC と同じ。`OwnedPtr` は `LType`。
-- **v0.0.2 で実装した範囲** (FEAT-0213、[spec-v0.0.2.md](cirkalang/spec-v0.0.2.md) §8。共通基盤の §7.2 を使う記法は FEAT-0250): スカラーの引数と結果、`Foreign` の C の型 (`Int` / `Float` を包むデータ型)、
+- **v0.0.2 で実装した範囲** (FEAT-0213、[spec-v0.0.2.md](cirkalang/spec-v0.0.2.md) §8): スカラーの引数と結果、`Foreign` の C の型 (`Int` / `Float` を包むデータ型)、
   `Ptr` / `OwnedPtr`、構成子とフィールドが 1 つの利用者の型、`withCString` / `peekCString`。フロントエンドは引数の箱を開けて結果を箱に入れる Core のラッパと、
-  C シグネチャ付きの `extern` 宣言 (§7.1 と同じ共通基盤) を生成する。ブロック内の `type`・`struct`・`free with`・`BorrowedPtr`・`link` の任意のライブラリは
-  FEAT-0047 / 0048 で加える。不透明型は構成子のないデータ型か `Ptr` の型引数で表す。
+  C シグネチャ付きの `extern` 宣言 (§7.1 と同じ共通基盤) を生成する。
+- **v0.0.6 で実装した範囲** (FEAT-0250、[spec-v0.0.6.md](cirkalang/spec-v0.0.6.md) §1、§7.3): ブロック内の不透明型 `type T`・型の別名・定数・列挙・構造体・共用体、
+  構造体・共用体の値渡し、可変長引数、関数ポインタ (`"dynamic"`・`"wrapper"`・`"&sym"`)、記号名の指定、任意のライブラリの `link`、`Storable`、`cirka bindgen`。
+- 上の例の `free with`・`BorrowedPtr`・`MutPtr`・`Nullable`・`CString` は設計の構想で、CirkaLang にはまだない。v0.0.6 ではポインタはすべて `Ptr` で、
+  所有権は推測せず (ADR-093)、`Release` を持つ線形な型のラッパを書いて RAII にする (spec-v0.0.6.md §1.8 の zlib)。借用ポインタは借用の領域とともに第二段階で検討する。
 - CirkaLang ではエラーは `Result` で返すラッパを標準とし、`errno` は `Result IOError a` に変換する (std.os、FEAT-0242)。
 - 部分集合型を FFI 宣言に付けられる (例: `{n : CSize | n <= length buf}`)。宣言の述語は信頼される仮定として扱い、`--report` に列挙する (13 §1 P5)。
 

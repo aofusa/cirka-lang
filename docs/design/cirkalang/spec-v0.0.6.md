@@ -51,14 +51,19 @@ extern "C" link "z" where
 - ブロックの項目は、関数の宣言 `名前 : 型` (v0.0.2) に加えて、次の宣言である。先頭の語 `type` `const` `enum` `struct` `union` `packed` は
   extern ブロックの項目の先頭でだけ働く文脈キーワードで、予約語ではない。
   - `type T`: **不透明型**。構成子のない型 `T : Type` で、`Ptr T` の型引数にだけ使える (値として渡すと E1270)。
+    C のハンドル (`VkInstance` = `struct VkInstance_T *` など) は不透明型へのポインタで、`Release` を持つ線形な型に包んで RAII で管理する (§1.8)。
   - `type T = 型`: **型の別名** (C の `typedef`)。`T : Type` の大域定義で、定義的等価性で展開される (別の型にはならない)。
-  - `const X : 型 = リテラル`: **定数**。型は境界を越えるスカラーの型 (§1.2) か `String`。リテラルは整数・浮動小数・文字列で、数には `-` を付けられる。
+    別名は extern の関数・データ型より先に検査するので、どのモジュールの関数の型・構成子のフィールドにも書ける。
+  - `const X : 型 = リテラル`: **定数**。型は境界を越えるスカラーの型 (§1.2) か `String`。リテラルは整数・浮動小数・文字列で、数には `-` を付けられる
+    (C の型のリテラル、§1.2)。
   - `enum T : 整数の型 where { 名前 = 整数 }`: **列挙** (§1.3)。
   - `struct T where { フィールド : 型 }`、`union T where { … }`、`packed struct T where { … }`: **構造体・共用体** (§1.3)。
 - 型・定数・列挙の定数の名前は大文字で始まる (定数も値の名前として使える。パターンには書けない)。フィールドの名前は小文字で始まる。
 - `"記号" 名前 : 型` は C の記号 `記号` を `名前` で宣言する (C の名前が予約語や大文字で始まるとき、同じ関数を別の型で宣言するとき)。
-  記号が `"dynamic"`・`"wrapper"`・`"&…"` のものは §1.5。
+  記号は C の識別子 (英数字と `_`) でなければならない (E1272)。記号が `"dynamic"`・`"wrapper"`・`"&…"` のものは §1.5。
+  `extern "cirka"` (ランタイムの関数) には記号名も `...` も書けない (E1272)。
 - ブロックの宣言は互いに参照でき、書く順序によらない。`private` を付けたブロックの名前 (構成子・フィールドの関数を含む) はすべて非公開になる。
+- 局所の宣言は取り込んだモジュールの同名の名前を隠す (bindgen が書く `type Callback = …` は `Foreign.Callback` に優先する)。
 
 ### 1.2 C の型と `Storable`
 
@@ -71,9 +76,15 @@ extern "C" link "z" where
 | `CArray n a` | 構造体のフィールドの配列 `a[n]` (`n : Int`) | `MkCArray (List a)` (書き込むとき `n` 個に切り詰め、足りなければ `zeroed` で埋める) |
 
 `Ptr a` と `FunPtr f` の `Eq` `Ord` `Show` は指す先の型によらない (v0.0.5 までの導出は `Eq a` などを要求した)。
+`CArray n a` の `Eq` は C の値として比べる: どちらも `n` 個に切り詰め・`zeroed` で埋めた (`resize n`) 要素の列を比べる (`Eq a` と `Storable a` が要る)。
 
 境界を越えるスカラーの型は v0.0.2 の型 (`Int` `UInt` `Float` `Char` `Bool`、`Foreign` の C の型、`Ptr` / `OwnedPtr`、それらを包む型) に `CBool` と `FunPtr` を加えたもの。
 構造体・共用体・列挙の型も関数の引数と結果に書ける (§1.3)。
+
+**C の型のリテラル.** 整数リテラルは `Foreign` の C の整数型の値として書ける: `42 : CInt` は `MkCInt 42` である。
+範囲は C の型のもの (`CChar` −128〜127、`CUChar` 0〜255、`CShort`・`CUShort`・`CInt`・`CUInt`・`CLong`・`CSSize`・`CULong`・`CSize` も同様、`CBool` 0〜1) で、
+外れると E1200 (`literal out of range for `CUChar``)。`CULong`・`CSize` の 2⁶³ 以上の値はビットを保った `Int` になる。
+浮動小数点リテラルと整数リテラルは `CFloat`・`CDouble` の値としても書ける。数の演算 (`Num`) は C の型にはない (v0.0.6 では `fromCInt` などで `Int` にして計算する)。
 
 ```
 trait Storable a where
@@ -87,7 +98,8 @@ trait Storable a where
 - `impl` があるのは、`Foreign` の C の型・`Int` `UInt` `Float` (`int64_t` `uint64_t` `double`)・`Ptr a`・`FunPtr f`・`CArray n a` (`Storable a` から)・
   extern ブロックの構造体・共用体・列挙。読み書きはメモリの位置を検査しない (C と同じ。v0.0.2 の `peekInt32` などと同じ扱い)。
 - 補助関数: `peekElemOff` `pokeElemOff` `advancePtr` (要素単位)、`alloca : Storable a => (Ptr a -> IO b) -> IO b`、
-  `withValue : Storable a => a -> (Ptr a -> IO b) -> IO b` (`with` は予約語)、`allocaArray` `withArray` `peekArray` `pokeArray`、`mallocArray`。
+  `withValue : Storable a => a -> (Ptr a -> IO b) -> IO b` (`with` は予約語)、`allocaArray` `withArray` `peekArray` `pokeArray` `pokeArrayN`、`mallocArray`、
+  `resize : Storable a => Int -> List a -> List a` (`n` 個に切り詰め・`zeroed` で埋める)、`zeroedList`。
   `alloca` などのメモリは関数が戻った後に解放する (`withCString` と同じく、ポインタの持ち出しは検査しない)。
 
 **impl の値の変数.** `impl {n : Int} -> Storable a => Storable (CArray n a)` のように、型でない型 (`Int` など) で宣言した impl の変数は
@@ -99,25 +111,29 @@ trait Storable a where
 **構造体.** `struct S where { f1 : T1; …; fn : Tn }` は次を定める。
 
 - データ型 `S : Type` と構成子 `MkS : T1 -> … -> Tn -> S` (フィールドの順)。`Eq` と `Show` を導出する。
-- フィールドの関数 `S.fi : S -> Ti` と、置き換えた値を作る `S.set_fi : Ti -> S -> S`。名前はデータ型の名前で修飾した形でだけ書ける
-  (別名で取り込んだモジュールなら `Vk.VkExtent2D.width`)。
+- フィールドの関数 `S.fi : S -> Ti`、置き換えた値を作る `S.set_fi : Ti -> S -> S`、C のメモリの中のフィールドを指す `S.ptr_fi : Ptr S -> Ptr Ti`。
+  名前はデータ型の名前で修飾した形でだけ書ける (別名で取り込んだモジュールなら `Vk.VkExtent2D.width`)。
 - `impl Storable S`。フィールドの位置・大きさ・境界は C (x86_64 SysV) と同じで、`packed` は境界を 1 にする。
-- フィールドの型は、境界を越えるスカラーの型・列挙・構造体・共用体 (値の入れ子。自分自身は不可)・`CArray n T` とそれらの別名。
-  `String`・リスト・関数・線形な型 (`OwnedPtr` を含む) は書けない (E1272)。
+- フィールドの型は、`Foreign` の C の型・`Int` `UInt` `Float`・`Ptr` `FunPtr`・列挙・構造体・共用体 (値の入れ子。自分自身は不可)・`CArray n T`、それらの別名と、
+  それらを包む型 (`Storable` の `impl` が要る)。`Bool` と `Char` (C での大きさが決まっていない。`CBool` を使う)・`String`・リスト・関数・
+  線形な型 (`OwnedPtr` を含む) は書けない (E1272)。フィールドのない構造体も書けない (E1272。ポインタでだけ使う型は不透明型にする)。
 
 ```
 p0 : VkExtent2D
-p0 = VkExtent2D.set_width (MkCUInt 64) zeroed
+p0 = VkExtent2D.set_width 64 zeroed
 ```
 
-**共用体.** `union U where { … }` はデータ型 `U` と構成子 `MkU : CArray k CUChar -> U` (`k` は共用体の大きさ) で、値は **バイト列** である。
-`impl Storable U` を持ち、メンバーはポインタを通して読み書きする (`peek (castPtr p : Ptr CFloat)`)。
+**共用体.** `union U where { m1 : T1; … }` はデータ型 `U` と構成子 `MkU : List CUChar -> U` で、値は **バイト列** である
+(書き込むとき共用体の大きさに切り詰め、足りなければ 0 で埋める)。`impl Storable U` を持つ。
+メンバーはポインタを通して読み書きする: `U.mi : Ptr U -> Ptr Ti` (`peek (Number.f p)`)。
+`Eq` は大きさのバイトを比べ (`resize`)、`Show` はバイト列を示す。メンバーの型の規則は構造体のフィールドと同じ。
 
 **列挙.** `enum E : I where { A = 1; … }` はデータ型 `E` と構成子 `MkE : I -> E` (`Eq` `Ord` `Show` を導出)、定数 `A : E`、`impl Storable E` を定める。
 `I` は `Foreign` の整数の C の型。値は宣言した定数に限らない (C と同じ)。
 
 **値渡し.** 構造体・共用体・列挙の値は、extern の関数の引数と結果にそのまま書ける。構造体と共用体は C の値渡し (x86_64 SysV の分類) で渡り、
 列挙は整数として渡る。値は C 側の複製であり、C が書き換えても CirkaLang の値は変わらない。C に書き換えさせるときは `Ptr S` を渡す。
+構造体を包む型 (`data W = MkW S`) は境界を越えない (E1270)。
 
 ### 1.4 可変長引数
 
@@ -128,7 +144,7 @@ extern "C" where
 ```
 
 - 型の中の `...` は可変長の関数の固定部の終わりを表す。`...` の後に書いた引数が、その宣言で渡す可変部である。
-  可変部の型を変えて呼ぶときは、記号名を指定して別の名前で宣言する (Idris 2 と同じく、呼び出しごとの型は宣言で決める)。
+  可変部の型を変えて呼ぶときは、記号名を指定して別の名前で宣言する (Idris 2 と同じく、呼び出しごとの型は宣言で決める)。`...` は 1 つだけ書ける (E1273)。
 - 可変部には既定の実引数昇格の後の型だけを書ける: `CFloat`・`CChar`・`CUChar`・`CShort`・`CUShort`・`CBool` は E1273 (`CDouble` / `CInt` を使う)。
   構造体と共用体は可変部に書けない (E1273)。
 
@@ -143,27 +159,113 @@ extern "C" where
 
 - `"dynamic"`: 型は `FunPtr F -> F` (`F` は extern の関数として書ける型)。関数ポインタが指す C の関数を `F` として呼ぶ。
 - `"wrapper"`: 型は `F -> IO (FunPtr F)`。呼ぶたびに、関数 (クロージャ) を呼ぶ新しい C の関数ポインタを作る。
-  `freeFunPtr : FunPtr f -> IO ()` (`Foreign`) で解放する。解放した後に C から呼ぶのは利用者の誤り (C の解放済みメモリと同じ)。
-  `Foreign` の線形な型 `Callback f` (`Release` で解放する) で包むと RAII で扱える。
+  ポインタはクロージャを保持し、`freeFunPtr : FunPtr f -> IO ()` (`Foreign`) で解放する (解放しないとクロージャがリークとして報告される)。
+  解放した後に C から呼ぶのは利用者の誤り (C の解放済みメモリと同じ)。
+- RAII: `Foreign` の線形な型 `Callback f` は `Release` で `freeFunPtr` する。
+
+  ```
+  callback : IO (FunPtr f) -> IO1 (Callback f)                 -- cb <- callback (mkVisitor visit)
+  callbackPtr : (1 c : Callback f) -> (Callback f, FunPtr f)   -- C に渡すポインタ
+  ```
+
 - `"&sym"`: 型は `FunPtr F` か `Ptr T`。記号 `sym` (関数か大域変数) のアドレス。
-- コールバックはランタイムの知っているスレッドから呼ばれなければならない。コールバックの中のパニックはプロセスを終える。可変長のコールバックは作れない
-  (08-ffi.md §7.2 の制約)。
+- 形が違う宣言は E1272。コールバックはランタイムの知っているスレッドから呼ばれなければならない。コールバックの中のパニックはプロセスを終える。
+  可変長のコールバックは作れない (08-ffi.md §7.2 の制約)。MIR インタプリタはコールバックを作れない (`-- skip-backend: interp` のテストにする)。
 
 ### 1.6 ライブラリのリンク
 
 `extern "C" link "z" where …` の `link` に任意のライブラリの名前を書ける (v0.0.2 の `"c"` `"m"` `"pthread"` だけという制限をなくす)。
-`cirka build` / `run` / `test` は、プログラムが取り込むモジュールの `link` のライブラリを、最初に現れた順に `-l名前` でリンクする
-(CLI の `-L` `-l` `-Wl,` と併用できる)。MIR インタプリタは同じライブラリを読み込む。
+`link "a" link "b"` と複数書ける。名前は英数字と `_` `.` `+` `-` だけからなる (E1007)。
+`cirka build` / `run` / `test` は、プログラムの extern 関数のブロックの `link` のライブラリを、最初に現れた順に `-l名前` でリンクする
+(CLI の `-L` `-l` `-Wl,` と併用できる)。MIR インタプリタは `lib名前.so` を読み込む (C ライブラリの `c` `m` `pthread` `dl` `rt` は読み込み済みとして飛ばす)。
 
 ### 1.7 `cirka bindgen`
 
 `cirka bindgen [options] header.h [-o 出力.cirka]` は C のヘッダから §1.1 の宣言の extern ブロックを書く (共通の bindgen、08-ffi.md §6)。
 ポインタはすべて `Ptr` で、所有権は推測しない。生成したモジュールの上に、`Release` を持つ線形な型などの安全なラッパを書く (§1.8)。
 
+- 関数ポインタの型の別名 `type T = FunPtr F` には、呼び出す `"dynamic" dyn_T : T -> F` と作る `"wrapper" wrap_T : F -> IO T` も書く
+  (aCHC の `dyn_T` / `wrap_T` と同じ。可変長・不透明型の値渡しを含む `F` は除く)。
+- テストは生成したモジュールをフロントエンドで検査し (`tests/bindgen/gen`)、`shapes`・`vulkan` (Docker) の `Main.cirka` を実行する。
+  `vulkan_core.h` 全体の出力 (構造体 981・共用体 10・列挙 265・型 1189・定数 1403・関数 1889 の宣言、約 2 万行) も検査を通るが、
+  約 50 秒かかる (大きな extern のモジュールのコンパイル時間は FEAT-0255)。
+
 ### 1.8 サンプル: zlib を RAII で包む
 
-(実装時に書く)
+`tests/cirkalang/run/v006/zlib.cirka` は zlib のストリームを線形な型で包み、圧縮と展開をする。
+
+```
+extern "C" link "z" where
+  type ZState
+  type Bytef = CUChar
+  struct ZStream where
+    next_in : Ptr Bytef
+    avail_in : CUInt
+    total_in : CULong
+    ...                                      -- z_stream のフィールド (14 個)
+  enum Flush : CInt where
+    NoFlush = 0
+    Finish = 4
+  const Z_OK : CInt = 0
+  "deflateInit_" deflateInit : Ptr ZStream -> CInt -> Ptr CChar -> CInt -> IO CInt
+  deflate : Ptr ZStream -> Flush -> IO CInt
+  deflateEnd : Ptr ZStream -> IO CInt
+  ...
+
+-- A zlib stream: its state in C memory, ended and freed when released.
+data Stream : LType where
+  MkStream : Mode -> Ptr ZStream -> Stream
+
+impl Release Stream where
+  release (MkStream m p) = do
+    r <- if m == Compress then deflateEnd p else inflateEnd p
+    freeBytes p
+    putStrLn ("released the " ++ show m ++ " stream: " ++ show r)
+
+open : Mode -> IO1 (Result CInt Stream)               -- deflateInit_ / inflateInit_
+run : (1 s : Stream) -> List Bytef -> Int -> IO1 (Stream, Result CInt (List Bytef))
+run (MkStream m p) input cap = do
+  out <- withArray input (\inp => allocaArray cap (\buf => do
+    poke (ZStream.ptr_next_in p) inp                     -- C のメモリの中のフィールド
+    poke (ZStream.ptr_avail_in p) (MkCUInt (length input))
+    ...
+    r <- if m == Compress then deflate p Finish else inflate p Finish
+    z <- peek p                                         -- 構造体の値として読む
+    ...))
+  pure1 (MkStream m p, out)
+```
+
+- `ZStream` の配置はコンパイラが C と同じに計算し、zlib が検査する (`deflateInit_` は `sizeOf (nullPtr : Ptr ZStream)` = 112 を受け取る)。
+- `Stream` は使い終わった経路で (エラーで抜けた経路でも) 解放され、`deflateEnd` / `inflateEnd` と `free` が一度だけ走る。
+  CirkaLang の側にリークはない (リーク検査を有効にした実行テスト)。インタプリタは `libz.so` を読み込んで同じ結果を出す。
+- Docker イメージは zlib の開発用ファイル (`zlib1g-dev`) を持つ。
 
 ### 1.9 実行時の表現とコスト、制限、診断
 
-(実装時に書く)
+**表現.** 構造体・共用体・列挙の値は CirkaLang のデータ (フィールドを持つ構成子) である。C のメモリとの間は、生成した `S.$peek : Int -> IO S` と
+`S.$poke : Int -> S -> IO ()` が各フィールドを `Storable` で読み書きする。配置は共通基盤 (`cirka_core::CTypes::layout`、08-ffi.md §7.2) が計算し、
+生成したコードの中の `Foreign.primCLayout p k` (大きさ・境界・フィールドの位置) は lowering で定数になる。
+
+**コスト.**
+
+- 構造体・共用体を値で渡す呼び出しは、引数ごとに C のメモリを `malloc` し、`$poke` で書いて、アドレスからバックエンドが C の規約で渡し、呼び出しの後に `free` する。
+  構造体の結果も同様に確保したメモリに受けて `$peek` で読む。ポインタで渡す API (Vulkan の大半) にはこのコストはない。
+  スタックに置く最適化は計測の後に行う (16-performance.md §4)。
+- 列挙・定数・フィールドの関数は通常のデータと関数で、特別なコストはない。`"dynamic"` の呼び出しは間接呼び出し 1 回、`"&sym"` は記号のアドレスの定数である。
+- `"wrapper"` は呼ぶたびにランタイムのトランポリンを 1 つ確保し、クロージャを保持する (`freeFunPtr` まで)。
+
+**制限.** ビットフィールドは格納単位のフィールドとして書く (bindgen はビットの位置をコメントに書く)。`long double`・可変長のコールバック・
+構造体を包む型の値渡しは扱わない。コールバックはネイティブのプログラムでだけ動く。
+
+**診断.**
+
+| コード | 内容 |
+|--------|------|
+| E1007 | 不明な呼び出し規約、ライブラリの名前でない `link` |
+| E1200 | C の型のリテラルが範囲外 |
+| E1270 | 境界を越えない型 (不透明型・構造体を包む型の値など) |
+| E1271 | 同じ記号の宣言の型が違う |
+| E1272 | 宣言の誤り: フィールドの型、自分自身を含む構造体、フィールドのない構造体、`"dynamic"` `"wrapper"` `"&sym"` の型の形、記号名、ランタイムの関数の記号名 |
+| E1273 | 可変長: `...` が 2 つ、昇格される型・構造体を可変部に書いた、可変長のコールバック |
+
+フィールドの型が誤っている構造体については、その構造体のために生成したコードの誤り (`Storable String` がないなど) は重ねて報告しない。
