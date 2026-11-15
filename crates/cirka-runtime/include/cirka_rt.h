@@ -168,6 +168,11 @@ int64_t cirka_net_udp_bind(void *host, int64_t port);
 void   *cirka_net_peer_host(void);
 int64_t cirka_net_peer_port(void);
 
+/* C function pointers for closures (08-ffi.md §7.2): a stub that calls
+ * `target` with `env` in r10; `cirka_callback_free` drops `env`. */
+int64_t cirka_callback_new(void *target, void *env);
+void    cirka_callback_free(int64_t f);
+
 /* Input and output of the libraries (spec-v0.0.2.md §8.3; strings
  * borrowed; failures are -errno, or an empty string with errno set). */
 int64_t cirka_errno(void);
