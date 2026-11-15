@@ -143,7 +143,8 @@ int    main(int argc, char** argv);              // ランタイムが提供。c
 ## 7. 起動と終了
 
 1. `main(argc, argv)`: 引数・環境変数 (`CIRKA_*`) を読む。
-2. `CIRKA_STACK_SIZE` のスタックを持つスレッドを作成し、ガードページを設定。
+2. `CIRKA_STACK_SIZE` のスタックを持つスレッドを作成し、ガードページを設定。最初のスレッドはそのスレッドを待つだけで、
+   すべてのシグナルをブロックしてから作る。作ったスレッドは起動時のマスクに戻してからプログラムを実行する (§11.3)。
 3. トップレベルの CAF(定数式)は初回参照時に評価する静的サンクとして配置(RC=0 不死)。
 4. `Main.main` の IO アクションを実行。
 5. ハンドルをフラッシュし、debug ランタイムなら `CIRKA_LEAK_CHECK=1` で生存オブジェクトを報告(CAF から到達可能なものは除外)。
@@ -371,3 +372,75 @@ OS のスレッド (pthread) を 1 対 1 で使う。グリーンスレッドは
 - CirkaLang の実行テスト `tests/cirkalang/run/v005/` の `async.cirka` (`tsan: 1`)・`async_task.cirka`・`net_tcp.cirka` (1 つのループで 100 の
   クライアント、1 MB の送受信、タイムアウト、エラー、名前解決、`stopLoop` で閉じるソケット)・`net_udp.cirka`・`http_echo.cirka`。
 - MIR インタプリタはイベントループとソケットを扱わない (MIR のテストは `skip-backend: interp`)。
+
+## 11. OS 層 (FEAT-0242)
+
+CirkaLang の `Std.Os`・`Std.Process`・`Std.Fs`・`Std.Env` (spec-v0.0.5.md §3) が `extern "cirka"` で呼ぶ関数 (`os.rs`)。
+libc の関数を包み、ライブラリが `Result` にしやすい形で返す。
+
+### 11.1 規約
+
+- 失敗は `-errno` で返すか、文字列・オブジェクトを返す関数なら空の値を返して `errno` を設定する (`stdio.rs` と同じ。成功では `errno` を 0 にする)。
+- 戻り値 1 つに収まらない結果 (子のパイプ、終了の状態、ファイルの属性、出力の長さ) はスレッドの状態の `os` (6 語) に置き、
+  ライブラリはすぐに `cirka_os_result(i)` で読む。次の `os.rs` の呼び出しで上書きされる。
+- 文字列とオブジェクトの引数は借用。パスに NUL を含むと `-EINVAL`。
+
+### 11.2 子プロセス
+
+- `cirka_os_spawn(argv, flags)`: `argv` はプログラム名と引数をそれぞれ NUL で終えて並べた文字列。`posix_spawnp` で `PATH` から探して
+  起動し、プロセス id か `-errno` (見つからなければ `-ENOENT`) を返す。`flags` は標準入力・出力・エラーごとに 2 ビット
+  (0 継承、1 パイプ、2 `/dev/null`) と、エラーを出力へ向ける 64 (`2>&1`)。パイプの親の側は close-on-exec で作り
+  (ほかの子へ漏れない)、結果 0〜2 に置く (パイプでなければ -1)。子の側は起動後に閉じる。
+- 子は **空のシグナルマスクと既定の `SIGPIPE`** で始める (`POSIX_SPAWN_SETSIGMASK`・`POSIX_SPAWN_SETSIGDEF`)。親がシグナルを
+  受け取るためにブロックしていても、`SIGPIPE` を無視していても、シェルから起動したのと同じ状態になる (Rust・Python と同じ)。
+- `cirka_os_wait(pid, nohang)`: `waitpid` (EINTR はやり直す)。終わっていれば 0 で、終了コード (シグナルで終われば -1) を結果 0、
+  シグナル (なければ 0) を結果 1 に置く。`nohang` でまだ動いていれば 1。`cirka_os_kill(pid, sig)`。
+- `cirka_os_communicate(in, out, err, input)`: 子の標準入力へ `input` を書いて閉じながら、出力とエラーを終わりまで読む
+  (-1 の記述子は使わない)。記述子を非ブロッキングにして `poll` で回すので、子が入力を読み切る前に多く書いても止まらない。
+  書き込みの間は `SIGPIPE` をブロックし、入力を読まずに終わった子への書き込み (`EPIPE`) は残りを捨てるだけにする
+  (発生した `SIGPIPE` は、もともとブロックしていなければ `sigtimedwait` で取り除いてからマスクを戻す)。
+  出力とエラーをつないだ文字列を返し、出力の長さを結果 0 に置く。記述子はすべて閉じる。
+
+### 11.3 シグナルとスレッドのマスク
+
+- ランタイムはシグナルハンドラを持たない (スタック溢れの報告に使う `SIGSEGV`・`SIGBUS` を除く、§9.1)。プログラムはシグナルを
+  **ブロックして待つ** (`cirka_os_signal_wait` = `sigtimedwait`) か、**signalfd で読む** (`cirka_os_signalfd(mask)` はこのスレッドで
+  `mask` をブロックし、非ブロッキングで close-on-exec の signalfd を返す。`cirka_os_signalfd_read(h)` は記述子オブジェクトから 1 つ読み、
+  なければ `-EAGAIN`。予算 (§10.3) を数える)。非同期のハンドラの中で動かしてよい処理の制約を言語に持ち込まない。
+- `cirka_os_signal_action(sig, action)`: 既定 (0) か無視 (1)。`SIGSEGV`・`SIGBUS` は `-EINVAL`。`cirka_os_raise(sig)` (このスレッドへ)、
+  `cirka_os_signal_mask(how, mask)` (0 ブロック、1 解除)。マスクはシグナル `s` をビット `s - 1` で表す 1〜63 番 (`SIGSEGV`・`SIGBUS` は除く)。
+- **プロセスへ送られたシグナルは、それをブロックしていないスレッドのどれかに届く。** 届いたスレッドに既定の動作 (終了) が働くと、
+  プログラムがそのシグナルを signalfd で待っていてもプロセスが終わる。そこでランタイムのスレッドはシグナルを受けない:
+  - 最初のスレッド (`main` を動かすスレッドを待つだけ) は、すべてのシグナルをブロックしてから `main` のスレッドを作る。
+    `main` のスレッドは起動時のマスクに戻してから始める (§7)。
+  - スレッドプール (§10.1) のスレッドは、作る間だけ作る側で非同期のシグナル (障害で起きる `SIGILL`・`SIGTRAP`・`SIGBUS`・`SIGFPE`・
+    `SIGSEGV`・`SIGSYS` 以外のすべて) をブロックして作る。新しいスレッドはマスクを継承するので、始まった時点からブロックしている
+    (始まってからブロックすると、その前に届いたシグナルで終わる)。
+  - 利用者のスレッド (`Std.Thread`) は作ったスレッドのマスクを継承する。シグナルを受け取るプログラムは、スレッドを作る前に
+    ブロックする (spec-v0.0.5.md §3.3)。
+
+### 11.4 メモリマップ
+
+- `cirka_os_map_file(path)`: ファイルを読み取り専用 (`MAP_PRIVATE`) で写像し、写像オブジェクト (kind `FOREIGN`。語 0 が `{ptr, len}` の
+  状態、後始末の関数が `munmap` する) を返す。空のファイルは空の写像。失敗しても空の写像を返して `errno` を設定する。
+- `cirka_os_map_len(m)`・`cirka_os_map_slice(m, off, n)` (写像に切り詰めたコピー)・`cirka_os_map_byte(m, i)` (外なら -1)・
+  `cirka_os_map_count(m, byte, from, to)`・`cirka_os_map_find(m, byte, from)` (なければ -1)。範囲は写像に切り詰めるので、
+  ライブラリの誤りでも写像の外は読まない。
+- ほかのプロセスが写像中のファイルを短くすると、失われた部分を読んだときに `SIGBUS` が起き、ランタイムのハンドラ (§9.1) が
+  `segmentation fault` と報告してプログラムを終える (終了コード 139。C のプログラムもシグナルで終わる)。
+
+### 11.5 ディレクトリ・属性・作業ディレクトリ
+
+- `cirka_fs_list(path)`: `.`・`..` を除く名前をそれぞれ NUL で終えて並べた文字列 (ディレクトリの順。並べ替えはライブラリ)。
+- `cirka_fs_stat(path, follow)`: `stat` (`follow` が 0 なら `lstat`)。大きさ・種類 (1 ファイル、2 ディレクトリ、3 シンボリックリンク、
+  0 そのほか)・許可のビット (`mode & 0o7777`)・更新時刻 (秒) を結果 0〜3 に置く。
+- `cirka_fs_mkdir(path, mode)`・`cirka_fs_rmdir(path)`・`cirka_fs_rename(from, to)`・`cirka_os_getcwd()`・`cirka_os_chdir(path)`・
+  `cirka_os_hostname()`。
+
+### 11.6 テスト
+
+- ランタイムの単体テスト (`os.rs`): パイプでつないだ子とその終了コード、シグナルで終えた子、ないプログラム、入力を読まない子への
+  1 MB の書き込み (止まらず、`SIGPIPE` で終わらない)、シグナルの待ちと signalfd、写像・一覧・属性・改名・削除、作業ディレクトリと
+  ホスト名。ヘッダ `cirka_rt.h` がライブラリ用のモジュールの公開する関数をすべて宣言していることも調べる。
+- CirkaLang の実行テスト `tests/cirkalang/run/v005/os_tool.cirka` (spec-v0.0.5.md §3.6) は、プロセスへ送ったシグナルをループで受ける前に
+  スレッドプールを起動しておく。最初のスレッドかプールのスレッドがシグナルをブロックしていなければ、`SIGUSR2` でプロセスが終わる。

@@ -24,6 +24,13 @@ v0.0.5 の目的は、GC なしのメモリ安全と単一スレッドの性能�
 | §2.3 | `Std.Net`: TCP・UDP のソケット (線形な値)、タイムアウト | FEAT-0241 |
 | §2.4 | サンプル: HTTP/1.1 のエコーサーバ | FEAT-0241 |
 | §2.5 | 実行時の表現と実行、制限、診断 | FEAT-0241 |
+| §3.1 | errno と `Result`: C の関数の結果 (`cResult`)、エラー番号の定数 | FEAT-0242 |
+| §3.2 | 子プロセス (`Std.Process`): `Command`、線形な `Child` (捨てると終わりを待つ)、`output`、`kill` | FEAT-0242 |
+| §3.3 | シグナル (`Std.Os`): 無視・ブロック・待ち、イベントループで受け取る `Signals` | FEAT-0242 |
+| §3.4 | ファイルとディレクトリ (`Std.Fs`・`Std.Env`): 一覧・属性・作成・削除・改名、作業ディレクトリ | FEAT-0242 |
+| §3.5 | メモリマップ (`Mapping`)、プロセスとホストの情報 | FEAT-0242 |
+| §3.6 | サンプル: OS 層を使う CLI ツール | FEAT-0242 |
+| §3.7 | 実行時の表現と実行、制限 | FEAT-0242 |
 
 ## 1. スレッドと共有 (FEAT-0240)
 
@@ -300,3 +307,151 @@ main = runLoop (do
     ソケットを扱えない。`Monad` の `>>=` は引数を ω で受け取り、結果は種 `Type` の値に限るので、線形なソケットを文から文へ渡せない
     (タスクに捕捉させると E0303・E0305 になり、結果には入れられない)。線形な bind を表すトレイトか効果 (v0.0.7) で書き味を比べる。
 - 新しい診断コードはない。E1270 は `Handle`・関数・動作を `extern "C"` に渡したときにも出し、`extern "cirka"` では注に渡せる型を示す。
+
+## 3. OS 層 (FEAT-0242)
+
+syscall を使うプログラム (CLI ツール、サーバの起動と停止、子プロセスの管理) を書くためのライブラリ。libc とランタイムの関数
+(05-runtime.md §11) を包み、失敗は v0.0.2 と同じく `Result IOError a` の値で返す。資源 (子プロセス・シグナルの受け口) は
+線形な値で、使い終わりを型で追える。
+
+### 3.1 errno と `Result` (`Std.Os`)
+
+```
+cResult : IO CInt -> IO (Result IOError Int)
+cResultLong : IO CLong -> IO (Result IOError Int)
+cResultSize : IO CSSize -> IO (Result IOError Int)
+notPermitted, notFound, noSuchProcess, interrupted, badDescriptor, noChild, wouldBlock,
+  permissionDenied, alreadyExists, notADirectory, isADirectory, invalidArgument, brokenPipe, notEmpty : IOError
+```
+
+- `cResult act` は、失敗すると -1 を返して `errno` を設定する C の関数 (`extern "C"` で宣言したもの) を実行し、-1 なら呼んだ直後の
+  `errno` を `Err` に、それ以外の結果を `Ok` にする。`cResultLong` は `long` (`lseek` など)、`cResultSize` は `ssize_t` (`read`・`write`) の版。
+  ライブラリが包まない syscall は、利用者が `extern "C"` で宣言してこれで `Result` にする (サンプルの `symlink`・`readlink`)。
+- エラー番号の定数は Linux の値で、`==` で比べる (`if e == notFound then …`)。
+
+### 3.2 子プロセス (`Std.Process`)
+
+```
+data Stdio = Inherit | Piped | Discard
+data Command                                  -- プログラム、引数、標準入力・出力・エラーのつなぎ先
+command : String -> List String -> Command
+setStdin, setStdout, setStderr : Stdio -> Command -> Command
+mergeErrors : Command -> Command              -- 2>&1
+data ExitStatus = Exited Int | Signaled Int
+succeeded : ExitStatus -> Bool
+data Child : LType
+spawn : Command -> IO1 (Result IOError Child)
+childId : (1 c : Child) -> (Child, Int)
+takeStdin, takeStdout, takeStderr : (1 c : Child) -> (Child, Maybe File)
+wait : (1 c : Child) -> IO (Result IOError ExitStatus)
+kill : (1 c : Child) -> Int -> IO1 (Child, Result IOError ())
+run : Command -> IO (Result IOError ExitStatus)
+data Output = MkOutput ExitStatus String String
+output : Command -> String -> IO (Result IOError Output)
+```
+
+- `command prog args` は `prog` (`/` を含まなければ `PATH` から探す) を引数 `args` で実行するコマンドで、標準入力・出力・エラーは
+  このプロセスのものを継承する。`Piped` はこのプロセスが読み書きするパイプ、`Discard` は `/dev/null` につなぐ。
+  子は空のシグナルマスクと既定の `SIGPIPE` で始まる (このプロセスがブロック・無視していても、シェルから起動したのと同じ)。
+- `Child` は **線形な値** で、`Release` が `wait` する。`wait` (と捨てること) は、取り出していないパイプを閉じてから子の終わりを待つ
+  (入力を待っている子は終わりを見て終わる)。そのため子はかならず回収され (ゾンビが残らない)、`Child` がある間は子のプロセス id が
+  ほかのプロセスに再利用されない。`kill` が別のプロセスへ届くことはない。
+- パイプは `takeStdin` などで `Std.Fs.File` (線形な値。捨てると閉じる) として取り出し、`write`・`readAll` で読み書きする。
+- `wait` はスレッドをブロックする。イベントループの上では `Std.Async.blocking (wait c) k` でスレッドプールに待たせる
+  (`Child` と結果は `Send`)。
+- `output cmd input` は、標準入力を `input`、出力とエラーをパイプにして実行し、すべて読んで終わりを待つ。入力を書くのと出力を読むのを
+  同時に進めるので、入力を読み切る前に多く書く子でも止まらない。入力を読まずに終わった子への残りの入力は捨てる。
+  `mergeErrors` なら、エラーは出力に入り `Output` のエラーは空になる。`run cmd` は継承したまま実行して終わりを待つ。
+- プログラムが見つからなければ `spawn`・`run`・`output` は `Err notFound`。
+
+### 3.3 シグナル (`Std.Os`)
+
+```
+sigHup, sigInt, sigQuit, sigKill, sigUsr1, sigUsr2, sigPipe, sigAlrm, sigTerm, sigChld, sigCont, sigStop, sigTstp, sigWinch : Int
+ignoreSignal, defaultSignal : Int -> IO (Result IOError ())
+raiseSignal : Int -> IO (Result IOError ())
+sendSignal : Int -> Int -> IO (Result IOError ())        -- プロセス id、シグナル
+blockSignals, unblockSignals : List Int -> IO (Result IOError ())
+waitSignal : List Int -> Int -> IO (Maybe Int)
+data Signals : LType
+signals : List Int -> IO1 (Result IOError Signals)
+nextSignal : (1 s : Signals) -> (1 k : (1 s : Signals) -> Result IOError Int -> IO ()) -> IO ()
+closeSignals : (1 s : Signals) -> IO ()
+```
+
+- **シグナルハンドラは書けない。** シグナルはブロックして待つ (`waitSignal`) か、イベントループで受け取る (`signals`)。
+  非同期のハンドラの中で使ってよい処理の制約 (async-signal-safe) を言語に持ち込まず、受け取った後はふつうのコードで扱う。
+- `ignoreSignal`・`defaultSignal` はシグナルの動作を無視・既定にする。`ignoreSignal sigPipe` で、読む側のいないパイプへの書き込みは
+  プログラムを終えず `Err brokenPipe` になる (既定では C と同じくプログラムが終わる。ソケットは v0.0.5 §2 のとおり常にエラー)。
+  `sigKill`・`sigStop` と、ランタイムが使う `SIGSEGV`・`SIGBUS` は変えられない (`Err invalidArgument`)。
+- `blockSignals` はこのスレッドでシグナルをブロックする (届いたシグナルは保留される)。`waitSignal sigs ms` は保留されたシグナルを
+  1 つ取り出し、`ms` ミリ秒 (負なら無期限) 待っても来なければ `Nothing`。スレッドをブロックする。
+- `signals sigs` はこのスレッドで `sigs` をブロックし、ループで読む受け口 `Signals` (線形な値。捨てると閉じる) を返す。`nextSignal s k` は
+  次のシグナルを待って `k` に渡す (継続は v0.0.5 §2 と同じくちょうど 1 回実行される)。サーバが `SIGTERM` を受けて止まる処理などに使う。
+- **スレッドとマスク.** プロセスへ送られたシグナルは、それをブロックしていないスレッドのどれかに届き、届いた先で既定の動作 (終了) が
+  働きうる。ランタイムのスレッド (最初のスレッドとスレッドプール) はシグナルを受けないので、`Std.Thread` でスレッドを作らないプログラムは
+  どこで `signals` を呼んでもよい。スレッドを作るプログラムは、スレッドを作る前に `blockSignals`・`signals` を呼ぶ
+  (スレッドは作ったスレッドのマスクを継承する)。
+
+### 3.4 ファイルとディレクトリ (`Std.Fs`・`Std.Env`)
+
+```
+listDirectory : String -> IO (Result IOError (List String))
+data FileKind = RegularFile | Directory | SymbolicLink | OtherFile
+data FileStatus
+fileKind : FileStatus -> FileKind
+fileSize, filePermissions, modifiedTime : FileStatus -> Int
+fileStatus, linkStatus : String -> IO (Result IOError FileStatus)
+makeDirectory, removeDirectory : String -> IO (Result IOError ())
+rename : String -> String -> IO (Result IOError ())
+currentDirectory : IO (Result IOError String)                    -- Std.Env
+setCurrentDirectory : String -> IO (Result IOError ())           -- Std.Env
+```
+
+- `listDirectory` は `.`・`..` を除く名前を **並べ替えて** 返す (ディレクトリの順はファイルシステムで変わるので、結果を決まったものにする)。
+- `fileStatus` はシンボリックリンクをたどり、`linkStatus` はたどらない。`filePermissions` は許可のビット (`0o755` = 493 など)、
+  `modifiedTime` は 1970 年からの秒。`makeDirectory` の許可は `0o777` から umask を引いたもの。`removeDirectory` は空のディレクトリだけ。
+- `setCurrentDirectory` はプロセスの (すべてのスレッドの) 作業ディレクトリを変える。
+
+### 3.5 メモリマップとプロセスの情報 (`Std.Os`)
+
+```
+data Mapping
+mapFile : String -> IO (Result IOError Mapping)
+mappingSize : Mapping -> IO Int
+mappingSlice : Mapping -> Int -> Int -> IO String              -- 位置、長さ
+mappingByte : Mapping -> Int -> IO (Maybe Int)
+mappingCount : Mapping -> Int -> Int -> Int -> IO Int          -- バイト、[from, to)
+mappingFind : Mapping -> Int -> Int -> IO (Maybe Int)          -- バイト、from
+parentProcessId, userId, effectiveUserId, groupId : IO Int
+hostName : IO (Result IOError String)
+isTerminal : Int -> IO Bool
+```
+
+- `mapFile` はファイルを読み取り専用で写像する。読む操作は文字列へコピーせずにファイルを読む (`mappingCount` で行を数えるなど)。
+  `Mapping` は ω の値 (`Handle` を包む) で、最後の参照が消えると写像を外す。範囲は写像に切り詰める。
+- 読む操作が `IO` なのは、写像中のファイルをほかのプロセスが変えると読む値が変わるからである。ほかのプロセスがファイルを短くすると、
+  失われた部分を読んだときにプログラムが終わる (`SIGBUS`。C と同じ)。
+- `isTerminal fd` は記述子 (0 標準入力、1 出力、2 エラー) が端末か。プロセス id は `Std.Process.processId`。
+
+### 3.6 サンプル: OS 層を使う CLI ツール
+
+`tests/cirkalang/run/v005/os_tool.cirka` は、`tree DIR…` (ファイルの種類と大きさ。リンクは `readlink` を `extern "C"` で呼んで先を示す)、
+`lines FILE…` (写像で数えた行数)、`run PROG ARG…` (子の終わり方)、`signals` (ループで `SIGINT`・`SIGTERM` を待つ) のサブコマンドを持つ。
+引数がなければ `/tmp` の新しいディレクトリで自分を試す: ディレクトリとファイルを作り、`symlink` を `cResult` で呼び (2 度目は
+`Err alreadyExists`)、木と行数を表示し、`sh`・`tr`・`wc` を `output` で実行し、ないプログラム (`notFound`)、`SIGTERM` で終えた `sleep`
+(`Signaled 15`)、パイプを 2 本取り出した `cat`、入力を読まずに終わった子への書き込み (`SIGPIPE` を無視して `brokenPipe`)、
+`SIGUSR1` のブロックと待ち、スレッドプールで待つ子 (`Exited 7`) とプロセスへ送った `SIGUSR2` のループでの受け取り、改名と後片付けを行う。
+
+### 3.7 実行時の表現と実行、制限
+
+- `Std.Os`・`Std.Process`・`Std.Fs`・`Std.Env` は `cirka_os_*`・`cirka_fs_*` を `extern "cirka"` で呼ぶ (05-runtime.md §11)。
+  `Signals` と `Mapping` はランタイムのオブジェクト (`Handle`) で、解放されると記述子を閉じ・写像を外す。`Child` はプロセス id と
+  `Maybe File` 3 つを持つ線形なデータ型で、`Release` を実装する (spec-v0.0.2.md §5.5)。
+- MIR インタプリタは OS 層を扱わない。実行テストはネイティブだけで行う (`skip-backend: interp`)。
+- v0.0.5 の制限:
+  - 子の終わりはイベントループで待てない (`blocking` でスレッドプールに待たせる)。`pidfd` をループで待つ形は必要になれば後の版で。
+  - 子の環境変数と作業ディレクトリは変えられない (このプロセスのものを継承する)。
+  - 書き込める写像 (`MAP_SHARED`)・無名の写像 (共有メモリ) はない。
+  - シグナルは 1〜63 番。リアルタイムシグナルのキューの値 (`sigqueue`) は受け取らない。
+- 新しい診断コードはない。

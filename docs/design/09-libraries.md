@@ -93,7 +93,7 @@ GMP は使わない(静的リンク時の LGPL の扱いを避ける・依存を
 | 名前 | 内容 | 版 |
 |------|------|----|
 | `lib/cirkalang/core` | プリミティブ型・`Maybe`/`Result`/`List`/`Nat`・基本トレイト・`Unique`/`Drop`/`Release`・`Lazy`・証明用の型 | v0.0.1〜 |
-| `lib/cirkalang/std` | libc ベース: fs / io / env / process / time (v0.0.2)、thread / net / os (v0.0.5)、math (v0.0.6) | v0.0.2〜 |
+| `lib/cirkalang/std` | libc ベース: fs / io / env / process / time (v0.0.2)、thread / async / net (v0.0.5)、os (v0.0.5。errno の `Result` 化・子プロセス・シグナル・メモリマップ・ディレクトリ、spec-v0.0.5.md §3)、math (v0.0.6) | v0.0.2〜 |
 | `cirka-linalg` 等 | 数学・線形代数ラッパー (下記 1.5) | v0.0.6 |
 
 方針は第二段階 (§2) と同じで、プロトタイプではその最小部分を作る。
