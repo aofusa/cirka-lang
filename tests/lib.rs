@@ -88,7 +88,8 @@ pub fn check_native_with(
 /// The C helper of a test (FEAT-0047): `<name>.c` next to it, compiled into
 /// a shared library that the interpreter loads (`dlopen`, so that its
 /// foreign calls find the functions) and that native programs link with
-/// the returned arguments (none without a `.c` file).
+/// the returned linker flags (none without a `.c` file), which the CLIs
+/// also take.
 pub fn c_helper(cfg: &cirka_driver::Config, c: &Case, suite: &str) -> Result<Vec<String>, String> {
     let src = c.sibling("c");
     if !src.exists() {
@@ -112,7 +113,8 @@ pub fn c_helper(cfg: &cirka_driver::Config, c: &Case, suite: &str) -> Result<Vec
     }
     cirka_mir::ffi::load_library(&lib)?;
     Ok(vec![
-        lib.display().to_string(),
+        format!("-L{}", dir.display()),
+        format!("-l{}", c.name),
         format!("-Wl,-rpath,{}", dir.display()),
     ])
 }

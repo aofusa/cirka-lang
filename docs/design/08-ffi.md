@@ -197,7 +197,7 @@ callbackPtr :: Ref r (Callback f) -> Borrow r (FunPtr f)   -- C 側が保持し�
 ABI の順に語へ並べる。結果は RAX・RDX・XMM0・XMM1 を `#[repr(C)]` の 2 語の構造体として受ける。`:dynamic` と `:addr` (`dlsym`) も扱う。
 コールバックはインタプリタを再入させる必要があるので **扱わない** (実行時エラー)。それを使うテストは `skip-backend: interp` を付ける。
 テスト用の C の補助関数は、テストと同じ名前の `.c` を共有ライブラリにしてインタプリタのプロセスに読み込み (`ffi::load_library`)、
-ネイティブではリンクする。
+ネイティブでは CLI と同じリンカのフラグ (`-L`・`-l`・`-Wl,-rpath`) でリンクする。
 
 **errno。** ランタイムの `cirka_errno` (スレッドの `errno`) を C の関数の直後に呼ぶ (FEAT-0242 で std.os が使う)。
 aCHC は `Foreign.C.Error.getErrno` がこれを呼ぶ。

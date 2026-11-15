@@ -36,15 +36,21 @@ fn run(bin: &PathBuf, args: &[&str], cwd: &std::path::Path) -> cirka_testkit::Ru
 }
 
 /// `achc run` and `cirka run` on every tests/core/run program print the
-/// expected output with the same exit code, at -O0 and -O2.
+/// expected output with the same exit code, at -O0 and -O2. Programs with
+/// a C helper (FEAT-0047) link it with the linker flags of the CLIs.
 #[test]
 fn both_clis_agree_on_core_input() {
     cirka_testkit::init();
     cirka_driver::native::ensure_runtime_built().unwrap();
+    let cfg = cirka_driver::Config::from_env();
     let (achc, cirka) = bins();
     let cases = discover(&repo_root().join("tests/core/run"), &["core"]);
     assert!(!cases.is_empty());
     run_suite("driver-core", &cases, |c| {
+        let link = match cirka_integration::c_helper(&cfg, c, "driver-core") {
+            Ok(l) => l,
+            Err(e) => return Outcome::Fail(e),
+        };
         let expected = std::fs::read_to_string(c.sibling("stdout")).unwrap_or_default();
         // Without `.exitcode`, `main`'s result is the exit code: all runs
         // must agree with each other.
@@ -57,7 +63,10 @@ fn both_clis_agree_on_core_input() {
             for (o, rt) in [("-O0", "--runtime=debug"), ("-O2", "--runtime=release")] {
                 let work = cirka_testkit::work_dir("driver-core", &format!("{}-{tool}{o}", c.name));
                 let bd = format!("--build-dir={}", work.display());
-                let out = run(bin, &["run", o, rt, &bd, src], &work);
+                let mut args = vec!["run", o, rt, &bd];
+                args.extend(link.iter().map(String::as_str));
+                args.push(src);
+                let out = run(bin, &args, &work);
                 let want = *code.get_or_insert(out.code);
                 if out.stdout != expected || out.code != want {
                     return Outcome::Fail(format!(
