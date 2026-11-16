@@ -17,4 +17,8 @@ while IFS= read -r _line || [ -n "$_line" ]; do
   fi
 done < "$_cirka_env"
 export CIRKA_ROOT="$_cirka_root"
+# The Vulkan driver (ICD) chosen in .env, for the Vulkan loader.
+if [ -n "${CIRKA_VULKAN_ICD:-}" ]; then
+  export VK_DRIVER_FILES="$CIRKA_VULKAN_ICD" VK_ICD_FILENAMES="$CIRKA_VULKAN_ICD"
+fi
 unset _cirka_root _cirka_env _line _key _val

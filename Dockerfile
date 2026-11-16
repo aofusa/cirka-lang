@@ -64,6 +64,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
+# Vulkan compute without a GPU (FEAT-0251, docs/design/15-gpu-and-remote.md
+# §2): Mesa's lavapipe (a Vulkan driver running on the CPU), the validation
+# layers, vulkaninfo, and glslc / spirv-tools for GLSL compute shaders.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        mesa-vulkan-drivers vulkan-tools vulkan-validationlayers glslc spirv-tools \
+    && rm -rf /var/lib/apt/lists/*
+
 USER ${USERNAME}
 WORKDIR /work
 CMD ["bash"]

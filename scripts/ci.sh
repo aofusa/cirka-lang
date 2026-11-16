@@ -48,6 +48,28 @@ else
     exit 1
 fi
 
+stage "Vulkan compute"
+# The tests with `requires: vulkan` (spec-v0.0.6.md §3, FEAT-0251) compile
+# GLSL shaders with glslc and run them on a Vulkan device with the
+# validation layer, and skip when either is missing; CI requires them (Mesa
+# lavapipe, the validation layers and glslc in the Dockerfile).
+# (The summary is read whole: `grep -q` in a pipe could end vulkaninfo
+# with SIGPIPE, which pipefail reports.)
+summary=$(vulkaninfo --summary 2>/dev/null) || summary=""
+if ! "${CIRKA_GLSLC:-glslc}" --version >/dev/null 2>&1; then
+    echo "ci: ERROR: glslc (CIRKA_GLSLC) is not installed; rebuild the image"
+    exit 1
+elif [ -z "$summary" ]; then
+    echo "ci: ERROR: no Vulkan device (vulkaninfo --summary); rebuild the image"
+    echo "ci:        to get Mesa lavapipe (mesa-vulkan-drivers)"
+    exit 1
+elif ! grep -q VK_LAYER_KHRONOS_validation <<<"$summary"; then
+    echo "ci: ERROR: the validation layer VK_LAYER_KHRONOS_validation is not installed"
+    exit 1
+else
+    echo "ci: a Vulkan device, the validation layer and glslc are installed: the Vulkan tests run"
+fi
+
 stage "cargo test"
 cargo test --workspace
 
