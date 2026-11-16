@@ -29,7 +29,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | CirkaLang | CirkaLang v0.0.3 借用・リージョン・性能 | 5 / 5 |
 | CirkaLang | CirkaLang v0.0.4 証明と検証 | 6 / 6 |
 | CirkaLang | CirkaLang v0.0.5 並行性・サーバ・syscall | 5 / 5 |
-| CirkaLang | CirkaLang v0.0.6 Vulkan compute・数値計算 | 2 / 6 |
+| CirkaLang | CirkaLang v0.0.6 Vulkan compute・数値計算 | 3 / 7 |
 | CirkaLang | CirkaLang v0.0.7 効果・能力・セッション型 | 0 / 4 |
 | CirkaLang | CX 遠隔環境での GUI 検証 (任意) | 0 / 1 |
 | 第二段階 | P2 第二段階 (CirkaLang v0.1.0 以降) | 0 / 2 |
@@ -276,6 +276,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0252](features/FEAT-0252-cl-math-linalg.md) | 数学・線形代数ラッパー | todo | P2 | 0250 |
 | [FEAT-0254](features/FEAT-0254-cl-unique-array-sizes.md) | 一意な配列と文字列のビューの大きさを証明で追う | todo | P2 | 0244 |
 | [FEAT-0255](features/FEAT-0255-cl-large-extern-modules.md) | 大きな extern のモジュールのコンパイル時間 | done | P1 | 0250 |
+| [FEAT-0256](features/FEAT-0256-cl-private-constructors.md) | 非公開の構成子 (抽象データ型) | done | P0 | 0250 |
 | [FEAT-0253](features/FEAT-0253-cl-release-v006.md) | CirkaLang v0.0.6 リリース | todo | P0 | 0251 |
 
 ### CirkaLang v0.0.7 効果・能力・セッション型
