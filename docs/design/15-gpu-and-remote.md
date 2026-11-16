@@ -16,23 +16,32 @@
 ### 2.1 実行環境
 
 - Mesa の **lavapipe** (CPU で動くソフトウェア Vulkan 実装) を使い、GPU なしで Docker 内でテストできるようにする。
-- ホストに GPU がある場合は、デバイス (`/dev/dri`) をコンテナに渡して実機の Vulkan ドライバでも動かせる (任意。`CIRKA_VULKAN_ICD` で ICD を選ぶ)。
+- ホストに GPU がある場合は、デバイス (`/dev/dri`) をコンテナに渡して実機の Vulkan ドライバでも動かせる
+  (任意。`CIRKA_VULKAN_ICD` で ICD を選ぶ。`scripts/env.sh` が `VK_DRIVER_FILES` / `VK_ICD_FILENAMES` にする)。
 - Docker イメージへの追加パッケージ: `libvulkan-dev` (ヘッダとローダ。bindgen のテストが使うので FEAT-0048 で追加済み)。
-  FEAT-0251 で `mesa-vulkan-drivers`、`vulkan-tools`、`vulkan-validationlayers`、`glslc` (GLSL → SPIR-V)、`spirv-tools` を加える。
+  FEAT-0251 で `mesa-vulkan-drivers`、`vulkan-tools`、`vulkan-validationlayers`、`glslc` (GLSL → SPIR-V)、`spirv-tools` を加えた
+  (Ubuntu 24.04 では lavapipe は `llvmpipe (LLVM 20.1.2)`、Vulkan 1.4)。`scripts/ci.sh` はこれらがあることを確かめる。
 
 ### 2.2 構成
 
 | 層 | 内容 |
 |----|------|
-| `vulkan-sys` | `cirka bindgen` で `vulkan_core.h` から生成した extern 宣言 (FEAT-0048, 0250) |
-| `cirka-vulkan` (安全なラッパ) | `Instance` / `Device` / `Buffer` / `DeviceMemory` / `ShaderModule` / `Pipeline` / `CommandPool` を `LType` + `Release` で RAII 管理。破棄の順序 (依存するハンドルから先に) は所有関係で表す。メモリのマップは借用 (`MutRef r`) で表し、アンマップ忘れを防ぐ |
-| シェーダ | 当面は GLSL で書き、ビルド時に `glslc` で SPIR-V にしてバイト列として埋め込む。CirkaLang から SPIR-V を生成することは対象外 (第二段階で検討) |
+| `Vulkan.Sys` (`lib/cirkalang/vulkan/Vulkan/Sys.cirka`) | `cirka bindgen --module=Vulkan.Sys --link=vulkan` で `vulkan_core.h` から生成した extern 宣言 (FEAT-0048, 0250)。生成物をコミットし、テストで生成し直した結果と比べる |
+| `Vulkan` (安全なラッパ) | `withGpu` が作るリージョン `s` に資源 (`Gpu s` / `Buffer s e` / `Pipeline s`) の型を結び付け、作った資源の破棄の処理をリージョンの中の一覧に積んで、終わりに作った逆順に実行する (ADR-097)。構成子は非公開 (ADR-096)。バッファは host-visible・coherent のメモリを作成時からマップしておく。`dispatch` は同期 |
+| シェーダ | GLSL で書き、`glslc` で SPIR-V にする。実行時にファイルから読む (`spirvFile`) か、`glslc -mfmt=c` の配列を C のファイルでリンクして埋め込む (`spirv`)。CirkaLang から SPIR-V を生成することは対象外 (第二段階で検討) |
+
+当初の案は各ハンドルを `LType` + `Release` で包み、破棄の順序を所有関係で、マップを借用で表すものだった。
+バッファがデバイスより先に破棄されることを線形型で表すには、子が親の借用を持ち続ける入れ子が要り、`Release` は親のハンドルを受け取れない。
+リージョンと破棄の一覧なら、順序は積んだ順で自動的に正しく、使用後の破棄と破棄漏れは v0.0.3 のリージョンの型規則 (E1200) で防げる (ADR-097)。
+API と規則の詳細は [spec-v0.0.6.md](cirkalang/spec-v0.0.6.md) §3。
 
 ### 2.3 サンプルと検証
 
-- ベクトル加算、SAXPY、行列積、リダクション。CPU (CirkaLang) で計算した結果と一致することを確認する。
-- 検証レイヤー (`VK_LAYER_KHRONOS_validation`) を有効にして、エラー・警告がないことをテストで確認する。
-- バッファサイズやワークグループ数を部分集合型で表し (例: `{n : Nat | n <= maxWorkGroupCount}`)、v0.0.4 の検証機能が実用 API に使えるかも評価する。
+- ベクトル加算、SAXPY、行列積、リダクション (`tests/cirkalang/run/v006/vulkan_compute.cirka`)。CPU (CirkaLang) で計算した結果と完全に一致することを確認する
+  (値は整数か 2 進で正確に表せる数にして、浮動小数の誤差がないようにしている)。
+- 検証レイヤー (`VK_LAYER_KHRONOS_validation`) を有効にして実行し、その出力 (標準出力) がないことを期待出力との比較で確かめる。
+- ワークグループ数を部分集合型で表し (`{x : Int | 1 <= x && x <= 65535}`)、v0.0.4 の検証機能が実用 API に使えるかを評価した
+  (spec-v0.0.6.md §3.5: 静的に決まる制約には向き、他の値に依存する制約は実行時の検査にした)。
 
 ## 3. 遠隔環境での GUI 検証 (任意)
 

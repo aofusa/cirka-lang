@@ -25,6 +25,7 @@ ABI は共通基盤 ([08-ffi.md](../08-ffi.md) §7.2、FEAT-0047)、ヘッダの
 | §1.9 | 実行時の表現とコスト、制限、診断 | FEAT-0250 |
 | §1.10 | extern ブロックの項目は使うものだけを検査・変換する、`--extern-items`、`check` は Core を最適化しない | FEAT-0255 |
 | §2 | 非公開の構成子 (`private` を構成子に付けて、型を他のモジュールから抽象型にする) | FEAT-0256 |
+| §3 | Vulkan compute: `Vulkan.Sys` (bindgen) と安全なラッパ `Vulkan` (リージョンによる資源の管理・シェーダ・部分集合型によるワークグループ数・検証レイヤー) | FEAT-0251 |
 
 ## 1. FFI の完成 (FEAT-0250)
 
@@ -321,4 +322,118 @@ data File : LType where
 | コード | 内容 |
 |--------|------|
 | E1106 | (追加) 他のモジュールの非公開の構成子を式・パターンに書いた |
+
+## 3. Vulkan compute (FEAT-0251)
+
+Docker 内 (GPU なし、Mesa lavapipe) で、Vulkan のコンピュートシェーダによる計算を CirkaLang から安全に行う。
+ウィンドウと描画は扱わない ([15-gpu-and-remote.md](../15-gpu-and-remote.md))。
+
+### 3.1 ライブラリ
+
+ライブラリの根 `lib/cirkalang/vulkan/` (core・std に続く 3 つ目) に次の 2 つのモジュールを置く。
+
+| モジュール | 内容 |
+|------------|------|
+| `Vulkan.Sys` | `cirka bindgen --module=Vulkan.Sys --link=vulkan` が vulkan_core.h (1.3.275) から書いた extern 宣言 (構造体 981・共用体 10・列挙 265・定数 1403・別名 1189・関数 623)。生成物をコミットし、bindgen のテストが生成し直した結果と一致することを確かめる (`CIRKA_BLESS=1` で更新)。ポインタはすべて `Ptr` で安全ではない。使う項目だけが検査・変換される (§1.10) |
+| `Vulkan` | `Vulkan.Sys` の上の安全なラッパ (以下) |
+
+```
+import Foreign
+import Data.Borrow (Region)
+import Vulkan as Vk
+
+-- c = a + b
+add : (0 s : Region) -> Vk.Gpu s -> Vk.VkIO s (List CFloat)
+add s g = do
+  shader <- Vk.spirvFile "vadd.spv"                -- glslc -o vadd.spv vadd.comp
+  a <- Vk.fromList g (map (\i => MkCFloat (toFloat i)) (range 0 999))
+  b <- Vk.fromList g (map (\i => MkCFloat 1.0) (range 0 999))
+  c <- Vk.buffer g 1000
+  p <- Vk.pipeline g shader 3 1                    -- バッファ 3 つ、プッシュ定数 1 つ
+  Vk.dispatch g p (Vk.arg a :: Vk.arg b :: Vk.arg c :: Nil) (Vk.PushInt 1000 :: Nil) 16 1 1
+  Vk.read c
+
+main : IO ()
+main = do
+  r <- Vk.withGpu (Vk.options "add") add
+  case r of
+    Ok xs => print (length xs)
+    Err e => print e
+```
+
+### 3.2 API
+
+| 名前 | 型 | 内容 |
+|------|----|------|
+| `withGpu` | `Options -> ((0 s : Region) -> Gpu s -> VkIO s a) -> IO (Result VkError a)` | デバイスを用意して計算を実行し、作ったものをすべて破棄する (§3.3) |
+| `options` / `MkOptions` | `String -> Options` / `String -> Bool -> Options` | アプリケーション名と検証レイヤーの有無 (`options` は有効) |
+| `VkIO s` | `Functor`・`Monad` | リージョン `s` のデバイスを使う計算。最初の誤りで止まる |
+| `io` / `throw` | `IO a -> VkIO s a` / `VkError -> VkIO s a` | `IO` の動作を含める / 誤りで止める |
+| `VkError` | `Failed String Int \| Invalid String` | Vulkan の呼び出しの失敗 (関数名と `VkResult`) / このモジュールの誤った使い方 |
+| `gpuName` / `gpuKind` / `validated` | `Gpu s -> String` / `Gpu s -> String` / `Gpu s -> Bool` | デバイスの名前・種類 (`discrete GPU` … `CPU`)・検証レイヤーの有無 |
+| `buffer` | `Storable e => Gpu s -> Int -> VkIO s (Buffer s e)` | 要素 `n` 個 (`n >= 1`) のバッファ。中身は 0 |
+| `fromList` / `write` / `read` / `size` | | リストからバッファを作る / 先頭に書く (要素が多すぎれば `Invalid`) / 全要素を読む / 要素数 |
+| `spirvFile` | `String -> VkIO s Shader` | ファイルの SPIR-V (マジックナンバーと大きさを確かめる) |
+| `spirv` / `spirvWords` | `Ptr CUInt -> Int -> Shader` / `List CUInt -> Shader` | C のメモリにある SPIR-V (バイト数を添える) / ワードのリスト |
+| `pipeline` | `Gpu s -> Shader -> Int -> Int -> VkIO s (Pipeline s)` | バッファ `nb` 個とプッシュ定数 `np` 個 (32 ビット) をとるシェーダのパイプライン |
+| `arg` / `Push` | `Storable e => Buffer s e -> Arg s` / `PushInt Int \| PushFloat Float` | `dispatch` に渡すバッファとプッシュ定数 |
+| `dispatch` | `Gpu s -> Pipeline s -> List (Arg s) -> List Push -> {x : Int \| 1 <= x && x <= 65535} -> {y : …} -> {z : …} -> VkIO s ()` | `x * y * z` 個のワークグループで実行し、完了を待つ。バッファとプッシュ定数の数がパイプラインと違えば `Invalid` |
+
+- シェーダのエントリーポイントは `main`。set 0 の binding 0, 1, … に記憶バッファ (`dispatch` の引数の順)、プッシュ定数に 32 ビットの値
+  (`PushInt` は `int` / `uint`、`PushFloat` は `float`) を順に宣言する。要素の型はシェーダの `std430` の配置と同じものを使う
+  (`CFloat` = `float`、`CUInt` = `uint`、`CInt` = `int`)。
+- 計算に使うデバイスは、計算のキューを持つものから種類で選ぶ (discrete > integrated > virtual GPU > CPU > その他)。
+
+### 3.3 資源の管理
+
+- `withGpu` は新しいリージョン `s` (spec-v0.0.3.md §3) を作り、インスタンス・デバイス・コマンドプールを作る。
+  資源を作る関数はすべて、その破棄の処理をリージョンの中の一覧 (`RefIn s (List (IO ()))`) の先頭に積む。
+  `withGpu` は計算が終わると、成功しても誤りで止まっても、一覧を先頭から (作った逆順に) 実行する。
+  依存する資源 (バッファ・パイプライン) は依存される資源 (デバイス・インスタンス) より必ず先に破棄される。
+- `Gpu s`・`Buffer s e`・`Pipeline s`・`Arg s` は型に `s` を含むので、`withGpu` の結果にできない (E1200)。
+  したがって **破棄の後に資源を使うことも、破棄されない資源もない**。利用者は破棄を書かない。
+- これらの型の構成子は非公開 (§2) で、利用者がポインタや他のハンドルから資源を作ることはできない (E1106)。
+- バッファはホストから見えて一貫性のある (host-visible・coherent) メモリに作り、作成時にマップしたまま、破棄の直前にアンマップする
+  (マップは利用者に見えない)。`write` / `read` はマップしたメモリとリストの間でコピーする。
+- `dispatch` は記述子プール・記述子セット・コマンドバッファ・フェンスを呼び出しごとに作って破棄する (同期実行)。
+  コマンドバッファの最後にシェーダの書き込みをホストの読み出しに見せるバリア (COMPUTE_SHADER → HOST、SHADER_WRITE → HOST_READ) を置くので、
+  `dispatch` の後の `read` はシェーダが書いた値を読む。
+
+### 3.4 シェーダの用意
+
+- GLSL から SPIR-V への変換は `glslc` で行う (CirkaLang から SPIR-V を生成することは対象外)。
+- `spirvFile` は `glslc -o shader.spv shader.comp` が書いたファイルを読む (C は要らない)。
+  `spirv` は `glslc -mfmt=c` が書いた配列を C のファイルに `#include` してリンクし、そのアドレスを `"&name"` (§1.5) で受け取って使う
+  (実行ファイルにシェーダを埋め込む)。ポインタとバイト数は extern の宣言と同じく信頼する。
+- テストでは、テストの隣の `<テスト>.<名前>.comp` をテストハーネスが `glslc -mfmt=c` で `<名前>.spv.inc` にし、C ヘルパーが `#include` する
+  (`CIRKA_GLSLC`。`-- requires: vulkan` のテストは glslc か Vulkan のデバイスがなければ飛ばす)。
+
+### 3.5 部分集合型による制約
+
+- `dispatch` のワークグループ数は `{x : Int | 1 <= x && x <= 65535}` である。65535 はすべての Vulkan の実装が保証する
+  `maxComputeWorkGroupCount` の最小値で、0 や大きすぎる数は型検査の誤りになる (E0501)。リテラルは評価で決まり、計算した数は経路の条件などから Z3 で示す
+  (spec-v0.0.4.md §3)。部分集合型は消去されるので、実行時のコストはない。
+- 評価: 定数の範囲のような **静的に決まる仕様の制約** は部分集合型で自然に書け、利用者の負担も小さい
+  (リテラルなら何も書かなくてよく、計算した数は `if` で確かめれば示せる)。一方、バッファの要素数・`dispatch` に渡すバッファの数のように
+  別の値 (パイプライン・デバイス) に依存する制約を依存型で書くと、それらの値を型に持ち回る必要があって API が重くなるので、実行時に確かめて `Invalid` を返す。
+  デバイスごとの実際の上限は実行時の値なので部分集合型にできず、仕様の下限を使っている。
+
+### 3.6 検証レイヤー
+
+- `options` は検証レイヤー `VK_LAYER_KHRONOS_validation` を有効にする (インストールされていなければ `Invalid`)。`MkOptions name False` で無効にできる。
+- 検証レイヤーは誤った使い方 (破棄されていない資源・誤った引数など) を **標準出力** に書く。テストは標準出力を期待出力と比べるので、報告があれば失敗する。
+  破棄の処理をわざと抜くと、`vkDestroyDevice` で「`VkBuffer` … has not been destroyed」が報告されてテストが失敗することを確かめた。
+
+### 3.7 実行時の表現とコスト、制限、診断
+
+- `VkIO s a` は `RIO s (Result VkError a)` を包む型で、`>>=` は `Err` で止まる。ハンドルは C のポインタを包む値である。
+- MIR インタプリタでも実行できる (`link "vulkan"` の libvulkan を `dlopen` する、spec-v0.0.6.md §1.6)。
+- 制限: 同期実行だけ (`dispatch` ごとにコマンドバッファとフェンスを作る)。キューは 1 つ。バッファはホストから見えるメモリだけで、デバイス専用のメモリへの転送はない。
+  画像・サンプラー・グラフィックスのパイプライン・ウィンドウは対象外。
+
+| コード | 内容 |
+|--------|------|
+| E1200 | (既存) 資源を `withGpu` の外に出した |
+| E1106 | (既存) 非公開の構成子 (`Vk.MkBuffer` など) を使った |
+| E0501 | (既存) ワークグループ数が 1 から 65535 の外にある |
 
