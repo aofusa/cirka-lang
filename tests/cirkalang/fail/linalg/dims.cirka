@@ -1,0 +1,12 @@
+-- The dimensions of a matrix are in its type: a product whose dimensions
+-- do not fit is a type error (spec-v0.0.6.md §4.2).
+import Linalg
+
+a : Matrix 3 4
+a = matrix 3 4 (\i, j => 0.0)
+
+c : Matrix 3 4
+c = mul a a
+
+main : IO ()
+main = print c

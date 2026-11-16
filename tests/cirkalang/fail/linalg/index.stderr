@@ -1,0 +1,6 @@
+error[E0501]: the refinement `3 < 3` does not hold
+ --> tests/cirkalang/fail/linalg/index.cirka:9:20
+  |
+9 | main = print (at a 3 0)
+  |                    ^ in `Main.main`
+  = note: it evaluates to `False`

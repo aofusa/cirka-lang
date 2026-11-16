@@ -1,0 +1,96 @@
+-- requires: lib:openblas lib:lapacke
+-- max-array-copies: 2
+-- Matrices and linear algebra on OpenBLAS and LAPACKE (spec-v0.0.6.md
+-- §4.2, FEAT-0252), compared with reference implementations in CirkaLang:
+-- products (BLAS `dgemm`, both orders in memory), `alpha * a * b + beta
+-- * c` (in place when `c` is not shared), linear systems (LAPACK `dgesv`),
+-- inverses and determinants (`dgetrf`). The matrices hold small integers,
+-- so that the products are exact; the solutions are rounded to 9
+-- decimals. The copies of arrays: `c32` for the first `gemm` (it is used
+-- again), and one for the second, whose action `Main.main` allocates as a
+-- closure holding the array (FEAT-0088, which makes it 1). `accumulate`
+-- copies nothing.
+import Linalg
+
+-- ---- reference implementations ----
+
+dotList : List Float -> List Float -> Float
+dotList (x :: xs) (y :: ys) = x * y + dotList xs ys
+dotList _ _ = 0.0
+
+column : Int -> List (List Float) -> List Float
+column j xss = map (\xs => nth j xs) xss
+
+nth : Int -> List Float -> Float
+nth i Nil = 0.0
+nth i (x :: xs) = if i == 0 then x else nth (i - 1) xs
+
+-- The product of lists of rows.
+refMul : List (List Float) -> List (List Float) -> List (List Float)
+refMul a b = case b of
+  Nil => map (\_ => Nil) a
+  (r :: _) => map (\row => map (\j => dotList row (column j b)) (range 0 (length r - 1))) a
+
+r9 : Float -> Float
+r9 x = toFloat (truncate (x * 1000000000.0 + (if x < 0.0 then 0.0 - 0.5 else 0.5))) / 1000000000.0
+
+rounded : Matrix m n -> List (List Float)
+rounded a = map (map r9) (toLists a)
+
+-- `c := a * b + c`, `k` times, in place.
+accumulate : Int -> Matrix m k -> Matrix k n -> (1 c : Unique (Matrix m n)) -> Unique (Matrix m n)
+accumulate k a b c = if k == 0 then c else accumulate (k - 1) a b (gemmIn 1.0 a b 1.0 c)
+
+-- ---- matrices ----
+
+a34 : Matrix 3 4
+a34 = matrix 3 4 (\i, j => toFloat ((i * 4 + j) % 7 - 3))
+
+b42 : Matrix 4 2
+b42 = matrix 4 2 (\i, j => toFloat ((2 * i + 3 * j) % 5))
+
+c32 : Matrix 3 2
+c32 = matrix 3 2 (\i, j => toFloat (i - j))
+
+-- A non-singular system: a44 * x = b with x known.
+a44 : Matrix 4 4
+a44 = matrix 4 4 (\i, j => if i == j then 4.0 else toFloat ((i + 2 * j) % 3 - 1))
+
+x42 : Matrix 4 2
+x42 = matrix 4 2 (\i, j => toFloat (i - 2 * j + 1))
+
+singular : Matrix 3 3
+singular = matrix 3 3 (\i, j => toFloat (i + j))
+
+d33 : Matrix 3 3
+d33 = matrix 3 3 (\i, j => toFloat ((i * 2 + j * j) % 5) + (if i == j then 1.0 else 0.0))
+
+main : IO ()
+main = do
+  print a34
+  print (rows a34, cols a34)
+  print (order a34, at a34 2 3)
+  let p = mul a34 b42
+  print p
+  print (toLists p == refMul (toLists a34) (toLists b42))
+  -- The transposes are only read in the other order.
+  print (order (transpose b42), transpose (transpose b42) == b42)
+  print (mul (transpose b42) (transpose a34) == transpose p)
+  print (mul (withOrder ColMajor a34) b42 == p, mul a34 (withOrder ColMajor b42) == p)
+  -- alpha * a * b + beta * c, in the order of c.
+  print (gemm 2.0 a34 b42 3.0 c32 == add (scale 2.0 p) (scale 3.0 c32))
+  let t = gemm 1.0 a34 b42 1.0 (withOrder ColMajor c32)
+  print (order t, t == add p c32)
+  -- In place: c := a * b + c, five times.
+  print (freeze (accumulate 5 a34 b42 (unique (matrix 3 2 (\i, j => 0.0)))) == scale 5.0 p)
+  -- Linear systems.
+  let b = mul a44 x42
+  print (fmap rounded (solve a44 b))
+  print (fmap (\x => rounded x == toLists x42) (solve (withOrder ColMajor a44) b))
+  print (fmap (\inv => rounded (mul a44 inv) == toLists (identity 4)) (inverse a44))
+  print (fmap (\inv => rounded (mul inv a44) == toLists (identity 4)) (inverse (withOrder ColMajor a44)))
+  print (solve singular (identity 3), inverse singular)
+  print (r9 (det d33) :: det singular :: r9 (det (transpose d33)) :: det (identity 5) :: Nil)
+  print (sub (add a34 a34) a34 == a34, mapElems (\x => x * x) (identity 2))
+  print (get a34 3 0, get a34 2 3)
+  print (fromLists 2 2 ((1.0 :: 2.0 :: Nil) :: (3.0 :: 4.0 :: Nil) :: Nil), fromLists 2 2 ((1.0 :: Nil) :: Nil))

@@ -1,0 +1,9 @@
+-- The indices of `at` are checked against the dimensions in the type when
+-- the program is checked (spec-v0.0.6.md §4.2).
+import Linalg
+
+a : Matrix 3 4
+a = matrix 3 4 (\i, j => 0.0)
+
+main : IO ()
+main = print (at a 3 0)

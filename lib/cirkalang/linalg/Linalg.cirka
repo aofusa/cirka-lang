@@ -1,0 +1,262 @@
+-- Matrices of `Float` and linear algebra on OpenBLAS (CBLAS) and LAPACKE
+-- (spec-v0.0.6.md §4.2, FEAT-0252).
+--
+-- `Matrix m n` has `m` rows and `n` columns. The dimensions are in the
+-- type: a product of matrices whose dimensions do not fit is a type error
+-- (E1200), and the indices of `at` are checked against them when the
+-- program is checked (spec-v0.0.4.md §3), with no cost at run time.
+--
+-- A matrix is an immutable value, and the functions are pure: each makes
+-- a new matrix, except that `gemm` stores its result in the array of its
+-- last argument when that array is not shared (`gemmIn` takes it as a
+-- unique value). The C libraries work on copies of the elements in C
+-- memory that the function allocates and frees itself. The elements are
+-- stored in one unboxed array, by rows (`RowMajor`) or by columns
+-- (`ColMajor`); `transpose` only changes the order, without copying, and
+-- the BLAS and LAPACK calls read either order.
+module Linalg
+
+import Foreign
+import Data.Array.Unboxed as U
+
+-- CBLAS (cblas.h) and LAPACKE (lapacke.h); their enumerations are `int`.
+private extern "C" link "openblas" where
+  cblas_dgemm : CInt -> CInt -> CInt -> CInt -> CInt -> CInt -> Float -> Ptr Float -> CInt -> Ptr Float -> CInt -> Float -> Ptr Float -> CInt -> IO ()
+
+private extern "C" link "lapacke" where
+  "LAPACKE_dgesv" dgesv : CInt -> CInt -> CInt -> Ptr Float -> CInt -> Ptr CInt -> Ptr Float -> CInt -> IO CInt
+  "LAPACKE_dgetrf" dgetrf : CInt -> CInt -> CInt -> Ptr Float -> CInt -> Ptr CInt -> IO CInt
+
+-- Runs an action as a pure value. Only for actions whose effects are on
+-- memory that they allocate and free themselves, so that running them any
+-- number of times, or not at all, cannot be observed (spec-v0.0.6.md
+-- §4.3). Primitives are only declared in the libraries of the compiler.
+private prim primUnsafeRunIO : {a : Type} -> IO a -> a
+
+-- The order of the elements of a matrix in memory.
+data Order = RowMajor | ColMajor deriving (Eq, Show)
+
+-- A matrix of `m` rows and `n` columns: its dimensions at run time (`m`
+-- and `n`), the order of its elements and the elements.
+data Matrix (m : Int) (n : Int) = private MkMatrix Int Int Order (U.UArray Float)
+
+-- The number of rows.
+rows : Matrix m n -> Int
+rows (MkMatrix r _ _ _) = r
+
+-- The number of columns.
+cols : Matrix m n -> Int
+cols (MkMatrix _ c _ _) = c
+
+-- The order of the elements in memory.
+order : Matrix m n -> Order
+order (MkMatrix _ _ o _) = o
+
+-- The position of element (i, j) of an r x c matrix in its array.
+private offset : Int -> Int -> Order -> Int -> Int -> Int
+offset r c RowMajor i j = i * c + j
+offset r c ColMajor i j = j * r + i
+
+-- The matrix whose element (i, j) is `f i j`, stored by rows.
+matrix : (m : {m : Int | 0 <= m}) -> (n : {n : Int | 0 <= n}) -> (Int -> Int -> Float) -> Matrix m n
+matrix m n f = MkMatrix m n RowMajor (U.generate (m * n) (\k => f (k / n) (k % n)))
+
+-- The matrix of the rows `xss`, if there are `m` rows of `n` elements.
+fromLists : (m : {m : Int | 0 <= m}) -> (n : {n : Int | 0 <= n}) -> List (List Float) -> Maybe (Matrix m n)
+fromLists m n xss = if length xss == m && allLength n xss then Just (MkMatrix m n RowMajor (U.fromList (concat xss))) else Nothing
+
+private allLength : Int -> List (List Float) -> Bool
+allLength n Nil = True
+allLength n (xs :: xss) = length xs == n && allLength n xss
+
+-- The identity matrix.
+identity : (n : {n : Int | 0 <= n}) -> Matrix n n
+identity n = matrix n n (\i, j => if i == j then 1.0 else 0.0)
+
+-- The n x n identity matrix, for a dimension known only at run time. It
+-- is symmetric, so its elements are the same in both orders.
+private eye : Order -> Int -> Matrix n n
+eye o n = MkMatrix n n o (U.generate (n * n) (\k => if k / n == k % n then 1.0 else 0.0))
+
+-- Element (i, j). The indices are checked against the dimensions of the
+-- type when the program is checked.
+at : {m : Int} -> {n : Int} -> Matrix m n -> {i : Int | 0 <= i && i < m} -> {j : Int | 0 <= j && j < n} -> Float
+at (MkMatrix r c o xs) i j = U.unboxIndex xs (offset r c o i j)
+
+-- Element (i, j), if the indices are in range.
+get : Matrix m n -> Int -> Int -> Maybe Float
+get (MkMatrix r c o xs) i j = if 0 <= i && i < r && 0 <= j && j < c then Just (U.unboxIndex xs (offset r c o i j)) else Nothing
+
+-- The rows.
+toLists : Matrix m n -> List (List Float)
+toLists (MkMatrix r c o xs) = map (\i => map (\j => U.unboxIndex xs (offset r c o i j)) (range 0 (c - 1))) (range 0 (r - 1))
+
+impl Show (Matrix m n) where
+  show a = "Matrix " ++ show (toLists a)
+
+-- Equal dimensions and elements, whatever the order in memory.
+impl Eq (Matrix m n) where
+  a == b = rows a == rows b && cols a == cols b && toLists a == toLists b
+
+-- ---- order ----
+
+-- The transpose: the same elements in the other order, without a copy.
+transpose : Matrix m n -> Matrix n m
+transpose (MkMatrix r c o xs) = MkMatrix c r (flipOrder o) xs
+
+private flipOrder : Order -> Order
+flipOrder RowMajor = ColMajor
+flipOrder ColMajor = RowMajor
+
+-- The matrix with its elements in order `o` (copied unless they are).
+withOrder : Order -> Matrix m n -> Matrix m n
+withOrder o (MkMatrix r c p xs) = if o == p then MkMatrix r c p xs else MkMatrix r c o (U.generate (r * c) (\k => moved r c p xs o k))
+
+-- The element at position `k` in order `o`, read from order `p`.
+private moved : Int -> Int -> Order -> U.UArray Float -> Order -> Int -> Float
+moved r c p xs RowMajor k = U.unboxIndex xs (offset r c p (k / c) (k % c))
+moved r c p xs ColMajor k = U.unboxIndex xs (offset r c p (k % r) (k / r))
+
+-- ---- element-wise ----
+
+-- `f` on the elements at the same positions.
+zipElems : (Float -> Float -> Float) -> Matrix m n -> Matrix m n -> Matrix m n
+zipElems f (MkMatrix r c o xs) b = case withOrder o b of
+  MkMatrix _ _ _ ys => MkMatrix r c o (U.generate (r * c) (\k => f (U.unboxIndex xs k) (U.unboxIndex ys k)))
+
+-- `f` on each element.
+mapElems : (Float -> Float) -> Matrix m n -> Matrix m n
+mapElems f (MkMatrix r c o xs) = MkMatrix r c o (U.map f xs)
+
+add : Matrix m n -> Matrix m n -> Matrix m n
+add a b = zipElems (\x, y => x + y) a b
+
+sub : Matrix m n -> Matrix m n -> Matrix m n
+sub a b = zipElems (\x, y => x - y) a b
+
+scale : Float -> Matrix m n -> Matrix m n
+scale s a = mapElems (\x => s * x) a
+
+-- ---- BLAS and LAPACK ----
+
+-- `k` with `bytes` bytes of C memory (at least 8), freed afterwards.
+private withMemory : Int -> (Ptr Float -> IO b) -> IO b
+withMemory bytes k = do
+  p <- mallocBytes (max bytes 8)
+  r <- k p
+  done <- freeBytes p
+  pure r
+
+-- `k` with a copy of the elements in C memory.
+private withElems : U.UArray Float -> (Ptr Float -> IO b) -> IO b
+withElems xs k = withMemory (8 * U.size xs) (\p => pokeUArray p xs >> k p)
+
+-- The constants of cblas.h and lapacke.h for an order (CblasRowMajor =
+-- LAPACK_ROW_MAJOR, CblasColMajor = LAPACK_COL_MAJOR).
+private layout : Order -> CInt
+layout RowMajor = MkCInt 101
+layout ColMajor = MkCInt 102
+
+-- How a call in layout `l` reads a matrix stored in order `o`: as it is
+-- (CblasNoTrans) or transposed (CblasTrans), since the other order reads
+-- as the transpose.
+private transFor : Order -> Order -> CInt
+transFor o l = if o == l then MkCInt 111 else MkCInt 112
+
+-- The leading dimension of an r x c matrix stored in order `o` (at least
+-- 1, as BLAS requires): the length of a row or of a column.
+private ld : Order -> Int -> Int -> CInt
+ld RowMajor r c = MkCInt (max c 1)
+ld ColMajor r c = MkCInt (max r 1)
+
+-- `c := alpha * a * b + beta * c` for an m x k `a` in order `oa`, a k x n
+-- `b` in order `ob` and an m x n `c` in order `l`.
+private dgemmIn : Order -> Int -> Int -> Int -> Float -> Order -> Ptr Float -> Order -> Ptr Float -> Float -> Ptr Float -> IO ()
+dgemmIn l m n k alpha oa pa ob pb beta pc =
+  cblas_dgemm (layout l) (transFor oa l) (transFor ob l) (MkCInt m) (MkCInt n) (MkCInt k) alpha pa (ld oa m k) pb (ld ob k n) beta pc (ld l m n)
+
+-- The product (BLAS `dgemm`), stored by rows.
+mul : Matrix m k -> Matrix k n -> Matrix m n
+mul a b = primUnsafeRunIO (mulIO a b)
+
+private mulIO : Matrix m k -> Matrix k n -> IO (Matrix m n)
+mulIO (MkMatrix m k oa xa) (MkMatrix _ n ob xb) =
+  withElems xa (\pa => withElems xb (\pb => withMemory (8 * m * n) (\pc => do
+    done <- dgemmIn RowMajor m n k 1.0 oa pa ob pb 0.0 pc
+    out <- peekUArray (m * n) pc
+    pure (MkMatrix m n RowMajor out))))
+
+-- `alpha * a * b + beta * c` (BLAS `dgemm`), in the order of `c`. The
+-- result is stored in the array of `c` when no other value shares it.
+gemm : Float -> Matrix m k -> Matrix k n -> Float -> Matrix m n -> Matrix m n
+gemm alpha a b beta c = primUnsafeRunIO (gemmIO alpha a b beta c)
+
+private gemmIO : Float -> Matrix m k -> Matrix k n -> Float -> Matrix m n -> IO (Matrix m n)
+gemmIO alpha (MkMatrix m k oa xa) (MkMatrix _ n ob xb) beta (MkMatrix _ _ oc xc) = do
+  pc <- mallocBytes (max (8 * m * n) 8)
+  done <- pokeUArray pc xc
+  done <- withElems xa (\pa => withElems xb (\pb => dgemmIn oc m n k alpha oa pa ob pb beta pc))
+  -- The last use of `xc`: in place unless the caller shares it.
+  out <- peekUArrayInto xc pc
+  done <- freeBytes pc
+  pure (MkMatrix m n oc out)
+
+-- `gemm` on a matrix owned uniquely: the result is written over `c` (the
+-- elements are copied only when `c` was made by `unique` from a matrix
+-- that still shares them).
+gemmIn : Float -> Matrix m k -> Matrix k n -> Float -> (1 c : Unique (Matrix m n)) -> Unique (Matrix m n)
+gemmIn alpha a b beta c = unique (gemm alpha a b beta (freeze c))
+
+-- The solution `x` of `a * x = b` (LAPACK `dgesv`: LU decomposition with
+-- partial pivoting) in the order of `a`, or `Nothing` when `a` is
+-- singular.
+solve : Matrix n n -> Matrix n k -> Maybe (Matrix n k)
+solve a b = primUnsafeRunIO (solveIO a (withOrder (order a) b))
+
+private solveIO : Matrix n n -> Matrix n k -> IO (Maybe (Matrix n k))
+solveIO (MkMatrix n _ o xa) (MkMatrix _ k _ xb) =
+  withElems xa (\pa => withElems xb (\pb => allocaArray (max n 1) (\ipiv => do
+    info <- dgesv (layout o) (MkCInt n) (MkCInt k) pa (ld o n n) ipiv pb (ld o n k)
+    checked "LAPACKE_dgesv" info
+    if fromCInt info > 0 then pure Nothing else fmap (\out => Just (MkMatrix n k o out)) (peekUArray (n * k) pb))))
+
+-- A negative `info` of LAPACK names an invalid argument: a mistake of this
+-- module, not of its user.
+private checked : String -> CInt -> IO ()
+checked f info = if fromCInt info < 0 then panic ("Linalg: " ++ f ++ ": invalid argument " ++ show (negate (fromCInt info))) else pure ()
+
+-- The inverse, or `Nothing` when `a` is singular.
+inverse : Matrix n n -> Maybe (Matrix n n)
+inverse a = solve a (eye (order a) (rows a))
+
+-- The determinant (LAPACK `dgetrf`). The elements are read by rows
+-- whatever their order: the other order is the transpose, whose
+-- determinant is the same.
+det : Matrix n n -> Float
+det a = primUnsafeRunIO (detIO a)
+
+private detIO : Matrix n n -> IO Float
+detIO (MkMatrix n _ _ xa) =
+  withElems xa (\pa => allocaArray (max n 1) (\ipiv => do
+    info <- dgetrf (layout RowMajor) (MkCInt n) (MkCInt n) pa (MkCInt (max n 1)) ipiv
+    checked "LAPACKE_dgetrf" info
+    if fromCInt info > 0 then pure 0.0 else luDet n pa ipiv))
+
+-- The determinant from an LU decomposition: the product of the diagonal
+-- of U, negated for each row swap (`ipiv` counts rows from 1).
+private luDet : Int -> Ptr Float -> Ptr CInt -> IO Float
+luDet n pa ipiv = do
+  diag <- mapIO (\i => peekElemOff pa (i * n + i)) (range 0 (n - 1))
+  pivots <- peekArray n ipiv
+  pure (if swaps pivots 1 % 2 == 0 then product diag else negate (product diag))
+
+private swaps : List CInt -> Int -> Int
+swaps Nil _ = 0
+swaps (p :: ps) i = (if fromCInt p /= i then 1 else 0) + swaps ps (i + 1)
+
+private mapIO : (a -> IO b) -> List a -> IO (List b)
+mapIO f Nil = pure Nil
+mapIO f (x :: xs) = do
+  y <- f x
+  ys <- mapIO f xs
+  pure (y :: ys)

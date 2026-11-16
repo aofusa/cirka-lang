@@ -1,0 +1,7 @@
+error[E1200]: type mismatch
+ --> tests/cirkalang/fail/linalg/dims.cirka:9:11
+  |
+9 | c = mul a a
+  |           ^
+  = note: expected `Matrix 4 _`
+  = note:    found `Matrix 3 4`

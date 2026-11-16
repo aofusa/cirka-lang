@@ -1,0 +1,20 @@
+Matrix [[-3, -2, -1, 0], [1, 2, 3, -3], [-2, -1, 0, 1]]
+(3, 4)
+(RowMajor, 1)
+Matrix [[-8, -11], [13, -3], [-1, -2]]
+True
+(ColMajor, True)
+True
+(True, True)
+True
+(ColMajor, True)
+True
+Just [[1, -1], [2, 0], [3, 1], [4, 2]]
+Just True
+Just True
+Just True
+(Nothing, Nothing)
+[-52, 0, -52, 1]
+(True, Matrix [[1, 0], [0, 1]])
+(Nothing, Just 1)
+(Just Matrix [[1, 2], [3, 4]], Nothing)

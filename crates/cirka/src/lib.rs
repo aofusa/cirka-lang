@@ -44,11 +44,13 @@ pub fn lib_dir() -> PathBuf {
 
 /// Source roots of the libraries.
 pub fn lib_roots() -> Vec<PathBuf> {
-    // `vulkan`: `Vulkan` and the bindings `Vulkan.Sys` (spec-v0.0.6.md §3).
+    // `vulkan`: `Vulkan` and the bindings `Vulkan.Sys` (spec-v0.0.6.md §3);
+    // `linalg`: `Linalg` on OpenBLAS and LAPACKE (§4.2).
     vec![
         lib_dir().join("core"),
         lib_dir().join("std"),
         lib_dir().join("vulkan"),
+        lib_dir().join("linalg"),
     ]
 }
 

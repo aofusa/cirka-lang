@@ -138,9 +138,10 @@ fn compile_cirka_with(
 /// interpreter does not run, say `-- skip-backend: interp` (spec-v0.0.5.md
 /// §1.5): native code alone prints `.stdout`. A `.c` file next to a
 /// program is its C helper (spec-v0.0.6.md §1), loaded by the interpreter
-/// and linked with native code. A program with `-- requires: vulkan`
-/// (spec-v0.0.6.md §3) is skipped without glslc or a Vulkan device; its
-/// shaders `<name>.<shader>.comp` are compiled for its C helper.
+/// and linked with native code. A program with `-- requires:` is skipped
+/// without what it names (`vulkan`: glslc and a Vulkan device, spec-v0.0.6.md
+/// §3; `lib:<name>`: a C library, §4); the shaders `<name>.<shader>.comp`
+/// of a program are compiled for its C helper.
 #[test]
 fn cirkalang_run() {
     cirka_testkit::init();
@@ -152,9 +153,7 @@ fn cirkalang_run() {
     }
     assert!(!cases.is_empty());
     run_suite("cirkalang-run", &cases, |c| {
-        if c.header.get("requires") == Some("vulkan")
-            && let Some(why) = cirka_integration::vulkan_missing()
-        {
+        if let Some(why) = cirka_integration::missing_requirement(c) {
             return Outcome::Skip(why);
         }
         let (core, warnings) = match compile_cirka(&c.path) {
@@ -251,14 +250,14 @@ fn cirkalang_run() {
     });
 }
 
-/// Ill-typed programs under tests/cirkalang/fail/{type,own,test,total,proof,refine,thread,net,vulkan}/ report
+/// Ill-typed programs under tests/cirkalang/fail/{type,own,test,total,proof,refine,thread,net,vulkan,linalg}/ report
 /// the diagnostics in `.stderr` (`test/` is checked with its tests kept, as
 /// by `cirka check`).
 #[test]
 fn cirkalang_type_errors() {
     let mut cases = Vec::new();
     for d in [
-        "type", "own", "test", "total", "proof", "refine", "thread", "net", "vulkan",
+        "type", "own", "test", "total", "proof", "refine", "thread", "net", "vulkan", "linalg",
     ] {
         cases.extend(discover(
             &repo_root().join("tests/cirkalang/fail").join(d),

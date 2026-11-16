@@ -157,6 +157,29 @@ pub fn glslc() -> String {
         .unwrap_or_else(|| "glslc".into())
 }
 
+/// Why a case cannot run here, from its `-- requires:` (words separated by
+/// spaces): `vulkan` needs glslc and a Vulkan device ([`vulkan_missing`]),
+/// `lib:<name>` the C library `lib<name>.so` (spec-v0.0.6.md §4). The
+/// Docker image has them all, and scripts/ci.sh checks so.
+pub fn missing_requirement(c: &Case) -> Option<String> {
+    let reqs = c.header.get("requires")?;
+    reqs.split_whitespace().find_map(|r| {
+        if r == "vulkan" {
+            vulkan_missing()
+        } else if let Some(lib) = r.strip_prefix("lib:") {
+            library_missing(lib)
+        } else {
+            panic!("{}: unknown requirement `{r}`", c.name)
+        }
+    })
+}
+
+/// Why `lib<name>.so` cannot be used: it is loaded (with global symbols,
+/// as the interpreter loads the libraries of `link`).
+fn library_missing(name: &str) -> Option<String> {
+    cirka_mir::ffi::load_library(std::path::Path::new(&format!("lib{name}.so"))).err()
+}
+
 /// Why a case with `-- requires: vulkan` (spec-v0.0.6.md §3) cannot run
 /// here: it needs `glslc` and a Vulkan device (`vulkaninfo` lists one). In
 /// the Docker image both are installed (Mesa lavapipe), and
