@@ -1,0 +1,12 @@
+-- A buffer belongs to the region `s` of its device: it cannot be the
+-- result of `withGpu`, so it is never used after the device is destroyed
+-- (spec-v0.0.6.md §3, E1200).
+module Main
+
+import Foreign
+import Vulkan as Vk
+
+main : IO ()
+main = do
+  r <- Vk.withGpu (Vk.options "escape") (\s, g => Vk.fromList g (MkCFloat 1.0 :: Nil))
+  pure ()

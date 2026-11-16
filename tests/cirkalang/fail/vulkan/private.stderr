@@ -1,0 +1,5 @@
+error[E1106]: `Vk.MkBuffer` is private
+  --> tests/cirkalang/fail/vulkan/private.cirka:11:15
+   |
+11 | forge s b p = Vk.MkBuffer b p 1000000
+   |               ^^^^^^^^^^^ declared `private` in `Vulkan`

@@ -1,0 +1,9 @@
+error[E1200]: type mismatch
+  --> tests/cirkalang/fail/vulkan/escape.cirka:11:51
+   |
+11 |   r <- Vk.withGpu (Vk.options "escape") (\s, g => Vk.fromList g (MkCFloat 1.0 :: Nil))
+   |                                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: expected `VkIO s _`
+   = note:    found `VkIO s (Buffer s CFloat)`
+   = note: the region `s` exists only inside the borrow or `withRegion` that binds it, so neither a reference into it nor a computation in it can be the result
+   = help: return a value read through the reference instead (spec-v0.0.3.md §2.1, §3.1)

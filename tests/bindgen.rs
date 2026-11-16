@@ -382,6 +382,24 @@ fn bindgen_system_headers() {
                 failures.push(format!("<{header}>: {} is opaque: {why}", it.name));
             }
         }
+        // The module `Vulkan.Sys` of the Vulkan library (FEAT-0251,
+        // spec-v0.0.6.md §3) is this output; `CIRKA_BLESS=1` regenerates
+        // it when the header changes.
+        if header == "vulkan/vulkan_core.h" {
+            let sys_opts = cirka_bindgen::Options {
+                header: opts.header.clone(),
+                module: Some("Vulkan.Sys".into()),
+                links: vec!["vulkan".into()],
+                ..Default::default()
+            };
+            let sys = cirka_bindgen::print(&h, &sys_opts, Lang::Cirka, header);
+            let path = repo_root().join("lib/cirkalang/vulkan/Vulkan/Sys.cirka");
+            if let Err(e) = check_expect(&path, &sys) {
+                failures.push(format!(
+                    "<{header}>: lib/cirkalang/vulkan/Vulkan/Sys.cirka: {e}"
+                ));
+            }
+        }
         // The whole CirkaLang output is checked in seconds for a program
         // using a part of it (spec-v0.0.6.md §1.10; 51 s before FEAT-0255),
         // and compiles optimized.

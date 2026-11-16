@@ -1,0 +1,12 @@
+error[E0501]: the refinement `False` does not hold
+  --> tests/cirkalang/fail/vulkan/groups.cirka:12:41
+   |
+12 |   Vk.dispatch g p (Vk.arg b :: Nil) Nil 0 1 1
+   |                                         ^ in `Main.run`
+   = note: it evaluates to `False`
+error[E0501]: the refinement `65536 <= 65535` does not hold
+  --> tests/cirkalang/fail/vulkan/groups.cirka:13:43
+   |
+13 |   Vk.dispatch g p (Vk.arg b :: Nil) Nil 1 65536 1
+   |                                           ^^^^^ in `Main.run`
+   = note: it evaluates to `False`

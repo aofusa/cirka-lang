@@ -44,7 +44,12 @@ pub fn lib_dir() -> PathBuf {
 
 /// Source roots of the libraries.
 pub fn lib_roots() -> Vec<PathBuf> {
-    vec![lib_dir().join("core"), lib_dir().join("std")]
+    // `vulkan`: `Vulkan` and the bindings `Vulkan.Sys` (spec-v0.0.6.md §3).
+    vec![
+        lib_dir().join("core"),
+        lib_dir().join("std"),
+        lib_dir().join("vulkan"),
+    ]
 }
 
 /// The result of compiling a CirkaLang program.

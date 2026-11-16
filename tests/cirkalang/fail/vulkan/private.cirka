@@ -1,0 +1,14 @@
+-- The handles of the Vulkan module are only made by it, from what Vulkan
+-- gave: their constructors are private (spec-v0.0.6.md §2, §3, E1106).
+module Main
+
+import Foreign
+import Data.Borrow (Region)
+import Vulkan as Vk
+import Vulkan.Sys as C
+
+forge : (0 s : Region) -> C.VkBuffer -> Ptr CFloat -> Vk.Buffer s CFloat
+forge s b p = Vk.MkBuffer b p 1000000
+
+main : IO ()
+main = pure ()

@@ -122,11 +122,14 @@ pub fn c_helper(cfg: &cirka_driver::Config, c: &Case, suite: &str) -> Result<Vec
     }
     let dir = cirka_testkit::work_dir(suite, &c.name);
     std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    shaders(c, &dir)?;
     // Cases in directories have `/` in their names.
     let name = c.name.replace('/', "__");
     let lib = dir.join(format!("lib{name}.so"));
     let out = std::process::Command::new(&cfg.clang)
-        .args(["-O2", "-shared", "-fPIC", "-Wall", "-Werror", "-o"])
+        .args(["-O2", "-shared", "-fPIC", "-Wall", "-Werror"])
+        .arg(format!("-I{}", dir.display()))
+        .arg("-o")
         .arg(&lib)
         .arg(&src)
         .output()
@@ -144,6 +147,82 @@ pub fn c_helper(cfg: &cirka_driver::Config, c: &Case, suite: &str) -> Result<Vec
         format!("-l{name}"),
         format!("-Wl,-rpath,{}", dir.display()),
     ])
+}
+
+/// `glslc` (`CIRKA_GLSLC`), which compiles GLSL shaders to SPIR-V.
+pub fn glslc() -> String {
+    std::env::var("CIRKA_GLSLC")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "glslc".into())
+}
+
+/// Why a case with `-- requires: vulkan` (spec-v0.0.6.md §3) cannot run
+/// here: it needs `glslc` and a Vulkan device (`vulkaninfo` lists one). In
+/// the Docker image both are installed (Mesa lavapipe), and
+/// scripts/ci.sh checks so.
+pub fn vulkan_missing() -> Option<String> {
+    static MISSING: OnceLock<Option<String>> = OnceLock::new();
+    MISSING
+        .get_or_init(|| {
+            let runs = |cmd: &str, args: &[&str]| {
+                std::process::Command::new(cmd)
+                    .args(args)
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .is_ok_and(|s| s.success())
+            };
+            if !runs(&glslc(), &["--version"]) {
+                Some(format!("{} (CIRKA_GLSLC) is not installed", glslc()))
+            } else if !runs("vulkaninfo", &["--summary"]) {
+                Some("no Vulkan device (vulkaninfo --summary failed)".into())
+            } else {
+                None
+            }
+        })
+        .clone()
+}
+
+/// The GLSL compute shaders of a case, `<case>.<name>.comp` next to it
+/// (spec-v0.0.6.md §3), compiled with glslc to `<dir>/<name>.spv.inc`:
+/// the SPIR-V words as a C initializer, which the case's C helper
+/// includes (`const uint32_t name_spv[] = #include "name.spv.inc";`).
+fn shaders(c: &Case, dir: &std::path::Path) -> Result<(), String> {
+    let (Some(parent), Some(stem)) = (c.path.parent(), c.path.file_stem()) else {
+        return Ok(());
+    };
+    let prefix = format!("{}.", stem.to_string_lossy());
+    let entries =
+        std::fs::read_dir(parent).map_err(|e| format!("cannot read {}: {e}", parent.display()))?;
+    let mut found: Vec<(String, PathBuf)> = entries
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let file = e.file_name().to_string_lossy().into_owned();
+            let name = file
+                .strip_prefix(&prefix)?
+                .strip_suffix(".comp")?
+                .to_string();
+            Some((name, e.path()))
+        })
+        .collect();
+    found.sort();
+    for (name, path) in found {
+        let out = std::process::Command::new(glslc())
+            .args(["--target-env=vulkan1.0", "-O", "-Werror", "-mfmt=c", "-o"])
+            .arg(dir.join(format!("{name}.spv.inc")))
+            .arg(&path)
+            .output()
+            .map_err(|e| format!("cannot run {}: {e}", glslc()))?;
+        if !out.status.success() {
+            return Err(format!(
+                "compiling {} failed:\n{}",
+                path.display(),
+                String::from_utf8_lossy(&out.stderr)
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// [`check_native_with`], linking native programs with `link_args` (the

@@ -1,0 +1,19 @@
+// c = a * b for n x n matrices in row-major order (FEAT-0251).
+#version 450
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(std430, set = 0, binding = 0) readonly buffer A { float a[]; };
+layout(std430, set = 0, binding = 1) readonly buffer B { float b[]; };
+layout(std430, set = 0, binding = 2) writeonly buffer C { float c[]; };
+layout(push_constant) uniform Push { uint n; } p;
+
+void main() {
+  uint row = gl_GlobalInvocationID.y;
+  uint col = gl_GlobalInvocationID.x;
+  if (row < p.n && col < p.n) {
+    float s = 0.0;
+    for (uint k = 0u; k < p.n; k++) {
+      s += a[row * p.n + k] * b[k * p.n + col];
+    }
+    c[row * p.n + col] = s;
+  }
+}

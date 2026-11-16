@@ -1,0 +1,23 @@
+// total += the sum of xs, by a tree in each workgroup (FEAT-0251).
+#version 450
+layout(local_size_x = 64) in;
+layout(std430, set = 0, binding = 0) readonly buffer In { uint xs[]; };
+layout(std430, set = 0, binding = 1) buffer Out { uint total; };
+layout(push_constant) uniform Push { uint n; } p;
+shared uint partial[64];
+
+void main() {
+  uint i = gl_GlobalInvocationID.x;
+  uint l = gl_LocalInvocationID.x;
+  partial[l] = i < p.n ? xs[i] : 0u;
+  barrier();
+  for (uint s = 32u; s > 0u; s >>= 1) {
+    if (l < s) {
+      partial[l] += partial[l + s];
+    }
+    barrier();
+  }
+  if (l == 0u) {
+    atomicAdd(total, partial[0]);
+  }
+}

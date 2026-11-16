@@ -1,0 +1,188 @@
+-- requires: vulkan
+-- Vulkan compute shaders (spec-v0.0.6.md §3, FEAT-0251) on the device of
+-- the Docker image (Mesa lavapipe) with the validation layer, which
+-- reports wrong uses of Vulkan on the standard output: vector addition,
+-- SAXPY, a matrix product and a reduction, each compared with the same
+-- computation on the CPU. The shaders are vulkan_compute.<name>.comp,
+-- which the test harness compiles with glslc for the C helper; the vector
+-- addition reads its shader from a file.
+import Foreign
+import Data.Borrow (Region)
+import Vulkan as Vk
+
+extern "C" where
+  "&vadd_spv" vaddCode : Ptr CUInt
+  vadd_spv_size : IO CSize
+  "&saxpy_spv" saxpyCode : Ptr CUInt
+  saxpy_spv_size : IO CSize
+  "&matmul_spv" matmulCode : Ptr CUInt
+  matmul_spv_size : IO CSize
+  "&reduce_spv" reduceCode : Ptr CUInt
+  reduce_spv_size : IO CSize
+  vadd_spv_file : IO (Ptr CChar)
+  remove_vadd_spv_file : IO ()
+
+shader : Ptr CUInt -> IO CSize -> Vk.VkIO s Vk.Shader
+shader code size = do
+  n <- Vk.io size
+  pure (Vk.spirv code (fromCSize n))
+
+-- ---- lists ----
+
+floats : List Int -> List CFloat
+floats xs = map (\x => MkCFloat (toFloat x)) xs
+
+unfloat : CFloat -> Float
+unfloat (MkCFloat x) = x
+
+uints : List Int -> List CUInt
+uints xs = map (\x => MkCUInt x) xs
+
+unuint : CUInt -> Int
+unuint (MkCUInt x) = x
+
+zipWith : (a -> b -> c) -> List a -> List b -> List c
+zipWith f (x :: xs) (y :: ys) = f x y :: zipWith f xs ys
+zipWith f _ _ = Nil
+
+take : Int -> List a -> List a
+take n Nil = Nil
+take n (x :: xs) = if n <= 0 then Nil else x :: take (n - 1) xs
+
+drop : Int -> List a -> List a
+drop n Nil = Nil
+drop n (x :: xs) = if n <= 0 then x :: xs else drop (n - 1) xs
+
+index : List a -> Int -> a -> a
+index Nil i d = d
+index (x :: xs) i d = if i == 0 then x else index xs (i - 1) d
+
+-- The first, the 500th and the last element.
+probes : List CFloat -> List Float
+probes xs = map unfloat (append (take 1 xs) (append (take 1 (drop 499 xs)) (take 1 (reverse xs))))
+
+-- ---- the computations ----
+
+-- c = a + b over 1000 elements (16 workgroups of 64).
+vectorAdd : Vk.Gpu s -> Vk.Shader -> Vk.VkIO s String
+vectorAdd g code = do
+  let xs = floats (range 0 999)
+  let ys = floats (map (\i => 3 * i + 1) (range 0 999))
+  a <- Vk.fromList g xs
+  b <- Vk.fromList g ys
+  c <- Vk.buffer g 1000
+  p <- Vk.pipeline g code 3 1
+  Vk.dispatch g p (Vk.arg a :: Vk.arg b :: Vk.arg c :: Nil) (Vk.PushInt 1000 :: Nil) 16 1 1
+  zs <- Vk.read c
+  let cpu = zipWith (\x, y => MkCFloat (unfloat x + unfloat y)) xs ys
+  pure ("vector add: " ++ show (zs == cpu) ++ " " ++ show (probes zs))
+
+-- y = 2.5 * x + y over 1000 elements, twice on the same buffers.
+saxpy : Vk.Gpu s -> Vk.Shader -> Vk.VkIO s String
+saxpy g code = do
+  let xs = floats (range 0 999)
+  let ys = floats (map (\i => 1000 - i) (range 0 999))
+  x <- Vk.fromList g xs
+  y <- Vk.fromList g ys
+  p <- Vk.pipeline g code 2 2
+  Vk.dispatch g p (Vk.arg x :: Vk.arg y :: Nil) (Vk.PushInt 1000 :: Vk.PushFloat 2.5 :: Nil) 16 1 1
+  Vk.dispatch g p (Vk.arg x :: Vk.arg y :: Nil) (Vk.PushInt 1000 :: Vk.PushFloat 2.5 :: Nil) 16 1 1
+  zs <- Vk.read y
+  let once = zipWith (\a, b => MkCFloat (2.5 * unfloat a + unfloat b)) xs ys
+  let cpu = zipWith (\a, b => MkCFloat (2.5 * unfloat a + unfloat b)) xs once
+  pure ("saxpy: " ++ show (zs == cpu) ++ " " ++ show (probes zs))
+
+-- The product of two n x n matrices (row-major), n = 24: 3 x 3
+-- workgroups of 8 x 8.
+matrix : Int -> (Int -> Int -> Int) -> List CFloat
+matrix n f = concatMap (\i => map (\j => MkCFloat (toFloat (f i j))) (range 0 (n - 1))) (range 0 (n - 1))
+
+rowsOf : Int -> List CFloat -> List (List Float)
+rowsOf n xs = map (\i => map unfloat (take n (drop (i * n) xs))) (range 0 (n - 1))
+
+colsOf : Int -> List CFloat -> List (List Float)
+colsOf n xs = map (\j => map (\k => unfloat (index xs (k * n + j) (MkCFloat 0.0))) (range 0 (n - 1))) (range 0 (n - 1))
+
+cpuProduct : Int -> List CFloat -> List CFloat -> List CFloat
+cpuProduct n a b =
+  let cols = colsOf n b
+  in concatMap (\r => map (\c => MkCFloat (sum (zipWith (\x, y => x * y) r c))) cols) (rowsOf n a)
+
+matmul : Vk.Gpu s -> Vk.Shader -> Vk.VkIO s String
+matmul g code = do
+  let as = matrix 24 (\i, j => (i + 2 * j) % 7 - 3)
+  let bs = matrix 24 (\i, j => (3 * i + j) % 5)
+  a <- Vk.fromList g as
+  b <- Vk.fromList g bs
+  c <- Vk.buffer g (24 * 24)
+  p <- Vk.pipeline g code 3 1
+  Vk.dispatch g p (Vk.arg a :: Vk.arg b :: Vk.arg c :: Nil) (Vk.PushInt 24 :: Nil) 3 3 1
+  zs <- Vk.read c
+  pure ("matmul: " ++ show (zs == cpuProduct 24 as bs) ++ " " ++ show (map unfloat (take 4 zs)))
+
+-- The sum of 0 .. 99999 (1563 workgroups of 64): 4999950000 does not fit
+-- in 32 bits, so the shader's total wraps around as C's `uint`.
+reduce : Vk.Gpu s -> Vk.Shader -> Vk.VkIO s String
+reduce g code = do
+  xs <- Vk.fromList g (uints (range 0 99999))
+  out <- Vk.buffer g 1
+  p <- Vk.pipeline g code 2 1
+  Vk.dispatch g p (Vk.arg xs :: Vk.arg out :: Nil) (Vk.PushInt 100000 :: Nil) 1563 1 1
+  t <- Vk.read out
+  let cpu = sum (range 0 99999) % 4294967296
+  pure ("reduce: " ++ show (map unuint t == cpu :: Nil) ++ " " ++ show (map unuint t))
+
+-- Wrong uses stop the computation with an error; what it created is
+-- destroyed all the same.
+mistakes : Vk.Gpu s -> Vk.Shader -> Vk.VkIO s String
+mistakes g code = do
+  a <- Vk.fromList g (floats (range 1 4))
+  p <- Vk.pipeline g code 3 1
+  Vk.dispatch g p (Vk.arg a :: Nil) (Vk.PushInt 4 :: Nil) 1 1 1
+  pure "not reached"
+
+compute : String -> (0 s : Region) -> Vk.Gpu s -> Vk.VkIO s (List String)
+compute vaddFile s g = do
+  vadd <- Vk.spirvFile vaddFile
+  sax <- shader saxpyCode saxpy_spv_size
+  mm <- shader matmulCode matmul_spv_size
+  red <- shader reduceCode reduce_spv_size
+  r1 <- vectorAdd g vadd
+  r2 <- saxpy g sax
+  r3 <- matmul g mm
+  r4 <- reduce g red
+  pure (r1 :: r2 :: r3 :: r4 :: ("validated: " ++ show (Vk.validated g)) :: Nil)
+
+failing : (0 s : Region) -> Vk.Gpu s -> Vk.VkIO s String
+failing s g = do
+  vadd <- shader vaddCode vadd_spv_size
+  mistakes g vadd
+
+tooBig : (0 s : Region) -> Vk.Gpu s -> Vk.VkIO s (List CFloat)
+tooBig s g = do
+  b <- Vk.buffer g 2
+  Vk.write b (floats (range 1 3))
+  Vk.read b
+
+-- Reading shaders that do not exist or are not SPIR-V code.
+badFile : String -> (0 s : Region) -> Vk.Gpu s -> Vk.VkIO s ()
+badFile path s g = do
+  sh <- Vk.spirvFile path
+  pure ()
+
+main : IO ()
+main = do
+  vaddFile <- vadd_spv_file >>= peekCString
+  r <- Vk.withGpu (Vk.options "vulkan_compute") (compute vaddFile)
+  removed <- remove_vadd_spv_file
+  case r of
+    Ok lines => mapM_ putStrLn lines
+    Err e => print e
+  e0 <- Vk.withGpu (Vk.options "vulkan_compute") (badFile "/nonexistent/vadd.spv")
+  print e0
+  e00 <- Vk.withGpu (Vk.options "vulkan_compute") (badFile "/dev/null")
+  print e00
+  e1 <- Vk.withGpu (Vk.options "vulkan_compute") failing
+  print e1
+  e2 <- Vk.withGpu (Vk.options "vulkan_compute") tooBig
+  print e2

@@ -1,0 +1,16 @@
+-- The workgroup counts of `dispatch` are from 1 to 65535, the least
+-- maxComputeWorkGroupCount of every Vulkan device (spec-v0.0.6.md §3,
+-- E0501).
+module Main
+
+import Foreign
+import Data.Borrow (Region)
+import Vulkan as Vk
+
+run : Vk.Gpu s -> Vk.Pipeline s -> Vk.Buffer s CFloat -> Vk.VkIO s ()
+run g p b = do
+  Vk.dispatch g p (Vk.arg b :: Nil) Nil 0 1 1
+  Vk.dispatch g p (Vk.arg b :: Nil) Nil 1 65536 1
+
+main : IO ()
+main = pure ()

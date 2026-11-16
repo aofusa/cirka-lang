@@ -1,0 +1,9 @@
+vector add: True [1, 1997, 3997]
+saxpy: True [1000, 2996, 4996]
+matmul: True [-5, -23, -11, 6]
+reduce: True [704982704]
+validated: True
+Err (Invalid "cannot open /nonexistent/vadd.spv")
+Err (Invalid "/dev/null is not SPIR-V code")
+Err (Invalid "dispatch: the number of buffers differs from the pipeline's")
+Err (Invalid "more elements than the buffer holds")
