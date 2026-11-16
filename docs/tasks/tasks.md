@@ -29,7 +29,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | CirkaLang | CirkaLang v0.0.3 借用・リージョン・性能 | 5 / 5 |
 | CirkaLang | CirkaLang v0.0.4 証明と検証 | 6 / 6 |
 | CirkaLang | CirkaLang v0.0.5 並行性・サーバ・syscall | 5 / 5 |
-| CirkaLang | CirkaLang v0.0.6 Vulkan compute・数値計算 | 4 / 8 |
+| CirkaLang | CirkaLang v0.0.6 Vulkan compute・数値計算 | 5 / 8 |
 | CirkaLang | CirkaLang v0.0.7 効果・能力・セッション型 | 0 / 4 |
 | CirkaLang | CX 遠隔環境での GUI 検証 (任意) | 0 / 1 |
 | 第二段階 | P2 第二段階 (CirkaLang v0.1.0 以降) | 0 / 2 |
@@ -274,7 +274,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 |---|---|---|---|---|
 | [FEAT-0250](features/FEAT-0250-cl-ffi-complete.md) | FFI の完成と bindgen の利用 | done | P0 | 0243, 0047, 0048 |
 | [FEAT-0251](features/FEAT-0251-cl-vulkan-compute.md) | Vulkan コンピュートシェーダ (Docker / lavapipe) | done | P0 | 0250, 0256 |
-| [FEAT-0252](features/FEAT-0252-cl-math-linalg.md) | 数学・線形代数ラッパー | in-progress | P2 | 0250, 0256 |
+| [FEAT-0252](features/FEAT-0252-cl-math-linalg.md) | 数学・線形代数ラッパー | done | P2 | 0250, 0256 |
 | [FEAT-0257](features/FEAT-0257-cl-linalg-zero-copy.md) | Linalg の BLAS / LAPACK に配列の領域を直接渡す (コピーとバッファの除去) | todo | P2 | 0252 |
 | [FEAT-0254](features/FEAT-0254-cl-unique-array-sizes.md) | 一意な配列と文字列のビューの大きさを証明で追う | todo | P2 | 0244 |
 | [FEAT-0255](features/FEAT-0255-cl-large-extern-modules.md) | 大きな extern のモジュールのコンパイル時間 | done | P1 | 0250 |
