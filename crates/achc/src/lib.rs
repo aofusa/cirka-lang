@@ -130,13 +130,9 @@ pub fn compile(
         &achc_rename::Options::default(),
     )?;
     if let Some(m) = rn.modules.last() {
-        dump_frontend(
-            opts,
-            "rn",
-            name,
-            "rn",
-            &achc_syntax::print::print_module(&m.ast),
-        )?;
+        dump_frontend(opts, "rn", name, "rn", || {
+            achc_syntax::print::print_module(&m.ast)
+        })?;
     }
     let lib = lib_dir();
     let tp = achc_typeck::typecheck_in(
@@ -145,13 +141,9 @@ pub fn compile(
         &|f| std::path::Path::new(f).starts_with(&lib),
         ownership,
     )?;
-    dump_frontend(
-        opts,
-        "tc",
-        name,
-        "tc",
-        &achc_typeck::tast::print_program(&tp),
-    )?;
+    dump_frontend(opts, "tc", name, "tc", || {
+        achc_typeck::tast::print_program(&tp)
+    })?;
     if tp.main.is_none() {
         let root = rn
             .modules

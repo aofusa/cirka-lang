@@ -5,6 +5,7 @@ use std::process::ExitCode;
 const USAGE: &str =
     "usage: cirka <build|run|check|test> [options] FILE.cirka | DIR (with cirka.toml) | FILE.core
   --dump=rn,tt also writes the resolved program and the elaborated TT
+  --time-passes prints how long each stage takes
   test [--filter=S] runs the `test` declarations, each in its own process
        cirka bindgen [options] HEADER.h [-o FILE.cirka] (extern declarations for a C header)";
 

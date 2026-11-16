@@ -83,6 +83,8 @@ pub struct Options {
     /// Directory for intermediate files (default `_build/<name>`).
     pub build_dir: PathBuf,
     pub link_args: Vec<String>,
+    /// `--time-passes`: print how long each stage takes (stderr).
+    pub time_passes: bool,
 }
 
 impl Options {
@@ -96,8 +98,21 @@ impl Options {
             frontend_flags: Vec::new(),
             build_dir: PathBuf::from("_build").join(name),
             link_args: Vec::new(),
+            time_passes: false,
         }
     }
+}
+
+/// Runs the stage `what`; with `--time-passes`, prints how long it took
+/// to stderr.
+pub fn timed<T>(opts: &Options, what: &str, f: impl FnOnce() -> T) -> T {
+    if !opts.time_passes {
+        return f();
+    }
+    let start = std::time::Instant::now();
+    let r = f();
+    eprintln!("time: {:>9.3} s  {what}", start.elapsed().as_secs_f64());
+    r
 }
 
 /// Result of a successful compilation.
@@ -110,12 +125,19 @@ fn to_ice(d: Diagnostic) -> Diagnostic {
     Diagnostic::ice(d.message)
 }
 
-fn dump(opts: &Options, stage: Stage, name: &str, text: &str) -> Result<(), Vec<Diagnostic>> {
+/// Writes the dump of `stage` when it was requested (`text` is only
+/// printed then).
+fn dump(
+    opts: &Options,
+    stage: Stage,
+    name: &str,
+    text: impl FnOnce() -> String,
+) -> Result<(), Vec<Diagnostic>> {
     if !opts.dumps.contains(&stage) {
         return Ok(());
     }
     let p = opts.build_dir.join(format!("{name}.{}", stage.ext()));
-    write_file(&p, text)
+    write_file(&p, &text())
 }
 
 /// Writes the dump of a frontend stage to `<build_dir>/<name>.<ext>` when
@@ -125,12 +147,12 @@ pub fn dump_frontend(
     stage: &str,
     name: &str,
     ext: &str,
-    text: &str,
+    text: impl FnOnce() -> String,
 ) -> Result<(), Vec<Diagnostic>> {
     if !opts.frontend_dumps.iter().any(|s| s == stage || s == "all") {
         return Ok(());
     }
-    write_file(&opts.build_dir.join(format!("{name}.{ext}")), text)
+    write_file(&opts.build_dir.join(format!("{name}.{ext}")), &text())
 }
 
 fn write_file(p: &Path, text: &str) -> Result<(), Vec<Diagnostic>> {
@@ -151,7 +173,9 @@ fn write_file(p: &Path, text: &str) -> Result<(), Vec<Diagnostic>> {
 }
 
 /// Core → LLVM IR. `user_core` is true when the Core came from a `.core`
-/// file (Lint errors are user errors); otherwise a Lint failure is an ICE.
+/// file: it is linted here (Lint errors are user errors). A frontend lints
+/// the Core it produces itself (a failure is an ICE), so it is not linted
+/// twice (FEAT-0255).
 pub fn compile_core(
     p: Program,
     name: &str,
@@ -159,31 +183,39 @@ pub fn compile_core(
     user_core: bool,
 ) -> Result<Output, Vec<Diagnostic>> {
     let mut p = p;
-    dump(opts, Stage::Core, name, &cirka_core::print_program(&p))?;
-    let errs = cirka_core::lint::lint_program(&p);
-    if !errs.is_empty() {
-        if user_core {
+    dump(opts, Stage::Core, name, || cirka_core::print_program(&p))?;
+    if user_core {
+        let errs = timed(opts, "Core lint", || cirka_core::lint::lint_program(&p));
+        if !errs.is_empty() {
             return Err(errs);
         }
-        return Err(errs.into_iter().map(to_ice).collect());
     }
     if opts.opt_level > 0 {
-        cirka_core::opt::optimize(&mut p).map_err(|e| vec![to_ice(e)])?;
+        timed(opts, "Core optimizations", || {
+            cirka_core::opt::optimize(&mut p)
+        })
+        .map_err(|e| vec![to_ice(e)])?;
     } else {
         // Even unoptimized builds drop the library code `main` never uses.
-        cirka_core::opt::dce_globals(&mut p);
+        timed(opts, "Core dead code", || {
+            cirka_core::opt::dce_globals(&mut p)
+        });
     }
-    dump(opts, Stage::CoreOpt, name, &cirka_core::print_program(&p))?;
-    let mut m = cirka_mir::lower::lower_program(&p)?;
-    dump(opts, Stage::Mir, name, &cirka_mir::print_module(&m))?;
-    cirka_mir::perceus::run(&mut m);
-    dump(opts, Stage::MirOpt, name, &cirka_mir::print_module(&m))?;
-    let errs = cirka_mir::verify::verify_module(&m);
+    dump(opts, Stage::CoreOpt, name, || cirka_core::print_program(&p))?;
+    let mut m = timed(opts, "Core to MIR", || cirka_mir::lower::lower_program(&p))?;
+    dump(opts, Stage::Mir, name, || cirka_mir::print_module(&m))?;
+    timed(opts, "Perceus", || cirka_mir::perceus::run(&mut m));
+    dump(opts, Stage::MirOpt, name, || cirka_mir::print_module(&m))?;
+    let errs = timed(opts, "MIR verifier", || {
+        cirka_mir::verify::verify_module(&m)
+    });
     if !errs.is_empty() {
         return Err(errs.into_iter().map(to_ice).collect());
     }
-    let llvm = cirka_codegen_llvm::emit(&m, opts.runtime.codegen_options());
-    dump(opts, Stage::Llvm, name, &llvm)?;
+    let llvm = timed(opts, "LLVM IR", || {
+        cirka_codegen_llvm::emit(&m, opts.runtime.codegen_options())
+    });
+    dump(opts, Stage::Llvm, name, || llvm.clone())?;
     Ok(Output { mir: m, llvm })
 }
 
@@ -199,5 +231,8 @@ pub fn link(cfg: &Config, out: &Output, opts: &Options, exe: &Path) -> Result<()
             .chain(crate::native::lib_args(&out.mir.libs))
             .collect(),
     };
-    link_ir(cfg, &out.llvm, &opts.build_dir, exe, &nopts).map_err(|e| vec![Diagnostic::error(e)])
+    timed(opts, "LLVM and linking", || {
+        link_ir(cfg, &out.llvm, &opts.build_dir, exe, &nopts)
+    })
+    .map_err(|e| vec![Diagnostic::error(e)])
 }

@@ -10,7 +10,7 @@ pub mod package;
 
 use cirka_core::Program;
 use cirka_diagnostics::{Diagnostic, SourceMap, Style, render};
-use cirka_driver::pipeline::{Options, SourceTests, dump_frontend};
+use cirka_driver::pipeline::{Options, SourceTests, dump_frontend, timed};
 use cirkalang_resolve::TestMode;
 use cirkalang_resolve::rast;
 use std::collections::HashSet;
@@ -74,7 +74,9 @@ pub fn compile(
     opts: &Options,
     name: &str,
 ) -> Result<Compiled, Vec<Diagnostic>> {
-    let rp = cirkalang_resolve::resolve_file(sm, main_file, roots, &resolve_options(opts))?;
+    let rp = timed(opts, "parse and resolve", || {
+        cirkalang_resolve::resolve_file(sm, main_file, roots, &resolve_options(opts))
+    })?;
     let libs = library_modules(sm, &rp);
     compile_resolved(rp, &libs, opts, name)
 }
@@ -156,7 +158,9 @@ pub fn compile_package(
         ]);
     }
     let rp = if main.exists() {
-        cirkalang_resolve::resolve_main(sm, &main, &mut loader, &resolve_options(opts))?
+        timed(opts, "parse and resolve", || {
+            cirkalang_resolve::resolve_main(sm, &main, &mut loader, &resolve_options(opts))
+        })?
     } else {
         // A library: all its modules are checked and tested; there is
         // nothing to run (E1107 for `build` and `run`).
@@ -166,7 +170,9 @@ pub fn compile_package(
             format!("{} (library)", w.root.src_dir().display()),
             text.clone(),
         );
-        cirkalang_resolve::resolve_program(sm, id, &text, &mut loader, &resolve_options(opts))?
+        timed(opts, "parse and resolve", || {
+            cirkalang_resolve::resolve_program(sm, id, &text, &mut loader, &resolve_options(opts))
+        })?
     };
     let libs = library_modules(sm, &rp);
     compile_resolved(rp, &libs, opts, &w.root.name)
@@ -230,14 +236,13 @@ fn compile_resolved(
     if !errs.is_empty() {
         return Err(errs);
     }
-    dump_frontend(
-        opts,
-        "rn",
-        name,
-        "rn",
-        &cirkalang_resolve::print::print_program(&rp),
-    )?;
-    let el = cirkalang_elab::elaborate(&rp);
+    dump_frontend(opts, "rn", name, "rn", || {
+        cirkalang_resolve::print::print_program(&rp)
+    })?;
+    let flags = frontend_flags(opts).map_err(|d| vec![d])?;
+    let el = timed(opts, "elaborate", || {
+        cirkalang_elab::elaborate(&rp)
+    });
     let (errors, warnings): (Vec<Diagnostic>, Vec<Diagnostic>) =
         el.diags.into_iter().partition(|d| d.is_error());
     let Some(mut tt) = el.program else {
@@ -245,29 +250,26 @@ fn compile_resolved(
         all.extend(warnings);
         return Err(all);
     };
-    dump_frontend(
-        opts,
-        "tt",
-        name,
-        "tt",
-        &cirkalang_elab::tt::print_program(&tt),
-    )?;
+    dump_frontend(opts, "tt", name, "tt", || {
+        cirkalang_elab::tt::print_program(&tt)
+    })?;
     // Totality and refinements (spec-v0.0.4.md §1, §3, §4). The libraries'
     // obligations are verified by their own tests (spec-v0.0.5.md §4.3).
-    let flags = frontend_flags(opts).map_err(|d| vec![d])?;
     let mode = flags.contracts;
     let verified = if flags.verify_libraries {
         HashSet::new()
     } else {
         libs.clone()
     };
-    let checked = cirkalang_check::check_with(
-        &rp,
-        &tt,
-        Some(opts.build_dir.join("verify")),
-        mode,
-        &verified,
-    );
+    let checked = timed(opts, "totality and refinements", || {
+        cirkalang_check::check_with(
+            &rp,
+            &tt,
+            Some(opts.build_dir.join("verify")),
+            mode,
+            &verified,
+        )
+    });
     let (errors, more): (Vec<Diagnostic>, Vec<Diagnostic>) =
         checked.diags.into_iter().partition(|d| d.is_error());
     let mut warnings = warnings;
@@ -296,7 +298,7 @@ fn compile_resolved(
                 .with_help("define `main : IO ()`"),
         ]);
     }
-    let core = cirkalang_lower::lower(&tt)?;
+    let core = timed(opts, "lower to Core", || cirkalang_lower::lower(&tt))?;
     Ok(Compiled { core, warnings })
 }
 

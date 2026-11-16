@@ -85,6 +85,7 @@ pub fn parse_args(args: &[String]) -> Result<Args, String> {
             s if command == Command::Test && s.starts_with("--filter=") => {
                 filter = Some(s["--filter=".len()..].to_string())
             }
+            "--time-passes" => opts.time_passes = true,
             "--emit=llvm" => emit_llvm = true,
             "--emit=exe" => emit_llvm = false,
             "-o" => output = Some(PathBuf::from(it.next().ok_or("`-o` needs a file name")?)),
@@ -196,7 +197,9 @@ fn main_inner(tool: &'static str, usage: &str, frontend: Frontend) -> ExitCode {
     let program = if is_core {
         load_core(&mut sm, &args.file)
     } else {
-        match frontend(&mut sm, &args.file, &args.opts) {
+        match pipeline::timed(&args.opts, "frontend (total)", || {
+            frontend(&mut sm, &args.file, &args.opts)
+        }) {
             Some(r) => r,
             None => {
                 eprintln!("{tool}: unsupported input file `{}`", args.file.display());
@@ -455,5 +458,16 @@ mod tests {
         );
         // Other compiler flags are not taken for linker flags.
         assert!(args("run -Wall Main.cirka").is_err());
+    }
+
+    #[test]
+    fn time_passes_is_a_driver_flag() {
+        assert!(
+            args("check --time-passes Main.cirka")
+                .unwrap()
+                .opts
+                .time_passes
+        );
+        assert!(!args("check Main.cirka").unwrap().opts.time_passes);
     }
 }
