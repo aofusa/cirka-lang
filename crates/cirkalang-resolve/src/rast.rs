@@ -4,6 +4,7 @@
 
 use cirka_diagnostics::{FileId, Span};
 pub use cirkalang_syntax::ast::Abi;
+pub use cirkalang_syntax::ast::Origin;
 pub use cirkalang_syntax::ast::{Lit, Mult, Totality};
 
 /// A global: index into [`Program::globals`].
@@ -166,6 +167,7 @@ pub struct Impl {
     /// One entry per method of the trait, in field order.
     pub methods: Vec<ImplMethod>,
     pub span: Span,
+    pub origin: Origin,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -191,6 +193,7 @@ pub struct Def {
     /// `trusted` (spec-v0.0.5.md §4.2): the refinements of the result and
     /// `total` are assumed, not proved. Only in the libraries.
     pub trusted: Option<Span>,
+    pub origin: Origin,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -210,6 +213,7 @@ pub struct Data {
     pub cons: Vec<Con>,
     pub short: bool,
     pub span: Span,
+    pub origin: Origin,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -322,4 +326,104 @@ pub enum PatKind {
     Unit,
     Tuple(Vec<Pat>),
     List(Vec<Pat>),
+}
+
+/// Calls `f` with every global that `e` names, constructors in patterns
+/// included.
+pub fn globals_in_expr(e: &Expr, f: &mut dyn FnMut(GName)) {
+    match &e.kind {
+        ExprKind::Global(g) => f(*g),
+        ExprKind::Local(_)
+        | ExprKind::Lit(_)
+        | ExprKind::Hole(_)
+        | ExprKind::Wildcard
+        | ExprKind::Type
+        | ExprKind::LType
+        | ExprKind::Unit => {}
+        ExprKind::App(a, b) | ExprKind::Ann(a, b) | ExprKind::Rewrite(a, b) => {
+            globals_in_expr(a, f);
+            globals_in_expr(b, f);
+        }
+        ExprKind::Lam(bs, b) => {
+            for t in bs.iter().filter_map(|b| b.ty.as_ref()) {
+                globals_in_expr(t, f);
+            }
+            globals_in_expr(b, f);
+        }
+        ExprKind::Let(bs, b) => {
+            globals_in_lets(bs, f);
+            globals_in_expr(b, f);
+        }
+        ExprKind::Case(s, alts) | ExprKind::With(s, alts) => {
+            globals_in_expr(s, f);
+            for a in alts {
+                globals_in_pat(&a.pat, f);
+                globals_in_expr(&a.rhs, f);
+            }
+        }
+        ExprKind::If(c, t, e) => {
+            globals_in_expr(c, f);
+            globals_in_expr(t, f);
+            globals_in_expr(e, f);
+        }
+        ExprKind::Do(ss) => {
+            for s in ss {
+                match s {
+                    Stmt::Bind(_, _, x) | Stmt::Expr(x) | Stmt::Try(_, x, _) => {
+                        globals_in_expr(x, f)
+                    }
+                    Stmt::Let(bs) => globals_in_lets(bs, f),
+                }
+            }
+        }
+        ExprKind::Pi { dom, cod, .. } => {
+            globals_in_expr(dom, f);
+            globals_in_expr(cod, f);
+        }
+        ExprKind::Tuple(xs) | ExprKind::List(xs) => {
+            for x in xs {
+                globals_in_expr(x, f);
+            }
+        }
+    }
+}
+
+fn globals_in_lets(bs: &[LetBind], f: &mut dyn FnMut(GName)) {
+    for b in bs {
+        if let Some(t) = &b.ty {
+            globals_in_expr(t, f);
+        }
+        globals_in_expr(&b.rhs, f);
+    }
+}
+
+/// Calls `f` with the constructors of `p`.
+pub fn globals_in_pat(p: &Pat, f: &mut dyn FnMut(GName)) {
+    match &p.kind {
+        PatKind::Con(c, ps) => {
+            f(*c);
+            for p in ps {
+                globals_in_pat(p, f);
+            }
+        }
+        PatKind::Tuple(ps) | PatKind::List(ps) => {
+            for p in ps {
+                globals_in_pat(p, f);
+            }
+        }
+        PatKind::Var(_) | PatKind::Wild | PatKind::Lit(..) | PatKind::Unit => {}
+    }
+}
+
+/// Calls `f` with the globals of clauses.
+pub fn globals_in_clauses(cs: &[Clause], f: &mut dyn FnMut(GName)) {
+    for c in cs {
+        for p in &c.pats {
+            globals_in_pat(p, f);
+        }
+        globals_in_expr(&c.rhs, f);
+        if let Some(m) = &c.measure {
+            globals_in_expr(m, f);
+        }
+    }
 }

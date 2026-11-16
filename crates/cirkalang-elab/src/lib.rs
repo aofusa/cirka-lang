@@ -23,7 +23,15 @@ pub struct Elaborated {
 /// Elaborates and type checks a resolved program. In debug builds the
 /// result is re-checked by the TT Lint.
 pub fn elaborate(rp: &rast::Program) -> Elaborated {
+    elaborate_with(rp, false)
+}
+
+/// [`elaborate`]; with `every_extern_item`, the items of extern blocks
+/// that the program does not use are elaborated too (`--extern-items=all`,
+/// FEAT-0255).
+pub fn elaborate_with(rp: &rast::Program, every_extern_item: bool) -> Elaborated {
     let mut e = elab::Elab::new(rp);
+    e.every_extern_item = every_extern_item;
     e.run();
     let mut diags = dedup(e.diags.take());
     if diags.iter().any(|d| d.is_error()) {

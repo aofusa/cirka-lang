@@ -115,6 +115,7 @@ fn test(out: &mut Expanded, seen: &mut HashMap<String, Span>, decls: &mut Vec<De
     };
     decls.push(Decl {
         private: true,
+        origin: Origin::Source,
         kind: DeclKind::Sig {
             names: vec![(def.clone(), name_span)],
             ty: io_unit,
@@ -125,6 +126,7 @@ fn test(out: &mut Expanded, seen: &mut HashMap<String, Span>, decls: &mut Vec<De
     });
     decls.push(Decl {
         private: true,
+        origin: Origin::Source,
         kind: DeclKind::Clause {
             name: def.clone(),
             name_span,

@@ -66,6 +66,7 @@ fn item(i: &ExternItem, private: bool) -> Vec<Decl> {
     let sp = i.span;
     let decl = |kind| Decl {
         private,
+        origin: Origin::Extern,
         kind,
         span: sp,
     };
@@ -114,8 +115,11 @@ fn item(i: &ExternItem, private: bool) -> Vec<Decl> {
 fn enum_(i: &ExternItem, repr: &Expr, consts: &[ExternConst], private: bool) -> Vec<Decl> {
     let sp = i.span;
     let con = con_name(&i.name);
+    // Checked eagerly: the constants and `Storable` check the
+    // representation.
     let decl = |kind| Decl {
         private,
+        origin: Origin::Extern,
         kind,
         span: sp,
     };
@@ -195,7 +199,7 @@ fn enum_(i: &ExternItem, repr: &Expr, consts: &[ExternConst], private: bool) -> 
             sp,
         ),
     ];
-    out.push(storable(&i.name, items, sp));
+    out.push(storable(&i.name, items, Origin::Extern, sp));
     out
 }
 
@@ -206,6 +210,7 @@ fn struct_(i: &ExternItem, fields: &[ExternField], private: bool) -> Vec<Decl> {
     let n = fields.len();
     let decl = |kind| Decl {
         private,
+        origin: Origin::ExternLazy,
         kind,
         span: sp,
     };
@@ -377,6 +382,7 @@ fn struct_(i: &ExternItem, fields: &[ExternField], private: bool) -> Vec<Decl> {
                 sp,
             ),
         ),
+        Origin::ExternLazy,
         sp,
     ));
     out
@@ -388,6 +394,7 @@ fn union_(i: &ExternItem, fields: &[ExternField], private: bool) -> Vec<Decl> {
     let con = con_name(t);
     let decl = |kind| Decl {
         private,
+        origin: Origin::ExternLazy,
         kind,
         span: sp,
     };
@@ -456,11 +463,17 @@ fn union_(i: &ExternItem, fields: &[ExternField], private: bool) -> Vec<Decl> {
         app(foreign("zeroedList", sp), size.clone(), sp),
         sp,
     );
-    out.push(storable(t, layout_methods(sp, zeroed), sp));
+    out.push(storable(
+        t,
+        layout_methods(sp, zeroed),
+        Origin::ExternLazy,
+        sp,
+    ));
     // Equal when their bytes are: `resize size a == resize size b`.
     let bytes_of = |x: &str| apps(foreign("resize", sp), vec![size.clone(), var(x, sp)], sp);
     out.push(Decl {
         private: false,
+        origin: Origin::ExternLazy,
         kind: DeclKind::Impl(ImplDecl {
             binders: Vec::new(),
             context: Vec::new(),
@@ -490,6 +503,7 @@ fn peek_poke(
 ) -> Vec<Decl> {
     let decl = |kind| Decl {
         private,
+        origin: Origin::ExternLazy,
         kind,
         span: sp,
     };
@@ -560,7 +574,7 @@ fn layout_methods(sp: Span, zeroed: Expr) -> Vec<Decl> {
 
 /// `impl Foreign.Storable T where items` with `peek` and `poke` through
 /// `T.$peek` and `T.$poke` added for structs and unions.
-fn storable(t: &str, mut items: Vec<Decl>, sp: Span) -> Decl {
+fn storable(t: &str, mut items: Vec<Decl>, origin: Origin, sp: Span) -> Decl {
     if !items
         .iter()
         .any(|d| matches!(&d.kind, DeclKind::Clause { name, .. } if name == "peek"))
@@ -581,6 +595,7 @@ fn storable(t: &str, mut items: Vec<Decl>, sp: Span) -> Decl {
     }
     Decl {
         private: false,
+        origin,
         kind: DeclKind::Impl(ImplDecl {
             binders: Vec::new(),
             context: Vec::new(),
@@ -712,6 +727,7 @@ fn clause(name: &str, span: Span, pats: Vec<Pat>, rhs: Expr) -> DeclKind {
 fn method(name: &str, pats: Vec<Pat>, rhs: Expr, span: Span) -> Decl {
     Decl {
         private: false,
+        origin: Origin::Source,
         kind: clause(name, span, pats, rhs),
         span,
     }

@@ -15,7 +15,11 @@ pub fn expand(m: &mut Module) -> Vec<Diagnostic> {
     for d in std::mem::take(&mut m.decls) {
         match &d.kind {
             DeclKind::Data(dd) if !dd.deriving.is_empty() => {
-                let gen_: Vec<Decl> = derive_all(dd, &mut errs);
+                let mut gen_: Vec<Decl> = derive_all(dd, &mut errs);
+                // Derived for a type of an extern block: used with it.
+                for g in &mut gen_ {
+                    g.origin = d.origin;
+                }
                 out.push(d);
                 out.extend(gen_);
             }
@@ -109,6 +113,7 @@ fn derive_all(dd: &DataDecl, errs: &mut Vec<Diagnostic>) -> Vec<Decl> {
             .collect();
         out.push(Decl {
             private: false,
+            origin: Origin::Source,
             span: *sp,
             kind: DeclKind::Impl(ImplDecl {
                 binders: Vec::new(),
@@ -219,6 +224,7 @@ fn con_pat(c: &Ctor, base: &str, span: Span) -> Pat {
 fn clause(name: &str, pats: Vec<Pat>, rhs: Expr, span: Span) -> Decl {
     Decl {
         private: false,
+        origin: Origin::Source,
         span,
         kind: DeclKind::Clause {
             name: name.to_string(),

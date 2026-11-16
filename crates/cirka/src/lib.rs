@@ -186,6 +186,10 @@ struct Flags {
     /// the libraries are checked too (`--libraries=trust`, the default:
     /// their own tests verify them).
     verify_libraries: bool,
+    /// `--extern-items=all` (spec-v0.0.6.md §1.10): the items of extern
+    /// blocks that the program does not use are checked too
+    /// (`--extern-items=used`, the default: only those it uses).
+    every_extern_item: bool,
 }
 
 /// Parses the frontend options; others are unknown.
@@ -193,8 +197,22 @@ fn frontend_flags(opts: &Options) -> Result<Flags, Diagnostic> {
     let mut flags = Flags {
         contracts: cirkalang_check::Contracts::default(),
         verify_libraries: false,
+        every_extern_item: false,
     };
     for f in &opts.frontend_flags {
+        if let Some(v) = f.strip_prefix("--extern-items=") {
+            flags.every_extern_item = match v {
+                "all" => true,
+                "used" => false,
+                _ => {
+                    return Err(
+                        Diagnostic::error(format!("unknown extern items mode in `{f}`"))
+                            .with_help("use `--extern-items=used` or `--extern-items=all`"),
+                    );
+                }
+            };
+            continue;
+        }
         if let Some(v) = f.strip_prefix("--libraries=") {
             flags.verify_libraries = match v {
                 "verify" => true,
@@ -241,7 +259,7 @@ fn compile_resolved(
     })?;
     let flags = frontend_flags(opts).map_err(|d| vec![d])?;
     let el = timed(opts, "elaborate", || {
-        cirkalang_elab::elaborate(&rp)
+        cirkalang_elab::elaborate_with(&rp, flags.every_extern_item)
     });
     let (errors, warnings): (Vec<Diagnostic>, Vec<Diagnostic>) =
         el.diags.into_iter().partition(|d| d.is_error());

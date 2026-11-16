@@ -1,0 +1,19 @@
+-- The items of extern blocks are part of the program when it uses them
+-- (spec-v0.0.6.md §1.10): `P.x` and the implementations for `P`, not
+-- `P.y`, `P.set_x`, the struct `Q`, the enum `E` or the constant `K`.
+import Foreign
+
+extern "C" where
+  struct P where
+    x : CInt
+    y : CInt
+  struct Q where
+    a : CDouble
+    b : P
+  enum E : CInt where
+    A = 1
+    B = 2
+  const K : CInt = 3
+
+main : IO ()
+main = print (P.x (MkP 1 2))

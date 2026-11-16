@@ -142,7 +142,10 @@ fn cirka_accepts(c: &Case, text: &str) -> Result<(), String> {
     )
     .map_err(|e| e.to_string())?;
     let mut sm = cirka_diagnostics::SourceMap::new();
-    let opts = cirka_driver::pipeline::Options::new(&c.name);
+    let mut opts = cirka_driver::pipeline::Options::new(&c.name);
+    // Everything the declarations expand to is checked, used or not
+    // (spec-v0.0.6.md §1.10).
+    opts.frontend_flags.push("--extern-items=all".into());
     let mut roots = vec![work.clone()];
     roots.extend(cirka::lib_roots());
     cirka::compile(&mut sm, &main, &roots, &opts, "test")

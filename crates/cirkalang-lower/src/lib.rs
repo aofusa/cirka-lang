@@ -2276,7 +2276,7 @@ impl<'a> Lower<'a> {
             .order
             .iter()
             .copied()
-            .filter(|g| matches!(self.p.get(*g), Global::Data { .. }))
+            .filter(|g| matches!(self.p.get(*g), Global::Data { .. }) && !self.p.unused.contains(g))
             .collect();
         let mut decls = Vec::new();
         for d in &datas {
@@ -2298,6 +2298,10 @@ impl<'a> Lower<'a> {
             }
         }
         for g in &self.p.order {
+            // Items of extern blocks that the program does not use.
+            if self.p.unused.contains(g) {
+                continue;
+            }
             match self.p.get(*g) {
                 Global::Def { ty, body: Some(b) } => {
                     let tv = self.ev().eval(&Vec::new(), ty);

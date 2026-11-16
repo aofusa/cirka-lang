@@ -13,6 +13,7 @@ use std::rc::Rc;
 mod raii;
 mod send;
 mod traits;
+mod used;
 use traits::{Goal, Pending, Search};
 
 type SLit = cirkalang_resolve::rast::Lit;
@@ -218,6 +219,15 @@ pub struct Elab<'r> {
     /// The spans of held linear values that have a finalizer: a holder of
     /// one that is left unused leaks it (W0308).
     fin_held: RefCell<HashSet<Span>>,
+    /// Elaborate every item of extern blocks, used or not
+    /// (`--extern-items=all`, FEAT-0255).
+    pub every_extern_item: bool,
+    /// The globals the program uses (`used.rs`), known before the bodies
+    /// are elaborated; `None` when every item is.
+    used: RefCell<Option<HashSet<GName>>>,
+    /// Implementations of extern blocks that instance search chose but
+    /// that are not known to be used (elaborated after the others).
+    demanded: RefCell<Vec<GName>>,
 }
 
 fn sp(e: &rast::Expr) -> Span {
@@ -250,6 +260,7 @@ impl<'r> Elab<'r> {
             measures: HashMap::new(),
             refine_sites: Vec::new(),
             proofs_trusted: false,
+            unused: HashSet::new(),
         };
         let f = |n: &str| rp.find("Prelude", n);
         prog.builtins = Builtins {
@@ -335,6 +346,9 @@ impl<'r> Elab<'r> {
             fin_spans: RefCell::new(Vec::new()),
             fin_span_default: Cell::new(Span::DUMMY),
             fin_held: RefCell::new(HashSet::new()),
+            every_extern_item: false,
+            used: RefCell::new(None),
+            demanded: RefCell::new(Vec::new()),
         }
     }
 
@@ -3861,17 +3875,52 @@ impl<'r> Elab<'r> {
                 self.refined_cons(d);
             }
         }
-        // 4. Bodies.
+        // 4. Bodies: of the items of extern blocks, those the program uses
+        // (`used.rs`).
+        let uses = used::Uses::new(&items);
+        if !self.every_extern_item {
+            *self.used.borrow_mut() = Some(uses.of_source(&items));
+        }
         for it in &items {
             match it {
-                rast::Item::Def(d) if !self.is_type_alias(d) => self.def_body(d),
+                rast::Item::Def(d) if !self.is_type_alias(d) && !self.skipped(d.origin, d.name) => {
+                    self.def_body(d)
+                }
                 rast::Item::Trait(t) => self.default_bodies(t),
-                rast::Item::Impl(i) => self.impl_body(i),
+                rast::Item::Impl(i) if !self.skipped(i.origin, i.name) => self.impl_body(i),
                 _ => {}
             }
         }
+        // Implementations that instance search chose although the items
+        // did not use their types, with what they use.
+        loop {
+            let demanded = std::mem::take(&mut *self.demanded.borrow_mut());
+            if demanded.is_empty() {
+                break;
+            }
+            let new = match self.used.borrow_mut().as_mut() {
+                Some(u) => uses.add(u, demanded),
+                None => Vec::new(),
+            };
+            for g in new {
+                match uses.item(g) {
+                    Some(used::Item::Def(d)) if d.origin == rast::Origin::ExternLazy => {
+                        self.def_body(d)
+                    }
+                    Some(used::Item::Impl(i)) if i.origin == rast::Origin::ExternLazy => {
+                        self.impl_body(i)
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if let Some(u) = &*self.used.borrow() {
+            self.prog.unused = uses.unused(u);
+        }
         for it in &items {
-            if let rast::Item::Def(d) = it {
+            if let rast::Item::Def(d) = it
+                && !self.skipped(d.origin, d.name)
+            {
                 self.check_lazy_value(d.name);
             }
         }
@@ -3891,6 +3940,21 @@ impl<'r> Elab<'r> {
                         .with_note(format!("its type is `{}`", self.show(&cx, &ty))),
                 );
             }
+        }
+    }
+
+    /// An item of an extern block whose body is only elaborated when the
+    /// program uses it, and which it does not use (FEAT-0255).
+    fn skipped(&self, origin: rast::Origin, g: GName) -> bool {
+        origin == rast::Origin::ExternLazy
+            && self.used.borrow().as_ref().is_some_and(|u| !u.contains(&g))
+    }
+
+    /// Instance search chose the implementation `g`: if the program was
+    /// not known to use it, it is elaborated after the other items.
+    pub(super) fn note_impl_use(&self, g: GName) {
+        if self.used.borrow().as_ref().is_some_and(|u| !u.contains(&g)) {
+            self.demanded.borrow_mut().push(g);
         }
     }
 

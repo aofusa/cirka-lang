@@ -574,6 +574,7 @@ impl<'s> Resolver<'s> {
             span: sp,
             totality: None,
             trusted: None,
+            origin: Origin::Source,
         };
         if let Some(m) = prog.modules.iter_mut().find(|m| m.name == root) {
             m.items.push(Item::Def(def));
@@ -1001,6 +1002,7 @@ impl<'s> Resolver<'s> {
                             span: *sp,
                             totality: *totality,
                             trusted: *trusted,
+                            origin: d.origin,
                         });
                     }
                 }
@@ -1028,12 +1030,14 @@ impl<'s> Resolver<'s> {
                                 span: d.span,
                                 totality: None,
                                 trusted: None,
+                                origin: d.origin,
                             });
                         }
                     }
                 }
                 ast::DeclKind::Data(dd) => {
-                    let data = self.data(dd, d.span);
+                    let mut data = self.data(dd, d.span);
+                    data.origin = d.origin;
                     items.push(Item::Data(data));
                 }
                 ast::DeclKind::Prim { name: n, ty, .. } => {
@@ -1068,7 +1072,8 @@ impl<'s> Resolver<'s> {
                 ast::DeclKind::Impl(i) => {
                     let k = impls;
                     impls += 1;
-                    if let Some(it) = self.impl_(i, k, d.span) {
+                    if let Some(mut it) = self.impl_(i, k, d.span) {
+                        it.origin = d.origin;
                         items.push(Item::Impl(it));
                     }
                 }
@@ -1158,6 +1163,7 @@ impl<'s> Resolver<'s> {
             cons,
             short: dd.short,
             span,
+            origin: Origin::Source,
         }
     }
 
@@ -1255,6 +1261,7 @@ impl<'s> Resolver<'s> {
             }],
             short: false,
             span,
+            origin: Origin::Source,
         };
         let tr = Trait {
             name,
@@ -1382,6 +1389,7 @@ impl<'s> Resolver<'s> {
             trait_: tr,
             methods,
             span,
+            origin: Origin::Source,
         })
     }
 

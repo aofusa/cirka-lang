@@ -299,6 +299,41 @@ fn cirkalang_proofs_are_erased() {
     );
 }
 
+/// The items of extern blocks that a program does not use are neither
+/// elaborated (struct and union code) nor lowered (FEAT-0255,
+/// spec-v0.0.6.md §1.10); `--extern-items=all` keeps all of them.
+#[test]
+fn cirkalang_extern_items_on_demand() {
+    let path = repo_root().join("tests/cirkalang/extern/OnDemand.cirka");
+    let names = |flags: &[&str]| {
+        let (core, warnings) =
+            compile_cirka_with(&path, cirka_driver::pipeline::SourceTests::Strip, flags)
+                .unwrap_or_else(|e| panic!("OnDemand.cirka does not compile:\n{e}"));
+        assert_eq!(warnings, "");
+        core.binds
+            .iter()
+            .map(|b| b.name.clone())
+            .collect::<std::collections::HashSet<_>>()
+    };
+    let used = names(&[]);
+    let all = names(&["--extern-items=all"]);
+    // `Storable P` (with `P.$peek`) is used with `P`.
+    for n in ["Main.P.x", "Main.P.$peek", "Main.main"] {
+        assert!(used.contains(n), "`{n}` is used but missing");
+    }
+    for n in [
+        "Main.P.y",
+        "Main.P.set_x",
+        "Main.Q.a",
+        "Main.Q.$poke",
+        "Main.K",
+        "Main.A",
+    ] {
+        assert!(!used.contains(n), "`{n}` is not used but lowered");
+        assert!(all.contains(n), "`{n}` is missing with --extern-items=all");
+    }
+}
+
 /// `--contracts` (FEAT-0233): `off` generates the same code as the
 /// program without contracts; `check` turns what is not proved into run
 /// time checks that panic with the contract (without Z3, all of them).

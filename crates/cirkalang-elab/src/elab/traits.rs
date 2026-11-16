@@ -342,7 +342,10 @@ impl<'r> Elab<'r> {
         }
         for i in self.candidates(tr, &gargs) {
             match self.try_impl(cx, &i, &gargs, depth) {
-                Search::Found(x) => return Search::Found(x),
+                Search::Found(x) => {
+                    self.note_impl_use(i.dict);
+                    return Search::Found(x);
+                }
                 Search::Stuck => stuck = true,
                 Search::NotFound => {}
             }

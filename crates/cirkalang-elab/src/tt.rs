@@ -675,6 +675,10 @@ pub struct Program {
     /// may drop their checks (spec-v0.0.4.md §5). `false` (the default)
     /// keeps the checks.
     pub proofs_trusted: bool,
+    /// The items of extern blocks that the program does not use
+    /// (definitions, data types, functions, implementations and their
+    /// methods, FEAT-0255): not lowered.
+    pub unused: HashSet<GName>,
 }
 
 /// A place where a value must satisfy a refinement.

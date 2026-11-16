@@ -81,8 +81,26 @@ pub enum Assoc {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Decl {
     pub private: bool,
+    pub origin: Origin,
     pub kind: DeclKind,
     pub span: Span,
+}
+
+/// Where a declaration comes from (FEAT-0255). The source decides what a
+/// program uses: a declaration expanded from an extern block is part of
+/// the program only when the source uses it (spec-v0.0.6.md §1.10).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Origin {
+    /// Written in the source, or derived for a type written there.
+    #[default]
+    Source,
+    /// Expanded from a declaration of an extern block and checked like the
+    /// source, since its errors are the declaration's: type aliases,
+    /// constants and enums.
+    Extern,
+    /// Expanded from a struct or union of an extern block, which is
+    /// well-typed when the declaration is (§1.9): only checked when used.
+    ExternLazy,
 }
 
 #[derive(Clone, Debug, PartialEq)]

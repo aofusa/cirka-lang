@@ -595,6 +595,7 @@ impl Parser {
         };
         Ok(Decl {
             private,
+            origin: Origin::Source,
             kind,
             span: self.from(start),
         })
