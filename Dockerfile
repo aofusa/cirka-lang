@@ -71,6 +71,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         mesa-vulkan-drivers vulkan-tools vulkan-validationlayers glslc spirv-tools \
     && rm -rf /var/lib/apt/lists/*
 
+# Linear algebra (FEAT-0252, docs/design/09-libraries.md §1.5): OpenBLAS
+# (CBLAS) and LAPACKE, wrapped by the CirkaLang library `Linalg`.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libopenblas-dev liblapacke-dev \
+    && rm -rf /var/lib/apt/lists/*
+
 USER ${USERNAME}
 WORKDIR /work
 CMD ["bash"]

@@ -70,6 +70,19 @@ else
     echo "ci: a Vulkan device, the validation layer and glslc are installed: the Vulkan tests run"
 fi
 
+stage "BLAS and LAPACK"
+# The tests with `requires: lib:openblas lib:lapacke` (spec-v0.0.6.md §4.2,
+# FEAT-0252) skip when a library is missing; CI requires them
+# (libopenblas-dev and liblapacke-dev in the Dockerfile).
+cache=$(ldconfig -p 2>/dev/null) || cache=""
+for lib in libopenblas.so liblapacke.so; do
+    if ! grep -q "[[:space:]]$lib (" <<<"$cache"; then
+        echo "ci: ERROR: $lib is not installed; rebuild the image"
+        exit 1
+    fi
+done
+echo "ci: OpenBLAS and LAPACKE are installed: the linear algebra tests run"
+
 stage "cargo test"
 cargo test --workspace
 
