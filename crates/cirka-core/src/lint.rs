@@ -22,7 +22,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// Lints a whole program; returns all errors (at most one per definition).
 pub fn lint_program(p: &Program) -> Vec<Diagnostic> {
-    let mut l = Linter::new(p);
+    let ix = LintIndex::new(p);
+    let mut l = Linter::new(p, &ix);
     l.program();
     l.errs
 }
@@ -30,9 +31,59 @@ pub fn lint_program(p: &Program) -> Vec<Diagnostic> {
 /// Lints one top-level binding of `p` (by index) against the rest of the
 /// program; used by the optimizer to check each binding after a pass.
 pub fn lint_bind(p: &Program, i: usize) -> Vec<Diagnostic> {
-    let mut l = Linter::new(p);
+    lint_bind_in(p, &LintIndex::new(p), i)
+}
+
+/// [`lint_bind`] with the names of `p` looked up in `ix`, made once for a
+/// pass that only changes the expressions of bindings (FEAT-0255).
+pub fn lint_bind_in(p: &Program, ix: &LintIndex, i: usize) -> Vec<Diagnostic> {
+    let mut l = Linter::new(p, ix);
     l.top(&p.binds[i]);
     l.errs
+}
+
+/// The globals, data types and constructors of a program by name, as
+/// positions in its lists (the first declaration of a name; a second one
+/// is an error). It stays valid while the lists are not changed: the
+/// expressions of bindings may be.
+pub struct LintIndex {
+    globals: HashMap<String, usize>,
+    datas: HashMap<String, usize>,
+    ctors: HashMap<String, (usize, usize)>,
+    /// The functions returning unboxed tuples, when the program declares
+    /// any (the placement rule, 06-ir.md §1.7).
+    utup_fns: Option<HashSet<String>>,
+    /// The kinds of the data types without parameters (by position).
+    kinds: std::cell::RefCell<HashMap<usize, Kind>>,
+}
+
+impl LintIndex {
+    pub fn new(p: &Program) -> LintIndex {
+        let mut globals = HashMap::new();
+        for (k, b) in p.binds.iter().enumerate() {
+            globals.entry(b.name.clone()).or_insert(k);
+        }
+        let mut datas = HashMap::new();
+        let mut ctors = HashMap::new();
+        for (k, d) in p.datas.iter().enumerate() {
+            datas.entry(d.name.clone()).or_insert(k);
+            for (i, c) in d.ctors.iter().enumerate() {
+                ctors.entry(c.name.clone()).or_insert((k, i));
+            }
+        }
+        let utup_fns = p
+            .datas
+            .iter()
+            .any(|d| crate::cpr::is_utup(&d.name))
+            .then(|| crate::cpr::utup_functions(p));
+        LintIndex {
+            globals,
+            datas,
+            ctors,
+            utup_fns,
+            kinds: Default::default(),
+        }
+    }
 }
 
 /// Renders lint errors as plain text (tests and ICE reports).
@@ -127,7 +178,8 @@ type R<T> = Result<T, String>;
 struct Linter<'p> {
     p: &'p Program,
     errs: Vec<Diagnostic>,
-    globals: HashMap<&'p str, &'p Type>,
+    /// The names of `p`.
+    ix: &'p LintIndex,
     vars: HashMap<u32, (Id, Mult, Type)>,
     tyvars: Vec<(TyVar, Kind)>,
     /// Variables whose usage differed between case branches.
@@ -138,16 +190,24 @@ struct Linter<'p> {
 }
 
 impl<'p> Linter<'p> {
-    fn new(p: &'p Program) -> Linter<'p> {
+    fn new(p: &'p Program, ix: &'p LintIndex) -> Linter<'p> {
         Linter {
             p,
             errs: Vec::new(),
-            globals: p.binds.iter().map(|b| (b.name.as_str(), &b.ty)).collect(),
+            ix,
             vars: HashMap::new(),
             tyvars: Vec::new(),
             inconsistent: HashSet::new(),
             visiting: Default::default(),
         }
+    }
+
+    fn data_decl(&self, c: &str) -> Option<&'p DataDecl> {
+        self.ix.datas.get(c).map(|&k| &self.p.datas[k])
+    }
+
+    fn ctor_decl(&self, c: &str) -> Option<(&'p DataDecl, usize)> {
+        self.ix.ctors.get(c).map(|&(k, i)| (&self.p.datas[k], i))
     }
 
     fn error(&mut self, ctx: &str, msg: String) {
@@ -239,7 +299,9 @@ impl<'p> Linter<'p> {
             if !t.alpha_eq(&b.ty) {
                 return Err(format!("declared type {} but the body has type {t}", b.ty));
             }
-            crate::cpr::check_placement(self.p, b)?;
+            if let Some(fs) = &self.ix.utup_fns {
+                crate::cpr::check_placement(fs, b)?;
+            }
             Ok(())
         })();
         if let Err(m) = r {
@@ -411,7 +473,7 @@ impl<'p> Linter<'p> {
                 let mut inner = Linter {
                     p: self.p,
                     errs: vec![],
-                    globals: HashMap::new(),
+                    ix: self.ix,
                     vars: HashMap::new(),
                     tyvars: self.tyvars.clone(),
                     inconsistent: HashSet::new(),
@@ -452,7 +514,7 @@ impl<'p> Linter<'p> {
                     }
                     return Ok(Kind::Unboxed);
                 }
-                let Some(d) = self.p.data(c) else {
+                let Some(d) = self.data_decl(c) else {
                     return Err(format!("unknown type constructor `{c}`"));
                 };
                 if args.len() > d.params.len() {
@@ -511,9 +573,25 @@ impl<'p> Linter<'p> {
         if d.linear {
             return Kind::LType;
         }
+        // The kind of a data type without parameters is remembered. Only
+        // the outermost computation is: one inside assumes that the types
+        // being computed are not linear (a cycle), which may be wrong for
+        // the types in the cycle until the outermost one is done.
+        let pos = d
+            .params
+            .is_empty()
+            .then(|| self.ix.datas.get(&d.name).copied())
+            .flatten()
+            .filter(|&k| std::ptr::eq(&self.p.datas[k], d));
+        if let Some(k) = pos
+            && let Some(kind) = self.ix.kinds.borrow().get(&k)
+        {
+            return kind.clone();
+        }
         if self.visiting.borrow().contains(&d.name) {
             return Kind::Type;
         }
+        let outermost = self.visiting.borrow().is_empty();
         self.visiting.borrow_mut().push(d.name.clone());
         let s: Vec<(TyVar, Type)> = d
             .params
@@ -522,21 +600,29 @@ impl<'p> Linter<'p> {
             .zip(args.iter().cloned())
             .collect();
         let mut k = Kind::Type;
-        for c in &d.ctors {
+        'fields: for c in &d.ctors {
             for f in &c.fields {
-                let ft = f.subst_all(&s);
-                if self.field_linear(&ft) {
+                let linear = if s.is_empty() {
+                    self.field_linear(f)
+                } else {
+                    self.field_linear(&f.subst_all(&s))
+                };
+                if linear {
                     k = Kind::LType;
+                    break 'fields;
                 }
             }
         }
         self.visiting.borrow_mut().pop();
+        if outermost && let Some(p) = pos {
+            self.ix.kinds.borrow_mut().insert(p, k.clone());
+        }
         k
     }
 
     fn field_linear(&self, t: &Type) -> bool {
         match t {
-            Type::Con(c, args) => match self.p.data(c) {
+            Type::Con(c, args) => match self.data_decl(c) {
                 Some(d) if args.len() == d.params.len() => self.data_kind(d, args) == Kind::LType,
                 _ => c == ARRAY && args.first().is_some_and(|a| self.field_linear(a)),
             },
@@ -604,13 +690,18 @@ impl<'p> Linter<'p> {
                 Some((id, _, t)) if id.name == v.name => Ok((t.clone(), Usage::one(v))),
                 _ => Err(format!("variable `{}` (#{}) is not in scope", v.name, v.id)),
             },
-            Expr::Global(g) => match self.globals.get(g.as_str()) {
+            Expr::Global(g) => match self
+                .ix
+                .globals
+                .get(g.as_str())
+                .map(|&k| &self.p.binds[k].ty)
+            {
                 Some(t) => Ok(((*t).clone(), Usage::default())),
                 None => Err(format!("unknown global `{g}`")),
             },
             Expr::Lit(l) => Ok((l.ty(), Usage::default())),
             Expr::Con(c, targs, args) => {
-                let Some((d, i)) = self.p.ctor(c) else {
+                let Some((d, i)) = self.ctor_decl(c) else {
                     return Err(format!("unknown constructor `{c}`"));
                 };
                 if targs.len() != d.params.len() {
@@ -844,7 +935,7 @@ impl<'p> Linter<'p> {
                 if c == ARRAY {
                     return args.iter().all(|a| self.resource_free(a, visiting));
                 }
-                let Some(d) = self.p.data(c) else {
+                let Some(d) = self.data_decl(c) else {
                     return false;
                 };
                 if args.len() != d.params.len() {
@@ -882,7 +973,7 @@ impl<'p> Linter<'p> {
         self.type_kind(res)?;
         self.bind_var(b)?;
         let data = match &b.ty {
-            Type::Con(c, args) => self.p.data(c).map(|d| (d, args.clone())),
+            Type::Con(c, args) => self.data_decl(c).map(|d| (d, args.clone())),
             _ => None,
         };
         let mut seen: Vec<&AltCon> = Vec::new();

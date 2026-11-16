@@ -103,6 +103,11 @@ pub fn optimize_with_stats(p: &mut Program) -> Result<Stats, Diagnostic> {
         lint_all(p, "dict-fields")?;
     }
     simplify_rounds(p, &mut st, &mut next)?;
+    // What the simplifier inlined at its only call is dead now. Only the
+    // fields of dictionaries have been made globals so far, and they go
+    // with their dictionaries: no later pass makes the name of a removed
+    // binding again (FEAT-0255). Later, `simplify_rounds` skips the dead.
+    st.removed_globals += dce_globals(p);
     // Functions returning IO take the state token (BUG-0011).
     st.io_arity = crate::io::io_arity(p, &mut next);
     if st.io_arity > 0 {
@@ -215,34 +220,44 @@ pub fn optimize_with_stats(p: &mut Program) -> Result<Stats, Diagnostic> {
 type KnownGlobal = (Vec<TyVar>, String, Vec<Type>, Vec<Expr>);
 
 /// Runs the simplifier to a fixed point (at most [`MAX_ITERS`] rounds).
+///
+/// What the simplifier does to a binding depends only on its expression,
+/// the data types, and the inlining candidates and known globals among
+/// the globals it names (a binding it leaves unchanged inlined nothing).
+/// A binding the last round left unchanged is therefore skipped while
+/// those stay the same (FEAT-0255): the later rounds only go through
+/// what changed and its callers.
 fn simplify_rounds(p: &mut Program, st: &mut Stats, next: &mut u32) -> Result<(), Diagnostic> {
+    // Bindings the last round left unchanged, with the globals they name.
+    let mut stable: HashMap<String, Vec<String>> = HashMap::new();
+    let mut last: Option<(HashMap<String, Expr>, HashMap<String, KnownGlobal>)> = None;
     for _ in 0..MAX_ITERS {
         st.iterations += 1;
         let inl = inline_candidates(p);
-        // Globals bound to a constructor of atoms, possibly under type
-        // abstractions (`$fMonad = Λr. Monad$Dict …`, the dictionary of a
-        // class instance for a type constructor): known under the
-        // corresponding type application (BUG-0011).
-        let kg: HashMap<String, KnownGlobal> = p
-            .binds
-            .iter()
-            .filter_map(|b| {
-                let mut tvs = Vec::new();
-                let mut e = &b.expr;
-                while let Expr::TyLam(v, _, x) = e {
-                    tvs.push(v.clone());
-                    e = x;
-                }
-                match e {
-                    Expr::Con(k, ts, a) if a.iter().all(|e| e.is_atom()) => {
-                        Some((b.name.clone(), (tvs, k.clone(), ts.clone(), a.clone())))
-                    }
-                    _ => None,
-                }
-            })
-            .collect();
+        let kg = known_globals(p);
+        // The globals whose candidate or known value changed.
+        let moved: HashSet<&str> = match &last {
+            Some((inl0, kg0)) => changed_keys(inl0, &inl)
+                .chain(changed_keys(kg0, &kg))
+                .collect(),
+            None => HashSet::new(),
+        };
         let mut changed = false;
+        // The simplifier only changes the expressions of bindings.
+        let ix = lint::LintIndex::new(p);
+        // Bindings that became dead (e.g. functions inlined at their only
+        // call) are left for `dce`: removing them now would let later
+        // passes reuse their names.
+        let live = live_globals(p);
         for i in 0..p.binds.len() {
+            let name = &p.binds[i].name;
+            if live.as_ref().is_some_and(|l| !l.contains(name))
+                || stable
+                    .get(name)
+                    .is_some_and(|gs| gs.iter().all(|g| !moved.contains(g.as_str())))
+            {
+                continue;
+            }
             let old = p.binds[i].expr.clone();
             let mut occ = HashMap::new();
             occ_analyze(&old, &mut occ);
@@ -262,11 +277,15 @@ fn simplify_rounds(p: &mut Program, st: &mut Stats, next: &mut u32) -> Result<()
             let new = s.expr(old.clone());
             *next = s.next;
             if !s.changed {
+                let mut gs = Vec::new();
+                globals_in(&old, &mut gs);
+                stable.insert(p.binds[i].name.clone(), gs);
                 continue;
             }
+            stable.remove(&p.binds[i].name);
             let local = s.st;
             p.binds[i].expr = new;
-            let errs = lint::lint_bind(p, i);
+            let errs = lint::lint_bind_in(p, &ix, i);
             if errs.is_empty() {
                 changed = true;
                 add_stats(st, &local);
@@ -280,8 +299,44 @@ fn simplify_rounds(p: &mut Program, st: &mut Stats, next: &mut u32) -> Result<()
         if !changed {
             break;
         }
+        last = Some((inl, kg));
     }
     Ok(())
+}
+
+/// Globals bound to a constructor of atoms, possibly under type
+/// abstractions (`$fMonad = Λr. Monad$Dict …`, the dictionary of a class
+/// instance for a type constructor): known under the corresponding type
+/// application (BUG-0011).
+fn known_globals(p: &Program) -> HashMap<String, KnownGlobal> {
+    p.binds
+        .iter()
+        .filter_map(|b| {
+            let mut tvs = Vec::new();
+            let mut e = &b.expr;
+            while let Expr::TyLam(v, _, x) = e {
+                tvs.push(v.clone());
+                e = x;
+            }
+            match e {
+                Expr::Con(k, ts, a) if a.iter().all(|e| e.is_atom()) => {
+                    Some((b.name.clone(), (tvs, k.clone(), ts.clone(), a.clone())))
+                }
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+/// The keys whose values differ between `a` and `b` (or are in one only).
+fn changed_keys<'a, V: PartialEq>(
+    a: &'a HashMap<String, V>,
+    b: &'a HashMap<String, V>,
+) -> impl Iterator<Item = &'a str> {
+    a.iter()
+        .filter(|(k, v)| b.get(*k) != Some(*v))
+        .map(|(k, _)| k.as_str())
+        .chain(b.keys().filter(|k| !a.contains_key(*k)).map(|k| k.as_str()))
 }
 
 fn add_stats(st: &mut Stats, o: &Stats) {
@@ -1024,23 +1079,32 @@ fn components(succ: &[Vec<usize>], set: &[usize]) -> Vec<Vec<usize>> {
 /// Removes top-level bindings unreachable from `main` (when there is one)
 /// and from the handlers of callbacks.
 pub fn dce_globals(p: &mut Program) -> usize {
-    if p.bind("main").is_none() {
+    let Some(live) = live_globals(p) else {
         return 0;
-    }
+    };
+    let before = p.binds.len();
+    p.binds.retain(|b| live.contains(&b.name));
+    before - p.binds.len()
+}
+
+/// The top-level bindings that `main` and the callback handlers reach;
+/// `None` without `main`.
+fn live_globals(p: &Program) -> Option<HashSet<String>> {
+    p.bind("main")?;
+    let index: HashMap<&str, &TopBind> = p.binds.iter().map(|b| (b.name.as_str(), b)).collect();
     let mut live: HashSet<String> = HashSet::new();
     let mut stack = vec!["main".to_string()];
     stack.extend(p.callback_handlers().map(str::to_string));
     while let Some(g) = stack.pop() {
-        if !live.insert(g.clone()) {
+        if live.contains(&g) {
             continue;
         }
-        if let Some(b) = p.bind(&g) {
+        if let Some(b) = index.get(g.as_str()) {
             globals_in(&b.expr, &mut stack);
         }
+        live.insert(g);
     }
-    let before = p.binds.len();
-    p.binds.retain(|b| live.contains(&b.name));
-    before - p.binds.len()
+    Some(live)
 }
 
 // ---------------------------------------------------------------------

@@ -85,7 +85,7 @@ pub(crate) fn returns_utup(t: &Type) -> bool {
 }
 
 /// The globals returning an unboxed tuple.
-fn utup_functions(p: &Program) -> HashSet<String> {
+pub(crate) fn utup_functions(p: &Program) -> HashSet<String> {
     p.binds
         .iter()
         .filter(|b| matches!(result_of(&b.ty), Type::Con(c, _) if is_utup(c)))
@@ -93,14 +93,11 @@ fn utup_functions(p: &Program) -> HashSet<String> {
         .collect()
 }
 
-/// Core Lint's placement rule for unboxed tuples (06-ir.md §1.7).
-pub(crate) fn check_placement(p: &Program, b: &TopBind) -> Result<(), String> {
-    if !p.datas.iter().any(|d| is_utup(&d.name)) {
-        return Ok(());
-    }
-    let fs = utup_functions(p);
+/// Core Lint's placement rule for unboxed tuples (06-ir.md §1.7), in a
+/// program that declares them: `fs` are its [`utup_functions`].
+pub(crate) fn check_placement(fs: &HashSet<String>, b: &TopBind) -> Result<(), String> {
     let (_, _, body) = split_fun(&b.expr);
-    place(body, true, &fs)
+    place(body, true, fs)
 }
 
 fn utup_type(t: &Type) -> bool {
