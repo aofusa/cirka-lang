@@ -1,0 +1,15 @@
+-- Native programs call the math functions of the C library, as the
+-- interpreter does, and not the weak copies of Rust's compiler-builtins in
+-- the runtime archive (BUG-0028). glibc's `cbrt` is not correctly rounded
+-- and gives 3.0000000000000004 for 27, where the copy gives 3; the test
+-- compares native programs with the interpreter.
+extern "C" link "m" where
+  cbrt : Float -> Float
+  fma : Float -> Float -> Float -> Float
+  floor : Float -> Float
+
+main : IO ()
+main = do
+  print (cbrt 27.0)
+  -- Rounded once: `0.1 * 10.0 - 1.0` is 0 with two roundings.
+  print (fma 0.1 10.0 (negate 1.0), floor (negate 2.5))

@@ -45,10 +45,12 @@
 
 ```
 $CIRKA_CLANG -O3 --target=$CIRKA_TARGET -c out.ll -o out.o
-$CIRKA_CLANG -fuse-ld=lld out.o <prefix>/lib/libcirka_rt.a -lm -lpthread -o a.out
+$CIRKA_CLANG -fuse-ld=lld out.o -lm <prefix>/lib/libcirka_rt.a -lm -lpthread -o a.out
 ```
 
 - `libcirka_rt.a` は `cargo build -p cirka-runtime` で作り、`achc` 実行ファイルからの相対パス、または `CIRKA_RUNTIME_DIR` で探す。
+- `-lm` はランタイムより前にも置く。`libcirka_rt.a` には Rust の compiler-builtins の数学関数 (`cbrt`・`fma`・`floor` など) が
+  弱いシンボルとして入っており、後ろに置くとプログラムの呼び出しがそちらに解決されて C ライブラリの関数と結果や性能が変わる (BUG-0028)。
 - FFI で指定されたライブラリ (`extern` の `link` 属性、`achc.toml` の `[link]`) を追加する。
 - 将来: LTO で `libcirka_rt` の高速経路も含めてインライン化(ランタイムを LLVM bitcode でも出力)。
 

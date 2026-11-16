@@ -220,8 +220,13 @@ pub fn link_ir(
         // and links the ThreadSanitizer runtime.
         cmd.arg("-fsanitize=thread");
     }
+    // libm comes before the runtime: the archive also holds the weak math
+    // functions of Rust's compiler-builtins (`cbrt`, `fma`, `floor`, ...),
+    // which would otherwise be taken for the program's calls instead of the
+    // C library's (BUG-0028).
     let out = cmd
         .arg(&ll)
+        .arg("-lm")
         .arg(&rt)
         .args(&opts.link_args)
         .args(["-lm", "-lpthread", "-Wl,--gc-sections", "-o"])
