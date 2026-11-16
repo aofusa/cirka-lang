@@ -16,7 +16,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | 共通基盤 | M1 バックエンド基盤 | 7 / 7 |
 | 共通基盤 | M2 Perceus | 3 / 3 |
 | 共通基盤 | M3 共通 Core と Core→MIR | 4 / 4 |
-| 共通基盤 | SX 共通基盤の拡張 (各トラックの必要に応じて) | 31 / 47 |
+| 共通基盤 | SX 共通基盤の拡張 (各トラックの必要に応じて) | 31 / 48 |
 | aCHC | H1 Haskell 最小フロントエンド | 6 / 6 |
 | aCHC | H2 Haskell 実用化 (スコープ縮小版) | 10 / 10 |
 | aCHC | H3 所有権拡張 (.chs) | 9 / 9 |
@@ -29,7 +29,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | CirkaLang | CirkaLang v0.0.3 借用・リージョン・性能 | 5 / 5 |
 | CirkaLang | CirkaLang v0.0.4 証明と検証 | 6 / 6 |
 | CirkaLang | CirkaLang v0.0.5 並行性・サーバ・syscall | 5 / 5 |
-| CirkaLang | CirkaLang v0.0.6 Vulkan compute・数値計算 | 1 / 6 |
+| CirkaLang | CirkaLang v0.0.6 Vulkan compute・数値計算 | 2 / 6 |
 | CirkaLang | CirkaLang v0.0.7 効果・能力・セッション型 | 0 / 4 |
 | CirkaLang | CX 遠隔環境での GUI 検証 (任意) | 0 / 1 |
 | 第二段階 | P2 第二段階 (CirkaLang v0.1.0 以降) | 0 / 2 |
@@ -126,6 +126,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0084](features/FEAT-0084-tsan-in-docker-ci.md) | Docker の CI で ThreadSanitizer を動かす | done | P2 | 0045 |
 | [FEAT-0085](features/FEAT-0085-code-alignment-noise.md) | コード配置による性能の揺らぎの抑制 (関数・ループの整列) | todo | P2 | 0043 |
 | [FEAT-0086](features/FEAT-0086-cl-server-request-allocs.md) | サーバの要求ごとの確保を減らす (継続・Result・文字列のビュー) | todo | P1 | 0243 |
+| [FEAT-0087](features/FEAT-0087-simplifier-convergence.md) | 深く入れ子の式で Core の単純化を早く収束させる | todo | P2 | 0255 |
 
 
 ## aCHC
@@ -274,7 +275,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0251](features/FEAT-0251-cl-vulkan-compute.md) | Vulkan コンピュートシェーダ (Docker / lavapipe) | todo | P0 | 0250 |
 | [FEAT-0252](features/FEAT-0252-cl-math-linalg.md) | 数学・線形代数ラッパー | todo | P2 | 0250 |
 | [FEAT-0254](features/FEAT-0254-cl-unique-array-sizes.md) | 一意な配列と文字列のビューの大きさを証明で追う | todo | P2 | 0244 |
-| [FEAT-0255](features/FEAT-0255-cl-large-extern-modules.md) | 大きな extern のモジュールのコンパイル時間 | todo | P1 | 0250 |
+| [FEAT-0255](features/FEAT-0255-cl-large-extern-modules.md) | 大きな extern のモジュールのコンパイル時間 | done | P1 | 0250 |
 | [FEAT-0253](features/FEAT-0253-cl-release-v006.md) | CirkaLang v0.0.6 リリース | todo | P0 | 0251 |
 
 ### CirkaLang v0.0.7 効果・能力・セッション型
