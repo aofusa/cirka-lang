@@ -1,0 +1,26 @@
+-- The functions of libm are pure functions of `Std.Math` (spec-v0.0.6.md
+-- §4.1, FEAT-0252). Values that are exact in IEEE 754 are printed as
+-- they are, the others rounded to 9 decimals.
+import Std.Math
+
+r9 : Float -> Float
+r9 x = round (x * 1000000000.0) / 1000000000.0
+
+main : IO ()
+main = do
+  print (map r9 (sin 0.5 :: cos 0.5 :: tan 0.5 :: Nil))
+  print (map r9 (asin 0.5 :: acos 0.5 :: atan 1.0 :: atan2 1.0 (negate 1.0) :: Nil))
+  print (map r9 (sinh 1.0 :: cosh 1.0 :: tanh 1.0 :: asinh 1.0 :: acosh 2.0 :: atanh 0.5 :: Nil))
+  print (map r9 (exp 1.0 :: expm1 0.000001 :: log 10.0 :: log1p 0.000001 :: Nil))
+  print (exp 0.0 :: exp2 10.0 :: log 1.0 :: log2 1024.0 :: log10 1000.0 :: Nil)
+  print (pow 2.0 10.0 :: hypot 3.0 4.0 :: fma 2.0 3.0 4.0 :: Nil)
+  -- `fma` rounds once: `0.1 * 10.0 - 1.0` is 0 with two roundings.
+  print (fma 0.1 10.0 (negate 1.0), 0.1 * 10.0 - 1.0)
+  -- glibc's `cbrt` is not correctly rounded (libm_link.cirka).
+  print (map r9 (cbrt 27.0 :: cbrt 2.0 :: Nil))
+  print (floor 2.7 :: ceil 2.1 :: round 2.5 :: round (negate 2.5) :: trunc (negate 2.7) :: Nil)
+  print (fmod 7.0 3.0 :: fmod (negate 7.0) 3.0 :: copysign 3.0 (negate 1.0) :: fmin 1.0 2.0 :: fmax 1.0 2.0 :: Nil)
+  print (r9 pi == r9 (4.0 * atan 1.0), r9 euler == r9 (exp 1.0))
+  print (isNaN nan :: isNaN (log (negate 1.0)) :: isInfinite (log 0.0) :: isInfinite infinity :: isFinite 1.0 :: isFinite nan :: Nil)
+  -- IEEE 754: the square of `sqrt 2.0` is not exactly 2.
+  print (log 0.0 == negate infinity, sqrt 2.0 * sqrt 2.0 == 2.0)

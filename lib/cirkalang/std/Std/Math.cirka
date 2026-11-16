@@ -1,0 +1,77 @@
+-- Mathematical functions (spec-v0.0.6.md §4.1, FEAT-0252): C's libm.
+--
+-- The functions are pure: they depend only on their arguments and have no
+-- other effect (they may set `errno`, which nothing reads). The results are
+-- C's (IEEE 754 double precision): `log 0.0` is minus infinity and
+-- `asin 2.0` is NaN; they never end the program. `sqrt`, `abs` and
+-- `truncate` are in the Prelude.
+module Std.Math
+
+extern "C" link "m" where
+  sin : Float -> Float
+  cos : Float -> Float
+  tan : Float -> Float
+  asin : Float -> Float
+  acos : Float -> Float
+  atan : Float -> Float
+  -- The angle of the point (x, y): `atan2 y x`, from -pi to pi.
+  atan2 : Float -> Float -> Float
+  sinh : Float -> Float
+  cosh : Float -> Float
+  tanh : Float -> Float
+  asinh : Float -> Float
+  acosh : Float -> Float
+  atanh : Float -> Float
+  exp : Float -> Float
+  exp2 : Float -> Float
+  -- `exp x - 1`, precise for small `x`.
+  expm1 : Float -> Float
+  log : Float -> Float
+  log2 : Float -> Float
+  log10 : Float -> Float
+  -- `log (1 + x)`, precise for small `x`.
+  log1p : Float -> Float
+  pow : Float -> Float -> Float
+  cbrt : Float -> Float
+  -- `sqrt (x * x + y * y)` without overflow.
+  hypot : Float -> Float -> Float
+  floor : Float -> Float
+  ceil : Float -> Float
+  -- To the nearest integer, halves away from zero.
+  round : Float -> Float
+  -- Towards zero (`truncate` gives an `Int`).
+  trunc : Float -> Float
+  -- The remainder of `x / y` with the sign of `x`.
+  fmod : Float -> Float -> Float
+  -- `x * y + z` rounded once.
+  fma : Float -> Float -> Float -> Float
+  -- `x` with the sign of `y`.
+  copysign : Float -> Float -> Float
+  fmin : Float -> Float -> Float
+  fmax : Float -> Float -> Float
+
+-- The ratio of a circle's circumference to its diameter.
+pi : Float
+pi = 3.141592653589793
+
+-- Euler's number, `exp 1.0`.
+euler : Float
+euler = 2.718281828459045
+
+-- Positive infinity.
+infinity : Float
+infinity = 1.0 / 0.0
+
+-- Not a number (`0.0 / 0.0`).
+nan : Float
+nan = 0.0 / 0.0
+
+isNaN : Float -> Bool
+isNaN x = x /= x
+
+isInfinite : Float -> Bool
+isInfinite x = x == infinity || x == negate infinity
+
+-- Neither NaN nor infinite.
+isFinite : Float -> Bool
+isFinite x = not (isNaN x) && not (isInfinite x)
