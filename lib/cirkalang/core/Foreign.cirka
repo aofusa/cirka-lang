@@ -6,6 +6,8 @@
 -- through it is not checked (as in C).
 module Foreign
 
+import Data.Array.Unboxed (UArray)
+
 data CChar = MkCChar Int deriving (Eq, Ord, Show)
 data CUChar = MkCUChar Int deriving (Eq, Ord, Show)
 data CShort = MkCShort Int deriving (Eq, Ord, Show)
@@ -463,3 +465,23 @@ private pokeArrayThen : Storable a => List a -> (Ptr a -> IO b) -> Ptr a -> IO b
 pokeArrayThen xs f p = do
   pokeArray p xs
   f p
+
+-- ---- unboxed arrays (spec-v0.0.6.md §4.3) ----
+
+private prim primUArrayStore : {a : Type} -> UArray a -> Int -> IO ()
+private prim primUArrayLoad : {a : Type} -> Int -> Int -> IO (UArray a)
+private prim primUArrayLoadInto : {a : Type} -> UArray a -> Int -> IO (UArray a)
+
+-- Writes the elements of `arr` from `p` on, 8 bytes each (an `Int` as an
+-- `int64_t`, a `Float` as a `double`), in one copy.
+pokeUArray : Ptr a -> UArray a -> IO ()
+pokeUArray (MkPtr p) arr = primUArrayStore arr p
+
+-- The array of the `n` elements from `p` on, 8 bytes each, in one copy.
+peekUArray : Int -> Ptr a -> IO (UArray a)
+peekUArray n (MkPtr p) = primUArrayLoad (max n 0) p
+
+-- The array of `size arr` elements from `p` on, as `peekUArray`, stored in
+-- `arr` itself when no other value shares it (otherwise in a copy).
+peekUArrayInto : UArray a -> Ptr a -> IO (UArray a)
+peekUArrayInto arr (MkPtr p) = primUArrayLoadInto arr p

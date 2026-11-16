@@ -1,0 +1,43 @@
+-- max-array-copies: 1
+-- Unboxed arrays to and from C memory, one copy of the elements each
+-- (spec-v0.0.6.md §4.3): `pokeUArray`, `peekUArray`, and `peekUArrayInto`,
+-- which stores the elements in the array itself when no other value
+-- shares it. The copy of the shared array `a` below is the only copy.
+import Foreign
+import Data.Array.Unboxed as U
+
+floats : Ptr Float -> IO (List Float)
+floats p = peekArray 4 p
+
+ints : Ptr Int -> IO (List Int)
+ints p = peekArray 3 p
+
+main : IO ()
+main = do
+  p <- mallocBytes 32
+  pokeUArray p (U.fromList (1.5 :: 2.5 :: 3.5 :: 4.5 :: Nil))
+  xs <- floats p
+  print xs
+  pokeElemOff p 1 (negate 4.0)
+  a <- peekUArray 4 p
+  print (U.toList a)
+  -- `a` is used afterwards: the result is a new array.
+  pokeElemOff p 0 10.0
+  b <- peekUArrayInto a p
+  print (U.toList a, U.toList b)
+  -- The last use of `b`: its array is overwritten.
+  pokeElemOff p 3 20.0
+  c <- peekUArrayInto b p
+  print (U.toList c)
+  freeBytes p
+  q <- mallocBytes 24
+  pokeUArray q (U.fromList (7 :: negate 8 :: 9 :: Nil))
+  ys <- ints q
+  print ys
+  e <- peekUArray 0 q
+  print (U.size e, U.toList e)
+  -- Nothing is read or written for an empty array.
+  pokeUArray nullPtr e
+  f <- peekUArrayInto e nullPtr
+  print (U.size f)
+  freeBytes q

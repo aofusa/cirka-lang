@@ -375,6 +375,13 @@ pub enum Prim {
     UArrayIndexFloat,
     UArrayReadFloat,
     UArrayWriteFloat,
+    // Copies between an unboxed array and C memory (spec-v0.0.6.md §4.3).
+    UArrayStore,
+    UArrayLoad,
+    UArrayLoadInto,
+    // An `IO` action run as a pure value, for libraries whose actions only
+    // touch memory that they allocate and free (spec-v0.0.6.md §4.3).
+    UnsafeRunIO,
     // Borrows (spec-v0.0.3.md §2): the types and the wrappers of their
     // representations.
     Region,
@@ -543,6 +550,10 @@ impl Prim {
         ("primUArrayIndexFloat", Prim::UArrayIndexFloat),
         ("primUArrayReadFloat", Prim::UArrayReadFloat),
         ("primUArrayWriteFloat", Prim::UArrayWriteFloat),
+        ("primUArrayStore", Prim::UArrayStore),
+        ("primUArrayLoad", Prim::UArrayLoad),
+        ("primUArrayLoadInto", Prim::UArrayLoadInto),
+        ("primUnsafeRunIO", Prim::UnsafeRunIO),
         ("Region", Prim::Region),
         ("Ref", Prim::Ref),
         ("Borrow", Prim::Borrow),

@@ -2008,6 +2008,50 @@ impl<'a> Lower<'a> {
             }
             Prim::UArrayIndexWord => self.uarr_index(ty, O::BytesGet64, "I#", c::Type::int()),
             Prim::UArrayIndexFloat => self.uarr_index(ty, O::BytesGetF, "F#", c::Type::double()),
+            // `UArray a -> Int -> IO ()`: the words to C memory.
+            Prim::UArrayStore => self.skeleton(ty, 3, |a, r| {
+                self.unbox(a[1].clone(), "I#", "Int", c::Type::int(), r, |addr| {
+                    self.seq_int(
+                        c::Expr::Extern("cirka_bytes_store".into(), vec![a[0].clone(), addr]),
+                        self.unit_val(),
+                    )
+                })
+            }),
+            // `Int -> Int -> IO (UArray a)`: `n` words from C memory.
+            Prim::UArrayLoad => self.skeleton(ty, 3, |a, r| {
+                self.unbox(a[0].clone(), "I#", "Int", c::Type::int(), r.clone(), |n| {
+                    self.unbox(a[1].clone(), "I#", "Int", c::Type::int(), r, |addr| {
+                        c::Expr::Extern(
+                            "cirka_bytes_load".into(),
+                            vec![prim(O::Shl, vec![n, c::Expr::int(3)]), addr],
+                        )
+                    })
+                })
+            }),
+            // `UArray a -> Int -> IO (UArray a)`: the array (made unique,
+            // copied only when shared) overwritten with words from C memory.
+            Prim::UArrayLoadInto => self.skeleton(ty, 3, |a, r| {
+                let b = self.id("b");
+                let arr = a[0].clone();
+                self.unbox(a[1].clone(), "I#", "Int", c::Type::int(), r, |addr| {
+                    c::Expr::LetStrict(
+                        c::Binder::new(b.clone(), c::Mult::Many, c::Type::bytes()),
+                        Box::new(prim(O::BytesUnique, vec![arr])),
+                        Box::new(self.seq_int(
+                            c::Expr::Extern(
+                                "cirka_bytes_fill".into(),
+                                vec![c::Expr::Var(b.clone()), addr],
+                            ),
+                            c::Expr::Var(b),
+                        )),
+                    )
+                })
+            }),
+            // `IO a -> a`: the action applied to the state token (`main`
+            // is run the same way).
+            Prim::UnsafeRunIO => self.skeleton(ty, 1, |a, _| {
+                app(a[0].clone(), vec![c::Expr::Lit(c::Lit::Unit)])
+            }),
             Prim::UArrayReadWord => self.uarr_read(ty, O::BytesGet64, "I#", c::Type::int()),
             Prim::UArrayReadFloat => self.uarr_read(ty, O::BytesGetF, "F#", c::Type::double()),
             Prim::UArrayWriteWord => {

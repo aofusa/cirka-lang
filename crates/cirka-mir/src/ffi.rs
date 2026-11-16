@@ -376,6 +376,30 @@ pub fn mem_write(addr: i64, kind: i64, val: i64) -> Result<(), String> {
     Ok(())
 }
 
+/// `cirka_bytes_store`: copies `b` to C memory at `addr`.
+pub fn bytes_store(addr: i64, b: &[u8]) -> Result<(), String> {
+    if b.is_empty() {
+        return Ok(());
+    }
+    check(addr)?;
+    // SAFETY: writing foreign memory through a `Ptr` is unchecked, as in C
+    // and GHC (`poke`); the address is not null.
+    unsafe { std::ptr::copy_nonoverlapping(b.as_ptr(), addr as usize as *mut u8, b.len()) };
+    Ok(())
+}
+
+/// `cirka_bytes_load`: the `n` bytes at C memory `addr`.
+pub fn bytes_load(addr: i64, n: usize) -> Result<Vec<u8>, String> {
+    let mut b = vec![0u8; n];
+    if n > 0 {
+        check(addr)?;
+        // SAFETY: reading foreign memory through a `Ptr` is unchecked, as
+        // in C and GHC (`peek`); the address is not null.
+        unsafe { std::ptr::copy_nonoverlapping(addr as usize as *const u8, b.as_mut_ptr(), n) };
+    }
+    Ok(b)
+}
+
 /// `cirka_mem_read_f`: a `float` (kind 0) or `double` (kind 1).
 pub fn mem_read_f(addr: i64, kind: i64) -> Result<f64, String> {
     check(addr)?;

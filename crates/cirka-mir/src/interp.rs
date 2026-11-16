@@ -1667,6 +1667,31 @@ impl<'m> Interp<'m> {
                     Err(e) => Err(Exit::Panic(file_error(&path, "withFile", &e))),
                 }
             }
+            "cirka_bytes_store" => {
+                let b = self.bytes(a[0])?.clone();
+                crate::ffi::bytes_store(a[1].int(), &b)
+                    .map(|_| Val::I(0))
+                    .or_else(fault)
+            }
+            "cirka_bytes_fill" => {
+                let Val::P(p) = a[0] else {
+                    return fault("expected a bytes object");
+                };
+                let n = self.bytes(a[0])?.len();
+                let b = crate::ffi::bytes_load(a[1].int(), n).or_else(fault)?;
+                match &mut self.obj_mut(p)?.payload {
+                    Payload::Bytes(d) => d.copy_from_slice(&b),
+                    _ => return fault("expected a bytes object"),
+                }
+                Ok(Val::I(0))
+            }
+            "cirka_bytes_load" => {
+                let b = crate::ffi::bytes_load(a[1].int(), a[0].int().max(0) as usize);
+                match b {
+                    Ok(b) => Ok(self.new_bytes(b)),
+                    Err(e) => fault(e),
+                }
+            }
             "cirka_mem_read" => crate::ffi::mem_read(a[0].int(), a[1].int())
                 .map(Val::I)
                 .or_else(fault),
