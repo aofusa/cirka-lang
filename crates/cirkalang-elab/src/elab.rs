@@ -243,6 +243,7 @@ impl<'r> Elab<'r> {
             builtins: Builtins::default(),
             traits: HashMap::new(),
             impls: HashMap::new(),
+            impl_index: HashMap::new(),
             c_records: HashMap::new(),
             totality: HashMap::new(),
             trusted: HashSet::new(),
@@ -370,8 +371,9 @@ impl<'r> Elab<'r> {
     }
 
     fn ty_val(&self, cx: &Cxt, l: u32) -> Val {
-        let env: Env = cx.env[..l as usize].to_vec();
-        self.ev().eval(&env, &cx.tys[l as usize])
+        // In the context of the variables before `l` (a prefix of the
+        // environment, not copied).
+        self.ev().eval(&cx.env[..l as usize], &cx.tys[l as usize])
     }
 
     /// `v` under `l` binders without names (extern signatures).
@@ -983,13 +985,10 @@ impl<'r> Elab<'r> {
             .into_iter()
             .flatten()
             .any(|tr| {
-                self.prog.impls.get(&tr).is_some_and(|is| {
-                    is.iter().any(|i| {
-                        i.nctx == 0
-                            && matches!(self.impl_head_args(i).first().map(|a| self.whnf(&a.0)),
-                            Some(Val::Data(h, _)) if h == d)
-                    })
-                })
+                self.prog
+                    .impls
+                    .get(&tr)
+                    .is_some_and(|is| is.iter().any(|i| i.nctx == 0 && i.key == Some(d)))
             })
     }
 
@@ -2103,7 +2102,13 @@ impl<'r> Elab<'r> {
                         lin_arg = Some(sp(a));
                         self.note_held(cx, sp(a), &dom);
                     }
-                    let av = self.eval(cx, &at);
+                    // The argument is evaluated only for a dependent type:
+                    // in `a ++ b ++ ..` it is everything applied before.
+                    let av = if term_mentions(&c.body, 0) {
+                        self.eval(cx, &at)
+                    } else {
+                        Val::Error
+                    };
                     t = Term::App(Rc::new(t), Rc::new(at), Icit::Expl);
                     ty = self.ev().inst(&c, av);
                 }
@@ -3661,11 +3666,13 @@ impl<'r> Elab<'r> {
             Term::Meta(m) | Term::InsertedMeta(m, _) => match self.metas.get(*m) {
                 Some(mut v) => {
                     if let Term::InsertedMeta(_, mask) = t {
-                        for (l, b) in mask.iter().enumerate() {
-                            if *b {
-                                v = self.ev().apply(v, Val::var(l as u32), Icit::Expl);
-                            }
-                        }
+                        let args = mask
+                            .iter()
+                            .enumerate()
+                            .filter(|&(_, b)| *b)
+                            .map(|(l, _)| (Val::var(l as u32), Icit::Expl))
+                            .collect();
+                        v = self.ev().apply_all(v, args);
                     }
                     let q = self.ev().quote(lvl, &v);
                     self.zonk(lvl, &q)

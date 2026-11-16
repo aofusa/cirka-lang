@@ -652,6 +652,10 @@ pub struct Program {
     pub traits: HashMap<GName, TraitInfo>,
     /// Implementations of each trait.
     pub impls: HashMap<GName, Vec<ImplInfo>>,
+    /// The positions in `impls` of the implementations of a trait with a
+    /// `key` (`None`: those without one), so that instance search only
+    /// tries those that can match (FEAT-0255).
+    pub impl_index: HashMap<(GName, Option<GName>), Vec<usize>>,
     /// The structs and unions of extern blocks, by data type
     /// (spec-v0.0.6.md §1.3).
     pub c_records: HashMap<GName, CRecord>,
@@ -712,6 +716,10 @@ pub struct ImplInfo {
     pub dict: GName,
     pub nvars: usize,
     pub nctx: usize,
+    /// The type constructor at the head of the first argument of the
+    /// instance (`Storable (Ptr a)`: `Ptr`), when there is one: the
+    /// instance only matches goals with the same one.
+    pub key: Option<GName>,
 }
 
 /// Prelude types and constructors used by built-in sugar (literals,

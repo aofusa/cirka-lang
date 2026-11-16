@@ -35,6 +35,18 @@ pub(super) enum Search {
     Stuck,
 }
 
+/// What selects the instances that can match a type (the first argument
+/// of a goal or of an instance head).
+#[derive(Clone, Copy, PartialEq)]
+pub(super) enum HeadKey {
+    /// A data type or a primitive type (former), possibly applied.
+    Con(GName),
+    /// Not known yet.
+    Meta,
+    /// Anything else (a variable, a function type, ...).
+    Other,
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum M {
     Yes,
@@ -314,6 +326,8 @@ impl<'r> Elab<'r> {
                 Term::App(Rc::new(Term::Global(free)), Rc::new(tq.clone()), Icit::Impl),
             ));
         }
+        // Each argument is forced once, rather than by every instance.
+        let gargs: Vec<(Val, Icit)> = gargs.into_iter().map(|(a, i)| (self.whnf(&a), i)).collect();
         let mut stuck = false;
         for l in (0..cx.lvl()).rev() {
             if cx.mults[l as usize] == Mult::Zero {
@@ -326,7 +340,7 @@ impl<'r> Elab<'r> {
                 Search::NotFound => {}
             }
         }
-        for i in self.prog.impls.get(&tr).cloned().unwrap_or_default() {
+        for i in self.candidates(tr, &gargs) {
             match self.try_impl(cx, &i, &gargs, depth) {
                 Search::Found(x) => return Search::Found(x),
                 Search::Stuck => stuck = true,
@@ -364,6 +378,61 @@ impl<'r> Elab<'r> {
             }
         }
         Search::NotFound
+    }
+
+    /// The instances of `tr` that can match the goal `gargs`, in the order
+    /// they were declared: those whose key is the goal's and those without
+    /// a key. An instance with another key cannot match; while the goal is
+    /// a meta, it could only be stuck (the search is then stuck anyway).
+    fn candidates(&self, tr: GName, gargs: &[(Val, Icit)]) -> Vec<ImplInfo> {
+        let Some(all) = self.prog.impls.get(&tr) else {
+            return Vec::new();
+        };
+        let key = match gargs.first() {
+            Some((a, _)) => self.head_key(a),
+            None => HeadKey::Other,
+        };
+        let pos = |k: Option<GName>| {
+            self.prog
+                .impl_index
+                .get(&(tr, k))
+                .map(Vec::as_slice)
+                .unwrap_or(&[])
+        };
+        let mut ix: Vec<usize> = match key {
+            HeadKey::Con(g) => pos(Some(g)).iter().chain(pos(None)).copied().collect(),
+            HeadKey::Meta => pos(None).to_vec(),
+            HeadKey::Other => return all.clone(),
+        };
+        ix.sort_unstable();
+        ix.into_iter().map(|k| all[k]).collect()
+    }
+
+    /// The [`HeadKey`] of a type.
+    pub(super) fn head_key(&self, v: &Val) -> HeadKey {
+        match self.whnf(v) {
+            Val::Data(d, _) => HeadKey::Con(d),
+            // Primitive types do not reduce.
+            Val::Neutral(Head::Global(g), _)
+                if self.prog.prim_of(g).is_some_and(|p| p.is_type()) =>
+            {
+                HeadKey::Con(g)
+            }
+            Val::Neutral(Head::Meta(_), _) => HeadKey::Meta,
+            _ => HeadKey::Other,
+        }
+    }
+
+    /// The `key` of an instance.
+    fn impl_key(&self, i: &ImplInfo) -> Option<GName> {
+        match self
+            .impl_head_args(i)
+            .first()
+            .map(|(a, _)| self.head_key(a))
+        {
+            Some(HeadKey::Con(g)) => Some(g),
+            _ => None,
+        }
     }
 
     /// The dictionary of `Drop t` / `Release t` with this method.
@@ -917,11 +986,21 @@ impl<'r> Elab<'r> {
             }
         }
         self.prog.globals[i.name.0 as usize] = Global::Def { ty, body: None };
-        self.prog.impls.entry(i.trait_).or_default().push(ImplInfo {
+        let mut info = ImplInfo {
             dict: i.name,
             nvars,
             nctx,
-        });
+            key: None,
+        };
+        info.key = self.impl_key(&info);
+        let list = self.prog.impls.entry(i.trait_).or_default();
+        list.push(info);
+        let pos = list.len() - 1;
+        self.prog
+            .impl_index
+            .entry((i.trait_, info.key))
+            .or_default()
+            .push(pos);
     }
 
     /// The arguments of the head of an instance, with pattern variables.
@@ -978,21 +1057,33 @@ impl<'r> Elab<'r> {
     pub(super) fn check_coherence(&self, impls: &[&rast::Impl]) {
         let module_of = |g: GName| &self.rp.info(g).module;
         let mut orphans = HashSet::new();
-        for i in impls {
-            let info = ImplInfo {
-                dict: i.name,
-                nvars: i.vars.len(),
-                nctx: i.context.len(),
-            };
+        // The heads of the instances and their keys, computed once: only
+        // instances with the same key (or without one) can overlap.
+        let heads: Vec<Vec<(Val, Icit)>> = impls
+            .iter()
+            .map(|i| {
+                self.impl_head_args(&ImplInfo {
+                    dict: i.name,
+                    nvars: i.vars.len(),
+                    nctx: i.context.len(),
+                    key: None,
+                })
+            })
+            .collect();
+        let keys: Vec<HeadKey> = heads
+            .iter()
+            .map(|h| match h.first() {
+                Some((a, _)) => self.head_key(a),
+                None => HeadKey::Other,
+            })
+            .collect();
+        for (i, head) in impls.iter().zip(&heads) {
             let here = module_of(i.name);
-            let local_head = self
-                .impl_head_args(&info)
-                .iter()
-                .any(|(a, _)| match self.whnf(a) {
-                    Val::Data(d, _) => module_of(d) == here,
-                    Val::Neutral(Head::Global(g), _) => module_of(g) == here,
-                    _ => false,
-                });
+            let local_head = head.iter().any(|(a, _)| match self.whnf(a) {
+                Val::Data(d, _) => module_of(d) == here,
+                Val::Neutral(Head::Global(g), _) => module_of(g) == here,
+                _ => false,
+            });
             if module_of(i.trait_) != here && !local_head {
                 self.report(
                     self.error(
@@ -1008,25 +1099,16 @@ impl<'r> Elab<'r> {
             }
         }
         for (a, ia) in impls.iter().enumerate() {
-            let ha = ImplInfo {
-                dict: ia.name,
-                nvars: ia.vars.len(),
-                nctx: ia.context.len(),
-            };
-            for ib in &impls[a + 1..] {
+            for (b, ib) in impls.iter().enumerate().skip(a + 1) {
                 if ib.trait_ != ia.trait_
                     || orphans.contains(&ia.name)
                     || orphans.contains(&ib.name)
+                    || matches!((keys[a], keys[b]), (HeadKey::Con(x), HeadKey::Con(y)) if x != y)
                 {
                     continue;
                 }
-                let hb = ImplInfo {
-                    dict: ib.name,
-                    nvars: ib.vars.len(),
-                    nctx: ib.context.len(),
-                };
-                let (x, y) = (self.impl_head_args(&ha), self.impl_head_args(&hb));
-                if x.len() == y.len() && x.iter().zip(&y).all(|(p, q)| self.overlaps(&p.0, &q.0)) {
+                let (x, y) = (&heads[a], &heads[b]);
+                if x.len() == y.len() && x.iter().zip(y).all(|(p, q)| self.overlaps(&p.0, &q.0)) {
                     self.report(
                         self.error(
                             "E1252",

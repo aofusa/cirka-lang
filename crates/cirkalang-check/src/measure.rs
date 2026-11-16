@@ -548,7 +548,7 @@ pub fn check(ev: &Ev, solver: &Solver, facts: &Facts, m: &Measure) -> Result<(),
         let (old, new) = match m {
             Measure::Given(g) => {
                 let o = ev.eval(&params, &g.term);
-                let n = ev.eval(&args[..np].to_vec(), &g.term);
+                let n = ev.eval(&args[..np], &g.term);
                 (tr.int(&o, 0), tr.int(&n, 0))
             }
             Measure::Param(i) => (tr.int(&params[*i], 0), tr.int(&args[*i], 0)),

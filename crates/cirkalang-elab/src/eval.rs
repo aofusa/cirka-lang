@@ -89,7 +89,7 @@ impl<'a> Ev<'a> {
 
     // ---- evaluation ----
 
-    pub fn eval(&self, env: &Env, t: &Term) -> Val {
+    pub fn eval(&self, env: &[Val], t: &Term) -> Val {
         match t {
             Term::Var(i) => {
                 let n = env.len() as i64 - 1 - *i as i64;
@@ -109,7 +109,7 @@ impl<'a> Ev<'a> {
                 *i,
                 Rc::new(self.eval(env, a)),
                 Closure {
-                    env: env.clone(),
+                    env: env.to_vec(),
                     body: b.clone(),
                 },
             ),
@@ -119,7 +119,7 @@ impl<'a> Ev<'a> {
                 *i,
                 Rc::new(self.eval(env, a)),
                 Closure {
-                    env: env.clone(),
+                    env: env.to_vec(),
                     body: b.clone(),
                 },
             ),
@@ -130,7 +130,7 @@ impl<'a> Ev<'a> {
             }
             Term::Let(_, _, _, v, b) => {
                 let vv = self.eval(env, v);
-                let mut e = env.clone();
+                let mut e = env.to_vec();
                 e.push(vv);
                 self.eval(&e, b)
             }
@@ -143,16 +143,17 @@ impl<'a> Ev<'a> {
                 None => Val::Neutral(Head::Meta(*m), Vec::new()),
             },
             Term::InsertedMeta(m, mask) => {
-                let mut v = match self.metas.get(*m) {
+                let v = match self.metas.get(*m) {
                     Some(v) => v,
                     None => Val::Neutral(Head::Meta(*m), Vec::new()),
                 };
-                for (l, bound) in mask.iter().enumerate() {
-                    if *bound && l < env.len() {
-                        v = self.apply(v, env[l].clone(), Icit::Expl);
-                    }
-                }
-                v
+                let args = mask
+                    .iter()
+                    .enumerate()
+                    .filter(|&(l, bound)| *bound && l < env.len())
+                    .map(|(l, _)| (env[l].clone(), Icit::Expl))
+                    .collect();
+                self.apply_all(v, args)
             }
         }
     }
@@ -171,9 +172,47 @@ impl<'a> Ev<'a> {
         self.eval(&e, &c.body)
     }
 
+    /// [`Ev::inst`] of a closure that is not used afterwards (its
+    /// environment is not copied).
+    fn inst_owned(&self, c: Closure, v: Val) -> Val {
+        let Closure { mut env, body } = c;
+        env.push(v);
+        self.eval(&env, &body)
+    }
+
+    /// Applies `f` to `args` in order. The arguments of nested lambdas
+    /// extend one environment: a meta's solution `λx0 .. xk. t` applied to
+    /// the variables of its context evaluates `t` once, instead of making
+    /// a closure (and copying the environment) per variable.
+    pub fn apply_all(&self, f: Val, args: Vec<(Val, Icit)>) -> Val {
+        let mut f = f;
+        let mut args = args.into_iter().peekable();
+        while let Some((a, i)) = args.next() {
+            f = match f {
+                Val::Lam(_, _, _, _, c) => {
+                    let Closure { mut env, mut body } = c;
+                    env.push(a);
+                    while args.peek().is_some() {
+                        let Term::Lam(_, _, _, _, b) = &*body else {
+                            break;
+                        };
+                        let b = b.clone();
+                        if let Some((a, _)) = args.next() {
+                            env.push(a);
+                        }
+                        body = b;
+                    }
+                    self.eval(&env, &body)
+                }
+                other => self.apply(other, a, i),
+            };
+        }
+        f
+    }
+
     pub fn apply(&self, f: Val, a: Val, i: Icit) -> Val {
         match f {
-            Val::Lam(_, _, _, _, c) => self.inst(&c, a),
+            Val::Lam(_, _, _, _, c) => self.inst_owned(c, a),
             Val::Neutral(h, mut sp) => {
                 sp.push(Elim::App(a, i));
                 Val::Neutral(h, sp)
@@ -191,7 +230,7 @@ impl<'a> Ev<'a> {
     }
 
     /// Selects a case alternative, or gets stuck.
-    pub fn case(&self, s: Val, env: &Env, c: &Rc<Case>) -> Val {
+    pub fn case(&self, s: Val, env: &[Val], c: &Rc<Case>) -> Val {
         // A scrutinee headed by a definition or a primitive may reduce
         // (`not (primEqInt 2 0)`).
         let s = match self.force(s) {
@@ -208,7 +247,7 @@ impl<'a> Ev<'a> {
                     if let Alt::Con { con, body, .. } = a
                         && *con == k
                     {
-                        let mut e = env.clone();
+                        let mut e = env.to_vec();
                         e.extend(args.into_iter().skip(nparams));
                         return self.eval(&e, body);
                     }
@@ -232,7 +271,7 @@ impl<'a> Ev<'a> {
                 }
             }
             Val::Neutral(h, mut sp) => {
-                sp.push(Elim::Case(env.clone(), c.clone()));
+                sp.push(Elim::Case(env.to_vec(), c.clone()));
                 Val::Neutral(h, sp)
             }
             _ => Val::Error,
@@ -240,13 +279,23 @@ impl<'a> Ev<'a> {
     }
 
     fn apply_elims(&self, mut v: Val, sp: Vec<Elim>) -> Val {
+        let mut apps = Vec::new();
         for e in sp {
-            v = match e {
-                Elim::App(a, i) => self.apply(v, a, i),
-                Elim::Case(env, c) => self.case(v, &env, &c),
-            };
+            match e {
+                Elim::App(a, i) => apps.push((a, i)),
+                Elim::Case(env, c) => {
+                    if !apps.is_empty() {
+                        v = self.apply_all(v, std::mem::take(&mut apps));
+                    }
+                    v = self.case(v, &env, &c);
+                }
+            }
         }
-        v
+        if apps.is_empty() {
+            v
+        } else {
+            self.apply_all(v, apps)
+        }
     }
 
     /// Replaces solved metas in the head.
