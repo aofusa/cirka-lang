@@ -152,13 +152,14 @@ fn decl(d: &Decl) -> String {
                 let _ = write!(s, " : {}", expr(t));
             }
             for c in &dd.cons {
+                let cp = if c.private { "private " } else { "" };
                 match &c.body {
                     ConBody::Sig(t) => {
-                        let _ = write!(s, "\n  ({} : {})", c.name, expr(t));
+                        let _ = write!(s, "\n  ({cp}{} : {})", c.name, expr(t));
                     }
                     ConBody::Fields(fs) => {
                         let f: Vec<String> = fs.iter().map(expr).collect();
-                        let _ = write!(s, "\n  ({} {})", c.name, f.join(" "));
+                        let _ = write!(s, "\n  ({cp}{} {})", c.name, f.join(" "));
                     }
                 }
             }

@@ -1298,6 +1298,8 @@ impl Parser {
                 invariants.push((ncons, e, sp));
                 return Ok(Vec::new());
             }
+            // `private` constructors (spec-v0.0.6.md §2).
+            let private = p.eat(&Tok::Kw(Kw::Private));
             let mut names = vec![p.con_name()?];
             while p.eat(&Tok::Comma) {
                 names.push(p.con_name()?);
@@ -1319,6 +1321,7 @@ impl Parser {
                     name: n,
                     span: sp,
                     body: ConBody::Sig(ty.clone()),
+                    private,
                 })
                 .collect::<Vec<_>>())
         })?;
@@ -1406,7 +1409,15 @@ impl Parser {
         }
     }
 
+    /// A constructor of the short form, possibly `private`.
     fn short_con(&mut self) -> R<ConDecl> {
+        let private = self.eat(&Tok::Kw(Kw::Private));
+        let mut c = self.short_con_body()?;
+        c.private = private;
+        Ok(c)
+    }
+
+    fn short_con_body(&mut self) -> R<ConDecl> {
         let start = self.span();
         if matches!(self.peek(), Tok::UIdent(p, _) if p.is_empty())
             || (self.at(&Tok::LParen)
@@ -1446,12 +1457,14 @@ impl Parser {
                     name: op,
                     span: sp,
                     body: ConBody::Fields(vec![lhs, rhs]),
+                    private: false,
                 });
             }
             return Ok(ConDecl {
                 name,
                 span,
                 body: ConBody::Fields(fields),
+                private: false,
             });
         }
         let lhs = self.app()?;
@@ -1463,6 +1476,7 @@ impl Parser {
                     name: op,
                     span: sp,
                     body: ConBody::Fields(vec![lhs, rhs]),
+                    private: false,
                 })
             }
             _ => {

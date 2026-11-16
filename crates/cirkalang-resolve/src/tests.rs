@@ -319,3 +319,50 @@ fn import_lists() {
     assert!(e.contains("E1101: `w` is not defined in module `A`"), "{e}");
     assert!(e.contains("E1106: `A.z` is private"), "{e}");
 }
+
+/// `private` constructors (spec-v0.0.6.md §2): the type and the public
+/// constructors are visible elsewhere; the private ones only in their
+/// module, in expressions and in patterns.
+#[test]
+fn private_constructors() {
+    const A: &str = "module A
+data T = private MkT Int | Pub
+data L : Type where
+  private MkL : Int -> L
+  Shown : L
+mk : Int -> T
+mk n = MkT n
+get : T -> Int
+get t = case t of
+  MkT n => n
+  Pub => 0
+";
+    let ok = run(
+        &[
+            ("Prelude", PRELUDE),
+            ("A", A),
+            (
+                "Main",
+                "import A\nf : A.T\nf = A.mk (A.get A.Pub)\ng : L\ng = Shown\n",
+            ),
+        ],
+        "Main",
+    );
+    assert!(ok.is_ok(), "{}", ok.err().unwrap_or_default());
+    let e = run(
+        &[
+            ("Prelude", PRELUDE),
+            ("A", A),
+            (
+                "Main",
+                "import A\nf : T\nf = MkT 1\ng : T -> Int\ng t = case t of\n  A.MkT n => n\n  _ => 0\nh : L\nh = A.MkL 2\n",
+            ),
+        ],
+        "Main",
+    )
+    .unwrap_err();
+    assert_eq!(
+        e,
+        "E1106: `A.MkT` is private\nE1106: `A.MkT` is private\nE1106: `A.MkL` is private"
+    );
+}

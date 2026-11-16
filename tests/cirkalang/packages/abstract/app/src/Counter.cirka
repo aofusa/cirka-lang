@@ -1,0 +1,14 @@
+-- A counter that only counts up: its constructor is private, so other
+-- modules make counters with `start` and `tick` (spec-v0.0.6.md §2).
+module Counter
+
+data Counter = private MkCounter Int deriving (Eq, Show)
+
+start : Counter
+start = MkCounter 0
+
+tick : Counter -> Counter
+tick (MkCounter n) = MkCounter (n + 1)
+
+value : Counter -> Int
+value (MkCounter n) = n

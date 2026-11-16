@@ -1,0 +1,10 @@
+error[E1106]: `Lib.MkT` is private
+ --> tests/cirkalang/modules/private_con_fail/Main.cirka:7:5
+  |
+7 | g = MkT 1
+  |     ^^^ declared `private` in `Lib`
+error[E1106]: `Lib.MkT` is private
+  --> tests/cirkalang/modules/private_con_fail/Main.cirka:11:3
+   |
+11 |   Lib.MkT n => mk n
+   |   ^^^^^^^^^ declared `private` in `Lib`

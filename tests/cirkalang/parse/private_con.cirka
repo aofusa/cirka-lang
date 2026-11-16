@@ -1,0 +1,8 @@
+module Handles
+
+-- `private` constructors (spec-v0.0.6.md §2).
+data Buffer (s : Region) (e : Type) = private MkBuffer Int (Ptr e) | Empty
+
+data File : LType where
+  private MkFile, MkPipe : Int -> File
+  Closed : File

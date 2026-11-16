@@ -1,0 +1,15 @@
+module Lib
+
+prim Int : Type
+
+-- A type with a private constructor (spec-v0.0.6.md §2): only `mk` and
+-- `Pub` build its values outside this module.
+data T = private MkT Int | Pub
+
+mk : Int -> T
+mk n = MkT n
+
+get : T -> Int
+get t = case t of
+  MkT n => n
+  Pub => get (mk 0)

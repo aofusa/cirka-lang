@@ -1,0 +1,8 @@
+(module Handles)
+(data Buffer (s : Region) (e : Type)
+  (private MkBuffer Int (Ptr e))
+  (Empty ))
+(data File : LType
+  (private MkFile : (-> Int File))
+  (private MkPipe : (-> Int File))
+  (Closed : File))

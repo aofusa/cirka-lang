@@ -129,6 +129,7 @@ fn enum_(i: &ExternItem, repr: &Expr, consts: &[ExternConst], private: bool) -> 
         params: Vec::new(),
         sig: None,
         cons: vec![ConDecl {
+            private: false,
             name: con.clone(),
             span: i.name_span,
             body: ConBody::Fields(vec![repr.clone()]),
@@ -220,6 +221,7 @@ fn struct_(i: &ExternItem, fields: &[ExternField], private: bool) -> Vec<Decl> {
         params: Vec::new(),
         sig: None,
         cons: vec![ConDecl {
+            private: false,
             name: con.clone(),
             span: i.name_span,
             body: ConBody::Fields(fields.iter().map(|f| f.ty.clone()).collect()),
@@ -405,6 +407,7 @@ fn union_(i: &ExternItem, fields: &[ExternField], private: bool) -> Vec<Decl> {
         params: Vec::new(),
         sig: None,
         cons: vec![ConDecl {
+            private: false,
             name: con.clone(),
             span: i.name_span,
             body: ConBody::Fields(vec![bytes]),

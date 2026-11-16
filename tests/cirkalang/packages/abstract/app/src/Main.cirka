@@ -1,0 +1,8 @@
+import Counter
+
+main : IO ()
+main = do
+  let c = tick (tick start)
+  print (value c)
+  print c
+  print (c == tick (tick start), c == start)

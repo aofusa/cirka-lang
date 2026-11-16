@@ -675,7 +675,9 @@ impl<'s> Resolver<'s> {
                     ast::DeclKind::Data(dd) => {
                         self.declare(name, &dd.name, GKind::Data, dd.name_span, d.private);
                         for c in &dd.cons {
-                            self.declare(name, &c.name, GKind::Con, c.span, d.private);
+                            // A `private` constructor of a public type
+                            // (spec-v0.0.6.md §2).
+                            self.declare(name, &c.name, GKind::Con, c.span, d.private || c.private);
                         }
                     }
                     ast::DeclKind::Prim {
@@ -913,6 +915,36 @@ impl<'s> Resolver<'s> {
     }
 
     fn unknown(&mut self, q: &ast::QName, span: Span) {
+        // A private name of a module imported without qualification, such
+        // as a `private` constructor (spec-v0.0.6.md §2).
+        if q.module.is_empty() {
+            let loaded = &self.st.loaded[&self.cur];
+            let owner = loaded
+                .imports
+                .iter()
+                .chain(
+                    loaded
+                        .only
+                        .iter()
+                        .filter(|(_, ns)| ns.iter().any(|(n, _)| *n == q.name))
+                        .map(|(m, _)| m),
+                )
+                .find(|m| {
+                    self.tables
+                        .get(*m)
+                        .and_then(|t| t.own.get(&q.name))
+                        .is_some_and(|g| self.globals[g.0 as usize].private)
+                })
+                .cloned();
+            if let Some(m) = owner {
+                self.errs.push(
+                    Diagnostic::error(format!("`{m}.{}` is private", q.name))
+                        .with_code("E1106")
+                        .with_label(span, format!("declared `private` in `{m}`")),
+                );
+                return;
+            }
+        }
         self.errs.push(
             Diagnostic::error(format!("`{q}` is not defined"))
                 .with_code("E1101")
@@ -1446,7 +1478,14 @@ impl<'s> Resolver<'s> {
             ast::PatKind::Wild => PatKind::Wild,
             ast::PatKind::Con(q, args) => match self.con_ref(q, p.span) {
                 Some(g) => PatKind::Con(g, args.iter().map(|a| self.pat(a, bound)).collect()),
-                None => PatKind::Wild,
+                None => {
+                    // The variables are still bound: no errors about their
+                    // uses follow the one about the constructor.
+                    for a in args {
+                        self.pat(a, bound);
+                    }
+                    PatKind::Wild
+                }
             },
             ast::PatKind::Lit(l, neg) => PatKind::Lit(l.clone(), *neg),
             ast::PatKind::Unit => PatKind::Unit,

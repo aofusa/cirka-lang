@@ -297,6 +297,8 @@ pub struct ConDecl {
     pub name: String,
     pub span: Span,
     pub body: ConBody,
+    /// `private`: only usable in its module (spec-v0.0.6.md §2).
+    pub private: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]

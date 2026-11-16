@@ -1,0 +1,12 @@
+import Lib
+
+f : Lib.T
+f = mk (get Pub)
+
+g : Lib.T
+g = MkT 1
+
+h : Lib.T -> Lib.T
+h t = case t of
+  Lib.MkT n => mk n
+  _ => Pub

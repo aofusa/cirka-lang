@@ -13,8 +13,8 @@ error[E1101]: `T` is not defined
   |
 8 | g : T
   |     ^ not in scope
-error[E1101]: `hidden` is not defined
+error[E1106]: `Lib.hidden` is private
  --> tests/cirkalang/modules/import_list_fail/Main.cirka:9:5
   |
 9 | g = hidden
-  |     ^^^^^^ not in scope
+  |     ^^^^^^ declared `private` in `Lib`
