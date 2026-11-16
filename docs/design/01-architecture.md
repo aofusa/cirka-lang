@@ -103,7 +103,7 @@ achc check Main.hs                          # 型・所有権検査のみ
 achc verify Main.hs                         # (後期 H6) 洗練型・契約の検証 (FEAT-0151, 0152)
 ```
 
-フラグ: `-O0|-O1|-O2`、`--ownership=off|warn|strict` (`achc.toml` より優先)、`--cycles=warn|error|collect`、`--runtime=release|debug`、`--emit=llvm|obj|exe`。
+フラグ: `-O0|-O1|-O2`、`--ownership=off|warn|strict` (`achc.toml` より優先)、`--cycles=warn|error|collect`、`--runtime=release|debug`、`--emit=llvm|obj|exe`、`--time-passes`。
 
 ```toml
 # achc.toml (tsconfig に相当)
@@ -132,7 +132,12 @@ cirka bindgen header.h -o foo.cirka         # C ヘッダから extern 宣言を
 cirka --version                             # 例: CirkaLang v0.0.1
 ```
 
-フラグ: `-O0|-O1|-O2`、`--runtime=release|debug`、`--contracts=off|check|verify`、`--emit=llvm|obj|exe`。
+フラグ: `-O0|-O1|-O2`、`--runtime=release|debug`、`--contracts=off|check|verify`、`--emit=llvm|obj|exe`、
+`--extern-items=used|all` (extern ブロックから展開した項目を使うものだけ検査するか、すべて検査するか。spec-v0.0.6.md §1.10)、
+`--time-passes` (段階ごとの時間を標準エラーに表示する)。
+
+両 CLI に共通: `--time-passes` は CLI の引数処理 (`cirka-driver`) が受け取り、フロントエンドと Core 以降の各段階の時間を表示する。
+`check` はコード生成しないので、`-O` を明示しなければ Core を最適化しない (Core から LLVM IR までは作り、検証器を通す。FEAT-0255)。
 C のライブラリは `-l<名前>`・`-L<ディレクトリ>`・`-Wl,<引数>` (例: `-Wl,-rpath,<ディレクトリ>`) でリンクする。これらは順にリンカ (clang) へ渡る (FEAT-0047)。
 
 ```toml
