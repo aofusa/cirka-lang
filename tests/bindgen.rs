@@ -131,24 +131,44 @@ fn achc_accepts(c: &Case, module: &str, text: &str) -> Result<(), String> {
 }
 
 /// The CirkaLang front end accepts the module `text` (spec-v0.0.6.md §1),
-/// imported by a `Main`.
+/// imported by a `Main`. Everything the declarations expand to is
+/// checked, used or not (`--extern-items=all`, §1.10).
 fn cirka_accepts(c: &Case, text: &str) -> Result<(), String> {
-    let work = cirka_testkit::work_dir("bindgen-gen", &c.name);
-    let main = work.join("Main.cirka");
-    std::fs::write(work.join("Bindings.cirka"), text).map_err(|e| e.to_string())?;
-    std::fs::write(
-        &main,
+    cirka_compiles(
+        "bindgen-gen",
+        &c.name,
+        text,
         "module Main\n\nimport Bindings as B\n\nmain : IO ()\nmain = pure ()\n",
+        &["--extern-items=all"],
+        2,
     )
-    .map_err(|e| e.to_string())?;
+}
+
+/// `cirka` compiles `main` (a module `Main`) with the module `Bindings` =
+/// `text` to LLVM IR, optimizing the Core at `opt_level` (0: what
+/// `cirka check` does).
+fn cirka_compiles(
+    suite: &str,
+    name: &str,
+    text: &str,
+    main: &str,
+    flags: &[&str],
+    opt_level: u8,
+) -> Result<(), String> {
+    let work = cirka_testkit::work_dir(suite, name);
+    let main_path = work.join("Main.cirka");
+    std::fs::write(work.join("Bindings.cirka"), text).map_err(|e| e.to_string())?;
+    std::fs::write(&main_path, main).map_err(|e| e.to_string())?;
     let mut sm = cirka_diagnostics::SourceMap::new();
-    let mut opts = cirka_driver::pipeline::Options::new(&c.name);
-    // Everything the declarations expand to is checked, used or not
-    // (spec-v0.0.6.md §1.10).
-    opts.frontend_flags.push("--extern-items=all".into());
+    let mut opts = cirka_driver::pipeline::Options::new(name);
+    opts.frontend_flags = flags.iter().map(|f| f.to_string()).collect();
+    opts.opt_level = opt_level;
+    if opt_level == 0 {
+        opts.tests = cirka_driver::pipeline::SourceTests::Check;
+    }
     let mut roots = vec![work.clone()];
     roots.extend(cirka::lib_roots());
-    cirka::compile(&mut sm, &main, &roots, &opts, "test")
+    cirka::compile(&mut sm, &main_path, &roots, &opts, "test")
         .map(|_| ())
         .map_err(|ds| {
             ds.iter()
@@ -156,6 +176,33 @@ fn cirka_accepts(c: &Case, text: &str) -> Result<(), String> {
                 .collect()
         })
 }
+
+/// A program using structs (nested, and one of 106 fields), enums,
+/// constants and a function of the whole `vulkan_core.h` (FEAT-0255).
+const VULKAN_MAIN: &str = r#"module Main
+
+import Foreign
+import Bindings
+
+main : IO ()
+main = do
+  print (VK_API_VERSION_1_0, VK_STRUCTURE_TYPE_APPLICATION_INFO, VK_SUCCESS)
+  print (sizeOf (nullPtr : Ptr VkPhysicalDeviceProperties))
+  (r, v) <- alloca (\p => do
+    r <- vkEnumerateInstanceVersion p
+    v <- peek p
+    pure (r, v))
+  print (r == VK_SUCCESS, v)
+  withCString "app" (\name => do
+    let app = MkVkApplicationInfo VK_STRUCTURE_TYPE_APPLICATION_INFO nullPtr name 1 nullPtr 0 VK_API_VERSION_1_0
+    withValue app (\p => do
+      app2 <- peek p
+      print (app2 == app)))
+  withValue zeroed (\p => do
+    props <- peek p
+    print (VkPhysicalDeviceLimits.maxComputeSharedMemorySize (VkPhysicalDeviceProperties.limits props))
+    print (VkPhysicalDeviceProperties.deviceType props == VK_PHYSICAL_DEVICE_TYPE_CPU))
+"#;
 
 fn run(bin: &Path, args: &[String], cwd: &Path) -> cirka_testkit::RunOutput {
     let mut cmd = Command::new(bin);
@@ -333,6 +380,37 @@ fn bindgen_system_headers() {
         for it in &h.items {
             if let Def::Opaque(Some(why)) = &it.def {
                 failures.push(format!("<{header}>: {} is opaque: {why}", it.name));
+            }
+        }
+        // The whole CirkaLang output is checked in seconds for a program
+        // using a part of it (spec-v0.0.6.md §1.10; 51 s before FEAT-0255),
+        // and compiles optimized.
+        if header == "vulkan/vulkan_core.h" {
+            for (what, opt_level) in [("checked", 0), ("compiled with -O2", 2)] {
+                let start = std::time::Instant::now();
+                match cirka_compiles(
+                    "bindgen-system",
+                    "vulkan",
+                    &cirka,
+                    VULKAN_MAIN,
+                    &[],
+                    opt_level,
+                ) {
+                    Ok(()) => {
+                        let t = start.elapsed();
+                        eprintln!(
+                            "[bindgen-system] <{header}>: the CirkaLang output {what} in {t:.2?}"
+                        );
+                        if t > std::time::Duration::from_secs(30) {
+                            failures.push(format!(
+                                "<{header}>: the CirkaLang output {what} in {t:.2?}"
+                            ));
+                        }
+                    }
+                    Err(e) => {
+                        failures.push(format!("<{header}>: the CirkaLang output ({what}):\n{e}"))
+                    }
+                }
             }
         }
         if functions < min_functions || records < min_records {
