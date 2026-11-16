@@ -93,9 +93,9 @@ GMP は使わない(静的リンク時の LGPL の扱いを避ける・依存を
 | 名前 | 内容 | 版 |
 |------|------|----|
 | `lib/cirkalang/core` | プリミティブ型・`Maybe`/`Result`/`List`/`Nat`・基本トレイト・`Unique`/`Drop`/`Release`・`Lazy`・証明用の型 | v0.0.1〜 |
-| `lib/cirkalang/std` | libc ベース: fs / io / env / process / time (v0.0.2)、thread / async / net (v0.0.5)、os (v0.0.5。errno の `Result` 化・子プロセス・シグナル・メモリマップ・ディレクトリ、spec-v0.0.5.md §3)、math (v0.0.6) | v0.0.2〜 |
+| `lib/cirkalang/std` | libc ベース: fs / io / env / process / time (v0.0.2)、thread / async / net (v0.0.5)、os (v0.0.5。errno の `Result` 化・子プロセス・シグナル・メモリマップ・ディレクトリ、spec-v0.0.5.md §3)、math (v0.0.6。libm の純粋な関数 `Std.Math`、spec-v0.0.6.md §4.1) | v0.0.2〜 |
 | `lib/cirkalang/vulkan` | `Vulkan.Sys` (vulkan_core.h の bindgen の出力) と安全なラッパ `Vulkan` (Vulkan compute、spec-v0.0.6.md §3) | v0.0.6 |
-| `cirka-linalg` 等 | 数学・線形代数ラッパー (下記 1.5) | v0.0.6 |
+| `lib/cirkalang/linalg` | `Linalg`: 行列 `Matrix m n` と OpenBLAS / LAPACKE による線形代数 (下記 1.5、spec-v0.0.6.md §4.2) | v0.0.6 |
 
 方針は第二段階 (§2) と同じで、プロトタイプではその最小部分を作る。
 
@@ -117,6 +117,14 @@ gemm   : Matrix m k a -> Matrix k n a -> Matrix m n a
 ```
 
 CirkaLang では次元を依存型で表す (`Matrix m n a`) ので、次元不一致はコンパイル時に検出される。次元は多重度 0 で消去されるので実行時コストはない。
+
+**v0.0.6 の結果** (FEAT-0252、spec-v0.0.6.md §4): `cirka-math` は `std` の `Std.Math` (libm の関数を `extern` で宣言した純粋な関数)、
+`cirka-linalg` はライブラリの根 `lib/cirkalang/linalg` の `Linalg` として作った。
+
+- 行列は `Matrix m n` で、要素は `Float` (`double`) だけにした。要素の型の引数は、BLAS のほかの型 (単精度・複素数) が CirkaLang にないので持たない。
+- 純粋版 `gemm` は、`c` の配列をほかの値が共有していなければその配列に結果を書く (Perceus の再利用と同じく観測できない)。
+  in-place 版 `gemmIn` は `Unique (Matrix m n)` を受け取って返し、書き換えの前の `c` を使えないことを型で表す。
+- BLAS / LAPACK には要素を C のメモリにコピーして渡す (ADR-098)。`at` の添字は型の次元に対する部分集合型で、検査時に示す。
 
 ## 2. 第二段階 (CirkaLang v0.1.0〜) の推奨構成
 

@@ -1,7 +1,7 @@
 # CirkaLang v0.0.6 言語仕様
 
 - 版: v0.0.6 (プロトタイプ。版間の互換性は保証しない)
-- チケット: FEAT-0250 (FFI の完成と bindgen の利用)、FEAT-0255 (大きな extern のモジュールのコンパイル時間)、FEAT-0256 (非公開の構成子)、FEAT-0251 (Vulkan compute)、FEAT-0252 (数学・線形代数)、FEAT-0254 (一意な配列と文字列のビューの大きさ)、FEAT-0253 (リリース)
+- チケット: FEAT-0250 (FFI の完成と bindgen の利用)、FEAT-0255 (大きな extern のモジュールのコンパイル時間)、FEAT-0256 (非公開の構成子)、FEAT-0251 (Vulkan compute)、FEAT-0252 (数学・線形代数)、FEAT-0257 (`Linalg` のコピーの除去)、FEAT-0254 (一意な配列と文字列のビューの大きさ)、FEAT-0253 (リリース)
 - 位置づけ: [12-cirkalang.md](../12-cirkalang.md) の「v0.0.6: Vulkan compute・数値計算」を確定したもの。
 
 v0.0.6 の目的は、**実用の C ライブラリ (zlib・Vulkan など) を安全に包めるようにすること** である。
@@ -26,6 +26,7 @@ ABI は共通基盤 ([08-ffi.md](../08-ffi.md) §7.2、FEAT-0047)、ヘッダの
 | §1.10 | extern ブロックの項目は使うものだけを検査・変換する、`--extern-items`、`check` は Core を最適化しない | FEAT-0255 |
 | §2 | 非公開の構成子 (`private` を構成子に付けて、型を他のモジュールから抽象型にする) | FEAT-0256 |
 | §3 | Vulkan compute: `Vulkan.Sys` (bindgen) と安全なラッパ `Vulkan` (リージョンによる資源の管理・シェーダ・部分集合型によるワークグループ数・検証レイヤー) | FEAT-0251 |
+| §4 | 数学・線形代数: libm の純粋な関数 `Std.Math`、行列 `Matrix m n` と OpenBLAS / LAPACKE による `Linalg` (次元は型にあり、`gemm` は一意なら in-place)、unboxed 配列と C のメモリの間のコピー (`pokeUArray`・`peekUArray`・`peekUArrayInto`) | FEAT-0252 |
 
 ## 1. FFI の完成 (FEAT-0250)
 
@@ -437,3 +438,111 @@ main = do
 | E1106 | (既存) 非公開の構成子 (`Vk.MkBuffer` など) を使った |
 | E0501 | (既存) ワークグループ数が 1 から 65535 の外にある |
 
+## 4. 数学・線形代数 (FEAT-0252)
+
+C の成熟した数値計算のライブラリ (libm・OpenBLAS・LAPACKE) を、純粋な関数として安全に使う ([09-libraries.md](../09-libraries.md) §1.5)。
+再実装はしない。
+
+### 4.1 `Std.Math`
+
+`lib/cirkalang/std/Std/Math.cirka` は、libm の関数を `extern "C" link "m"` で宣言した純粋な関数 (§1.1) と定数を持つ。
+
+| 名前 | 内容 |
+|------|------|
+| `sin` `cos` `tan` `asin` `acos` `atan` `atan2` | 三角関数 (`atan2 y x` は点 (x, y) の角度で、-π から π) |
+| `sinh` `cosh` `tanh` `asinh` `acosh` `atanh` | 双曲線関数 |
+| `exp` `exp2` `expm1` `log` `log2` `log10` `log1p` `pow` `cbrt` `hypot` | 指数・対数・べき (`expm1`・`log1p` は 0 の近くで精度を保ち、`hypot` はあふれない) |
+| `floor` `ceil` `round` `trunc` `fmod` `fma` `copysign` `fmin` `fmax` | 丸め (結果は `Float`。`round` は半分を 0 から遠ざける)・`x` の符号の剰余・丸めが 1 回の積和など |
+| `pi` `euler` `infinity` `nan` | 定数 |
+| `isNaN` `isInfinite` `isFinite` | 判定 |
+
+- 引数と結果は `Float` (C の `double`)。値は glibc の libm のもので、正しく丸めた値とは限らない (`cbrt 27.0` は 3.0000000000000004)。
+  定義域の外は NaN、極は無限大になり、プログラムは止まらない (`errno` は読まない)。
+- ネイティブのプログラムもインタプリタも glibc の関数を呼ぶ (ランタイムの中の compiler-builtins の同名の関数ではない。BUG-0028)。
+- `sqrt`・`abs`・`truncate` は Prelude にある。
+
+### 4.2 `Linalg`
+
+ライブラリの根 `lib/cirkalang/linalg/` (core・std・vulkan に続く 4 つ目) の `Linalg` は、`Float` の行列と、OpenBLAS (CBLAS) と LAPACKE による線形代数を持つ。
+
+```
+import Linalg
+
+a : Matrix 2 3
+a = matrix 2 3 (\i, j => toFloat (i + j))
+
+main : IO ()
+main = do
+  print (mul a (transpose a))                          -- Matrix 2 2 (dgemm)
+  print (solve (identity 2) (matrix 2 1 (\i, j => 1.0))) -- Just (dgesv)
+  print (at a 1 2)                                     -- 添字は型の次元に対して検査時に示す
+```
+
+| 名前 | 型 | 内容 |
+|------|----|------|
+| `Matrix m n` | | `m` 行 `n` 列の行列。構成子は非公開 (§2) |
+| `Order` | `RowMajor \| ColMajor` | 要素の並び |
+| `matrix` | `(m : {m : Int \| 0 <= m}) -> (n : {n : Int \| 0 <= n}) -> (Int -> Int -> Float) -> Matrix m n` | 要素 (i, j) が `f i j` の行列 (行優先) |
+| `fromLists` | `(m : …) -> (n : …) -> List (List Float) -> Maybe (Matrix m n)` | 行のリストから作る。大きさが違えば `Nothing` |
+| `identity` | `(n : {n : Int \| 0 <= n}) -> Matrix n n` | 単位行列 |
+| `rows` / `cols` / `order` | `Matrix m n -> Int` / … / `Matrix m n -> Order` | 行数・列数・並び |
+| `at` | `{m : Int} -> {n : Int} -> Matrix m n -> {i : Int \| 0 <= i && i < m} -> {j : Int \| 0 <= j && j < n} -> Float` | 要素 |
+| `get` | `Matrix m n -> Int -> Int -> Maybe Float` | 要素 (範囲の外は `Nothing`) |
+| `toLists` | `Matrix m n -> List (List Float)` | 行のリスト |
+| `transpose` | `Matrix m n -> Matrix n m` | 転置。並びを変えるだけで、要素はコピーしない |
+| `withOrder` | `Order -> Matrix m n -> Matrix m n` | 要素を指定の並びにする (違えばコピー) |
+| `add` / `sub` / `scale` / `mapElems` / `zipElems` | | 要素ごとの演算 |
+| `mul` | `Matrix m k -> Matrix k n -> Matrix m n` | 積 (`cblas_dgemm`)。結果は行優先 |
+| `gemm` | `Float -> Matrix m k -> Matrix k n -> Float -> Matrix m n -> Matrix m n` | `alpha * a * b + beta * c` (`cblas_dgemm`)。結果は `c` の並びで、`c` の配列をほかの値が共有していなければその配列に書く |
+| `gemmIn` | `Float -> Matrix m k -> Matrix k n -> Float -> (1 c : Unique (Matrix m n)) -> Unique (Matrix m n)` | 一意な行列 `c` の上に `gemm` の結果を書く (in-place 版) |
+| `solve` | `Matrix n n -> Matrix n k -> Maybe (Matrix n k)` | `a * x = b` の解 (`LAPACKE_dgesv`、部分ピボット付きの LU 分解)。`a` が特異なら `Nothing`。結果は `a` の並び |
+| `inverse` | `Matrix n n -> Maybe (Matrix n n)` | 逆行列 |
+| `det` | `Matrix n n -> Float` | 行列式 (`LAPACKE_dgetrf`) |
+| `Show` / `Eq` | | 行のリストとして表示・比較する (並びによらない) |
+
+- **次元は型にある。** 型の引数 `m`・`n` は `Int` の値で、型検査の後に消去される (行列は実行時の次元を自分の値としても持つ)。
+  積・和などの次元が合わなければ型の誤り (E1200)、`at` の添字が型の次元の範囲にあることは部分集合型として検査時に示す (E0501。spec-v0.0.4.md §3)。
+  `matrix`・`identity` は次元の値をとって型に使う依存型の関数で、実行時に決まる `n` (`0 <= n` を示したもの) からも `Matrix n n` を作れる。
+- **純粋。** 関数はすべて純粋で、BLAS と LAPACK は関数の中で確保して解放する C のメモリの上で呼ぶ (§4.3)。
+  `gemm` が `c` の配列に結果を書くのは、その配列をほかの値が共有していないときだけなので、観測できない (一意な配列の更新と同じ。spec-v0.0.2.md §7)。
+  `gemmIn` は一意な行列 (`Unique`) を受け取って返すので、書き換える前の `c` を利用者が使えないことが型で分かる
+  (`c` を `unique` で作ったときに、まだ要素を共有する行列が残っていれば、要素はコピーされる)。
+- **並び。** 行列は 1 つの unboxed 配列 (`UArray Float`) に行優先 (`RowMajor`) か列優先 (`ColMajor`) で要素を持つ。
+  BLAS と LAPACK の呼び出しはどちらの並びも読める (他方の並びは転置として渡す) ので、並びを変えるコピーは `solve` の `b` の並びが `a` と違うときだけ行う。
+- LAPACK が不正な引数 (`info < 0`) を報告したら、このモジュールの誤りなので `panic` する。
+- テストは OpenBLAS と LAPACKE がなければ飛ばす (`-- requires: lib:openblas lib:lapacke`。`requires:` の `lib:<名前>` は `lib<名前>.so` を読み込めることを求める)。
+  Docker のイメージには両方があり、`scripts/ci.sh` が確かめる。
+
+### 4.3 unboxed 配列と C のメモリ
+
+`Foreign` に、unboxed 配列 (spec-v0.0.2.md §7.3) と C のメモリの間で要素をまとめてコピーする関数を加える。
+要素は 8 バイトで、`Int` は `int64_t`、`Float` は `double` として読み書きする。
+
+| 名前 | 型 | 内容 |
+|------|----|------|
+| `pokeUArray` | `Ptr a -> UArray a -> IO ()` | 配列の要素を `p` から書く |
+| `peekUArray` | `Int -> Ptr a -> IO (UArray a)` | `p` から `n` 個の要素を読んだ新しい配列 |
+| `peekUArrayInto` | `UArray a -> Ptr a -> IO (UArray a)` | `p` から `size arr` 個の要素を読んだ配列。`arr` をほかの値が共有していなければ `arr` の領域に書く (共有されていればコピーに書く) |
+
+- 値としては、`peekUArrayInto` も新しい配列を返す。元の配列を共有する値からは変化が見えない。
+- ポインタの先の大きさは `peek` / `poke` と同じく利用者が保証する。空の配列ではポインタを使わない (`nullPtr` でもよい)。
+- ライブラリの中だけで宣言できるプリミティブ `primUnsafeRunIO : {a : Type} -> IO a -> a` は、`IO` の動作を純粋な値として実行する。
+  使ってよいのは、動作の効果が自分で確保して解放するメモリの上だけにあって、何回実行しても実行しなくても観測できない場合だけで、`Linalg` が使う。
+  プリミティブは利用者のプログラムには書けない (BUG-0023)。
+
+### 4.4 実行時の表現とコスト、制限、診断
+
+- BLAS / LAPACK の呼び出しごとに、入力と出力の要素を C のメモリとの間で 1 回ずつコピーする (memcpy で O(要素数))。
+  計測では、512×512 の積で C から直接呼ぶより 1.36 倍遅く、差の多くは呼び出しごとに確保するバッファのページフォールトである (ADR-098)。
+  配列の領域を直接 C に渡してコピーとバッファをなくすのは FEAT-0257 で行う。
+- `gemm` が `c` の配列に書けるかは実行時の参照カウントで決まり、最適化にもよる。現在は、大きな関数の中で `gemm` の動作が
+  クロージャとして確保されて `c` の配列を持つと、配列がコピーされる (結果は同じ。FEAT-0088)。`max-array-copies` のテストで回数を確かめている。
+- MIR インタプリタでも実行できる (`link` の libopenblas・liblapacke を `dlopen` する。§1.6)。
+- 制限: 要素は `Float` (`double`) だけで、単精度・複素数はない。BLAS は level 3 の `dgemm` だけを包み、ベクトルの演算は CirkaLang で書く。
+  固有値・特異値分解・最小二乗法などはない。
+
+| コード | 内容 |
+|--------|------|
+| E1200 | (既存) 行列の次元が合わない |
+| E0501 | (既存) `at` の添字が型の次元の範囲にない、次元が負 |
+| E1106 | (既存) 非公開の構成子 `MkMatrix` を使った |
