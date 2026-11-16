@@ -1,0 +1,41 @@
+-- Partial applications leaving more parameters than a closure takes (8)
+-- are curried (BUG-0027): an extern function with an `IO` result and 10
+-- parameters, used without optimization (its wrapper is a partial
+-- application of the function of its representation), and functions of 9
+-- and 11 parameters applied to fewer arguments, kept in lists.
+import Foreign
+
+extern "C" where
+  weigh10 : CInt -> CInt -> CInt -> CInt -> CInt -> CInt -> CInt -> CInt -> CInt -> CInt -> IO ()
+  last_weight : IO CLong
+  weigh9 : CLong -> CLong -> CLong -> CLong -> CLong -> CLong -> CLong -> CLong -> CLong -> CLong
+
+weigh11 : Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int
+weigh11 a b c d e f g h i j k = a + 2 * b + 3 * c + 4 * d + 5 * e + 6 * f + 7 * g + 8 * h + 9 * i + 10 * j + 11 * k
+
+ci : Int -> CInt
+ci n = MkCInt n
+
+cl : Int -> CLong
+cl n = MkCLong n
+
+-- Gives the last 9 arguments to a partial application of `weigh10`.
+runRest : (CInt -> CInt -> CInt -> CInt -> CInt -> CInt -> CInt -> CInt -> CInt -> IO ()) -> IO ()
+runRest act = do
+  act (ci 0) (ci 0) (ci 0) (ci 0) (ci 0) (ci 0) (ci 0) (ci 0) (ci 1)
+  w <- last_weight
+  print (fromCLong w)
+
+main : IO ()
+main = do
+  weigh10 (ci 1) (ci 1) (ci 1) (ci 1) (ci 1) (ci 1) (ci 1) (ci 1) (ci 1) (ci 1)
+  w <- last_weight
+  print (fromCLong w)
+  let actions = map (\n => weigh10 (ci n)) (range 1 3)
+  mapM_ runRest actions
+  let fs = map weigh11 (range 1 3)
+  print (map (\f => f 0 0 0 0 0 0 0 0 0 1) fs)
+  let gs = map (\n => weigh9 (cl n)) (range 1 2)
+  print (map (\g => fromCLong (g (cl 0) (cl 0) (cl 0) (cl 0) (cl 0) (cl 0) (cl 0) (cl 1))) gs)
+  let h = weigh11 1 2
+  print (h 0 0 0 0 0 0 0 0 1)

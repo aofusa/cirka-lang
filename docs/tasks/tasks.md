@@ -334,5 +334,6 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [BUG-0024](bugs/BUG-0024-runtime-tests-descriptor-race.md) | ランタイムの単体テストが記述子番号の再利用で競合し、まれに失敗する | done | minor | FEAT-0242 |
 | [BUG-0025](bugs/BUG-0025-runtime-siginfo-size.md) | ランタイムの `siginfo_t` が 8 バイト短く、`sigtimedwait` がスタックを壊す | done | critical | FEAT-0242, FEAT-0047 |
 | [BUG-0026](bugs/BUG-0026-cl-instance-solution-with-pending-metas.md) | 型の中の多重定義された演算 (`Tagged (2 + 5) Bool`) でインスタンスの解決が ICE になる | todo | minor | FEAT-0250 |
+| [BUG-0027](bugs/BUG-0027-mir-partial-application-over-closure-arity.md) | 残りの引数が 8 個を超える部分適用が C0200 になる (`-O0` の extern の `IO` 関数など) | done | major | FEAT-0251 |
 
 新しいチケットは `features/_TEMPLATE.md` / `bugs/_TEMPLATE.md` をコピーして作成する。

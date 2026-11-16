@@ -1505,23 +1505,61 @@ impl<'p> Lowerer<'p> {
         arity: usize,
         given: Vec<Operand>,
     ) -> Operand {
+        if arity - given.len() > ir::MAX_CLOSURE_ARITY {
+            let target = self.curried(func, fvs.len(), given.len(), arity);
+            let mut args = fvs;
+            args.extend(given);
+            return Operand::Var(fb.let_("clo", Ty::Ptr, Rhs::MkClosure { func: target, args }));
+        }
         let sig = self.sigs[func].clone();
         let nfv = fvs.len();
         let native_ok = sig.ret == Ty::Ptr && sig.params[nfv..].iter().all(|t| *t == Ty::Ptr);
-        let target = if native_ok && arity - given.len() <= ir::MAX_CLOSURE_ARITY {
+        let target = if native_ok {
             func.to_string()
         } else {
             self.wrapper(func, nfv)
         };
-        if arity - given.len() > ir::MAX_CLOSURE_ARITY {
-            self.error(format!(
-                "partial application of `{func}` leaves more than {} parameters",
-                ir::MAX_CLOSURE_ARITY
-            ));
-        }
         let mut args = fvs;
         args.extend(given);
         Operand::Var(fb.let_("clo", Ty::Ptr, Rhs::MkClosure { func: target, args }))
+    }
+
+    /// A closure may take at most [`ir::MAX_CLOSURE_ARITY`] arguments, so a
+    /// partial application of `func` leaving more parameters is curried
+    /// (BUG-0027): `func$cur<k>(fvs..., given_1..given_k, p_1..p_8)`
+    /// returns the closure of `func` for the parameters after `p_8`.
+    fn curried(&mut self, func: &str, nfv: usize, ngiven: usize, arity: usize) -> String {
+        let name = format!("{func}$cur{ngiven}");
+        if self.sigs.contains_key(&name) {
+            return name;
+        }
+        let sig = self.sigs[func].clone();
+        let mut ps: Vec<Ty> = sig.params[..nfv].to_vec();
+        ps.extend(std::iter::repeat_n(Ty::Ptr, ngiven + ir::MAX_CLOSURE_ARITY));
+        // Before the body: it may need this function again (recursion
+        // through `pap` stops, each level takes 8 more arguments).
+        self.sigs.insert(
+            name.clone(),
+            Sig {
+                params: ps.clone(),
+                ret: Ty::Ptr,
+            },
+        );
+        let mut fb = Fb::new(&name, Ty::Ptr);
+        let mut vars = Vec::new();
+        for (i, t) in ps.iter().enumerate() {
+            let v = fb.f.new_var(format!("a{i}"), *t);
+            fb.f.params.push(ir::Param {
+                var: v,
+                own: Own::Owned,
+            });
+            vars.push(Operand::Var(v));
+        }
+        let given = vars.split_off(nfv);
+        let clo = self.pap(&mut fb, func, vars, arity, given);
+        fb.term(Terminator::Ret(clo));
+        self.m.funcs.push(fb.f);
+        name
     }
 
     /// `func$clo(fvs..., p1: ptr, ...) -> ptr`: unboxes, calls, boxes.
