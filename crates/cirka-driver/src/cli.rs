@@ -64,12 +64,18 @@ pub fn parse_args(args: &[String]) -> Result<Args, String> {
     let mut build_dir = None;
     let mut filter = None;
     let mut runtime_set = false;
+    let mut opt_set = false;
     let mut it = rest.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
-            "-O0" => opts.opt_level = 0,
-            "-O1" => opts.opt_level = 1,
-            "-O2" | "-O3" | "--release" => opts.opt_level = 2,
+            "-O0" | "-O1" | "-O2" | "-O3" | "--release" => {
+                opts.opt_level = match a.as_str() {
+                    "-O0" => 0,
+                    "-O1" => 1,
+                    _ => 2,
+                };
+                opt_set = true;
+            }
             "--runtime=release" => {
                 opts.runtime = RuntimeKind::Release;
                 runtime_set = true;
@@ -136,6 +142,11 @@ pub fn parse_args(args: &[String]) -> Result<Args, String> {
     // Tests check for leaks, which needs the debug runtime.
     if command == Command::Test && !runtime_set {
         opts.runtime = RuntimeKind::Debug;
+    }
+    // `check` generates no code: the Core is not optimized unless asked
+    // (FEAT-0255).
+    if command == Command::Check && !opt_set {
+        opts.opt_level = 0;
     }
     Ok(Args {
         command,
@@ -469,5 +480,13 @@ mod tests {
                 .time_passes
         );
         assert!(!args("check Main.cirka").unwrap().opts.time_passes);
+    }
+
+    #[test]
+    fn check_does_not_optimize_unless_asked() {
+        assert_eq!(args("check Main.cirka").unwrap().opts.opt_level, 0);
+        assert_eq!(args("check -O2 Main.cirka").unwrap().opts.opt_level, 2);
+        assert_eq!(args("build Main.cirka").unwrap().opts.opt_level, 2);
+        assert_eq!(args("build -O1 Main.cirka").unwrap().opts.opt_level, 1);
     }
 }
