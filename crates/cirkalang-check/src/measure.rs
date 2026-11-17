@@ -50,6 +50,9 @@ pub(crate) struct Tr<'a> {
     /// The values of one-constructor types whose field refinements are
     /// hypotheses.
     records: HashSet<String>,
+    /// The translation of each call of a definition (`None` while it is
+    /// made), reused wherever the call is (BUG-0031).
+    calls: HashMap<String, Option<Expr>>,
 }
 
 /// Unique SMT names for the variables of a definition.
@@ -88,6 +91,7 @@ impl<'a> Tr<'a> {
             stand_ins: HashMap::new(),
             stand_in_calls: HashMap::new(),
             records: HashSet::new(),
+            calls: HashMap::new(),
         }
     }
 
@@ -153,10 +157,49 @@ impl<'a> Tr<'a> {
         self.tr(v, cirka_smt::Sort::Bool, depth)
     }
 
+    /// A call of a definition translates to the same term wherever it is
+    /// (BUG-0031): unfolding stops at the depth limit, so the same call in
+    /// the goal and in a hypothesis translated deeper (`parseInt arg` in the
+    /// size of `generate (parseInt arg) f`) would give two terms that Z3
+    /// does not know equal. The first translation is reused, and the call
+    /// inside its own unfolding is opaque. Nothing is assumed: equating two
+    /// translations instead would contradict for a call that never returns
+    /// (`f x = f x + 1`).
     fn tr(&mut self, v: &Val, want: cirka_smt::Sort, depth: u32) -> Expr {
+        let v = self.ev.force(v.clone());
+        let key = match &v {
+            Val::Neutral(Head::Global(g), sp)
+                if !sp.is_empty()
+                    && sp.iter().all(|e| matches!(e, Elim::App(..)))
+                    && matches!(self.prog.get(*g), Global::Def { body: Some(_), .. }) =>
+            {
+                let refine = self.prog.builtins.refine;
+                let k = format!(
+                    "{:?}{:?}",
+                    want,
+                    strip_refine(&self.ev.quote(100_000, &v), refine)
+                );
+                match self.calls.get(&k) {
+                    Some(Some(e)) => return e.clone(),
+                    Some(None) => return self.opaque(&v, want),
+                    None => {}
+                }
+                self.calls.insert(k.clone(), None);
+                Some(k)
+            }
+            _ => None,
+        };
+        let e = self.tr_value(&v, want, depth);
+        if let Some(k) = key {
+            self.calls.insert(k, Some(e.clone()));
+        }
+        e
+    }
+
+    fn tr_value(&mut self, v: &Val, want: cirka_smt::Sort, depth: u32) -> Expr {
         use cirka_smt::Sort as S;
         let b = &self.prog.builtins;
-        let v = self.ev.force(v.clone());
+        let v = v.clone();
         match (&v, want) {
             (Val::Lit(Lit::Int(n)), S::Int) => return Expr::Int(*n as i128),
             (Val::Con(c, args), S::Int) if Some(*c) == b.zero && args.is_empty() => {

@@ -1,0 +1,17 @@
+module Main
+
+-- BUG-0031: `parseInt` is not total, so `parseInt arg` is translated by
+-- unfolding it down to a depth limit. In the `requires` of `thawS`, the
+-- size of `generate n f` (a hypothesis, translated deeper) and `n` gave two
+-- terms for the same call, and the obligation was not proved.
+
+import Data.Array.Unboxed as U
+
+sizeOf : String -> Int
+sizeOf arg =
+  let n = parseInt arg in
+  if n < 3 then 0
+  else U.size (U.freezeS (U.thawS n (U.generate n (\i => toFloat i))))
+
+main : IO ()
+main = printInt (sizeOf "8")
