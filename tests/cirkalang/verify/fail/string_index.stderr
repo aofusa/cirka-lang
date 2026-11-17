@@ -1,0 +1,6 @@
+error[E0501]: cannot prove the refinement `(0 <= (length v)) && ((length v) < (length v))`
+  --> tests/cirkalang/verify/fail/string_index.cirka:10:47
+   |
+10 | lastByte v = if S.length v > 0 then S.index v (S.length v) else 0
+   |                                               ^^^^^^^^^^^^ in `Main.lastByte`
+   = help: check the value, add a condition (`if`), or refine the type of what it is computed from

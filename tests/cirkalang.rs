@@ -538,6 +538,22 @@ fn cirkalang_sized_arrays_remove_checks() {
     );
 }
 
+/// Views of strings: the reads of string_views.cirka and the loops of
+/// `Data.String` (whose views are within their strings, an invariant of
+/// `Str`) have no bounds checks.
+#[test]
+fn cirkalang_string_views_remove_checks() {
+    proofs_remove_checks(
+        "string_views",
+        &[
+            ("Main.sumBytes", &["bytes_get"]),
+            ("Main.palindrome", &["bytes_get"]),
+            ("Data.String.skipSpace", &["bytes_get"]),
+            ("Data.String.skipWord", &["bytes_get"]),
+        ],
+    );
+}
+
 /// The proof obligations of the libraries are not checked when a program
 /// is compiled (FEAT-0244, spec-v0.0.5.md §4.3): they are checked here,
 /// with `--libraries=verify`, on a program that imports every module of

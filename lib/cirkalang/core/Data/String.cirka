@@ -6,6 +6,10 @@
 -- (or returns the string itself when the view covers all of it). Indices
 -- and lengths count bytes. Import the module with an alias
 -- (`import Data.String as S`).
+--
+-- A view is within its string (an invariant of `MkStr`), so the loops of
+-- the module read the bytes without bounds checks, and `index` reads a
+-- byte at an index proved in bounds (spec-v0.0.6.md §5).
 module Data.String
 
 private prim primStrSlice : String -> Int -> Int -> String
@@ -15,14 +19,45 @@ private prim primStrRangeEq : String -> Int -> String -> Int -> Int -> Bool
 private prim primStrNew : Int -> Unique String
 private prim primStrWrite : (1 u : Unique String) -> Int -> String -> Int -> Int -> Unique String
 private prim primStrSetByte : (1 u : Unique String) -> Int -> Int -> Unique String
+private prim primStrIndexProved : String -> Int -> Int
 
--- `MkStr s i j` is the bytes `[i, j)` of `s` (`0 <= i <= j <= length s`).
-data Str = MkStr String Int Int
+-- `MkStr s i j` is the bytes `[i, j)` of `s`.
+data Str : Type where
+  MkStr : (s : String) -> (i : Int) -> (j : Int) -> Str
+  invariant 0 <= i && i <= j && j <= strLength s
+
+-- The number of bytes.
+total
+length : Str -> Int
+length (MkStr _ i j) = j - i
+
+-- The byte at `k`, proved in bounds: no bounds check.
+private byteIn : (s : String) -> {k : Int | 0 <= k && k < strLength s} -> Int
+byteIn s k = primStrIndexProved s k
+
+-- The first index in `[i, j)` of the byte `b`, or a negative number.
+-- (Trusted, spec-v0.0.5.md §4.2: the runtime searches the range clamped to
+-- the string, which is the range itself here.)
+trusted total
+private findByte : (s : String) -> (b : Int) -> (i : Int) -> (j : Int) -> Int
+  requires 0 <= i && i <= j && j <= strLength s
+  ensures \k => k < 0 || (i <= k && k < j)
+findByte s b i j = primStrFindByte s b i j
+
+-- The first index in `[i, j)` where `p` starts and ends before `j`, or a
+-- negative number (trusted, as `findByte`).
+trusted total
+private find : (s : String) -> (i : Int) -> (j : Int) -> (p : String) -> Int
+  requires 0 <= i && i <= j && j <= strLength s
+  ensures \k => k < 0 || (i <= k && k <= j - strLength p)
+find s i j p = primStrFind s i j p
 
 -- ---- conversions ----
 
 -- The whole string as a view.
-toStr : String -> Str
+total
+toStr : (s : String) -> Str
+  ensures \r => length r == strLength s
 toStr s = MkStr s 0 (strLength s)
 
 -- The text of a view (a copy unless it covers the whole string).
@@ -31,10 +66,6 @@ fromStr (MkStr s i j) = if i == 0 then (if j == strLength s then s else primStrS
 
 -- ---- views ----
 
--- The number of bytes.
-length : Str -> Int
-length (MkStr _ i j) = j - i
-
 isEmpty : Str -> Bool
 isEmpty (MkStr _ i j) = i == j
 
@@ -42,43 +73,54 @@ isEmpty (MkStr _ i j) = i == j
 byteAt : Str -> Int -> Int
 byteAt (MkStr s i j) k =
   if k < 0 then panic "Data.String.byteAt: index out of bounds"
-  else if i + k >= j then panic "Data.String.byteAt: index out of bounds"
-  else primStrIndex s (i + k)
+  else if k >= j - i then panic "Data.String.byteAt: index out of bounds"
+  else byteIn s (i + k)
 
--- The bytes `[a, b)` of the view (clamped to it).
-slice : Str -> Int -> Int -> Str
+-- The byte at index `k` (0..255), proved in bounds: no bounds check.
+index : (v : Str) -> {k : Int | 0 <= k && k < length v} -> Int
+index (MkStr s i j) k = byteIn s (i + k)
+
+-- The bytes `[a, b)` of the view (clamped to it): `b - a` bytes when
+-- `0 <= a <= b <= length v`.
+total
+slice : (v : Str) -> (a : Int) -> (b : Int) -> Str
+  ensures \r => length r <= length v && (a < 0 || b < a || length v < b || length r == b - a)
 slice (MkStr s i j) a b =
-  let a2 = clamp (i + a) i j in
-  MkStr s a2 (clamp (i + b) a2 j)
+  let a2 = clamp a 0 (j - i) in
+  MkStr s (i + a2) (i + clamp b a2 (j - i))
 
 private clamp : Int -> Int -> Int -> Int
 clamp x lo hi = if x < lo then lo else if x > hi then hi else x
 
--- The first `n` bytes.
-take : Int -> Str -> Str
-take n v = slice v 0 n
+-- The first `n` bytes (all of them when there are fewer).
+total
+take : (n : Int) -> (v : Str) -> Str
+  ensures \r => length r == (if n < 0 then 0 else if n < length v then n else length v)
+take n (MkStr s i j) = MkStr s i (i + clamp n 0 (j - i))
 
 -- Without the first `n` bytes.
-drop : Int -> Str -> Str
-drop n v = slice v n (length v)
+total
+drop : (n : Int) -> (v : Str) -> Str
+  ensures \r => length r == (if n < 0 then length v else if n < length v then length v - n else 0)
+drop n (MkStr s i j) = MkStr s (i + clamp n 0 (j - i)) j
 
 -- ---- searching ----
 
 -- The index of the first occurrence of `p`.
 indexOf : Str -> String -> Maybe Int
 indexOf (MkStr s i j) p =
-  let k = primStrFind s i j p in
+  let k = find s i j p in
   if k < 0 then Nothing else Just (k - i)
 
 -- The index of the first occurrence of the character `c`.
 indexOfChar : Str -> Char -> Maybe Int
 indexOfChar (MkStr s i j) c =
   let b = primCharToInt c in
-  let k = if b < 128 then primStrFindByte s b i j else primStrFind s i j (primCharToStr c) in
+  let k = if b < 128 then findByte s b i j else find s i j (primCharToStr c) in
   if k < 0 then Nothing else Just (k - i)
 
 contains : Str -> String -> Bool
-contains (MkStr s i j) p = primStrFind s i j p >= 0
+contains (MkStr s i j) p = find s i j p >= 0
 
 startsWith : Str -> String -> Bool
 startsWith (MkStr s i j) p =
@@ -98,9 +140,10 @@ splitOn : String -> Str -> List Str
 splitOn sep (MkStr s i j) =
   if strLength sep == 0 then MkStr s i j :: Nil else splitFrom sep s i i j
 
-private splitFrom : String -> String -> Int -> Int -> Int -> List Str
+private splitFrom : (sep : String) -> (s : String) -> (start : Int) -> (i : Int) -> (j : Int) -> List Str
+  requires 0 <= start && start <= i && i <= j && j <= strLength s
 splitFrom sep s start i j =
-  let k = primStrFind s i j sep in
+  let k = find s i j sep in
   if k < 0 then MkStr s start j :: Nil
   else MkStr s start k :: splitFrom sep s (k + strLength sep) (k + strLength sep) j
 
@@ -109,28 +152,31 @@ splitFrom sep s start i j =
 lines : Str -> List Str
 lines (MkStr s i j) = linesFrom s i j
 
-private linesFrom : String -> Int -> Int -> List Str
+private linesFrom : (s : String) -> (i : Int) -> (j : Int) -> List Str
+  requires 0 <= i && j <= strLength s
 linesFrom s i j =
   if i >= j then Nil
   else
-    let k = primStrFindByte s 10 i j in
+    let k = findByte s 10 i j in
     if k < 0 then dropCR s i j :: Nil
     else dropCR s i k :: linesFrom s (k + 1) j
 
 -- (One constructor with a computed end: branches that each build the view
 -- would allocate it before the caller takes it apart.)
-private dropCR : String -> Int -> Int -> Str
-dropCR s i k = MkStr s i (if k > i then (if primStrIndex s (k - 1) == 13 then k - 1 else k) else k)
+private dropCR : (s : String) -> (i : Int) -> (k : Int) -> Str
+  requires 0 <= i && i <= k && k <= strLength s
+dropCR s i k = MkStr s i (if k > i then (if byteIn s (k - 1) == 13 then k - 1 else k) else k)
 
 -- `f` applied to each line in order (as `lines`, without building a list).
 foldLines : (b -> Str -> b) -> b -> Str -> b
 foldLines f z (MkStr s i j) = foldLinesFrom f z s i j
 
-private foldLinesFrom : (b -> Str -> b) -> b -> String -> Int -> Int -> b
+private foldLinesFrom : (b -> Str -> b) -> b -> (s : String) -> (i : Int) -> (j : Int) -> b
+  requires 0 <= i && j <= strLength s
 foldLinesFrom f z s i j =
   if i >= j then z
   else
-    let k = primStrFindByte s 10 i j in
+    let k = findByte s 10 i j in
     if k < 0 then f z (dropCR s i j)
     else foldLinesFrom f (f z (dropCR s i k)) s (k + 1) j
 
@@ -138,7 +184,8 @@ foldLinesFrom f z s i j =
 foldWords : (b -> Str -> b) -> b -> Str -> b
 foldWords f z (MkStr s i j) = foldWordsFrom f z s i j
 
-private foldWordsFrom : (b -> Str -> b) -> b -> String -> Int -> Int -> b
+private foldWordsFrom : (b -> Str -> b) -> b -> (s : String) -> (i : Int) -> (j : Int) -> b
+  requires 0 <= i && j <= strLength s
 foldWordsFrom f z s i j =
   let a = skipSpace s i j in
   if a >= j then z
@@ -150,7 +197,8 @@ foldWordsFrom f z s i j =
 words : Str -> List Str
 words (MkStr s i j) = wordsFrom s i j
 
-private wordsFrom : String -> Int -> Int -> List Str
+private wordsFrom : (s : String) -> (i : Int) -> (j : Int) -> List Str
+  requires 0 <= i && j <= strLength s
 wordsFrom s i j =
   let a = skipSpace s i j in
   if a >= j then Nil
@@ -158,11 +206,18 @@ wordsFrom s i j =
     let b = skipWord s a j in
     MkStr s a b :: wordsFrom s b j
 
-private skipSpace : String -> Int -> Int -> Int
-skipSpace s i j = if i >= j then j else if isSpaceByte (primStrIndex s i) then skipSpace s (i + 1) j else i
+-- The first index from `i` before `j` of a byte that is not a space (`j`
+-- when there is none).
+private skipSpace : (s : String) -> (i : Int) -> (j : Int) -> Int
+  requires 0 <= i && j <= strLength s
+  ensures \r => r <= j && (r == j || i <= r)
+skipSpace s i j = if i >= j then j else if isSpaceByte (byteIn s i) then skipSpace s (i + 1) j else i
 
-private skipWord : String -> Int -> Int -> Int
-skipWord s i j = if i >= j then j else if isSpaceByte (primStrIndex s i) then i else skipWord s (i + 1) j
+-- The first index from `i` before `j` of a space (`j` when there is none).
+private skipWord : (s : String) -> (i : Int) -> (j : Int) -> Int
+  requires 0 <= i && j <= strLength s
+  ensures \r => r <= j && (r == j || i <= r)
+skipWord s i j = if i >= j then j else if isSpaceByte (byteIn s i) then i else skipWord s (i + 1) j
 
 -- Space, tab, newline, vertical tab, form feed, carriage return.
 isSpaceByte : Int -> Bool
@@ -178,8 +233,10 @@ trimStart (MkStr s i j) = MkStr s (skipSpace s i j) j
 trimEnd : Str -> Str
 trimEnd (MkStr s i j) = MkStr s i (trimEndFrom s i j)
 
-private trimEndFrom : String -> Int -> Int -> Int
-trimEndFrom s i j = if j <= i then i else if isSpaceByte (primStrIndex s (j - 1)) then trimEndFrom s i (j - 1) else j
+private trimEndFrom : (s : String) -> (i : Int) -> (j : Int) -> Int
+  requires 0 <= i && i <= j && j <= strLength s
+  ensures \r => i <= r && r <= j
+trimEndFrom s i j = if j <= i then i else if isSpaceByte (byteIn s (j - 1)) then trimEndFrom s i (j - 1) else j
 
 -- ---- parsing ----
 
@@ -187,22 +244,24 @@ trimEndFrom s i j = if j <= i then i else if isSpaceByte (primStrIndex s (j - 1)
 toInt : Str -> Maybe Int
 toInt (MkStr s i j) =
   if i >= j then Nothing
-  else if primStrIndex s i == 45 then mapMaybe negate (digits s (i + 1) j)
-  else if primStrIndex s i == 43 then digits s (i + 1) j
+  else if byteIn s i == 45 then mapMaybe negate (digits s (i + 1) j)
+  else if byteIn s i == 43 then digits s (i + 1) j
   else digits s i j
 
 private mapMaybe : (a -> b) -> Maybe a -> Maybe b
 mapMaybe f Nothing = Nothing
 mapMaybe f (Just x) = Just (f x)
 
-private digits : String -> Int -> Int -> Maybe Int
+private digits : (s : String) -> (i : Int) -> (j : Int) -> Maybe Int
+  requires 0 <= i && j <= strLength s
 digits s i j = if i >= j then Nothing else digitsFrom s i j 0
 
-private digitsFrom : String -> Int -> Int -> Int -> Maybe Int
+private digitsFrom : (s : String) -> (i : Int) -> (j : Int) -> Int -> Maybe Int
+  requires 0 <= i && j <= strLength s
 digitsFrom s i j acc =
   if i >= j then Just acc
   else
-    let b = primStrIndex s i in
+    let b = byteIn s i in
     if isDigit b then digitsFrom s (i + 1) j (acc * 10 + b - 48) else Nothing
 
 -- ---- characters ----
@@ -211,26 +270,30 @@ digitsFrom s i j acc =
 chars : Str -> List Char
 chars (MkStr s i j) = charsFrom s i j
 
-private charsFrom : String -> Int -> Int -> List Char
+private charsFrom : (s : String) -> (i : Int) -> (j : Int) -> List Char
+  requires 0 <= i && j <= strLength s
 charsFrom s i j =
   if i >= j then Nil
   else
-    let n = utf8Len (primStrIndex s i) in
-    primIntToChar (decode s i n j) :: charsFrom s (i + n) j
+    let n = utf8Len (byteIn s i) in
+    primIntToChar (decode s i n j) :: (if n < j - i then charsFrom s (i + n) j else Nil)
 
 private utf8Len : Int -> Int
 utf8Len b = if b < 128 then 1 else if b < 224 then 2 else if b < 240 then 3 else 4
 
 -- The code point of the `n` bytes at `i` (bytes past `j` count as zero).
-private decode : String -> Int -> Int -> Int -> Int
+private decode : (s : String) -> (i : Int) -> Int -> (j : Int) -> Int
+  requires 0 <= i && i < j && j <= strLength s
 decode s i n j =
-  if n == 1 then primStrIndex s i
-  else if n == 2 then (primStrIndex s i - 192) * 64 + cont s (i + 1) j
-  else if n == 3 then (primStrIndex s i - 224) * 4096 + cont s (i + 1) j * 64 + cont s (i + 2) j
-  else (primStrIndex s i - 240) * 262144 + cont s (i + 1) j * 4096 + cont s (i + 2) j * 64 + cont s (i + 3) j
+  if n == 1 then byteIn s i
+  else if n == 2 then (byteIn s i - 192) * 64 + cont s i 1 j
+  else if n == 3 then (byteIn s i - 224) * 4096 + cont s i 1 j * 64 + cont s i 2 j
+  else (byteIn s i - 240) * 262144 + cont s i 1 j * 4096 + cont s i 2 j * 64 + cont s i 3 j
 
-private cont : String -> Int -> Int -> Int
-cont s i j = if i < j then primStrIndex s i - 128 else 0
+-- The continuation byte `d` bytes after `i` (zero at `j` and after).
+private cont : (s : String) -> (i : Int) -> (d : Int) -> (j : Int) -> Int
+  requires 0 <= i && i <= j && j <= strLength s && 0 <= d
+cont s i d j = if d < j - i then byteIn s (i + d) - 128 else 0
 
 -- The text of a list of characters.
 fromChars : List Char -> String
@@ -246,8 +309,9 @@ toLower v = mapBytes (\b => if b >= 65 then (if b <= 90 then b + 32 else b) else
 private mapBytes : (Int -> Int) -> Str -> String
 mapBytes f (MkStr s i j) = freeze (mapBytesFrom f s i j (primStrNew (j - i)) 0)
 
-private mapBytesFrom : (Int -> Int) -> String -> Int -> Int -> (1 u : Unique String) -> Int -> Unique String
-mapBytesFrom f s i j u k = if i + k >= j then u else mapBytesFrom f s i j (primStrSetByte u k (f (primStrIndex s (i + k)))) (k + 1)
+private mapBytesFrom : (Int -> Int) -> (s : String) -> (i : Int) -> (j : Int) -> (1 u : Unique String) -> (k : Int) -> Unique String
+  requires 0 <= i && i <= j && j <= strLength s && 0 <= k && k <= j - i
+mapBytesFrom f s i j u k = if i + k >= j then u else mapBytesFrom f s i j (primStrSetByte u k (f (byteIn s (i + k)))) (k + 1)
 
 -- ---- building ----
 
@@ -382,12 +446,13 @@ impl Eq Str where
 impl Ord Str where
   compare (MkStr s i j) (MkStr t k l) = compareFrom s i j t k l
 
-private compareFrom : String -> Int -> Int -> String -> Int -> Int -> Ordering
+private compareFrom : (s : String) -> (i : Int) -> (j : Int) -> (t : String) -> (k : Int) -> (l : Int) -> Ordering
+  requires 0 <= i && j <= strLength s && 0 <= k && l <= strLength t
 compareFrom s i j t k l =
   if i >= j then (if k >= l then EQ else LT)
   else if k >= l then GT
-  else if primStrIndex s i < primStrIndex t k then LT
-  else if primStrIndex s i > primStrIndex t k then GT
+  else if byteIn s i < byteIn t k then LT
+  else if byteIn s i > byteIn t k then GT
   else compareFrom s (i + 1) j t (k + 1) l
 
 impl Show Str where

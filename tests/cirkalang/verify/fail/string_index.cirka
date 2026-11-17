@@ -1,0 +1,13 @@
+module Main
+
+-- A byte of a view read at an index proved in bounds (FEAT-0254): the
+-- last byte is at `S.length v - 1`, not at `S.length v`.
+
+import Data.String as S
+import Data.String (Str, toStr)
+
+lastByte : Str -> Int
+lastByte v = if S.length v > 0 then S.index v (S.length v) else 0
+
+main : IO ()
+main = printInt (lastByte (toStr "abc"))
