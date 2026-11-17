@@ -1685,6 +1685,19 @@ impl<'m> Interp<'m> {
                 }
                 Ok(Val::I(0))
             }
+            "cirka_bytes_addr" => {
+                let Val::P(p) = a[0] else {
+                    return fault("expected a bytes object");
+                };
+                match &mut self.obj_mut(p)?.payload {
+                    Payload::Bytes(d) => Ok(Val::I(d.as_mut_ptr() as i64)),
+                    _ => fault("expected a bytes object"),
+                }
+            }
+            "cirka_bytes_touch" => {
+                self.bytes(a[0])?;
+                Ok(Val::I(0))
+            }
             "cirka_bytes_load" => {
                 let b = crate::ffi::bytes_load(a[1].int(), a[0].int().max(0) as usize);
                 match b {

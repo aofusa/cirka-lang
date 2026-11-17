@@ -379,6 +379,8 @@ pub enum Prim {
     UArrayStore,
     UArrayLoad,
     UArrayLoadInto,
+    UArrayAddr,
+    UArrayTouch,
     // An `IO` action run as a pure value, for libraries whose actions only
     // touch memory that they allocate and free (spec-v0.0.6.md §4.3).
     UnsafeRunIO,
@@ -553,6 +555,8 @@ impl Prim {
         ("primUArrayStore", Prim::UArrayStore),
         ("primUArrayLoad", Prim::UArrayLoad),
         ("primUArrayLoadInto", Prim::UArrayLoadInto),
+        ("primUArrayAddr", Prim::UArrayAddr),
+        ("primUArrayTouch", Prim::UArrayTouch),
         ("primUnsafeRunIO", Prim::UnsafeRunIO),
         ("Region", Prim::Region),
         ("Ref", Prim::Ref),

@@ -2047,6 +2047,26 @@ impl<'a> Lower<'a> {
                     )
                 })
             }),
+            // `UArray a -> Int`: the address of the elements. Extern calls
+            // are effects, so neither this nor the use below moves.
+            Prim::UArrayAddr => self.skeleton(ty, 1, |a, _| {
+                c::Expr::Con(
+                    "I#".into(),
+                    Vec::new(),
+                    vec![c::Expr::Extern(
+                        "cirka_bytes_addr".into(),
+                        vec![a[0].clone()],
+                    )],
+                )
+            }),
+            // `UArray a -> IO ()`: a use of the array after C used its
+            // address, so that it is not freed before.
+            Prim::UArrayTouch => self.skeleton(ty, 2, |a, _| {
+                self.seq_int(
+                    c::Expr::Extern("cirka_bytes_touch".into(), vec![a[0].clone()]),
+                    self.unit_val(),
+                )
+            }),
             // `IO a -> a`: the action applied to the state token (`main`
             // is run the same way).
             Prim::UnsafeRunIO => self.skeleton(ty, 1, |a, _| {

@@ -1,8 +1,11 @@
--- max-array-copies: 1
+-- max-array-copies: 2
 -- Unboxed arrays to and from C memory, one copy of the elements each
 -- (spec-v0.0.6.md §4.3): `pokeUArray`, `peekUArray`, and `peekUArrayInto`,
 -- which stores the elements in the array itself when no other value
--- shares it. The copy of the shared array `a` below is the only copy.
+-- shares it. Then arrays given to C where they are (FEAT-0257):
+-- `withUArrayPtr` (read), `newUArrayWith` (written) and
+-- `modifyUArrayWith` (changed in place when not shared). The two copies
+-- are those of the shared arrays `a` and `c`.
 import Foreign
 import Data.Array.Unboxed as U
 
@@ -30,6 +33,26 @@ main = do
   c <- peekUArrayInto b p
   print (U.toList c)
   freeBytes p
+  -- The elements of `c` read by C where they are.
+  t <- withUArrayPtr c (\q => peekArray 4 q)
+  print (t : List Float)
+  (u, seven) <- newUArrayWith 3 (\q => do
+    pokeElemOff q 0 1.25
+    pokeElemOff q 2 (negate 2.0)
+    pure 7)
+  print (U.toList u, seven)
+  -- The last use of `u`: changed in place.
+  (v, done) <- modifyUArrayWith u (\q => pokeElemOff q 1 9.5)
+  print (U.toList v)
+  -- `c` is used afterwards: a copy is changed.
+  (w, done) <- modifyUArrayWith c (\q => pokeElemOff q 0 0.5)
+  print (U.toList c, U.toList w)
+  -- The array is kept while C uses it even when its result is dropped: a
+  -- new array of the same size made meanwhile does not take its memory.
+  (_, s) <- modifyUArrayWith (U.fromList (1.0 :: 2.0 :: Nil)) (\q => do
+    print (U.toList (U.fromList (8.0 :: 9.0 :: Nil)))
+    peekElemOff q 1)
+  print (s : Float)
   q <- mallocBytes 24
   pokeUArray q (U.fromList (7 :: negate 8 :: 9 :: Nil))
   ys <- ints q

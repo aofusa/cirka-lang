@@ -6,7 +6,7 @@
 -- through it is not checked (as in C).
 module Foreign
 
-import Data.Array.Unboxed (UArray)
+import Data.Array.Unboxed (UArray, thaw, zeros)
 
 data CChar = MkCChar Int deriving (Eq, Ord, Show)
 data CUChar = MkCUChar Int deriving (Eq, Ord, Show)
@@ -471,6 +471,8 @@ pokeArrayThen xs f p = do
 private prim primUArrayStore : {a : Type} -> UArray a -> Int -> IO ()
 private prim primUArrayLoad : {a : Type} -> Int -> Int -> IO (UArray a)
 private prim primUArrayLoadInto : {a : Type} -> UArray a -> Int -> IO (UArray a)
+private prim primUArrayAddr : {a : Type} -> UArray a -> Int
+private prim primUArrayTouch : {a : Type} -> UArray a -> IO ()
 
 -- Writes the elements of `arr` from `p` on, 8 bytes each (an `Int` as an
 -- `int64_t`, a `Float` as a `double`), in one copy.
@@ -485,3 +487,34 @@ peekUArray n (MkPtr p) = primUArrayLoad (max n 0) p
 -- `arr` itself when no other value shares it (otherwise in a copy).
 peekUArrayInto : UArray a -> Ptr a -> IO (UArray a)
 peekUArrayInto arr (MkPtr p) = primUArrayLoadInto arr p
+
+-- Runs `k` with the address of the elements of `arr` (8 bytes each),
+-- without a copy: objects never move, and `arr` is kept until `k` ends.
+-- `k` may read the elements but not write them (other values may share
+-- the array), and must not keep the pointer.
+withUArrayPtr : UArray a -> (Ptr a -> IO b) -> IO b
+withUArrayPtr arr k = do
+  r <- k (MkPtr (primUArrayAddr arr))
+  done <- primUArrayTouch arr
+  pure r
+
+-- A new array of `n` elements (0 at first) that `k` writes through the
+-- address of its elements, and the result of `k`. `k` must not keep the
+-- pointer.
+newUArrayWith : Int -> (Ptr a -> IO b) -> IO (UArray a, b)
+newUArrayWith n k = writeUArrayWith (freeze (zeros n)) k
+
+-- `arr` changed by `k` through the address of its elements, and the
+-- result of `k`: in place when no other value shares `arr`, otherwise in
+-- a copy (as `peekUArrayInto`). `k` must not keep the pointer.
+modifyUArrayWith : UArray a -> (Ptr a -> IO b) -> IO (UArray a, b)
+modifyUArrayWith arr k = writeUArrayWith (freeze (thaw arr)) k
+
+-- `k` on an array that nothing else shares. The array is touched after
+-- `k`: when the caller drops the result, returning it would not keep it
+-- alive (the optimizer removes unused results).
+private writeUArrayWith : UArray a -> (Ptr a -> IO b) -> IO (UArray a, b)
+writeUArrayWith u k = do
+  r <- k (MkPtr (primUArrayAddr u))
+  done <- primUArrayTouch u
+  pure (u, r)

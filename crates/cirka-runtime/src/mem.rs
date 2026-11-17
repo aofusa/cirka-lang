@@ -129,3 +129,21 @@ pub unsafe extern "C" fn cirka_bytes_fill(b: crate::object::Obj, addr: i64) -> i
     }
     0
 }
+
+/// The address of the bytes of the BYTES object `b` (borrowed), for C to
+/// use while `b` is alive (`Foreign.withUArrayPtr`). Objects never move.
+///
+/// # Safety
+/// `b` must be a live BYTES object.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cirka_bytes_addr(b: crate::object::Obj) -> i64 {
+    // SAFETY: the data of a BYTES object follows its length word.
+    unsafe { crate::object::word(b, 1) as i64 }
+}
+
+/// Does nothing with the BYTES object `b` (borrowed): a use of `b` after C
+/// used its address, so that `b` is not freed before (`withUArrayPtr`).
+#[unsafe(no_mangle)]
+pub extern "C" fn cirka_bytes_touch(_b: crate::object::Obj) -> i64 {
+    0
+}
