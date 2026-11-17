@@ -8,7 +8,7 @@ use crate::walk::{Cond, Facts, SelfCall, Sort};
 use cirka_smt::{Expr, Outcome, Query, Solver};
 use cirkalang_elab::eval::Ev;
 use cirkalang_elab::tt::*;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
 /// The measure of a definition.
@@ -47,6 +47,9 @@ pub(crate) struct Tr<'a> {
     stand_ins: HashMap<String, Val>,
     /// The call each stand-in level stands for (to show counterexamples).
     stand_in_calls: HashMap<u32, Val>,
+    /// The values of one-constructor types whose field refinements are
+    /// hypotheses.
+    records: HashSet<String>,
 }
 
 /// Unique SMT names for the variables of a definition.
@@ -84,6 +87,7 @@ impl<'a> Tr<'a> {
             opaque_vals: HashMap::new(),
             stand_ins: HashMap::new(),
             stand_in_calls: HashMap::new(),
+            records: HashSet::new(),
         }
     }
 
@@ -134,14 +138,8 @@ impl<'a> Tr<'a> {
                 self.opaque_vals.insert(name.clone(), shown.clone());
             }
             None => {
-                let shown = match v {
-                    Val::Neutral(Head::Var(l), sp) if sp.is_empty() => self.stand_in_calls.get(l),
-                    _ => None,
-                }
-                .unwrap_or(v);
-                self.opaque_vals
-                    .entry(name.clone())
-                    .or_insert_with(|| shown.clone());
+                let shown = self.with_calls(v);
+                self.opaque_vals.entry(name.clone()).or_insert(shown);
             }
         }
         Expr::Var(name, s)
@@ -224,6 +222,35 @@ impl<'a> Tr<'a> {
                 // the refinement as a hypothesis (spec-v0.0.4.md §3).
                 if let Some(x) = self.stand_in(&v, depth) {
                     return self.tr(&x, want, depth + 1);
+                }
+                // So are such calls of total functions given to a definition
+                // that is unfolded: unfolding `length (drop n v)` would
+                // unfold `drop` too, and lose its refinement (FEAT-0254).
+                // (Total only, as for sizes: the call may be in an erased
+                // position, where a call that never returns would give a
+                // false fact.)
+                if depth < 24 && matches!(self.prog.get(*g), Global::Def { body: Some(_), .. }) {
+                    let mut changed = false;
+                    let mut sp2 = Vec::with_capacity(sp.len());
+                    for e in sp {
+                        let Elim::App(a, i) = e else {
+                            sp2.push(e.clone());
+                            continue;
+                        };
+                        let a = self.ev.force(a.clone());
+                        let total = matches!(&a, Val::Neutral(Head::Global(f), _)
+                            if matches!(self.prog.totality.get(f), Some((Totality::Total, _))));
+                        match total.then(|| self.stand_in(&a, depth)).flatten() {
+                            Some(x) => {
+                                changed = true;
+                                sp2.push(Elim::App(x, *i));
+                            }
+                            None => sp2.push(e.clone()),
+                        }
+                    }
+                    if changed {
+                        return self.tr(&Val::Neutral(Head::Global(*g), sp2), want, depth + 1);
+                    }
                 }
             }
             (Val::Neutral(h, sp), _) if matches!(sp.last(), Some(Elim::Case(..))) => {
@@ -367,25 +394,57 @@ impl<'a> Tr<'a> {
             && matches!(self.prog.get(*data), Global::Data { cons, .. } if cons.len() == 1)
         {
             let n = fields.len();
+            let scrut = Val::Neutral(h.clone(), rest.to_vec());
+            let scrut = self.stand_in(&scrut, d).unwrap_or(scrut);
+            let projs: Vec<Val> = (0..n).map(|i| projection(&scrut, *con, n, i)).collect();
+            self.field_refinements(&scrut, env, fields, &projs, d);
             // A field itself (a projection): opaque.
             if let Term::Var(k) = body
                 && (*k as usize) < n
             {
-                let scrut = Val::Neutral(h.clone(), rest.to_vec());
-                let scrut = self.stand_in(&scrut, d).unwrap_or(scrut);
-                let v = projection(&scrut, *con, n, n - 1 - *k as usize);
-                return Some(self.opaque(&v, want));
+                return Some(self.opaque(&projs[n - 1 - *k as usize], want));
             }
             let mut e = env.clone();
-            let scrut = Val::Neutral(h.clone(), rest.to_vec());
-            let scrut = self.stand_in(&scrut, d).unwrap_or(scrut);
-            for i in 0..n {
-                e.push(projection(&scrut, *con, n, i));
-            }
+            e.extend(projs);
             let bv = self.ev.eval(&e, body);
             return Some(self.tr(&bv, want, d + 1));
         }
         None
+    }
+
+    /// The refinements of the fields of a value of a one-constructor type
+    /// (a constructor's `invariant`, spec-v0.0.4.md §4.2) hold of its
+    /// projections `projs`: they were shown (or checked at run time) where
+    /// the value was built. Hypotheses, once per value.
+    fn field_refinements(
+        &mut self,
+        scrut: &Val,
+        env: &Env,
+        fields: &[(Name, Mult, Term)],
+        projs: &[Val],
+        d: u32,
+    ) {
+        if d >= 16 {
+            return;
+        }
+        let key = format!(
+            "{:?}",
+            strip_refine(&self.ev.quote(100_000, scrut), self.prog.builtins.refine)
+        );
+        if !self.records.insert(key) {
+            return;
+        }
+        let mut e = env.clone();
+        for ((_, _, ty), p) in fields.iter().zip(projs) {
+            let mut t = self.ev.eval(&e, ty);
+            while let Some((a, pred)) = crate::walk::subset_parts(self.prog, self.ev, &t) {
+                let holds = self.ev.apply(pred, p.clone(), Icit::Expl);
+                let h = self.boolean(&holds, d + 1);
+                self.extra.push(h);
+                t = a;
+            }
+            e.push(p.clone());
+        }
     }
 
     /// A call `v` of a function with a refined result, seen through the
@@ -425,6 +484,31 @@ impl<'a> Tr<'a> {
 
     /// `size (f a)` where `f` is total and its result is refined
     /// (`A.size (A.generate n g)`, spec-v0.0.5.md §4.1): the size of the
+    /// `v` with the stand-ins of calls (itself, or its arguments) replaced
+    /// by the calls, to show it.
+    fn with_calls(&self, v: &Val) -> Val {
+        let call = |a: &Val| match a {
+            Val::Neutral(Head::Var(l), sp) if sp.is_empty() => self.stand_in_calls.get(l).cloned(),
+            _ => None,
+        };
+        if let Some(c) = call(v) {
+            return c;
+        }
+        match v {
+            Val::Neutral(h, sp) => {
+                let sp2 = sp
+                    .iter()
+                    .map(|e| match e {
+                        Elim::App(a, i) => Elim::App(call(a).unwrap_or_else(|| a.clone()), *i),
+                        e => e.clone(),
+                    })
+                    .collect();
+                Val::Neutral(h.clone(), sp2)
+            }
+            v => v.clone(),
+        }
+    }
+
     /// stand-in of the call, whose refinements are hypotheses. Only for
     /// total functions: the call may be in an erased position (a
     /// predicate), where a call that never returns would give a false fact

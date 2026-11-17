@@ -1,0 +1,34 @@
+module Main
+
+-- FEAT-0254 (spec-v0.0.6.md §5.3): the invariant of a type with one
+-- constructor holds for the fields of a value that is not matched, and a
+-- call with a refined result given to a definition that is unfolded keeps
+-- its refinement.
+
+data Window : Type where
+  MkWindow : (lo : Int) -> (hi : Int) -> Window
+  invariant 0 <= lo && lo <= hi
+
+total
+width : Window -> Int
+width (MkWindow lo hi) = hi - lo
+
+-- The window of its last position: not wider.
+total
+collapse : (w : Window) -> Window
+  ensures \r => width r <= width w
+collapse (MkWindow lo hi) = MkWindow hi hi
+
+-- `width w` unfolds to the fields of `w`, which is not matched.
+total
+nonNegative : (w : Window) -> {x : Int | 0 <= x}
+nonNegative w = width w
+
+-- `collapse w` stands for itself: unfolding `width (collapse w)` would
+-- unfold `collapse` too, and lose its `ensures`.
+total
+narrower : (w : Window) -> {x : Int | x <= width w}
+narrower w = width (collapse w)
+
+main : IO ()
+main = printInt (nonNegative (MkWindow 2 5) + narrower (MkWindow 2 5))
