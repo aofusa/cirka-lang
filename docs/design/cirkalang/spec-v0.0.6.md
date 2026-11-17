@@ -26,7 +26,7 @@ ABI は共通基盤 ([08-ffi.md](../08-ffi.md) §7.2、FEAT-0047)、ヘッダの
 | §1.10 | extern ブロックの項目は使うものだけを検査・変換する、`--extern-items`、`check` は Core を最適化しない | FEAT-0255 |
 | §2 | 非公開の構成子 (`private` を構成子に付けて、型を他のモジュールから抽象型にする) | FEAT-0256 |
 | §3 | Vulkan compute: `Vulkan.Sys` (bindgen) と安全なラッパ `Vulkan` (リージョンによる資源の管理・シェーダ・部分集合型によるワークグループ数・検証レイヤー) | FEAT-0251 |
-| §4 | 数学・線形代数: libm の純粋な関数 `Std.Math`、行列 `Matrix m n` と OpenBLAS / LAPACKE による `Linalg` (次元は型にあり、`gemm` は一意なら in-place)、unboxed 配列と C のメモリの間のコピー (`pokeUArray`・`peekUArray`・`peekUArrayInto`) | FEAT-0252 |
+| §4 | 数学・線形代数: libm の純粋な関数 `Std.Math`、行列 `Matrix m n` と OpenBLAS / LAPACKE による `Linalg` (次元は型にあり、`gemm` は一意なら in-place)、unboxed 配列と C のメモリの間のコピー (`pokeUArray`・`peekUArray`・`peekUArrayInto`)、配列の領域をコピーせずに C に渡す関数 (`withUArrayPtr`・`newUArrayWith`・`modifyUArrayWith`。`Linalg` はこれで BLAS / LAPACK を呼ぶ) | FEAT-0252、FEAT-0257 |
 
 ## 1. FFI の完成 (FEAT-0250)
 
@@ -503,7 +503,9 @@ main = do
 - **次元は型にある。** 型の引数 `m`・`n` は `Int` の値で、型検査の後に消去される (行列は実行時の次元を自分の値としても持つ)。
   積・和などの次元が合わなければ型の誤り (E1200)、`at` の添字が型の次元の範囲にあることは部分集合型として検査時に示す (E0501。spec-v0.0.4.md §3)。
   `matrix`・`identity` は次元の値をとって型に使う依存型の関数で、実行時に決まる `n` (`0 <= n` を示したもの) からも `Matrix n n` を作れる。
-- **純粋。** 関数はすべて純粋で、BLAS と LAPACK は関数の中で確保して解放する C のメモリの上で呼ぶ (§4.3)。
+- **純粋。** 関数はすべて純粋で、BLAS と LAPACK は行列の配列の領域の上で直接呼ぶ (§4.3。FEAT-0257)。BLAS は入力の配列を読むだけで、
+  結果を新しい配列か `c` の配列に書く。LAPACK は入力を上書きする (`solve` の `a` は LU 分解に、`b` は解になる) ので、
+  入力の配列をほかの値が共有していればコピーしてから渡し、共有していなければその配列を使う。
   `gemm` が `c` の配列に結果を書くのは、その配列をほかの値が共有していないときだけなので、観測できない (一意な配列の更新と同じ。spec-v0.0.2.md §7)。
   `gemmIn` は一意な行列 (`Unique`) を受け取って返すので、書き換える前の `c` を利用者が使えないことが型で分かる
   (`c` を `unique` で作ったときに、まだ要素を共有する行列が残っていれば、要素はコピーされる)。
@@ -515,7 +517,8 @@ main = do
 
 ### 4.3 unboxed 配列と C のメモリ
 
-`Foreign` に、unboxed 配列 (spec-v0.0.2.md §7.3) と C のメモリの間で要素をまとめてコピーする関数を加える。
+`Foreign` に、unboxed 配列 (spec-v0.0.2.md §7.3) と C のメモリの間で要素をまとめてコピーする関数と、
+配列の要素の領域をコピーせずに C に渡す関数 (FEAT-0257) を加える。
 要素は 8 バイトで、`Int` は `int64_t`、`Float` は `double` として読み書きする。
 
 | 名前 | 型 | 内容 |
@@ -524,7 +527,23 @@ main = do
 | `peekUArray` | `Int -> Ptr a -> IO (UArray a)` | `p` から `n` 個の要素を読んだ新しい配列 |
 | `peekUArrayInto` | `UArray a -> Ptr a -> IO (UArray a)` | `p` から `size arr` 個の要素を読んだ配列。`arr` をほかの値が共有していなければ `arr` の領域に書く (共有されていればコピーに書く) |
 
-- 値としては、`peekUArrayInto` も新しい配列を返す。元の配列を共有する値からは変化が見えない。
+| `withUArrayPtr` | `UArray a -> (Ptr a -> IO b) -> IO b` | 配列の要素の領域を指すポインタを `k` に渡して実行する (コピーしない)。`k` は読むだけで、書いてはならない (ほかの値が配列を共有しうる) |
+| `newUArrayWith` | `Int -> (Ptr a -> IO b) -> IO (UArray a, b)` | `n` 個の要素の新しい配列 (初めはすべて 0) の領域に `k` が書き、その配列と `k` の結果を返す |
+| `modifyUArrayWith` | `UArray a -> (Ptr a -> IO b) -> IO (UArray a, b)` | `arr` の領域を `k` が書き換えた配列と `k` の結果。`arr` をほかの値が共有していなければその場で、共有されていればコピーを書き換える (`thaw` と同じ) |
+
+- 値としては、`peekUArrayInto` と `modifyUArrayWith` も新しい配列を返す。元の配列を共有する値からは変化が見えない。
+- ランタイムには GC がなくオブジェクトは動かないので、配列の要素の領域のアドレスは配列が生きている間変わらない。
+  `withUArrayPtr`・`newUArrayWith`・`modifyUArrayWith` は、`k` が終わるまで配列を解放しないことを保証する。ライブラリの中だけで宣言できる
+  プリミティブ `primUArrayAddr : {a : Type} -> UArray a -> Int` (アドレス) と `primUArrayTouch : {a : Type} -> UArray a -> IO ()`
+  (何もしない外部呼び出し) を使い、`k` の後で配列を touch する。外部呼び出しは効果として扱われて最適化で消えも動きもしないので、
+  配列の解放 (Perceus の `drop`) は touch の後、つまり `k` の後になる。
+  - 配列を結果として返す `newUArrayWith` / `modifyUArrayWith` でも touch が要る。呼ぶ側が結果の配列を使わなければ
+    (`det` は LU 分解を捨てる)、最適化はアドレスを取った直後に配列を解放するからである (FEAT-0257 の作業で見つけた。
+    回帰テストは `tests/cirkalang/run/v006/uarray_ptr.cirka` の最後の `modifyUArrayWith`)。
+- `k` はポインタを動作の後まで保持してはならない。ポインタの先で読み書きしてよいのは配列の要素 (`size arr` 個) だけで、
+  これは `peek` / `poke` と同じく利用者が保証する。
+- `newUArrayWith` / `modifyUArrayWith` が `k` に渡す領域の配列はほかの値と共有されていないので、`k` の書き込みは返す配列にだけ見える
+  (一意な配列の更新と同じく観測できない)。
 - ポインタの先の大きさは `peek` / `poke` と同じく利用者が保証する。空の配列ではポインタを使わない (`nullPtr` でもよい)。
 - ライブラリの中だけで宣言できるプリミティブ `primUnsafeRunIO : {a : Type} -> IO a -> a` は、`IO` の動作を純粋な値として実行する。
   使ってよいのは、動作の効果が自分で確保して解放するメモリの上だけにあって、何回実行しても実行しなくても観測できない場合だけで、`Linalg` が使う。
@@ -532,11 +551,12 @@ main = do
 
 ### 4.4 実行時の表現とコスト、制限、診断
 
-- BLAS / LAPACK の呼び出しごとに、入力と出力の要素を C のメモリとの間で 1 回ずつコピーする (memcpy で O(要素数))。
-  計測では、512×512 の積で C から直接呼ぶより 1.36 倍遅く、差の多くは呼び出しごとに確保するバッファのページフォールトである (ADR-098)。
-  配列の領域を直接 C に渡してコピーとバッファをなくすのは FEAT-0257 で行う。
-- `gemm` が `c` の配列に書けるかは実行時の参照カウントで決まり、最適化にもよる。現在は、大きな関数の中で `gemm` の動作が
-  クロージャとして確保されて `c` の配列を持つと、配列がコピーされる (結果は同じ。FEAT-0088)。`max-array-copies` のテストで回数を確かめている。
+- BLAS / LAPACK は配列の領域を直接使い、C のメモリのバッファもそこへのコピーもない (FEAT-0257)。配列のコピーは、
+  LAPACK が上書きする入力か `gemm` の `c` をほかの値が共有しているときの 1 回だけである (FEAT-0252 の版の C のバッファへのコピーの代わり)。
+  計測では、512×512 の積 20 回が C から `cblas_dgemm` を直接呼ぶ場合の 1.02 倍 (261.8 ms 対 256.8 ms。FEAT-0252 の版は 1.36 倍) である (ADR-098)。
+- 配列を書き換えられるか (コピーが要らないか) は実行時の参照カウントで決まり、最適化にもよる。FEAT-0252 の版では、大きな関数の中で
+  `gemm` の動作がクロージャとして確保されて `c` の配列を持ち、配列がコピーされた (FEAT-0088。FEAT-0257 の版では現れない)。
+  `max-array-copies` のテストで回数を確かめている (`linalg.cirka` は共有された入力の 9 回、`linalg_inplace.cirka` は 0 回)。
 - MIR インタプリタでも実行できる (`link` の libopenblas・liblapacke を `dlopen` する。§1.6)。
 - 制限: 要素は `Float` (`double`) だけで、単精度・複素数はない。BLAS は level 3 の `dgemm` だけを包み、ベクトルの演算は CirkaLang で書く。
   固有値・特異値分解・最小二乗法などはない。
