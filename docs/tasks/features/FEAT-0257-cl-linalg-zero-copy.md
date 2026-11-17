@@ -1,6 +1,6 @@
 # FEAT-0257: Linalg の BLAS / LAPACK に配列の領域を直接渡す
 
-- 状態: todo
+- 状態: done
 - トラック: CirkaLang
 - マイルストーン: CirkaLang v0.0.6 Vulkan compute・数値計算
 - 優先度: P2
@@ -16,16 +16,35 @@ FEAT-0252 の `Linalg` は、BLAS / LAPACK の呼び出しごとに要素を関�
 
 ## 作業内容
 
-- [ ] `Foreign` に、配列の領域のポインタを動作の間だけ渡す関数を加える: 読むだけのもの (`withUArrayPtr`)、新しい配列を C に書かせるもの、
+- [x] `Foreign` に、配列の領域のポインタを動作の間だけ渡す関数を加える: 読むだけのもの (`withUArrayPtr`)、新しい配列を C に書かせるもの、
       一意にした配列 (共有されていればコピー) を C に書き換えさせるもの。動作が終わるまで配列が解放されないことをプリミティブの変換で保証する
-- [ ] `Linalg` の `mul`・`gemm`・`solve`・`det` を、入力は配列の領域を読ませ、出力は結果の配列に直接書かせる (LAPACK が書き換える入力は一意な配列にする)
-- [ ] FEAT-0252 のベンチ (`docs/artifacts/bench-0252/`) で計測し、チケットと ADR-098 に記録する
+- [x] `Linalg` の `mul`・`gemm`・`solve`・`det` を、入力は配列の領域を読ませ、出力は結果の配列に直接書かせる (LAPACK が書き換える入力は一意な配列にする)
+- [x] FEAT-0252 のベンチ (`docs/artifacts/bench-0252/`) で計測し、チケットと ADR に記録する (ADR-099。ADR-098 から参照する)
 
 ## 受け入れ条件
 
-- [ ] 512×512 の積 20 回が、C から直接呼ぶ場合の 1.1 倍以内になる
-- [ ] `linalg.cirka` などのテストが通る。BLAS が読むだけの入力はコピーせず、`gemm` の `c` は共有されていなければコピーしないことを
+- [x] 512×512 の積 20 回が、C から直接呼ぶ場合の 1.1 倍以内になる (1.02 倍)
+- [x] `linalg.cirka` などのテストが通る。BLAS が読むだけの入力はコピーせず、`gemm` の `c` は共有されていなければコピーしないことを
       `max-array-copies` で確かめる (LAPACK が書き換える入力は、共有されていれば配列のコピーになる。これまでの C のバッファの代わり)
-- [ ] テストを追加し `scripts/ci.sh` が通る
+- [x] テストを追加し `scripts/ci.sh` が通る
 
 ## メモ
+
+- 実装: ランタイムの `cirka_bytes_addr` (要素の領域のアドレス) と `cirka_bytes_touch` (何もしない。配列の最後の使用になる)、インタプリタの同じ関数、
+  ライブラリだけのプリミティブ `primUArrayAddr` / `primUArrayTouch`、`Foreign.withUArrayPtr` / `newUArrayWith` / `modifyUArrayWith`
+  (spec-v0.0.6.md §4.3)。`Linalg` の `mul`・`gemm`・`solve`・`det` (と `inverse`) はこれで BLAS / LAPACK を呼び、C のバッファをなくした。
+- 見つけた問題: 結果の配列を呼ぶ側が捨てると (`det` と `solve` の LU 分解)、最適化は配列をアドレスを取った直後に解放し、LAPACK が解放済みの領域を読んだ
+  (Docker のネイティブで `det` が 0、`solve` が `Nothing`)。`writeUArrayWith` でも `k` の後に touch して直した。
+  回帰テスト: `uarray_ptr.cirka` の最後の `modifyUArrayWith` (直す前はネイティブで `-9.87e62` を読むことを確かめた)。
+- 配列のコピーの回数 (`docs/artifacts/copies-0257/`。操作ごとのプログラムで数え、合計が全体と一致した): `linalg.cirka` の 9 回はすべて、
+  上書きされる入力をほかの値が共有している場合である (`gemm` の `c32` 1 回、LAPACK の `a44` 2 回・`b` 1 回・`singular` 3 回・`d33` 2 回)。
+  FEAT-0252 の版にあった FEAT-0088 による 1 回は現れなくなった。共有されていない行列だけを使う `linalg_inplace.cirka` は 0 回。
+- 計測 (`docs/artifacts/bench-0257/`。512×512 の積 20 回、OpenBLAS 1 スレッド、hyperfine 10 回):
+
+  | プログラム | 時間 | システム時間 |
+  |------------|------|--------------|
+  | `Linalg.mul` (FEAT-0257) | 261.8 ± 3.8 ms | 7.7 ms |
+  | `Linalg.mul` (FEAT-0252、C のバッファ) | 347.6 ± 4.5 ms | 60.6 ms |
+  | C (`cblas_dgemm`) | 256.8 ± 11.2 ms | 5.6 ms |
+
+  C の 1.02 ± 0.05 倍で、差 (5 ms) は計測のばらつき (C の標準偏差 11.2 ms) の範囲にある。

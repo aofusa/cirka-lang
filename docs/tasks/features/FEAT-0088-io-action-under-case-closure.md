@@ -37,3 +37,5 @@ IO の関数を節 (パターン) で定義して純粋な文脈や大きな関�
   `cast` の中がラムダか `let` のときだけ扱う。IO の動作は `Unit# -> a` を `IO a` に `cast` した値なので、`(cast (case …) (Unit# -> a)) token` が
   押し込まれずに残る可能性がある (`cast` を腕に配ってから押し込めばよい)。`accumulate` では IO の関数の worker (`$io`、トークンを引数にとる) の
   呼び出しになったので影響しなかったと見られる。
+- FEAT-0257 で `Linalg` の `gemm` を書き換えた後は、`linalg.cirka` にこのコピーは現れない。再現には FEAT-0252 の版の `Linalg`
+  (コミット 424dd3d、`peekUArrayInto` で結果を読む `gemmIO`) と `linalg.cirka` を使う。
