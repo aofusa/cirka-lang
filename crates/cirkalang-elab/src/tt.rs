@@ -344,6 +344,17 @@ pub enum Prim {
     /// Operations whose check a proof makes unnecessary (spec-v0.0.4.md
     /// §5): used only by library functions whose arguments are refined.
     ArrayIndexProved,
+    /// The same for the unique arrays with their size in the type, the
+    /// unboxed arrays and the views of strings (FEAT-0254).
+    ArrayReadProved,
+    ArrayWriteProved,
+    UArrayIndexWordProved,
+    UArrayIndexFloatProved,
+    UArrayReadWordProved,
+    UArrayReadFloatProved,
+    UArrayWriteWordProved,
+    UArrayWriteFloatProved,
+    StrIndexProved,
     DivProved,
     ModProved,
     Unreachable,
@@ -525,6 +536,15 @@ impl Prim {
         ("primRefine", Prim::Refine),
         ("subsetOf", Prim::Subset),
         ("primArrayIndexProved", Prim::ArrayIndexProved),
+        ("primArrayReadProved", Prim::ArrayReadProved),
+        ("primArrayWriteProved", Prim::ArrayWriteProved),
+        ("primUArrayIndexWordProved", Prim::UArrayIndexWordProved),
+        ("primUArrayIndexFloatProved", Prim::UArrayIndexFloatProved),
+        ("primUArrayReadWordProved", Prim::UArrayReadWordProved),
+        ("primUArrayReadFloatProved", Prim::UArrayReadFloatProved),
+        ("primUArrayWriteWordProved", Prim::UArrayWriteWordProved),
+        ("primUArrayWriteFloatProved", Prim::UArrayWriteFloatProved),
+        ("primStrIndexProved", Prim::StrIndexProved),
         ("primDivProved", Prim::DivProved),
         ("primModProved", Prim::ModProved),
         ("primUnreachable", Prim::Unreachable),

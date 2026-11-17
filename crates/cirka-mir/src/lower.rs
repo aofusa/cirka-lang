@@ -1157,6 +1157,12 @@ impl<'p> Lowerer<'p> {
             PrimOp::QuotNz => P::DivNz,
             PrimOp::RemNz => P::RemNz,
             PrimOp::ArrayGetUnchecked => P::ArrayGetUnchecked,
+            PrimOp::ArraySetUnchecked => P::ArraySetUnchecked,
+            PrimOp::BytesGetUnchecked => P::BytesGetUnchecked,
+            PrimOp::BytesGet64Unchecked => P::BytesGetI64Unchecked,
+            PrimOp::BytesSet64Unchecked => P::BytesSetI64Unchecked,
+            PrimOp::BytesGetFUnchecked => P::BytesGetF64Unchecked,
+            PrimOp::BytesSetFUnchecked => P::BytesSetF64Unchecked,
             PrimOp::Neg => P::Neg,
             PrimOp::And => P::And,
             PrimOp::Or => P::Or,
@@ -1203,7 +1209,11 @@ impl<'p> Lowerer<'p> {
             // Array elements are stored lazily.
             let lazy_elem = matches!(
                 (op, i),
-                (PrimOp::ArrayNew, 1) | (PrimOp::ArraySet | PrimOp::ArraySetShared, 2)
+                (PrimOp::ArrayNew, 1)
+                    | (
+                        PrimOp::ArraySet | PrimOp::ArraySetShared | PrimOp::ArraySetUnchecked,
+                        2
+                    )
             );
             ops.push(if lazy_elem {
                 self.lazy(fb, env, a)?

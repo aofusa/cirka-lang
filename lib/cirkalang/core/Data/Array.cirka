@@ -23,6 +23,10 @@ private prim primArrayRead : {a : Type} -> (1 u : Unique (Array a)) -> Int -> Pa
 private prim primArrayLength : {a : Type} -> (1 u : Unique (Array a)) -> Pair (Unique (Array a)) Int
 private prim primArrayWrite : {a : Type} -> (1 u : Unique (Array a)) -> Int -> a -> Unique (Array a)
 private prim primArrayThaw : {a : Type} -> Array a -> Unique (Array a)
+-- Without the bounds check (only the functions of `Sized`, whose indices
+-- are proved in bounds).
+private prim primArrayReadProved : {a : Type} -> (1 u : Unique (Array a)) -> Int -> Pair (Unique (Array a)) (Ur a)
+private prim primArrayWriteProved : {a : Type} -> (1 u : Unique (Array a)) -> Int -> a -> Unique (Array a)
 
 -- ---- unique arrays (in place) ----
 
@@ -173,3 +177,63 @@ modifyB a i f = update a (\(1 u : _) => modify u i f)
 
 swapB : Ref (Unique (Array a)) r -> Int -> Int -> Borrow (Unique (Array a)) r ()
 swapB a i j = update a (\(1 u : _) => swap u i j)
+
+-- ---- unique arrays with their size in the type (spec-v0.0.6.md §5) ----
+
+-- A unique array of `n` elements (none when `n` is negative) with its size
+-- in the type: the indices of `readS`, `writeS`, ... are proved in bounds
+-- against `n` (spec-v0.0.4.md §3) and are not checked at run time. The
+-- size is erased; at run time the value is the unique array. Only this
+-- module makes values, and only of the size of their type.
+data Sized (n : Int) (a : Type) : LType where
+  private MkSized : (1 u : Unique (Array a)) -> Sized n a
+
+-- `n` copies of `x`.
+newS : (n : Int) -> a -> Sized n a
+newS n x = sized n (new n x)
+
+-- The elements of `arr`, of size `n`, as a unique array (a copy when `arr`
+-- is shared, as `thaw`).
+thawS : (n : Int) -> (arr : Array a) -> Sized n a
+  requires size arr == n
+thawS n arr = MkSized (thaw arr)
+
+-- The element at index `i`, and the array back.
+readS : (1 s : Sized n a) -> {i : Int | 0 <= i && i < n} -> (Sized n a, Ur a)
+readS (MkSized u) i = case primArrayReadProved u i of
+  (u, r) => (MkSized u, r)
+
+-- Stores `x` at index `i`.
+writeS : (1 s : Sized n a) -> {i : Int | 0 <= i && i < n} -> a -> Sized n a
+writeS (MkSized u) i x = MkSized (primArrayWriteProved u i x)
+
+-- Applies `f` to the element at index `i`.
+modifyS : (1 s : Sized n a) -> {i : Int | 0 <= i && i < n} -> (a -> a) -> Sized n a
+modifyS s i f = case readS s i of
+  (s, MkUr x) => writeS s i (f x)
+
+-- Swaps the elements at indices `i` and `j`.
+swapS : (1 s : Sized n a) -> {i : Int | 0 <= i && i < n} -> {j : Int | 0 <= j && j < n} -> Sized n a
+swapS s i j = case readS s i of
+  (s, MkUr x) => case readS s j of
+    (s, MkUr y) => writeS (writeS s i y) j x
+
+-- The array, shared. Its size is trusted (spec-v0.0.5.md §4.2): only this
+-- module makes `Sized` values, of the size of their type.
+trusted total
+freezeS : (1 s : Sized n a) -> Array a
+  ensures \r => size r == (if n < 0 then 0 else n)
+freezeS (MkSized u) = freeze u
+
+-- The unique array, without its size in the type.
+unsized : (1 s : Sized n a) -> Unique (Array a)
+unsized (MkSized u) = u
+
+-- `u` as an array of `n` elements. It has another size only when `n`
+-- elements do not fit in memory: a panic.
+private sized : (n : Int) -> (1 u : Unique (Array a)) -> Sized n a
+sized n u = case length u of
+  (u, k) => if k == (if n < 0 then 0 else n) then MkSized u else tooLarge u
+
+private tooLarge : {b : LType} -> (1 u : Unique (Array a)) -> b
+tooLarge u = panic "Data.Array: the array is too large"

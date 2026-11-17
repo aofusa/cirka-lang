@@ -47,6 +47,12 @@ fn in_place(op: &PrimOp) -> bool {
             | ArrayGet
             | ArrayGetUnchecked
             | ArraySet
+            | ArraySetUnchecked
+            | BytesGetUnchecked
+            | BytesGet64Unchecked
+            | BytesSet64Unchecked
+            | BytesGetFUnchecked
+            | BytesSetFUnchecked
     )
 }
 

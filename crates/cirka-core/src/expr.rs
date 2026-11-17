@@ -121,6 +121,15 @@ pub enum PrimOp {
     QuotNz,
     RemNz,
     ArrayGetUnchecked,
+    /// The other accesses at indices proved in bounds (FEAT-0254): the
+    /// unique arrays with their size in the type, the unboxed arrays and
+    /// the views of strings.
+    ArraySetUnchecked,
+    BytesGetUnchecked,
+    BytesGet64Unchecked,
+    BytesSet64Unchecked,
+    BytesGetFUnchecked,
+    BytesSetFUnchecked,
 }
 
 /// The message of a `panic` that cannot happen (a branch proved
@@ -177,6 +186,12 @@ impl PrimOp {
         PrimOp::QuotNz,
         PrimOp::RemNz,
         PrimOp::ArrayGetUnchecked,
+        PrimOp::ArraySetUnchecked,
+        PrimOp::BytesGetUnchecked,
+        PrimOp::BytesGet64Unchecked,
+        PrimOp::BytesSet64Unchecked,
+        PrimOp::BytesGetFUnchecked,
+        PrimOp::BytesSetFUnchecked,
     ];
 
     pub fn name(self) -> &'static str {
@@ -230,6 +245,12 @@ impl PrimOp {
             QuotNz => "quot_nz",
             RemNz => "rem_nz",
             ArrayGetUnchecked => "array_get_unchecked",
+            ArraySetUnchecked => "array_set_unchecked",
+            BytesGetUnchecked => "bytes_get_unchecked",
+            BytesGet64Unchecked => "bytes_get64_unchecked",
+            BytesSet64Unchecked => "bytes_set64_unchecked",
+            BytesGetFUnchecked => "bytes_getf_unchecked",
+            BytesSetFUnchecked => "bytes_setf_unchecked",
         }
     }
 
@@ -242,7 +263,7 @@ impl PrimOp {
         use PrimOp::*;
         match self {
             ArrayNew | ArrayLen | ArrayGet | ArraySet | ArrayUnique | ArraySetShared | PtrEq
-            | ArrayGetUnchecked => 1,
+            | ArrayGetUnchecked | ArraySetUnchecked => 1,
             _ => 0,
         }
     }
@@ -265,17 +286,21 @@ impl PrimOp {
             DoubleToInt => (vec![d()], i()),
             BytesNew => (vec![i()], Type::bytes()),
             BytesLen => (vec![Type::bytes()], i()),
-            BytesGet => (vec![Type::bytes(), i()], i()),
+            BytesGet | BytesGetUnchecked => (vec![Type::bytes(), i()], i()),
             BytesSet => (vec![Type::bytes(), i(), i()], Type::unit()),
             ArrayNew => (vec![i(), elem.clone()], arr),
             ArrayLen => (vec![arr], i()),
             ArrayGet | ArrayGetUnchecked => (vec![arr, i()], elem),
-            ArraySet | ArraySetShared => (vec![arr, i(), elem], Type::unit()),
+            ArraySet | ArraySetShared | ArraySetUnchecked => (vec![arr, i(), elem], Type::unit()),
             ArrayUnique => (vec![arr.clone()], arr),
-            BytesGet64 => (vec![Type::bytes(), i()], i()),
-            BytesSet64 | BytesSet64Shared => (vec![Type::bytes(), i(), i()], Type::unit()),
-            BytesGetF => (vec![Type::bytes(), i()], d()),
-            BytesSetF | BytesSetFShared => (vec![Type::bytes(), i(), d()], Type::unit()),
+            BytesGet64 | BytesGet64Unchecked => (vec![Type::bytes(), i()], i()),
+            BytesSet64 | BytesSet64Shared | BytesSet64Unchecked => {
+                (vec![Type::bytes(), i(), i()], Type::unit())
+            }
+            BytesGetF | BytesGetFUnchecked => (vec![Type::bytes(), i()], d()),
+            BytesSetF | BytesSetFShared | BytesSetFUnchecked => {
+                (vec![Type::bytes(), i(), d()], Type::unit())
+            }
             BytesUnique => (vec![Type::bytes()], Type::bytes()),
             PtrEq => (vec![elem.clone(), elem], i()),
         }
@@ -306,6 +331,12 @@ impl PrimOp {
                 | ArraySetShared
                 | BytesSet64Shared
                 | BytesSetFShared
+                | ArraySetUnchecked
+                | BytesGetUnchecked
+                | BytesGet64Unchecked
+                | BytesSet64Unchecked
+                | BytesGetFUnchecked
+                | BytesSetFUnchecked
         )
     }
 }

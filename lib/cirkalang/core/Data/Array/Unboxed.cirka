@@ -23,6 +23,18 @@ private prim primUArrayWriteWord : {a : Type} -> (1 u : Unique (UArray a)) -> In
 private prim primUArrayIndexFloat : {a : Type} -> UArray a -> Int -> Float
 private prim primUArrayReadFloat : {a : Type} -> (1 u : Unique (UArray a)) -> Int -> Pair (Unique (UArray a)) (Ur Float)
 private prim primUArrayWriteFloat : {a : Type} -> (1 u : Unique (UArray a)) -> Int -> Float -> Unique (UArray a)
+-- Without the bounds check (only at an `InBounds` index).
+private prim primUArrayIndexWordProved : {a : Type} -> UArray a -> Int -> Int
+private prim primUArrayReadWordProved : {a : Type} -> (1 u : Unique (UArray a)) -> Int -> Pair (Unique (UArray a)) (Ur Int)
+private prim primUArrayWriteWordProved : {a : Type} -> (1 u : Unique (UArray a)) -> Int -> Int -> Unique (UArray a)
+private prim primUArrayIndexFloatProved : {a : Type} -> UArray a -> Int -> Float
+private prim primUArrayReadFloatProved : {a : Type} -> (1 u : Unique (UArray a)) -> Int -> Pair (Unique (UArray a)) (Ur Float)
+private prim primUArrayWriteFloatProved : {a : Type} -> (1 u : Unique (UArray a)) -> Int -> Float -> Unique (UArray a)
+
+-- An index proved in bounds of the array it is used with. Only this module
+-- makes values (in `index`, `readS`, `writeS`), so the methods of `Unbox`
+-- that take one cannot be called at other indices.
+data InBounds = private MkInBounds Int
 
 -- Element types stored as one word.
 trait Unbox a where
@@ -32,34 +44,56 @@ trait Unbox a where
   unboxRead : (1 u : Unique (UArray a)) -> Int -> (Unique (UArray a), Ur a)
   -- Stores an element in place.
   unboxWrite : (1 u : Unique (UArray a)) -> Int -> a -> Unique (UArray a)
+  -- The same at an index proved in bounds: no bounds check.
+  unboxIndexAt : UArray a -> InBounds -> a
+  unboxReadAt : (1 u : Unique (UArray a)) -> InBounds -> (Unique (UArray a), Ur a)
+  unboxWriteAt : (1 u : Unique (UArray a)) -> InBounds -> a -> Unique (UArray a)
 
 impl Unbox Int where
   unboxIndex arr i = primUArrayIndexWord arr i
   unboxRead u i = primUArrayReadWord u i
   unboxWrite u i x = primUArrayWriteWord u i x
+  unboxIndexAt arr (MkInBounds i) = primUArrayIndexWordProved arr i
+  unboxReadAt u (MkInBounds i) = primUArrayReadWordProved u i
+  unboxWriteAt u (MkInBounds i) x = primUArrayWriteWordProved u i x
 
 impl Unbox Float where
   unboxIndex arr i = primUArrayIndexFloat arr i
   unboxRead u i = primUArrayReadFloat u i
   unboxWrite u i x = primUArrayWriteFloat u i x
+  unboxIndexAt arr (MkInBounds i) = primUArrayIndexFloatProved arr i
+  unboxReadAt u (MkInBounds i) = primUArrayReadFloatProved u i
+  unboxWriteAt u (MkInBounds i) x = primUArrayWriteFloatProved u i x
 
 impl Unbox UInt where
   unboxIndex arr i = primIntToUInt (primUArrayIndexWord arr i)
   unboxRead u i = case primUArrayReadWord u i of
     (u, MkUr w) => (u, MkUr (primIntToUInt w))
   unboxWrite u i x = primUArrayWriteWord u i (primUIntToInt x)
+  unboxIndexAt arr (MkInBounds i) = primIntToUInt (primUArrayIndexWordProved arr i)
+  unboxReadAt u (MkInBounds i) = case primUArrayReadWordProved u i of
+    (u, MkUr w) => (u, MkUr (primIntToUInt w))
+  unboxWriteAt u (MkInBounds i) x = primUArrayWriteWordProved u i (primUIntToInt x)
 
 impl Unbox Char where
   unboxIndex arr i = primIntToChar (primUArrayIndexWord arr i)
   unboxRead u i = case primUArrayReadWord u i of
     (u, MkUr w) => (u, MkUr (primIntToChar w))
   unboxWrite u i x = primUArrayWriteWord u i (primCharToInt x)
+  unboxIndexAt arr (MkInBounds i) = primIntToChar (primUArrayIndexWordProved arr i)
+  unboxReadAt u (MkInBounds i) = case primUArrayReadWordProved u i of
+    (u, MkUr w) => (u, MkUr (primIntToChar w))
+  unboxWriteAt u (MkInBounds i) x = primUArrayWriteWordProved u i (primCharToInt x)
 
 impl Unbox Bool where
   unboxIndex arr i = primUArrayIndexWord arr i /= 0
   unboxRead u i = case primUArrayReadWord u i of
     (u, MkUr w) => (u, MkUr (w /= 0))
   unboxWrite u i x = primUArrayWriteWord u i (if x then 1 else 0)
+  unboxIndexAt arr (MkInBounds i) = primUArrayIndexWordProved arr i /= 0
+  unboxReadAt u (MkInBounds i) = case primUArrayReadWordProved u i of
+    (u, MkUr w) => (u, MkUr (w /= 0))
+  unboxWriteAt u (MkInBounds i) x = primUArrayWriteWordProved u i (if x then 1 else 0)
 
 -- ---- unique arrays (in place) ----
 
@@ -115,10 +149,19 @@ size arr = primUArraySize arr
 (!) : Unbox a => UArray a -> Int -> a
 arr ! i = unboxIndex arr i
 
+-- The element at an index proved in bounds (spec-v0.0.4.md §3, §5): no
+-- bounds check at run time.
+index : Unbox a => (arr : UArray a) -> {i : Int | 0 <= i && i < size arr} -> a
+index arr i = unboxIndexAt arr (MkInBounds i)
+
 get : Unbox a => UArray a -> Int -> Maybe a
 get arr i = if i >= 0 && i < size arr then Just (arr ! i) else Nothing
 
-fromList : Unbox a => List a -> UArray a
+-- The array of the elements of a list. Its size is the length of the
+-- list: trusted (spec-v0.0.5.md §4.2), as the array is built unique.
+trusted total
+fromList : Unbox a => (xs : List a) -> UArray a
+  ensures \r => size r == Prelude.length xs
 fromList xs = freeze (fromListU xs)
 
 toList : Unbox a => UArray a -> List a
@@ -127,14 +170,23 @@ toList arr = toListFrom arr (size arr - 1) Nil
 private toListFrom : Unbox a => UArray a -> Int -> List a -> List a
 toListFrom arr i acc = if i < 0 then acc else toListFrom arr (i - 1) (arr ! i :: acc)
 
-generate : Unbox a => Int -> (Int -> a) -> UArray a
+-- The array of `f 0`, ..., `f (n - 1)`; empty when `n` is negative. `f`
+-- may assume its index is in bounds. The size is trusted (spec-v0.0.5.md
+-- §4.2), as for `Data.Array.generate`.
+trusted total
+generate : Unbox a => (n : Int) -> ({i : Int | 0 <= i && i < n} -> a) -> UArray a
+  ensures \r => size r == (if n < 0 then 0 else n)
 generate n f = freeze (generateFrom n f (zeros n) 0)
 
-private generateFrom : Unbox a => Int -> (Int -> a) -> (1 u : Unique (UArray a)) -> Int -> Unique (UArray a)
+private generateFrom : Unbox a => (n : Int) -> ({i : Int | 0 <= i && i < n} -> a) -> (1 u : Unique (UArray a)) -> (i : Int) -> Unique (UArray a)
+  requires 0 <= i
 generateFrom n f u i = if i >= n then u else generateFrom n f (write u i (f i)) (i + 1)
 
-map : (Unbox a, Unbox b) => (a -> b) -> UArray a -> UArray b
-map f arr = generate (size arr) (\i => f (arr ! i))
+-- The array of `f` applied to each element: of the same size.
+total
+map : (Unbox a, Unbox b) => (a -> b) -> (arr : UArray a) -> UArray b
+  ensures \r => size r == size arr
+map f arr = generate (size arr) (\i => f (index arr i))
 
 foldl : Unbox a => (b -> a -> b) -> b -> UArray a -> b
 foldl f z arr = foldlFrom f z arr 0
@@ -180,3 +232,68 @@ modifyB a i f = update a (\(1 u : _) => modify u i f)
 
 swapB : Unbox a => Ref (Unique (UArray a)) r -> Int -> Int -> Borrow (Unique (UArray a)) r ()
 swapB a i j = update a (\(1 u : _) => swap u i j)
+
+-- ---- unique arrays with their size in the type (spec-v0.0.6.md §5) ----
+
+-- A unique array of `n` elements (none when `n` is negative) with its size
+-- in the type: the indices of `readS`, `writeS`, ... are proved in bounds
+-- against `n` (spec-v0.0.4.md §3) and are not checked at run time. The
+-- size is erased; at run time the value is the unique array. Only this
+-- module makes values, and only of the size of their type.
+data Sized (n : Int) (a : Type) : LType where
+  private MkSized : (1 u : Unique (UArray a)) -> Sized n a
+
+-- `n` copies of `x`.
+newS : Unbox a => (n : Int) -> a -> Sized n a
+newS n x = sized n (new n x)
+
+-- `n` zero words (`0`, `0.0`, `'\0'`, `False`).
+zerosS : (n : Int) -> Sized n a
+zerosS n = sized n (zeros n)
+
+-- The elements of `arr`, of size `n`, as a unique array (a copy when `arr`
+-- is shared, as `thaw`).
+thawS : (n : Int) -> (arr : UArray a) -> Sized n a
+  requires size arr == n
+thawS n arr = MkSized (thaw arr)
+
+-- The element at index `i`, and the array back.
+readS : Unbox a => (1 s : Sized n a) -> {i : Int | 0 <= i && i < n} -> (Sized n a, Ur a)
+readS (MkSized u) i = case unboxReadAt u (MkInBounds i) of
+  (u, r) => (MkSized u, r)
+
+-- Stores `x` at index `i`.
+writeS : Unbox a => (1 s : Sized n a) -> {i : Int | 0 <= i && i < n} -> a -> Sized n a
+writeS (MkSized u) i x = MkSized (unboxWriteAt u (MkInBounds i) x)
+
+-- Applies `f` to the element at index `i`.
+modifyS : Unbox a => (1 s : Sized n a) -> {i : Int | 0 <= i && i < n} -> (a -> a) -> Sized n a
+modifyS s i f = case readS s i of
+  (s, MkUr x) => writeS s i (f x)
+
+-- Swaps the elements at indices `i` and `j`.
+swapS : Unbox a => (1 s : Sized n a) -> {i : Int | 0 <= i && i < n} -> {j : Int | 0 <= j && j < n} -> Sized n a
+swapS s i j = case readS s i of
+  (s, MkUr x) => case readS s j of
+    (s, MkUr y) => writeS (writeS s i y) j x
+
+-- The array, shared. Its size is trusted (spec-v0.0.5.md §4.2): only this
+-- module makes `Sized` values, of the size of their type.
+trusted total
+freezeS : (1 s : Sized n a) -> UArray a
+  ensures \r => size r == (if n < 0 then 0 else n)
+freezeS (MkSized u) = freeze u
+
+-- The unique array, without its size in the type.
+unsized : (1 s : Sized n a) -> Unique (UArray a)
+unsized (MkSized u) = u
+
+-- `u` as an array of `n` elements. It has another size only when the
+-- bytes of `n` elements do not fit in an `Int` (the size of the bytes
+-- wraps): a panic.
+private sized : (n : Int) -> (1 u : Unique (UArray a)) -> Sized n a
+sized n u = case length u of
+  (u, k) => if k == (if n < 0 then 0 else n) then MkSized u else tooLarge u
+
+private tooLarge : {b : LType} -> (1 u : Unique (UArray a)) -> b
+tooLarge u = panic "Data.Array.Unboxed: the array is too large"

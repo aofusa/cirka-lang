@@ -1625,11 +1625,7 @@ impl<'a> Lower<'a> {
                 self.skeleton(ty, 1, |_, r| c::Expr::Panic(msg.into(), r))
             }
             Prim::ArrayIndexProved => {
-                let op = if self.p.proofs_trusted {
-                    O::ArrayGetUnchecked
-                } else {
-                    O::ArrayGet
-                };
+                let op = self.proved(O::ArrayGetUnchecked, O::ArrayGet);
                 self.skeleton(ty, 2, |a, r| {
                     let elem = r.clone();
                     self.unbox(a[1].clone(), "I#", "Int", c::Type::int(), r, |k| {
@@ -1696,15 +1692,10 @@ impl<'a> Lower<'a> {
                     vec![prim(O::BytesLen, vec![a[0].clone()])],
                 )
             }),
-            Prim::StrIndex => self.skeleton(ty, 2, |a, r| {
-                self.unbox(a[1].clone(), "I#", "Int", c::Type::int(), r, |i| {
-                    c::Expr::Con(
-                        "I#".into(),
-                        Vec::new(),
-                        vec![prim(O::BytesGet, vec![a[0].clone(), i])],
-                    )
-                })
-            }),
+            Prim::StrIndex => self.str_index(ty, O::BytesGet),
+            Prim::StrIndexProved => {
+                self.str_index(ty, self.proved(O::BytesGetUnchecked, O::BytesGet))
+            }
             Prim::StrConcat => self.skeleton(ty, 2, |a, _| g("cirka$bytes_concat", a)),
             Prim::StrEq => self.skeleton(ty, 2, |a, _| self.bool_of(g("cirka$bytes_eq", a))),
             // `primStrSlice s i j`: a copy of bytes `[i, j)` (clamped).
@@ -1920,19 +1911,10 @@ impl<'a> Lower<'a> {
                     c::Expr::Prim(O::ArrayGet, vec![elem], vec![a[0].clone(), k])
                 })
             }),
-            Prim::ArrayRead => self.skeleton(ty, 2, |a, r| {
-                let elem = self.array_elem_of(ty, 0);
-                let arr = a[0].clone();
-                let x = self.id("x");
-                let rr = r.clone();
-                self.unbox(a[1].clone(), "I#", "Int", c::Type::int(), r, |k| {
-                    c::Expr::LetStrict(
-                        c::Binder::new(x.clone(), c::Mult::Many, elem.clone()),
-                        Box::new(c::Expr::Prim(O::ArrayGet, vec![elem], vec![arr.clone(), k])),
-                        Box::new(self.pair_ur(&rr, arr, c::Expr::Var(x))),
-                    )
-                })
-            }),
+            Prim::ArrayRead => self.array_read(ty, O::ArrayGet),
+            Prim::ArrayReadProved => {
+                self.array_read(ty, self.proved(O::ArrayGetUnchecked, O::ArrayGet))
+            }
             Prim::ArrayLength => self.skeleton(ty, 1, |a, r| {
                 let elem = self.array_elem_of(ty, 0);
                 let k = self.id("k");
@@ -1946,29 +1928,10 @@ impl<'a> Lower<'a> {
                     )),
                 )
             }),
-            Prim::ArrayWrite => self.skeleton(ty, 3, |a, r| {
-                let elem = array_elem(&r);
-                let b = self.id("b");
-                let arr_ty = r.clone();
-                self.unbox(a[1].clone(), "I#", "Int", c::Type::int(), r, |k| {
-                    c::Expr::LetStrict(
-                        c::Binder::new(b.clone(), c::Mult::Many, arr_ty),
-                        Box::new(c::Expr::Prim(
-                            O::ArrayUnique,
-                            vec![elem.clone()],
-                            vec![a[0].clone()],
-                        )),
-                        Box::new(self.seq_unit(
-                            c::Expr::Prim(
-                                O::ArraySet,
-                                vec![elem],
-                                vec![c::Expr::Var(b.clone()), k, a[2].clone()],
-                            ),
-                            c::Expr::Var(b),
-                        )),
-                    )
-                })
-            }),
+            Prim::ArrayWrite => self.array_write(ty, O::ArraySet),
+            Prim::ArrayWriteProved => {
+                self.array_write(ty, self.proved(O::ArraySetUnchecked, O::ArraySet))
+            }
             Prim::ArrayThaw => self.skeleton(ty, 1, |a, r| {
                 let elem = array_elem(&r);
                 c::Expr::Prim(O::ArrayUnique, vec![elem], vec![a[0].clone()])
@@ -2008,6 +1971,14 @@ impl<'a> Lower<'a> {
             }
             Prim::UArrayIndexWord => self.uarr_index(ty, O::BytesGet64, "I#", c::Type::int()),
             Prim::UArrayIndexFloat => self.uarr_index(ty, O::BytesGetF, "F#", c::Type::double()),
+            Prim::UArrayIndexWordProved => {
+                let op = self.proved(O::BytesGet64Unchecked, O::BytesGet64);
+                self.uarr_index(ty, op, "I#", c::Type::int())
+            }
+            Prim::UArrayIndexFloatProved => {
+                let op = self.proved(O::BytesGetFUnchecked, O::BytesGetF);
+                self.uarr_index(ty, op, "F#", c::Type::double())
+            }
             // `UArray a -> Int -> IO ()`: the words to C memory.
             Prim::UArrayStore => self.skeleton(ty, 3, |a, r| {
                 self.unbox(a[1].clone(), "I#", "Int", c::Type::int(), r, |addr| {
@@ -2079,6 +2050,22 @@ impl<'a> Lower<'a> {
             }
             Prim::UArrayWriteFloat => {
                 self.uarr_write(ty, O::BytesSetF, ("F#", "Float"), c::Type::double())
+            }
+            Prim::UArrayReadWordProved => {
+                let op = self.proved(O::BytesGet64Unchecked, O::BytesGet64);
+                self.uarr_read(ty, op, "I#", c::Type::int())
+            }
+            Prim::UArrayReadFloatProved => {
+                let op = self.proved(O::BytesGetFUnchecked, O::BytesGetF);
+                self.uarr_read(ty, op, "F#", c::Type::double())
+            }
+            Prim::UArrayWriteWordProved => {
+                let op = self.proved(O::BytesSet64Unchecked, O::BytesSet64);
+                self.uarr_write(ty, op, ("I#", "Int"), c::Type::int())
+            }
+            Prim::UArrayWriteFloatProved => {
+                let op = self.proved(O::BytesSetFUnchecked, O::BytesSetF);
+                self.uarr_write(ty, op, ("F#", "Float"), c::Type::double())
             }
         })
     }
@@ -2185,6 +2172,76 @@ impl<'a> Lower<'a> {
                 )
             })
         })
+    }
+
+    /// `primArrayRead*`: the element at index `i` (read with `op`) and the
+    /// array back.
+    fn array_read(&self, ty: &c::Type, op: c::PrimOp) -> c::Expr {
+        self.skeleton(ty, 2, |a, r| {
+            let elem = self.array_elem_of(ty, 0);
+            let arr = a[0].clone();
+            let x = self.id("x");
+            let rr = r.clone();
+            self.unbox(a[1].clone(), "I#", "Int", c::Type::int(), r, |k| {
+                c::Expr::LetStrict(
+                    c::Binder::new(x.clone(), c::Mult::Many, elem.clone()),
+                    Box::new(c::Expr::Prim(op, vec![elem], vec![arr.clone(), k])),
+                    Box::new(self.pair_ur(&rr, arr, c::Expr::Var(x))),
+                )
+            })
+        })
+    }
+
+    /// `primArrayWrite*`: stores `x` at index `i` with `op` (copying the
+    /// array first when it is shared) and returns the array.
+    fn array_write(&self, ty: &c::Type, op: c::PrimOp) -> c::Expr {
+        self.skeleton(ty, 3, |a, r| {
+            let elem = array_elem(&r);
+            let b = self.id("b");
+            let arr_ty = r.clone();
+            self.unbox(a[1].clone(), "I#", "Int", c::Type::int(), r, |k| {
+                c::Expr::LetStrict(
+                    c::Binder::new(b.clone(), c::Mult::Many, arr_ty),
+                    Box::new(c::Expr::Prim(
+                        c::PrimOp::ArrayUnique,
+                        vec![elem.clone()],
+                        vec![a[0].clone()],
+                    )),
+                    Box::new(self.seq_unit(
+                        c::Expr::Prim(
+                            op,
+                            vec![elem],
+                            vec![c::Expr::Var(b.clone()), k, a[2].clone()],
+                        ),
+                        c::Expr::Var(b),
+                    )),
+                )
+            })
+        })
+    }
+
+    /// `primStrIndex*`: the byte at index `i`, read with `op`.
+    fn str_index(&self, ty: &c::Type, op: c::PrimOp) -> c::Expr {
+        self.skeleton(ty, 2, |a, r| {
+            self.unbox(a[1].clone(), "I#", "Int", c::Type::int(), r, |i| {
+                c::Expr::Con(
+                    "I#".into(),
+                    Vec::new(),
+                    vec![prim(op, vec![a[0].clone(), i])],
+                )
+            })
+        })
+    }
+
+    /// The access without its check when the proofs are trusted
+    /// (spec-v0.0.4.md §5); the checked one with `--contracts=off`, which
+    /// does not look at the proofs.
+    fn proved(&self, unchecked: c::PrimOp, checked: c::PrimOp) -> c::PrimOp {
+        if self.p.proofs_trusted {
+            unchecked
+        } else {
+            checked
+        }
     }
 
     /// `primUArrayRead*`: the word at index `i` and the array back.

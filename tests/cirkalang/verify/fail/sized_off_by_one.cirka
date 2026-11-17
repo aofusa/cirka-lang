@@ -1,0 +1,10 @@
+-- Counting down from `n` writes one past the last element of a unique
+-- array of size `n` (FEAT-0254): the index is not proved in bounds.
+import Data.Array.Unboxed as U
+
+fill : (n : Int) -> (1 s : U.Sized n Int) -> (i : Int) -> U.Sized n Int
+  requires i <= n
+fill n s i = if i < 0 then s else fill n (U.writeS s i i) (i - 1)
+
+main : IO ()
+main = print (U.toList (U.freezeS (fill 3 (U.zerosS 3) 3)))

@@ -166,6 +166,12 @@ pub fn missing_requirement(c: &Case) -> Option<String> {
     reqs.split_whitespace().find_map(|r| {
         if r == "vulkan" {
             vulkan_missing()
+        } else if r == "z3" {
+            // Proofs that need Z3 (spec-v0.0.4.md §3.2); without it they
+            // are errors.
+            cirka_smt::Solver::from_env()
+                .is_none()
+                .then(|| "z3 not found (CIRKA_Z3)".to_string())
         } else if let Some(lib) = r.strip_prefix("lib:") {
             library_missing(lib)
         } else {

@@ -462,6 +462,82 @@ fn cirkalang_proofs_remove_checks() {
     assert!(!func(&off, "").contains("div_nz("));
 }
 
+/// The MIR (at -O2) of the run test `name` (v006) compiled with `flags`.
+fn mir_of(name: &str, flags: &[&str]) -> String {
+    let path = repo_root().join(format!("tests/cirkalang/run/v006/{name}.cirka"));
+    let (core, _) = compile_cirka_with(&path, cirka_driver::pipeline::SourceTests::Strip, flags)
+        .unwrap_or_else(|e| panic!("{e}"));
+    let mut opts = cirka_driver::pipeline::Options::new(name);
+    opts.opt_level = 2;
+    opts.build_dir = cirka_testkit::work_dir(&format!("cirkalang-{name}"), &flags.join(""));
+    let m = cirka_driver::pipeline::compile_core(core, name, &opts, false)
+        .unwrap_or_else(|_| panic!("does not compile"))
+        .mir;
+    cirka_mir::print::print_module(&m)
+}
+
+/// The accesses that proofs make without checks (FEAT-0254,
+/// spec-v0.0.6.md §5): in the MIR of the run test `name`, the functions
+/// whose names start with each of `funcs` (with their workers) use the
+/// operations `ops` without bounds checks, and no checked one, while under
+/// `--contracts=off` they are checked. (The loop analysis of FEAT-0069
+/// still removes the checks of a simple loop behind a test before the
+/// loop under `off`, keeping the checked loop for when the test fails.)
+/// With Z3 the indices are proved, so these functions check nothing at
+/// run time; without it, `check` checks the refinements at run time
+/// instead. Returns how long the compilation with the proofs took.
+fn proofs_remove_checks(name: &str, funcs: &[(&str, &[&str])]) -> std::time::Duration {
+    let z3 = cirka_smt::Solver::from_env().is_some();
+    let func = |text: &str, prefix: &str| -> String {
+        text.split("\nfn ")
+            .filter(|f| f.starts_with(prefix))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let start = std::time::Instant::now();
+    let trusted = if z3 {
+        mir_of(name, &[])
+    } else {
+        mir_of(name, &["--contracts=check"])
+    };
+    let took = start.elapsed();
+    let off = mir_of(name, &["--contracts=off"]);
+    for (prefix, ops) in funcs {
+        let t = func(&trusted, prefix);
+        let o = func(&off, prefix);
+        assert!(!t.is_empty(), "no function {prefix} in {name}");
+        for op in *ops {
+            assert!(t.contains(&format!("prim {op}_unchecked(")), "{op}: {t}");
+            assert!(!t.contains(&format!("prim {op}(")), "{op}: {t}");
+            assert!(o.contains(&format!("prim {op}(")), "{op}: {o}");
+        }
+        if z3 {
+            assert!(!t.contains("contract violated"), "{t}");
+        }
+    }
+    took
+}
+
+/// Unique arrays with their size in the type: the loops of
+/// sized_arrays.cirka read and write without bounds checks.
+#[test]
+fn cirkalang_sized_arrays_remove_checks() {
+    let t = proofs_remove_checks(
+        "sized_arrays",
+        &[
+            ("Main.squares", &["bytes_set_i64"]),
+            ("Main.prefix", &["bytes_get_f64", "bytes_set_f64"]),
+            ("Main.reverse", &["array_get", "array_set"]),
+        ],
+    );
+    // The checks of the refinements take a fraction of a second (BUG-0029:
+    // 76 s, evaluating the loops that fill the arrays).
+    assert!(
+        t < std::time::Duration::from_secs(30),
+        "compiled in {t:.2?} (BUG-0029)"
+    );
+}
+
 /// The proof obligations of the libraries are not checked when a program
 /// is compiled (FEAT-0244, spec-v0.0.5.md §4.3): they are checked here,
 /// with `--libraries=verify`, on a program that imports every module of

@@ -1,0 +1,40 @@
+-- requires: z3
+-- max-array-copies: 1
+-- Unique arrays with their size in the type (spec-v0.0.6.md §5,
+-- FEAT-0254): the indices of the loops below are proved in bounds, so
+-- `readS`, `writeS`, `modifyS` and `swapS` do not check them at run time
+-- (`cirkalang_sized_arrays_remove_checks` looks at the MIR). Unboxed
+-- (`U.Sized`) and boxed (`A.Sized`) arrays. The one copy is that of `ws`,
+-- which `thawS` copies as it is used again.
+import Data.Array as A
+import Data.Array.Unboxed as U
+
+-- `i * i` at `i`, from `i` to `n - 1`.
+squares : (n : Int) -> (1 s : U.Sized n Int) -> (i : Int) -> U.Sized n Int
+  requires 0 <= i
+squares n s i = if i >= n then s else squares n (U.writeS s i (i * i)) (i + 1)
+
+-- Prefix sums in place, from `i`.
+prefix : (n : Int) -> (1 s : U.Sized n Float) -> (i : Int) -> U.Sized n Float
+  requires 1 <= i
+prefix n s i =
+  if i >= n then s
+  else case U.readS s (i - 1) of
+    (s, MkUr x) => prefix n (U.modifyS s i (\y => x + y)) (i + 1)
+
+-- Reverses the elements from `lo` to `hi`.
+reverse : (n : Int) -> (1 s : A.Sized n a) -> (lo : Int) -> (hi : Int) -> A.Sized n a
+  requires 0 <= lo && hi < n
+reverse n s lo hi = if lo >= hi then s else reverse n (A.swapS s lo hi) (lo + 1) (hi - 1)
+
+main : IO ()
+main = do
+  let sq = U.freezeS (squares 8 (U.zerosS 8) 0)
+  print (U.toList sq)
+  -- The size of the frozen array is known (8): no check either.
+  print (U.index sq 7)
+  print (U.toList (U.freezeS (prefix 5 (U.newS 5 1.5) 1)))
+  let ws = A.fromList ("a" :: "b" :: "c" :: "d" :: Nil)
+  print (A.toList (A.freezeS (reverse (A.size ws) (A.thawS (A.size ws) ws) 0 (A.size ws - 1))), A.toList ws)
+  -- A negative size makes an empty array, which no index fits.
+  print (U.size (U.freezeS (U.zerosS (negate 3) : U.Sized (negate 3) Int)))

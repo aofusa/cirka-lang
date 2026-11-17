@@ -1,0 +1,7 @@
+error[E0501]: cannot prove the refinement `(0 <= i) && (i < n)`
+ --> tests/cirkalang/verify/fail/sized_off_by_one.cirka:7:54
+  |
+7 | fill n s i = if i < 0 then s else fill n (U.writeS s i i) (i - 1)
+  |                                                      ^ in `Main.fill`
+  = note: counterexample: i = 0, n = 0
+  = help: check the value, add a condition (`if`), or refine the type of what it is computed from
