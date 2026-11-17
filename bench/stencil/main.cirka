@@ -1,0 +1,37 @@
+module Main
+
+-- One-dimensional smoothing (FEAT-0254): 100 sweeps of a three-point
+-- stencil over `n` floats, from one array into the other. The indices are
+-- proved in bounds, so `U.index` reads the shared array of the previous
+-- sweep and `U.writeS` writes the unique array of the next without bounds
+-- checks (spec-v0.0.6.md §5); without the proofs (`--contracts=off`) the
+-- reads at `i - 1` and `i + 1` are checked in each iteration. The array
+-- read by a sweep becomes the destination of the next, in place. The same
+-- algorithm and input as rust/main.rs.
+
+import Data.Array.Unboxed as U
+
+-- `b[i]` from `i` to `n - 2`, from the values of `a`.
+sweep : (n : Int) -> (a : U.UArray Float) -> (1 b : U.Sized n Float) -> (i : Int) -> U.Sized n Float
+  requires U.size a == n && 1 <= i
+sweep n a b i =
+  if i >= n - 1 then b
+  else sweep n a (U.writeS b i (0.25 * U.index a (i - 1) + 0.5 * U.index a i + 0.25 * U.index a (i + 1))) (i + 1)
+
+-- `t` sweeps from `a` (at least one), the first into `b`.
+smooth : (n : Int) -> (1 b : U.Sized n Float) -> (t : Int) -> (a : U.UArray Float) -> U.UArray Float
+  requires 0 <= n && U.size a == n
+smooth n b t a =
+  let c = U.freezeS (sweep n a b 1) in
+  if t <= 1 then c else smooth n (U.thawS n a) (t - 1) c
+
+main : IO ()
+main = do
+  argc <- argCount
+  arg <- if argc > 0 then getArg 0 else pure "1000000"
+  let n = parseInt arg
+  if n < 3 then printInt 0
+  else do
+    let a = U.generate n (\i => toFloat (i % 100))
+    let r = smooth n (U.thawS n (U.generate n (\i => toFloat (i % 100)))) 100 a
+    printInt (truncate (U.foldl (\s, x => s + x) 0.0 r))
