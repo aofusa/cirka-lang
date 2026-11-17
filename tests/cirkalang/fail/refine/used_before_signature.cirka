@@ -1,0 +1,24 @@
+module Main
+
+-- BUG-0030: a type can only use the functions declared before it. The
+-- contract of `next` calls `double`, whose signature comes later: E1121
+-- (before, an error term without a diagnostic, so that the contract could
+-- not be proved). A constructor's invariant may use later functions (its
+-- type is elaborated again once the signatures are known).
+
+data Pair : Type where
+  MkPair : (a : Int) -> (b : Int) -> Pair
+  invariant below a b
+
+next : (x : Int) -> Int
+  ensures \r => r == double x
+next x = x + x
+
+double : Int -> Int
+double x = 2 * x
+
+below : Int -> Int -> Bool
+below a b = a < b
+
+main : IO ()
+main = printInt (next 1)

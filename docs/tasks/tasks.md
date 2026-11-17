@@ -339,5 +339,6 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [BUG-0027](bugs/BUG-0027-mir-partial-application-over-closure-arity.md) | 残りの引数が 8 個を超える部分適用が C0200 になる (`-O0` の extern の `IO` 関数など) | done | major | FEAT-0251 |
 | [BUG-0028](bugs/BUG-0028-native-libm-from-compiler-builtins.md) | ネイティブのプログラムが libm の一部の関数 (`cbrt`・`fma` など) をランタイムの compiler-builtins から取る | done | major | FEAT-0252 |
 | [BUG-0029](bugs/BUG-0029-checker-evaluates-array-loops.md) | 検査器が配列を作る繰り返しを評価して指数時間・メモリを使う | done | major | FEAT-0254 |
+| [BUG-0030](bugs/BUG-0030-type-uses-later-function-silently.md) | 型が後で宣言する関数を使うと、診断なしに誤りの項になる | done | minor | FEAT-0254 |
 
 新しいチケットは `features/_TEMPLATE.md` / `bugs/_TEMPLATE.md` をコピーして作成する。

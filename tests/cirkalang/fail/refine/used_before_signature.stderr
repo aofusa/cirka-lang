@@ -1,0 +1,6 @@
+error[E1121]: `double` is used before its signature
+  --> tests/cirkalang/fail/refine/used_before_signature.cirka:14:22
+   |
+14 |   ensures \r => r == double x
+   |                      ^^^^^^ a type can only use what is declared before it
+   = help: move the definition before the signature that uses it

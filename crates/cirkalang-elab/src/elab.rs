@@ -1807,7 +1807,21 @@ impl<'r> Elab<'r> {
             },
             ExprKind::Global(g) => match self.global_type(*g) {
                 Some(t) => (Term::Global(*g), t),
-                None => (Term::Error, Val::Error),
+                // A type elaborated before the signature of `g` (the
+                // signatures are elaborated in order): until BUG-0030, an
+                // error term without a diagnostic.
+                None => {
+                    self.report(
+                        Diagnostic::error(format!(
+                            "`{}` is used before its signature",
+                            self.prog.short_name(*g)
+                        ))
+                        .with_code("E1121")
+                        .with_label(span, "a type can only use what is declared before it")
+                        .with_help("move the definition before the signature that uses it"),
+                    );
+                    (Term::Error, Val::Error)
+                }
             },
             ExprKind::Lit(l) => {
                 let b = &self.prog.builtins;
@@ -4216,7 +4230,8 @@ impl<'r> Elab<'r> {
                     let sig = self.check_type(&mut cx, t);
                     // A refined constructor is elaborated again once the
                     // data type is complete (`refined_cons`): its predicate
-                    // is only checked for coverage there.
+                    // is only checked for coverage there, and may use the
+                    // functions whose signatures come later (E1121).
                     if let Some(sub) = self.prog.builtins.subset_of
                         && mentions_global(&sig, sub)
                     {
@@ -4224,7 +4239,7 @@ impl<'r> Elab<'r> {
                         let mut k = 0;
                         ds.retain(|d| {
                             k += 1;
-                            k <= before || d.code.as_deref() != Some("W1231")
+                            k <= before || !matches!(d.code.as_deref(), Some("W1231" | "E1121"))
                         });
                     }
                     sig
