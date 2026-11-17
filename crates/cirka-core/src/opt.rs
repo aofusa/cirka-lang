@@ -1712,6 +1712,18 @@ impl Simp<'_> {
         self.remember(x, &r);
         self.evaluated.insert(x);
         let body = self.run(k);
+        // let! b = f a in b  ⇒  f a: a call returns its value in WHNF
+        // (06-ir.md §3), so the binding only takes the call out of the tail
+        // position, and a self-call out of reach of CPR. The check of a
+        // refined result leaves this form (`primRefine` around the
+        // self-call of a CirkaLang function with `ensures`, FEAT-0254).
+        if matches!(&body, Expr::Var(v) if v.id == x)
+            && matches!(r, Expr::App(..) | Expr::Prim(..) | Expr::Extern(..))
+        {
+            self.hit();
+            self.st.dead += 1;
+            return r;
+        }
         if self.occ(x).count == 0 && b.mult != Mult::One && self.total(&r) && !self.uses_linear(&r)
         {
             self.hit();

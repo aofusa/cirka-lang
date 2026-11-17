@@ -268,6 +268,35 @@ fn opt_worker_wrapper_unboxes_strict_loops() {
 }
 
 #[test]
+fn opt_strict_let_of_returned_call_is_the_call() {
+    // `let! r = f x in r` is `f x` (a call returns a value in WHNF): the
+    // self-call stays in tail position and the result is unboxed (CPR).
+    // The check of a refined result leaves this form around a self-call
+    // (`primRefine`, the `ensures` of a CirkaLang function: FEAT-0254).
+    let src = format!(
+        "{STRICT_INT}(def sum (-> Int Int Int)
+           (lam ((n Int) (acc Int))
+             (case n (s Int) Int
+               ((I# k) (case k (kk Int#) Int
+                 (0 acc)
+                 (_ (case acc (t Int) Int
+                   ((I# a) (let! (r Int (sum (con I# () (prim sub k 1)) (con I# () (prim add a k))))
+                     r)))))))))
+         (extern arg () Int#)
+         (def main Int#
+           (let! (x Int# (extern arg))
+             (case (sum (con I# () x) (con I# () 0)) (r Int) Int# ((I# v) v))))"
+    );
+    let mut p = parse_program(FileId(0), &src).unwrap();
+    let st = opt::optimize_with_stats(&mut p).unwrap();
+    assert!(lint::lint_program(&p).is_empty(), "{}", print_program(&p));
+    let w = p.bind("sum$w").expect("worker");
+    let s = print::print_expr(&w.expr);
+    assert!(!s.contains("I#") && !s.contains("(let! (r "), "{s}");
+    assert_eq!(w.ty.to_string(), "(-> Int# (-> Int# Int#))", "{st:?}");
+}
+
+#[test]
 fn opt_worker_wrapper_unboxes_parameters_passed_evaluated() {
     // `loop` returns `acc` without using `step` when `n` is 0, so it is not
     // strict in `step`; but every call passes `step` evaluated (a
