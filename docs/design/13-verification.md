@@ -119,6 +119,8 @@ data Range : Type where
 - `requires` は引数の部分集合型、`ensures` は結果の部分集合型、`invariant` は構築子の引数の部分集合型に脱糖する。
 - 確定した規則は [spec-v0.0.4.md](cirkalang/spec-v0.0.4.md) §4。脱糖は構文解析で行い、`requires` は最後の明示的な引数、`invariant` は最後のフィールドを絞る。
   `check` は示せなかった義務の印 `primRefine` を `checkContract` (Prelude) に置き換えて実行時に検査する。
+- 構成子の `invariant` (フィールドの部分集合型) は、値を構成子で分解した所だけでなく、分解していない値の射影についても仮定する
+  (v0.0.6、spec-v0.0.6.md §5.3。文字列のビューの長さが負でないことなど)。
 - `--contracts`:
 
 | モード | 動作 | 実行時コスト |
@@ -133,6 +135,8 @@ data Range : Type where
 - 証明がない場合は従来どおり実行時検査が残る (安全側)。
 - 確定した規則は [spec-v0.0.4.md](cirkalang/spec-v0.0.4.md) §5。証明に頼る演算は部分集合型の引数を持つライブラリ関数 (`Data.Array.index`・`divNZ`・`modNZ`・`unreachable`) の中だけにあり、
   `--contracts=off` ではそれらも検査のある演算に戻る。
+- 一意な配列 (`LType`) は部分集合型を持てないので、大きさを型の添字に持つ一意な配列 `Sized n a` で添字を示して検査なしに読み書きする
+  (v0.0.6、spec-v0.0.6.md §5.1、ADR-100)。文字列のビューは不変条件から添字を示す (§5.2)。
 
 ## 4. ケイパビリティ・効果・セッション型 (CirkaLang v0.0.7)
 

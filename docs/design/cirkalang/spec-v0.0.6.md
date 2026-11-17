@@ -27,6 +27,7 @@ ABI は共通基盤 ([08-ffi.md](../08-ffi.md) §7.2、FEAT-0047)、ヘッダの
 | §2 | 非公開の構成子 (`private` を構成子に付けて、型を他のモジュールから抽象型にする) | FEAT-0256 |
 | §3 | Vulkan compute: `Vulkan.Sys` (bindgen) と安全なラッパ `Vulkan` (リージョンによる資源の管理・シェーダ・部分集合型によるワークグループ数・検証レイヤー) | FEAT-0251 |
 | §4 | 数学・線形代数: libm の純粋な関数 `Std.Math`、行列 `Matrix m n` と OpenBLAS / LAPACKE による `Linalg` (次元は型にあり、`gemm` は一意なら in-place)、unboxed 配列と C のメモリの間のコピー (`pokeUArray`・`peekUArray`・`peekUArrayInto`)、配列の領域をコピーせずに C に渡す関数 (`withUArrayPtr`・`newUArrayWith`・`modifyUArrayWith`。`Linalg` はこれで BLAS / LAPACK を呼ぶ) | FEAT-0252、FEAT-0257 |
+| §5 | 一意な配列の大きさと文字列のビュー: 大きさを型の添字に持つ一意な配列 `Sized n a` (添字を示して検査なしに読み書きする `readS`・`writeS` など)、unboxed 配列の `index` と大きさの契約、文字列のビュー `Str` の不変条件・示された添字で読む `index`・長さの契約、構成子の不変条件を分解していない値にも仮定する検証器 | FEAT-0254 |
 
 ## 1. FFI の完成 (FEAT-0250)
 
@@ -566,3 +567,146 @@ main = do
 | E1200 | (既存) 行列の次元が合わない |
 | E0501 | (既存) `at` の添字が型の次元の範囲にない、次元が負 |
 | E1106 | (既存) 非公開の構成子 `MkMatrix` を使った |
+
+## 5. 一意な配列の大きさと文字列のビュー (FEAT-0254)
+
+v0.0.5 では共有の配列を作る関数に大きさの契約を付け、`A.index` の境界検査を証明で除いた (spec-v0.0.5.md §4)。
+一意な配列 (`Unique (Array a)`、種 `LType`) は部分集合型を持てない (spec-v0.0.4.md §3.5) ので、in-place の更新 (`read`・`write`) の検査は残っていた。
+v0.0.6 では **大きさを型の添字に持つ一意な配列** `Sized n a` を加え、添字を `n` に対して示して検査なしに読み書きする。
+文字列のビュー `Str` には不変条件を付け、`Data.String` の繰り返しと、示された添字で読む `index` から境界検査を除く。
+
+### 5.1 大きさを型に持つ一意な配列 (`Sized`)
+
+`Data.Array` と `Data.Array.Unboxed` に次を加える (unboxed では要素を読み書きする関数に `Unbox a` の制約が付き、配列は `UArray a`)。
+
+```
+data Sized (n : Int) (a : Type) : LType where
+  private MkSized : (1 u : Unique (Array a)) -> Sized n a
+
+newS    : (n : Int) -> a -> Sized n a                   -- unboxed には zerosS : (n : Int) -> Sized n a も
+thawS   : (n : Int) -> (arr : Array a) -> Sized n a
+  requires size arr == n
+readS   : (1 s : Sized n a) -> {i : Int | 0 <= i && i < n} -> (Sized n a, Ur a)
+writeS  : (1 s : Sized n a) -> {i : Int | 0 <= i && i < n} -> a -> Sized n a
+modifyS : (1 s : Sized n a) -> {i : Int | 0 <= i && i < n} -> (a -> a) -> Sized n a
+swapS   : (1 s : Sized n a) -> {i : Int | 0 <= i && i < n} -> {j : Int | 0 <= j && j < n} -> Sized n a
+trusted total
+freezeS : (1 s : Sized n a) -> Array a
+  ensures \r => size r == (if n < 0 then 0 else n)
+unsized : (1 s : Sized n a) -> Unique (Array a)
+```
+
+- `Sized n a` は `n` 個 (`n` が負なら 0 個) の要素の一意な配列である。`n` は消去され、実行時の値は一意な配列そのもの (箱も検査もない)。
+  `LType` の値を部分集合型にする代わりに、大きさを型の添字に持たせて証明に載せる (ADR-100)。
+- 構成子は非公開 (§2) で、値を作るのはこのモジュールだけである。`newS` / `zerosS` は作った配列の大きさを確かめ
+  (`n` 個の要素が収まらず大きさが合わないときは異常終了する。unboxed の配列はバイト数 `8 * n` がラップしうる)、`thawS` は `size arr == n` を
+  呼ぶ側に示させる。`readS` 以下は大きさを変えない。したがって `Sized n a` の配列の大きさはいつも `n` (負なら 0) であり、
+  `freezeS` の結果の大きさを信頼する仕様 (spec-v0.0.5.md §4.2) として与える。
+- 添字の部分集合型は呼ぶ側が示す (spec-v0.0.4.md §3)。`readS` などは非公開のプリミティブ (`primArrayReadProved`・`primArrayWriteProved`、
+  unboxed は `primUArray{Index,Read,Write}{Word,Float}Proved`) で書かれ、証明を信頼するとき (`verify`・`check`) は Core の
+  `array_set_unchecked`・`bytes_get64_unchecked` などを経て MIR の検査のない演算になる。`--contracts=off` では検査のある演算になる (spec-v0.0.4.md §5)。
+- unboxed の要素の検査のない読み書きは `Unbox` のメソッド `unboxIndexAt`・`unboxReadAt`・`unboxWriteAt` が行う。これらは構成子が非公開の型
+  `InBounds` の添字を取るので、利用者は直接は呼べない。
+- `Data.Array.Unboxed` にも、共有の配列の示された添字での読み出し `index : Unbox a => (arr : UArray a) -> {i : Int | 0 <= i && i < size arr} -> a` と、
+  `fromList`・`generate`・`map` の大きさの契約を加える (`Data.Array` と同じ。spec-v0.0.4.md §5、spec-v0.0.5.md §4.1)。
+
+例 (`tests/cirkalang/run/v006/sized_arrays.cirka`): `writeS` の添字 `i` は、`requires 0 <= i` と `if` の条件 `i < n` から示される。
+
+```
+squares : (n : Int) -> (1 s : U.Sized n Int) -> (i : Int) -> U.Sized n Int
+  requires 0 <= i
+squares n s i = if i >= n then s else squares n (U.writeS s i (i * i)) (i + 1)
+
+main = do
+  let sq = U.freezeS (squares 8 (U.zerosS 8) 0)
+  print (U.index sq 7)          -- 大きさ 8 は freezeS の契約から分かる
+```
+
+### 5.2 文字列のビュー (`Data.String`)
+
+```
+data Str : Type where
+  MkStr : (s : String) -> (i : Int) -> (j : Int) -> Str
+  invariant 0 <= i && i <= j && j <= strLength s
+
+index : (v : Str) -> {k : Int | 0 <= k && k < length v} -> Int
+
+total
+toStr : (s : String) -> Str
+  ensures \r => length r == strLength s
+total
+take : (n : Int) -> (v : Str) -> Str
+  ensures \r => length r == (if n < 0 then 0 else if n < length v then n else length v)
+total
+drop : (n : Int) -> (v : Str) -> Str
+  ensures \r => length r == (if n < 0 then length v else if n < length v then length v - n else 0)
+total
+slice : (v : Str) -> (a : Int) -> (b : Int) -> Str
+  ensures \r => length r <= length v && (a < 0 || b < a || length v < b || length r == b - a)
+```
+
+- ビュー `MkStr s i j` は `s` のバイト `[i, j)` で、範囲が `s` の中にあることを構成子の不変条件 (spec-v0.0.4.md §4.2) にした。
+  構成子は公開のままで、利用者が作るときは不変条件を示す。
+- `index v k` は、添字が範囲内と示されたバイトを境界検査なしで読む (`Data.Array.index` と同じ)。範囲外で異常終了する `byteAt` も残す。
+- `Data.String` の繰り返し (`words`・`lines`・`trim`・`toInt`・`chars`・`splitOn`・`toUpper`・比較など) は、不変条件と補助関数の `requires` から
+  読み出しの添字を示し、境界検査なしで読む。文字列の検索 (ランタイムの `cirka$bytes_find`・`cirka$bytes_find_byte`) の結果が範囲の中にあることは
+  信頼する仕様にした (検索は範囲を文字列に切り詰めるが、不変条件の下では範囲そのものである)。
+- `toStr`・`take`・`drop`・`slice` の結果の長さを契約にした。どれも `total` なので、`let` で束縛した結果にも使える。
+  `slice v a b` の長さは、範囲が `0 <= a <= b <= length v` のとき `b - a` と分かる。
+- 添字は `Int` のラップで溢れないように計算する (`take n v` の終わりは `i + clamp n 0 (j - i)`)。以前は `slice v a b` の `i + a` が
+  溢れると範囲がずれた (`drop maxInt v` が空でなかった)。溢れない引数での結果は以前と同じである。
+
+例 (`tests/cirkalang/run/v006/string_views.cirka`):
+
+```
+palindrome : (v : Str) -> (lo : Int) -> (hi : Int) -> Bool
+  requires 0 <= lo && hi < S.length v
+palindrome v lo hi =
+  if lo >= hi then True
+  else if S.index v lo == S.index v hi then palindrome v (lo + 1) (hi - 1)
+  else False
+
+isPalindrome : Str -> Bool
+isPalindrome v = palindrome v 0 (S.length v - 1)    -- S.length v は負でない (§5.3)
+
+year : Str -> Maybe Int                              -- "2026-11-17" の 2026
+year v =
+  if S.length v < 4 then Nothing
+  else
+    let y = S.take 4 v in                            -- S.length y == 4
+    Just (digit (S.index y 0) * 1000 + digit (S.index y 1) * 100 + digit (S.index y 2) * 10 + digit (S.index y 3))
+```
+
+### 5.3 検証器の変更
+
+- 構成子が 1 つの型 (レコード) の値を構成子で分解していなくても、フィールドの部分集合型 (構成子の `invariant`) を、その値の射影
+  (spec-v0.0.4.md §3.2 の、分解したフィールドを表す変数) について仮定する。値を作った所で示されているか、実行時に検査されているからである
+  (`--contracts=off` では証明を信頼しないので、仮定に頼る検査の除去もない)。これで `S.length v` が負でないことを、`v` を分解せずに使える。
+- 結果に部分集合型を持つ `total` な関数の呼び出し (`S.drop n v`) は、それを引数にとる定義 (`S.length`) を展開して調べるときも
+  呼び出しのまま扱い、結果の部分集合型を仮定する (spec-v0.0.4.md §3.3。以前は `length` とともに `drop` も展開されて契約が失われた)。
+  `total` に限るのは、`size` の引数の呼び出し (spec-v0.0.5.md §4) と同じく、消去される位置の止まらない呼び出しから偽の事実を得ないためである。
+- 一つの証明義務の中で、同じ呼び出しは同じ項に訳す (BUG-0031)。定義の展開は深さで打ち切るので、目標と、それより深く訳す仮定 (呼び出しの代わりの
+  変数の部分集合型) とで同じ呼び出し (`let n = parseInt arg` の `n`) が別の項になり、`U.thawS n (U.generate n f)` が示せなかった。
+  最初の訳を使い回し、新しい仮定は加えない (二つの訳が等しいという仮定は、止まらない呼び出しで矛盾する)。
+- 型 (シグネチャと契約) の中では、前に宣言した関数だけを使える (Idris 2 と同じ。関数の本体はどの関数でも使える)。
+  後で宣言する関数を使うと E1121 (以前は診断なしに誤りの項になった。BUG-0030)。構成子の不変条件は、シグネチャの後でもう一度検査するので
+  後の関数も使える (spec-v0.0.4.md §4.2)。
+- 簡約できないプリミティブ (`primUArraySize` など) の引数は評価しない。検査器が値の分からない式を評価する 2 か所 (義務を評価で決める所と、
+  呼び出しの引数が辞書かを調べる所) が、一意な配列を作る繰り返しを評価して指数時間かかっていた (BUG-0029)。
+
+### 5.4 実行時の表現とコスト、制限、診断
+
+- 計測 (Docker。[bench-report.md](../bench-report.md) の「一意な配列の大きさと文字列のビューの証明 (FEAT-0254)」):
+  `bench/stencil` (100 万要素の 3 点ステンシルを 100 回。読む配列は共有の `UArray`、書く配列は `Sized`) は Rust と同じ時間 (215 ms 対 216 ms) で、
+  命令数は `--contracts=off` より 20% 少なく Rust の 1.01 倍。`--contracts=off` ではループの入口の検査 (FEAT-0069) が `i - 1` の読み出しの検査を
+  除けない。`bench/string-split` は `Data.String` の読み出しの検査が消えて命令数が 3.7% 減り、時間は Rust の 1.44 倍。
+- 証明は実行時に消えるが、`ensures` を持つ関数の結果は `primRefine` (恒等関数) を通る。Core の簡約が呼び出しを返すだけの `let!` を
+  呼び出しに戻すので、自己呼び出しは末尾呼び出しのままで、戻り値も unboxed になる (06-ir.md §1.3)。
+- 制限:
+  - `Sized` の大きさは型の中の `Int` で、繰り返しの添字との関係は呼ぶ側が `requires` で示す。大きさを変える操作 (追加・連結) はない。
+  - 一意な文字列 (`Builder` の内部や `toUpper` が書くバッファ) への書き込みの検査は残る。
+  - 文字列リテラルの長さは証明から見えない (`S.index (toStr "abc") 1` は示せない。`S.length` を確かめる `if` が要る)。
+
+| コード | 内容 |
+|--------|------|
+| E1121 | 型 (シグネチャ・契約) の中で、後で宣言する関数を使った (§5.3、BUG-0030) |
