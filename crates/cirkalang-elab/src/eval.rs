@@ -342,6 +342,25 @@ impl<'a> Ev<'a> {
     }
 
     fn prim_reduce(&self, p: Prim, sp: &[Elim]) -> Option<Val> {
+        // Only these primitives reduce. The others stay stuck whatever
+        // their arguments, which are then not evaluated: evaluating them
+        // can be long (the loop that fills a unique array whose size a
+        // refinement reads, FEAT-0254).
+        if !matches!(
+            p,
+            Prim::AddInt
+                | Prim::SubInt
+                | Prim::MulInt
+                | Prim::NegInt
+                | Prim::EqInt
+                | Prim::LtInt
+                | Prim::LeInt
+                | Prim::Rewrite
+                | Prim::Refine
+                | Prim::Subset
+        ) {
+            return None;
+        }
         let args: Vec<Val> = sp
             .iter()
             .map(|e| match e {

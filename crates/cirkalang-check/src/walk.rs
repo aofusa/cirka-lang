@@ -539,10 +539,37 @@ impl<'a> Walker<'a> {
         let Some(g) = head_global else {
             return false;
         };
-        if !matches!(self.prog.get(g), Global::Def { .. }) {
+        if !self.may_be_dict(g) {
             return false;
         }
         matches!(self.whnf(v.clone()), Val::Con(c, _) if self.dict_cons.contains(&c))
+    }
+
+    /// Whether a call of the definition `g` can be a dictionary: its result
+    /// type (after all its arguments) is a trait (instances, superclass
+    /// selectors), or a definition that may stand for one. Finding out by
+    /// evaluating the call runs it, which can take long (a loop over a
+    /// unique array, FEAT-0254), so calls of other types are not evaluated.
+    /// A type variable never stands for a trait: the elaborator passes
+    /// dictionaries only where a trait is expected.
+    fn may_be_dict(&self, g: GName) -> bool {
+        let Global::Def { ty, .. } = self.prog.get(g) else {
+            return false;
+        };
+        let mut t = ty;
+        while let Term::Pi(_, _, _, _, cod) = t {
+            t = cod;
+        }
+        while let Term::App(f, _, _) = t {
+            t = f;
+        }
+        match t {
+            Term::Global(d) => {
+                self.prog.traits.contains_key(d) || matches!(self.prog.get(*d), Global::Def { .. })
+            }
+            Term::Var(..) => false,
+            _ => true,
+        }
     }
 
     /// The arguments of an instance (its context dictionaries), without the

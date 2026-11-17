@@ -529,3 +529,38 @@ fn top_level_lazy_values_warn() {
     ));
     assert!(e.diags.is_empty(), "{:?}", codes(&e));
 }
+
+/// A primitive that does not reduce leaves its arguments unevaluated
+/// (BUG-0029): the size of an array made by a loop is not found by running
+/// the loop (which took exponential time on unique arrays).
+#[test]
+fn stuck_primitives_do_not_evaluate_their_arguments() {
+    let p = ok("prim UArray : Type -> Type
+prim primUArrayNew : {a : Type} -> Int -> Unique (UArray a)
+prim primUArraySize : {a : Type} -> UArray a -> Int
+
+build : Int -> UArray Int -> UArray Int
+build n a = if primEqInt n 0 then a else build (n - 1) a
+
+arraySize : Int
+arraySize = primUArraySize (build 1000 (freeze (primUArrayNew 3)))
+");
+    let g = p
+        .names
+        .iter()
+        .position(|n| n == "Main.arraySize")
+        .expect("Main.arraySize");
+    let tt::Global::Def {
+        body: Some(body), ..
+    } = p.get(tt::GName(g as u32))
+    else {
+        panic!("not a definition");
+    };
+    let metas = eval::Metas::default();
+    let fuel = std::cell::Cell::new(eval::FUEL);
+    let out_of_fuel = std::cell::Cell::new(false);
+    let ev = eval::Ev::new(&p, &metas, &fuel, &out_of_fuel);
+    let v = ev.whnf(ev.eval(&[], body));
+    assert!(matches!(v, tt::Val::Neutral(..)), "{v:?}");
+    assert_eq!(fuel.get(), eval::FUEL, "the loop was evaluated");
+}
