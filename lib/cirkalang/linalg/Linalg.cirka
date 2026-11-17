@@ -9,11 +9,13 @@
 -- A matrix is an immutable value, and the functions are pure: each makes
 -- a new matrix, except that `gemm` stores its result in the array of its
 -- last argument when that array is not shared (`gemmIn` takes it as a
--- unique value). The C libraries work on copies of the elements in C
--- memory that the function allocates and frees itself. The elements are
--- stored in one unboxed array, by rows (`RowMajor`) or by columns
--- (`ColMajor`); `transpose` only changes the order, without copying, and
--- the BLAS and LAPACK calls read either order.
+-- unique value). The elements are stored in one unboxed array, by rows
+-- (`RowMajor`) or by columns (`ColMajor`); `transpose` only changes the
+-- order, without copying, and the BLAS and LAPACK calls read either
+-- order. They work on the arrays themselves (objects never move): BLAS
+-- reads the arrays of its inputs and writes the array of the result, and
+-- LAPACK, which overwrites its inputs, works on arrays that nothing else
+-- shares (copies of shared ones).
 module Linalg
 
 import Foreign
@@ -139,18 +141,6 @@ scale s a = mapElems (\x => s * x) a
 
 -- ---- BLAS and LAPACK ----
 
--- `k` with `bytes` bytes of C memory (at least 8), freed afterwards.
-private withMemory : Int -> (Ptr Float -> IO b) -> IO b
-withMemory bytes k = do
-  p <- mallocBytes (max bytes 8)
-  r <- k p
-  done <- freeBytes p
-  pure r
-
--- `k` with a copy of the elements in C memory.
-private withElems : U.UArray Float -> (Ptr Float -> IO b) -> IO b
-withElems xs k = withMemory (8 * U.size xs) (\p => pokeUArray p xs >> k p)
-
 -- The constants of cblas.h and lapacke.h for an order (CblasRowMajor =
 -- LAPACK_ROW_MAJOR, CblasColMajor = LAPACK_COL_MAJOR).
 private layout : Order -> CInt
@@ -180,11 +170,9 @@ mul : Matrix m k -> Matrix k n -> Matrix m n
 mul a b = primUnsafeRunIO (mulIO a b)
 
 private mulIO : Matrix m k -> Matrix k n -> IO (Matrix m n)
-mulIO (MkMatrix m k oa xa) (MkMatrix _ n ob xb) =
-  withElems xa (\pa => withElems xb (\pb => withMemory (8 * m * n) (\pc => do
-    done <- dgemmIn RowMajor m n k 1.0 oa pa ob pb 0.0 pc
-    out <- peekUArray (m * n) pc
-    pure (MkMatrix m n RowMajor out))))
+mulIO (MkMatrix m k oa xa) (MkMatrix _ n ob xb) = do
+  r <- newUArrayWith (m * n) (\pc => withUArrayPtr xa (\pa => withUArrayPtr xb (\pb => dgemmIn RowMajor m n k 1.0 oa pa ob pb 0.0 pc)))
+  pure (MkMatrix m n RowMajor (fst r))
 
 -- `alpha * a * b + beta * c` (BLAS `dgemm`), in the order of `c`. The
 -- result is stored in the array of `c` when no other value shares it.
@@ -193,13 +181,8 @@ gemm alpha a b beta c = primUnsafeRunIO (gemmIO alpha a b beta c)
 
 private gemmIO : Float -> Matrix m k -> Matrix k n -> Float -> Matrix m n -> IO (Matrix m n)
 gemmIO alpha (MkMatrix m k oa xa) (MkMatrix _ n ob xb) beta (MkMatrix _ _ oc xc) = do
-  pc <- mallocBytes (max (8 * m * n) 8)
-  done <- pokeUArray pc xc
-  done <- withElems xa (\pa => withElems xb (\pb => dgemmIn oc m n k alpha oa pa ob pb beta pc))
-  -- The last use of `xc`: in place unless the caller shares it.
-  out <- peekUArrayInto xc pc
-  done <- freeBytes pc
-  pure (MkMatrix m n oc out)
+  r <- modifyUArrayWith xc (\pc => withUArrayPtr xa (\pa => withUArrayPtr xb (\pb => dgemmIn oc m n k alpha oa pa ob pb beta pc)))
+  pure (MkMatrix m n oc (fst r))
 
 -- `gemm` on a matrix owned uniquely: the result is written over `c` (the
 -- elements are copied only when `c` was made by `unique` from a matrix
@@ -214,11 +197,15 @@ solve : Matrix n n -> Matrix n k -> Maybe (Matrix n k)
 solve a b = primUnsafeRunIO (solveIO a (withOrder (order a) b))
 
 private solveIO : Matrix n n -> Matrix n k -> IO (Maybe (Matrix n k))
-solveIO (MkMatrix n _ o xa) (MkMatrix _ k _ xb) =
-  withElems xa (\pa => withElems xb (\pb => allocaArray (max n 1) (\ipiv => do
-    info <- dgesv (layout o) (MkCInt n) (MkCInt k) pa (ld o n n) ipiv pb (ld o n k)
-    checked "LAPACKE_dgesv" info
-    if fromCInt info > 0 then pure Nothing else fmap (\out => Just (MkMatrix n k o out)) (peekUArray (n * k) pb))))
+solveIO (MkMatrix n _ o xa) (MkMatrix _ k _ xb) = do
+  -- LAPACK overwrites `a` with its LU decomposition and `b` with `x`.
+  lu <- modifyUArrayWith xa (\pa => modifyUArrayWith xb (\pb => allocaArray (max n 1) (\ipiv => dgesv (layout o) (MkCInt n) (MkCInt k) pa (ld o n n) ipiv pb (ld o n k))))
+  solved n k o (snd lu)
+
+private solved : Int -> Int -> Order -> (U.UArray Float, CInt) -> IO (Maybe (Matrix n k))
+solved n k o (x, info) = do
+  checked "LAPACKE_dgesv" info
+  pure (if fromCInt info > 0 then Nothing else Just (MkMatrix n k o x))
 
 -- A negative `info` of LAPACK names an invalid argument: a mistake of this
 -- module, not of its user.
@@ -236,11 +223,12 @@ det : Matrix n n -> Float
 det a = primUnsafeRunIO (detIO a)
 
 private detIO : Matrix n n -> IO Float
-detIO (MkMatrix n _ _ xa) =
-  withElems xa (\pa => allocaArray (max n 1) (\ipiv => do
+detIO (MkMatrix n _ _ xa) = do
+  r <- modifyUArrayWith xa (\pa => allocaArray (max n 1) (\ipiv => do
     info <- dgetrf (layout RowMajor) (MkCInt n) (MkCInt n) pa (MkCInt (max n 1)) ipiv
     checked "LAPACKE_dgetrf" info
     if fromCInt info > 0 then pure 0.0 else luDet n pa ipiv))
+  pure (snd r)
 
 -- The determinant from an LU decomposition: the product of the diagonal
 -- of U, negated for each row swap (`ipiv` counts rows from 1).

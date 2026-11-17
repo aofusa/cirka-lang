@@ -1,15 +1,18 @@
 -- requires: lib:openblas lib:lapacke
--- max-array-copies: 2
+-- max-array-copies: 9
 -- Matrices and linear algebra on OpenBLAS and LAPACKE (spec-v0.0.6.md
 -- §4.2, FEAT-0252), compared with reference implementations in CirkaLang:
 -- products (BLAS `dgemm`, both orders in memory), `alpha * a * b + beta
 -- * c` (in place when `c` is not shared), linear systems (LAPACK `dgesv`),
 -- inverses and determinants (`dgetrf`). The matrices hold small integers,
 -- so that the products are exact; the solutions are rounded to 9
--- decimals. The copies of arrays: `c32` for the first `gemm` (it is used
--- again), and one for the second, whose action `Main.main` allocates as a
--- closure holding the array (FEAT-0088, which makes it 1). `accumulate`
--- copies nothing.
+-- decimals. The arrays are copied only where a matrix that a call
+-- overwrites is shared (FEAT-0257): `c32` for the first `gemm` (a
+-- top-level value), and for LAPACK, which overwrites its inputs, `a44`
+-- (`solve`, `inverse`), `b` (the first `solve`; it is used again),
+-- `singular` (`solve`, `inverse`, `det`) and `d33` (`det` of it and of its
+-- transpose): 9 in all. `accumulate` copies nothing, nor do the calls on
+-- matrices that nothing else shares (`linalg_inplace.cirka`).
 import Linalg
 
 -- ---- reference implementations ----
