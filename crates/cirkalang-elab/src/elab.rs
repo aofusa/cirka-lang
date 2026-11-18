@@ -424,6 +424,13 @@ impl<'r> Elab<'r> {
         print_term(&self.prog, &mut cx.names.clone(), &t)
     }
 
+    /// `v` with the definitions unfolded that reduce (`dual p` as the
+    /// protocol it computes), for the notes of a mismatch.
+    fn show_unfolded(&self, cx: &Cxt, v: &Val) -> String {
+        let t = self.ev().normalize_folded(cx.lvl(), v);
+        print_term(&self.prog, &mut cx.names.clone(), &t)
+    }
+
     fn fresh_meta(&self, cx: &Cxt, span: Span) -> Term {
         let m = self.new_meta(span);
         Term::InsertedMeta(m, Rc::new(cx.bound.clone()))
@@ -1095,6 +1102,19 @@ impl<'r> Elab<'r> {
     fn why_not_weaken(&self, cx: &Cxt, ty: &Val, d: Diagnostic, help: &str) -> Diagnostic {
         let t = self.show(cx, ty);
         if self.drop_status(cx, ty) == DropStatus::Fin {
+            // Implementations for other arguments of the same type: the
+            // endpoints of `Std.Session` can be dropped only at the end
+            // of their protocol (spec-v0.0.7.md §3.3).
+            if let Val::Data(head, _) = self.whnf(ty)
+                && self.has_fin_impl(head)
+            {
+                let h = self.show(cx, &Val::Data(head, Vec::new()));
+                return d
+                    .with_note(format!(
+                        "`{t}` has no `Drop` or `Release` implementation: those of `{h}` are for other arguments"
+                    ))
+                    .with_help(help);
+            }
             d.with_note(format!(
                 "`{t}` holds values with a finalizer, but has no `Drop` or `Release` implementation"
             ))
@@ -1257,10 +1277,22 @@ impl<'r> Elab<'r> {
                 }
                 // The types are shown with the literals at their defaults.
                 self.default_literals();
+                let (es, fs) = (self.show(cx, expected), self.show(cx, actual));
                 let mut d = self
                     .error("E1200", span, "type mismatch")
-                    .with_note(format!("expected `{}`", self.show(cx, expected)))
-                    .with_note(format!("   found `{}`", self.show(cx, actual)));
+                    .with_note(format!("expected `{es}`"))
+                    .with_note(format!("   found `{fs}`"));
+                // Types computed by functions (a protocol and its dual,
+                // spec-v0.0.7.md §3.3) are also shown computed.
+                let (eu, fu) = (
+                    self.show_unfolded(cx, expected),
+                    self.show_unfolded(cx, actual),
+                );
+                if (eu != es || fu != fs) && eu != fu {
+                    d = d
+                        .with_note(format!("expected (unfolded) `{eu}`"))
+                        .with_note(format!("   found (unfolded) `{fu}`"));
+                }
                 if let Some(r) = self.escaping_region(cx, expected, actual) {
                     d = d
                         .with_note(format!(

@@ -12,3 +12,5 @@ error[E1200]: type mismatch
    |       ^^^^
    = note: expected `Equal (plus (S Z) (S Z)) (S Z)`
    = note:    found `Equal (plus (S Z) (S Z)) (plus (S Z) (S Z))`
+   = note: expected (unfolded) `Equal (S (S Z)) (S Z)`
+   = note:    found (unfolded) `Equal (S (S Z)) (S (S Z))`
