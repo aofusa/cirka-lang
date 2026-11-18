@@ -1306,6 +1306,62 @@ fn opt_applies_an_action_chosen_by_a_case_in_its_branches() {
 }
 
 #[test]
+fn opt_moves_an_action_into_the_alternatives_that_run_it() {
+    // BUG-0035: `when (i `mod` 3 == 0) (put (digits i))` as a step of a
+    // `do` block. The action `m` (a partial application whose argument
+    // is work) is used in three alternatives of the `case` deciding
+    // whether to run it: it is built in those alternatives only, not as
+    // a thunk in every iteration.
+    let src = format!(
+        "{PRELUDE}(data U () (MkU))
+         (data IO (a) :newtype (IO# (-> Unit# a)))
+         (extern out (Int#) Unit#)
+         (def digits (-> Int# Int#)
+           (lam ((n Int#))
+             (case (prim lt n 10) (c Int#) Int#
+               (0 (prim add (digits (prim quot n 10)) 1))
+               (_ 1))))
+         (def put (-> Int# Unit# U)
+           (lam ((n Int#) (a Unit#))
+             (case (prim lt n 10) (c Int#) U
+               (0 (let! (u U (put (prim quot n 10) a))
+                    (let! (v Unit# (extern out (prim rem n 10))) (con MkU ()))))
+               (_ (let! (v Unit# (extern out n)) (con MkU ()))))))
+         (def step (-> Int# Unit# Int#)
+           (lam ((i Int#) (w Unit#))
+             (case i (k Int#) Int#
+               (0 0)
+               (_ (let! (r Int# (prim rem i 3))
+                    (let ((m (-> Unit# U) (cast ((cast put (-> Int# (IO U))) (digits i)) (-> Unit# U))))
+                      (let! (x U (case (prim lt r 0) (c Int#) U
+                                   (0 (case (prim gt r 0) (d Int#) U
+                                        (0 (case (prim eq r 0) (g Int#) U
+                                             (0 (con MkU ()))
+                                             (_ (m w))))
+                                        (_ (case (prim eq r 0) (h Int#) U
+                                             (0 (con MkU ()))
+                                             (_ (m w))))))
+                                   (_ (case (prim eq (prim add r 3) 0) (e Int#) U
+                                        (0 (con MkU ()))
+                                        (_ (m w))))))
+                        (step (prim sub i 1) w))))))))
+         (extern arg () Int#)
+         (def main Int# (step (extern arg) unit))"
+    );
+    let mut p = parse_program(FileId(0), &src).unwrap();
+    assert!(lint::lint_program(&p).is_empty(), "{}", print_program(&p));
+    opt::optimize_with_stats(&mut p).unwrap();
+    let all = print_program(&p);
+    assert!(lint::lint_program(&p).is_empty(), "{all}");
+    let step = print::print_expr(&p.bind("step").unwrap().expr);
+    // Nothing of the action before the `case`: each running alternative
+    // has its own copy.
+    let head = &step[..step.find("(case (prim lt").expect(&step)];
+    assert!(!head.contains("digits"), "{step}");
+    assert_eq!(step.matches("(digits i)").count(), 3, "{step}");
+}
+
+#[test]
 fn opt_gives_nested_newtypes_every_state() {
     // `Eff a` is a newtype over `Env -> IO a`: applying the environment
     // runs nothing, so `loop` gets one worker taking the environment and

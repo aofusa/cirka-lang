@@ -898,9 +898,12 @@ fn wrap_strict(binds: Vec<(Binder, Expr)>, body: Expr) -> Expr {
 
 /// Moves lazy `let`s down past `let!`s and into the only `case`
 /// alternative that uses them, so that a loop does not allocate (box or
-/// thunk) on every iteration what only its exit uses. A small binding used
-/// by several alternatives is copied into each (FEAT-0064): an alternative
-/// that scrutinizes it then evaluates it in place, without a thunk. Returns
+/// thunk) on every iteration what only its exit uses. A binding used by
+/// several alternatives is copied into each when that pays
+/// ([`worth_copying`]): an alternative that scrutinizes it then evaluates
+/// it in place, without a thunk (FEAT-0064), and the paths that do not use
+/// it allocate nothing (BUG-0035). A binding used only by the value of the
+/// next `let!` moves into it when it reaches an alternative there. Returns
 /// the number of changes: bindings moved into an alternative, and strict
 /// bindings of constructor values made lazy. The simplifier must run after
 /// either (BUG-0032): it removes a dead lazy binding, but not a dead strict
@@ -914,8 +917,13 @@ pub fn float_in(p: &mut Program, next: &mut u32) -> usize {
     n
 }
 
-/// Bindings at most this large (Core nodes) are copied into alternatives.
+/// Bindings at most this large (Core nodes) are copied into alternatives
+/// that scrutinize them.
 const COPY_SIZE: usize = 40;
+
+/// At most this much code (Core nodes) is added by the copies of a binding
+/// that some path does not use (BUG-0035).
+const COPY_BUDGET: usize = 240;
 
 fn float_expr(e: Expr, n: &mut usize, next: &mut u32) -> Expr {
     match e {
@@ -939,17 +947,85 @@ fn float_expr(e: Expr, n: &mut usize, next: &mut u32) -> Expr {
     }
 }
 
-/// Whether `r` may be copied: small and without closures (copying a
-/// closure or a local function would duplicate code that may be large
-/// once lifted).
+/// Whether `r` may be copied: without closures (copying a closure or a
+/// local function would duplicate code that may be large once lifted).
 fn copyable(r: &Expr) -> bool {
-    let mut ok = crate::opt::size(r) <= COPY_SIZE;
+    let mut ok = true;
     walk(r, &mut |s| {
         if matches!(s, Expr::Lam(..) | Expr::Let(Bind::Rec(_), _)) {
             ok = false;
         }
     });
     ok
+}
+
+/// Whether copying `let x = r` into the several alternatives `users` that
+/// use `x` pays: one of them scrutinizes `x`, so that its copy is
+/// evaluated in place (FEAT-0064; small bindings only), or some path
+/// through the alternatives does not use `x`, and then allocates nothing
+/// (BUG-0035; within a budget of copied code).
+fn worth_copying(r: &Expr, alts: &[Alt], users: &[usize], x: u32) -> bool {
+    if !copyable(r) {
+        return false;
+    }
+    let size = crate::opt::size(r);
+    let forced = || users.iter().any(|&i| forces(&alts[i].rhs, x));
+    let spared =
+        || users.len() < alts.len() || users.iter().any(|&i| !used_on_every_path(&alts[i].rhs, x));
+    let uses: usize = users.iter().map(|&i| occurrences(&alts[i].rhs, x)).sum();
+    (size <= COPY_SIZE && forced()) || (size * (uses - 1) <= COPY_BUDGET && spared())
+}
+
+/// The alternatives that `let x = r` moves into, if any: the only one that
+/// uses `x`, or each one using it when copying pays.
+fn targets(r: &Expr, alts: &[Alt], x: u32) -> Option<Vec<usize>> {
+    let users: Vec<usize> = (0..alts.len())
+        .filter(|&i| mentions(&alts[i].rhs, x))
+        .collect();
+    match users.len() {
+        0 => None,
+        1 => Some(users),
+        _ => worth_copying(r, alts, &users, x).then_some(users),
+    }
+}
+
+/// Whether [`sink`] moves `let x = r`, placed above `e`, into an
+/// alternative of a `case` in `e`.
+fn reaches_alternative(r: &Expr, e: &Expr, x: u32) -> bool {
+    match e {
+        Expr::LetStrict(_, r2, rest) | Expr::Let(Bind::NonRec(_, r2), rest) if !mentions(r2, x) => {
+            reaches_alternative(r, rest, x)
+        }
+        Expr::LetStrict(_, r2, rest) if !mentions(rest, x) => reaches_alternative(r, r2, x),
+        Expr::Case(s, _, _, alts) if !mentions(s, x) => targets(r, alts, x).is_some(),
+        _ => false,
+    }
+}
+
+/// Whether every path through `e` uses `x` (an approximation from above:
+/// only the `let`s and `case`s of the spine are followed).
+fn used_on_every_path(e: &Expr, x: u32) -> bool {
+    match e {
+        Expr::Case(s, _, _, alts) => {
+            mentions(s, x) || alts.iter().all(|a| used_on_every_path(&a.rhs, x))
+        }
+        Expr::LetStrict(_, r, k) | Expr::Let(Bind::NonRec(_, r), k) => {
+            mentions(r, x) || used_on_every_path(k, x)
+        }
+        e => mentions(e, x),
+    }
+}
+
+fn occurrences(e: &Expr, x: u32) -> usize {
+    let mut n = 0;
+    walk(e, &mut |s| {
+        if let Expr::Var(v) = s
+            && v.id == x
+        {
+            n += 1;
+        }
+    });
+    n
 }
 
 fn mentions(e: &Expr, x: u32) -> bool {
@@ -992,16 +1068,18 @@ fn sink(b: Binder, r: Expr, body: Expr, n: &mut usize, next: &mut u32) -> Expr {
         Expr::Let(Bind::NonRec(b2, r2), rest) if !mentions(&r2, x) => {
             Expr::Let(Bind::NonRec(b2, r2), Box::new(sink(b, r, *rest, n, next)))
         }
+        // Into the value of a strict binding when only that uses it, if
+        // the binding reaches an alternative there (BUG-0035: the action
+        // of `when c act` as a step of a `do` block, used in the
+        // alternatives of the `case` on `c`). Merely moved into the value,
+        // it would be floated out again by the simplifier.
+        Expr::LetStrict(b2, r2, rest) if !mentions(&rest, x) && reaches_alternative(&r, &r2, x) => {
+            Expr::LetStrict(b2, Box::new(sink(b, r, *r2, n, next)), rest)
+        }
         Expr::Case(s, cb, t, alts) if !mentions(&s, x) => {
-            let users: Vec<usize> = (0..alts.len())
-                .filter(|&i| mentions(&alts[i].rhs, x))
-                .collect();
-            if users.is_empty()
-                || (users.len() > 1
-                    && !(copyable(&r) && users.iter().any(|&i| forces(&alts[i].rhs, x))))
-            {
+            let Some(users) = targets(&r, &alts, x) else {
                 return keep(b, r, Expr::Case(s, cb, t, alts));
-            }
+            };
             *n += 1;
             let first = users[0];
             let alts = alts
