@@ -1,0 +1,5 @@
+(module Main)
+(test "no capabilities" (pure ()))
+(test "one capability" ((fs : (Cap FileSystem))) (pure ()))
+(test "erased and unnamed" ((0 clk : (Cap Clock)) (_ : (Cap Random))) (pure ()))
+(tests (test "in a block" ((net : (Cap Network))) (pure ())))

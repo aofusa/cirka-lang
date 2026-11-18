@@ -427,6 +427,8 @@ pub enum Prim {
     Lazy,
     Delay,
     Force,
+    /// A capability (spec-v0.0.7.md §1): a token without a value.
+    Cap,
     // Threads (spec-v0.0.5.md §1): the mark of values bound to their
     // thread, and the runtime's thread handles, `MVar`s and channels.
     ThreadBound,
@@ -606,6 +608,7 @@ impl Prim {
         ("Lazy", Prim::Lazy),
         ("primDelay", Prim::Delay),
         ("primForce", Prim::Force),
+        ("Cap", Prim::Cap),
         ("ThreadBound", Prim::ThreadBound),
         ("threadBound", Prim::ThreadBoundVal),
         ("Thread", Prim::Thread),
@@ -664,6 +667,7 @@ impl Prim {
                 | Prim::In
                 | Prim::RefIn
                 | Prim::Lazy
+                | Prim::Cap
                 | Prim::ThreadBound
                 | Prim::Thread
                 | Prim::MVar
@@ -835,6 +839,9 @@ pub struct Builtins {
     pub refine: Option<GName>,
     // Threads (spec-v0.0.5.md §1).
     pub send_trait: Option<GName>,
+    /// `Cap` and `Capability` (spec-v0.0.7.md §1).
+    pub cap: Option<GName>,
+    pub capability: Option<GName>,
     pub maybe: Option<GName>,
     pub nothing: Option<GName>,
     pub just: Option<GName>,

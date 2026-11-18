@@ -136,10 +136,13 @@ pub enum DeclKind {
         name_span: Span,
         ty: Expr,
     },
-    /// `test "name" = body` (12-cirkalang.md §11): `body : IO ()`.
+    /// `test "name" = body` (12-cirkalang.md §11): `body : IO ()`. The
+    /// parameters are the capabilities the test receives (spec-v0.0.7.md
+    /// §1.2): `test "name" (fs : Cap FileSystem) = body`.
     Test {
         name: String,
         name_span: Span,
+        params: Vec<LamBinder>,
         body: Expr,
     },
     /// `tests where { decls }`: declarations that exist only in test builds.

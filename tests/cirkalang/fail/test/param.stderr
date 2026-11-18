@@ -1,0 +1,12 @@
+error[E1117]: a test can only receive capabilities
+ --> tests/cirkalang/fail/test/param.cirka:7:23
+  |
+7 | test "takes a number" (n : Int) = pure ()
+  |                       ^^^^^^^^^ not a capability
+  = help: write `(fs : Cap FileSystem)`: the test runner gives a test only the capabilities it asks for (spec-v0.0.7.md §1.2)
+error[E1117]: a test can only receive capabilities
+ --> tests/cirkalang/fail/test/param.cirka:9:36
+  |
+9 | test "takes a name without a type" x = pure ()
+  |                                    ^ not a capability
+  = help: write `(fs : Cap FileSystem)`: the test runner gives a test only the capabilities it asks for (spec-v0.0.7.md §1.2)

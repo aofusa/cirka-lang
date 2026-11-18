@@ -337,6 +337,9 @@ impl<'a> Lower<'a> {
                     // Threads (spec-v0.0.5.md §1.5): the mark is a token,
                     // handles and channels are the runtime's objects.
                     (Some(Prim::ThreadBound), _) => self.unit_ty(),
+                    // Capabilities (spec-v0.0.7.md §1.6) are unboxed
+                    // tokens: constants without reference counts.
+                    (Some(Prim::Cap), _) => c::Type::unit(),
                     (Some(Prim::Thread | Prim::MVar | Prim::Chan | Prim::Handle), _) => {
                         c::Type::Any
                     }
@@ -1152,6 +1155,27 @@ impl<'a> Lower<'a> {
         }
     }
 
+    /// The capabilities that `main` receives at run time (spec-v0.0.7.md
+    /// §1.2): its leading `Cap c` parameters that are not erased.
+    fn main_caps(&self, m: GName) -> usize {
+        let Some(ty) = self.p.type_of(m) else {
+            return 0;
+        };
+        let mut t = self.ev().eval(&Vec::new(), ty);
+        let (mut n, mut lvl) = (0, 0);
+        while let Val::Pi(_, mult, Icit::Expl, dom, c) = self.whnf(&t)
+            && matches!(self.whnf(&dom), Val::Neutral(Head::Global(g), _)
+                if self.p.prim_of(g) == Some(Prim::Cap))
+        {
+            if mult != Mult::Zero {
+                n += 1;
+            }
+            t = self.ev().inst(&c, Val::var(lvl));
+            lvl += 1;
+        }
+        n
+    }
+
     fn unit_ty(&self) -> c::Type {
         match self.p.builtins.unit {
             Some(u) => c::Type::con(self.p.name(u)),
@@ -1443,6 +1467,7 @@ impl<'a> Lower<'a> {
             | Prim::In
             | Prim::RefIn
             | Prim::Lazy
+            | Prim::Cap
             | Prim::ThreadBound
             | Prim::Thread
             | Prim::MVar
@@ -2491,6 +2516,16 @@ impl<'a> Lower<'a> {
         }
         if let (Some(m), Some(unit)) = (self.p.main, self.p.builtins.unit) {
             let r = self.id("r");
+            // The capabilities that `main` receives (spec-v0.0.7.md §1.2).
+            let caps = self.main_caps(m);
+            let main_e = if caps == 0 {
+                c::Expr::Global(self.gname(m))
+            } else {
+                app(
+                    c::Expr::Global(self.gname(m)),
+                    vec![c::Expr::Lit(c::Lit::Unit); caps],
+                )
+            };
             prog.binds.push(c::TopBind {
                 name: "main".into(),
                 ty: c::Type::int(),
@@ -2498,7 +2533,7 @@ impl<'a> Lower<'a> {
                     c::Binder::new(r, c::Mult::Many, c::Type::con(self.p.name(unit))),
                     Box::new(app(
                         c::Expr::Cast(
-                            Box::new(c::Expr::Global(self.gname(m))),
+                            Box::new(main_e),
                             c::Type::fun(
                                 c::Mult::Many,
                                 c::Type::unit(),

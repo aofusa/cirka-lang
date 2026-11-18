@@ -57,6 +57,8 @@ pub struct Test {
     pub module: String,
     pub name: String,
     pub def: GName,
+    /// The capabilities it receives (spec-v0.0.7.md §1.2).
+    pub caps: Vec<String>,
     pub span: Span,
 }
 

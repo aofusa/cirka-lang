@@ -1,0 +1,12 @@
+-- Tests in source files (12-cirkalang.md §11) and the capabilities they
+-- receive (spec-v0.0.7.md §1.2).
+module Main
+
+test "no capabilities" = pure ()
+
+test "one capability" (fs : Cap FileSystem) = pure ()
+
+test "erased and unnamed" (0 clk : Cap Clock) (_ : Cap Random) = pure ()
+
+tests where
+  test "in a block" (net : Cap Network) = pure ()

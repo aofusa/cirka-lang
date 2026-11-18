@@ -83,7 +83,15 @@ fn decl(d: &Decl) -> String {
             format!("({p}def {name} ({}) {}{m})", ps.join(" "), expr(rhs))
         }
         DeclKind::Prim { name, ty, .. } => format!("({p}prim {name} {})", expr(ty)),
-        DeclKind::Test { name, body, .. } => format!("({p}test {name:?} {})", expr(body)),
+        DeclKind::Test {
+            name, params, body, ..
+        } if params.is_empty() => format!("({p}test {name:?} {})", expr(body)),
+        DeclKind::Test {
+            name, params, body, ..
+        } => {
+            let ps: Vec<String> = params.iter().map(binder).collect();
+            format!("({p}test {name:?} ({}) {})", ps.join(" "), expr(body))
+        }
         DeclKind::Tests(ds) => {
             let ds: Vec<String> = ds.iter().map(decl).collect();
             format!("({p}tests {})", ds.join(" "))
@@ -197,6 +205,14 @@ fn op(o: &OpRef) -> String {
     }
 }
 
+fn binder(b: &LamBinder) -> String {
+    let n = b.name.clone().unwrap_or("_".into());
+    match &b.ty {
+        Some(t) => format!("({}{n} : {})", mult(&b.mult), expr(t)),
+        None => n,
+    }
+}
+
 pub fn expr(e: &Expr) -> String {
     match &e.kind {
         ExprKind::Var(q) => q.to_string(),
@@ -218,16 +234,7 @@ pub fn expr(e: &Expr) -> String {
             format!("({} {})", expr(h), a.join(" "))
         }
         ExprKind::Lam(bs, body) => {
-            let b: Vec<String> = bs
-                .iter()
-                .map(|b| {
-                    let n = b.name.clone().unwrap_or("_".into());
-                    match &b.ty {
-                        Some(t) => format!("({}{n} : {})", mult(&b.mult), expr(t)),
-                        None => n,
-                    }
-                })
-                .collect();
+            let b: Vec<String> = bs.iter().map(binder).collect();
             format!("(\\ ({}) {})", b.join(" "), expr(body))
         }
         ExprKind::Let(bs, body) => {

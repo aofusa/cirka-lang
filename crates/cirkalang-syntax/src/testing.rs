@@ -3,7 +3,8 @@
 //! `test "name" = e` and `tests where { decls }` are removed right after
 //! parsing in normal builds ([`strip`]). Test builds ([`expand`]) turn each
 //! test into a private definition `test$N : IO ()` and lift the declarations
-//! of `tests` blocks to the top level.
+//! of `tests` blocks to the top level. A test with capability parameters
+//! (spec-v0.0.7.md §1.2) becomes `test$N : Cap K1 -> ... -> IO ()`.
 
 use crate::ast::*;
 use cirka_diagnostics::{Diagnostic, Span};
@@ -16,7 +17,34 @@ pub struct TestDecl {
     pub name: String,
     /// The generated definition (`test$N`).
     pub def: String,
+    /// The capabilities it receives, in order (`"FileSystem"`, ...).
+    pub caps: Vec<String>,
     pub span: Span,
+}
+
+/// The constructors of the Prelude's `Capability` (spec-v0.0.7.md §1.1).
+pub const CAPABILITIES: [&str; 6] = [
+    "FileSystem",
+    "Network",
+    "Clock",
+    "Random",
+    "Process",
+    "Environment",
+];
+
+/// `K` of the type `Cap K`.
+fn capability(ty: &Expr) -> Option<String> {
+    let ExprKind::App(f, k) = &ty.kind else {
+        return None;
+    };
+    match (&f.kind, &k.kind) {
+        (ExprKind::Var(c), ExprKind::Var(k))
+            if c.name == "Cap" && CAPABILITIES.contains(&k.name.as_str()) =>
+        {
+            Some(k.name.clone())
+        }
+        _ => None,
+    }
 }
 
 /// The result of [`expand`].
@@ -85,6 +113,7 @@ fn test(out: &mut Expanded, seen: &mut HashMap<String, Span>, decls: &mut Vec<De
     let DeclKind::Test {
         name,
         name_span,
+        params,
         body,
     } = d.kind
     else {
@@ -113,12 +142,56 @@ fn test(out: &mut Expanded, seen: &mut HashMap<String, Span>, decls: &mut Vec<De
         ),
         span: sp,
     };
+    // The capabilities: `test "t" (fs : Cap FileSystem) = e` is
+    // `test$N : (fs : Cap FileSystem) -> IO ()` with `test$N fs = e`.
+    let mut caps = Vec::new();
+    let mut pats = Vec::new();
+    let mut ty = io_unit;
+    let mut bad = false;
+    for b in params.iter().rev() {
+        let Some(k) = b.ty.as_ref().and_then(capability) else {
+            out.errors.push(
+                Diagnostic::error("a test can only receive capabilities")
+                    .with_code("E1117")
+                    .with_label(b.span, "not a capability")
+                    .with_help(
+                        "write `(fs : Cap FileSystem)`: the test runner gives a test only the \
+                         capabilities it asks for (spec-v0.0.7.md §1.2)",
+                    ),
+            );
+            bad = true;
+            continue;
+        };
+        caps.push(k);
+        pats.push(Pat {
+            kind: match &b.name {
+                Some(x) => PatKind::Var(x.clone()),
+                None => PatKind::Wild,
+            },
+            span: b.span,
+        });
+        ty = Expr {
+            kind: ExprKind::Pi {
+                mult: b.mult,
+                implicit: false,
+                names: b.name.iter().map(|x| (x.clone(), b.span)).collect(),
+                dom: Box::new(b.ty.clone().expect("a capability has a type")),
+                cod: Box::new(ty),
+            },
+            span: sp,
+        };
+    }
+    if bad {
+        return;
+    }
+    caps.reverse();
+    pats.reverse();
     decls.push(Decl {
         private: true,
         origin: Origin::Source,
         kind: DeclKind::Sig {
             names: vec![(def.clone(), name_span)],
-            ty: io_unit,
+            ty,
             totality: None,
             trusted: None,
         },
@@ -130,7 +203,7 @@ fn test(out: &mut Expanded, seen: &mut HashMap<String, Span>, decls: &mut Vec<De
         kind: DeclKind::Clause {
             name: def.clone(),
             name_span,
-            pats: Vec::new(),
+            pats,
             rhs: body,
             measure: None,
         },
@@ -140,6 +213,7 @@ fn test(out: &mut Expanded, seen: &mut HashMap<String, Span>, decls: &mut Vec<De
     out.tests.push(TestDecl {
         name,
         def,
+        caps,
         span: name_span,
     });
 }

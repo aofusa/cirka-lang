@@ -10,6 +10,7 @@ pub mod rast;
 
 use cirka_diagnostics::{Diagnostic, FileId, SourceMap, Span};
 use cirkalang_syntax::ast;
+use cirkalang_syntax::testing::CAPABILITIES;
 use rast::*;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -473,6 +474,7 @@ impl<'s> Resolver<'s> {
                         module: m.clone(),
                         name: t.name.clone(),
                         def: g,
+                        caps: t.caps.clone(),
                         span: t.span,
                     });
                 }
@@ -481,14 +483,17 @@ impl<'s> Resolver<'s> {
         out
     }
 
-    /// Replaces `main` by the test main of the root module:
+    /// Replaces `main` by the test main of the root module, which receives
+    /// every capability and gives each test those it asks for
+    /// (spec-v0.0.7.md §1.2):
     ///
     /// ```text
-    /// main$test = do n <- argCount
+    /// main$test : Cap FileSystem -> ... -> Cap Environment -> IO ()
+    /// main$test cap$FileSystem ... = do n <- argCount
     ///                if n == 0 then exit 2 else do
     ///                  a <- getArg 0
     ///                  if strEq a "--list" then do { putStrLn "M\tname"; ...; pure () }
-    ///                  else if strEq a "0" then test$0 else ... else exit 2
+    ///                  else if strEq a "0" then test$0 cap$K.. else ... else exit 2
     /// ```
     fn test_main(&mut self, prog: &mut Program, root: &str) {
         let sp = Span::new(self.st.loaded[root].file, 0, 0);
@@ -534,11 +539,19 @@ impl<'s> Resolver<'s> {
             })
             .collect();
         list.push(Stmt::Expr(app(g(pure), vec![e(ExprKind::Unit)])));
+        // The capabilities, when the Prelude has them (a test that asks
+        // for one without them is ill-typed already).
+        let caps: Option<(GName, Vec<GName>)> = prelude("Cap").and_then(|c| {
+            let ks: Option<Vec<GName>> = CAPABILITIES.iter().map(|k| prelude(k)).collect();
+            Some((c, ks?))
+        });
+        let cap_var = |k: &str| format!("cap${k}");
         let mut run = fail.clone();
         for (i, t) in prog.tests.iter().enumerate().rev() {
+            let args = t.caps.iter().map(|k| local(&cap_var(k))).collect();
             run = e(ExprKind::If(
                 Box::new(app(g(str_eq), vec![local("a"), str_lit(i.to_string())])),
-                Box::new(g(t.def)),
+                Box::new(app(g(t.def), args)),
                 Box::new(run),
             ));
         }
@@ -562,11 +575,30 @@ impl<'s> Resolver<'s> {
             ))),
         ]));
         let name = self.declare(root, "main$test", GKind::Def, sp, true);
+        let mut sig = io_unit();
+        let mut pats = Vec::new();
+        if let Some((cap, kinds)) = caps {
+            for (k, kg) in CAPABILITIES.iter().zip(kinds).rev() {
+                sig = e(ExprKind::Pi {
+                    mult: None,
+                    implicit: false,
+                    name: None,
+                    name_span: sp,
+                    dom: Box::new(app(g(cap), vec![g(kg)])),
+                    cod: Box::new(sig),
+                });
+                pats.push(Pat {
+                    kind: PatKind::Var(cap_var(k)),
+                    span: sp,
+                });
+            }
+            pats.reverse();
+        }
         let def = Def {
             name,
-            sig: io_unit(),
+            sig,
             clauses: vec![Clause {
-                pats: Vec::new(),
+                pats,
                 rhs: body,
                 span: sp,
                 measure: None,

@@ -1,0 +1,13 @@
+-- Capabilities cost nothing (spec-v0.0.7.md §1.6): this program passes an
+-- erased capability through a recursive function and to the library;
+-- `cap_none.cirka` is the same program without it. Both compile to the
+-- same MIR at -O2 (tests/cirkalang.rs).
+module Main
+
+countdown : (0 c : Cap Clock) -> Int -> IO ()
+countdown c n = if n == 0 then putStrLn "done" else do
+  printInt n
+  countdown c (n - 1)
+
+main : (0 c : Cap Clock) -> IO ()
+main c = countdown c 3

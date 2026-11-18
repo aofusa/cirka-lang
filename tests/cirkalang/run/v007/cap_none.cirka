@@ -1,0 +1,10 @@
+-- `cap_erased.cirka` without the capability (spec-v0.0.7.md §1.6).
+module Main
+
+countdown : Int -> IO ()
+countdown n = if n == 0 then putStrLn "done" else do
+  printInt n
+  countdown (n - 1)
+
+main : IO ()
+main = countdown 3

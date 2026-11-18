@@ -1,0 +1,7 @@
+error[E1200]: `main` must have type `IO ()`, after the capabilities it receives
+ --> tests/cirkalang/fail/cap/main_type.cirka:4:1
+  |
+4 | main : Cap FileSystem -> Int -> IO ()
+  | ^^^^
+  = note: its type is `Cap FileSystem -> Int -> IO Unit`
+  = help: write `main : IO ()`, or `main : Cap FileSystem -> Cap Network -> IO ()` to receive capabilities (spec-v0.0.7.md §1.2)

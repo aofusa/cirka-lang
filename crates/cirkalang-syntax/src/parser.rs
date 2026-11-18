@@ -541,11 +541,20 @@ impl Parser {
                 let Tok::Str(name) = self.bump().tok else {
                     unreachable!()
                 };
+                // The capabilities it receives (spec-v0.0.7.md §1.2); what
+                // is not a capability is reported when tests are expanded.
+                let mut params = Vec::new();
+                while matches!(self.peek(), Tok::LParen | Tok::Underscore)
+                    || matches!(self.peek(), Tok::LIdent(p, _) if p.is_empty())
+                {
+                    params.push(self.lam_binder()?);
+                }
                 self.expect(&Tok::Equals, "`=`")?;
                 let body = self.expr()?;
                 DeclKind::Test {
                     name,
                     name_span,
+                    params,
                     body,
                 }
             }

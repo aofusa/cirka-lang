@@ -56,6 +56,13 @@ data Dec (p : Type) = Yes p | No (p -> Void)
 data So : Bool -> Type where
   Oh : So True
 
+-- Capabilities (spec-v0.0.7.md §1): the kinds of effect on the world
+-- outside the program. A value of `Cap c` is the authority to have effects
+-- of kind `c`; a program cannot make one: `main` and the tests receive the
+-- ones they need as parameters. At run time it is `()`.
+data Capability = FileSystem | Network | Clock | Random | Process | Environment deriving (Eq, Show)
+prim Cap : Capability -> Type
+
 -- `rewrite` (spec-v0.0.4.md §2.2): the identity at run time.
 prim primRewrite : {a : Type} -> (0 p : a -> LType) -> (0 x : a) -> (0 y : a) -> (0 eq : x = y) -> (1 v : p y) -> p x
 

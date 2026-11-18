@@ -1,0 +1,5 @@
+-- `main` receives capabilities and nothing else (spec-v0.0.7.md §1.2).
+module Main
+
+main : Cap FileSystem -> Int -> IO ()
+main fs n = pure ()

@@ -334,6 +334,8 @@ impl<'r> Elab<'r> {
             subset_of: f("subsetOf"),
             refine: f("primRefine"),
             send_trait: f("Send"),
+            cap: f("Cap"),
+            capability: f("Capability"),
             maybe: f("Maybe"),
             nothing: f("Nothing"),
             just: f("Just"),
@@ -1270,6 +1272,17 @@ impl<'r> Elab<'r> {
                         );
                     // The result type is not reported again as unknown.
                     self.fail_metas(&self.quote(cx, expected));
+                } else if let Some(k) = self.capability_of(expected) {
+                    let k = self.prog.short_name(k);
+                    d = d
+                        .with_note(format!(
+                            "this needs the capability `Cap {k}`, which only `main` and tests \
+                             receive"
+                        ))
+                        .with_help(format!(
+                            "take it as a parameter, `(0 c : Cap {k}) ->`, and pass it here; \
+                             `main` receives it as `main : Cap {k} -> IO ()` (spec-v0.0.7.md §1.2)"
+                        ));
                 }
                 self.report(d);
                 false
@@ -3919,10 +3932,18 @@ impl<'r> Elab<'r> {
         let items: Vec<&rast::Item> = rp.modules.iter().flat_map(|m| m.items.iter()).collect();
         let is_type_prim =
             |g: GName| Prim::from_name(&rp.info(g).name).is_some_and(|p| p.is_type());
+        // A primitive type whose signature uses a data type (`Cap :
+        // Capability -> Type`) comes after the data type signatures.
+        let uses_data = |t: &rast::Expr| {
+            let mut found = false;
+            rast::globals_in_expr(t, &mut |g| found |= rp.info(g).kind == rast::GKind::Data);
+            found
+        };
         // 1. Primitive types and data type signatures.
         for it in &items {
             if let rast::Item::Prim(g, t) = it
                 && is_type_prim(*g)
+                && !uses_data(t)
             {
                 self.prim(*g, t);
             }
@@ -3956,6 +3977,14 @@ impl<'r> Elab<'r> {
         for it in &items {
             if let rast::Item::Data(d) = it {
                 self.data_sig(d);
+            }
+        }
+        for it in &items {
+            if let rast::Item::Prim(g, t) = it
+                && is_type_prim(*g)
+                && uses_data(t)
+            {
+                self.prim(*g, t);
             }
         }
         // The type aliases of extern blocks (`type T = t`, spec-v0.0.6.md
@@ -4068,7 +4097,8 @@ impl<'r> Elab<'r> {
                 self.check_lazy_value(d.name);
             }
         }
-        // `main : IO ()`.
+        // `main : IO ()`, or `Cap c1 -> ... -> Cap cn -> IO ()`: the
+        // capabilities are given at run time (spec-v0.0.7.md §1.2).
         if let Some(m) = rp.main
             && let (Some(io), Some(unit)) = (self.prog.builtins.io, self.prog.builtins.unit)
             && let Some(ty) = self.global_type(m)
@@ -4078,12 +4108,49 @@ impl<'r> Elab<'r> {
                 vec![Elim::App(Val::Data(unit, Vec::new()), Icit::Expl)],
             );
             let cx = Cxt::default();
-            if self.ev().unify(0, &want, &ty).is_err() {
+            let mut res = ty.clone();
+            let mut lvl = 0;
+            while let Val::Pi(_, _, Icit::Expl, dom, c) = self.whnf(&res)
+                && self.capability_of(&dom).is_some()
+            {
+                res = self.ev().inst(&c, Val::var(lvl));
+                lvl += 1;
+            }
+            if self.ev().unify(lvl, &want, &res).is_err() {
                 self.report(
-                    self.error("E1200", rp.info(m).span, "`main` must have type `IO ()`")
-                        .with_note(format!("its type is `{}`", self.show(&cx, &ty))),
+                    self.error(
+                        "E1200",
+                        rp.info(m).span,
+                        "`main` must have type `IO ()`, after the capabilities it receives",
+                    )
+                    .with_note(format!("its type is `{}`", self.show(&cx, &ty)))
+                    .with_help(
+                        "write `main : IO ()`, or `main : Cap FileSystem -> Cap Network -> IO ()` \
+                         to receive capabilities (spec-v0.0.7.md §1.2)",
+                    ),
                 );
             }
+        }
+    }
+
+    /// `Cap c` for a constructor `c` of `Capability` (spec-v0.0.7.md §1).
+    pub(crate) fn capability_of(&self, ty: &Val) -> Option<GName> {
+        let cap = self.prog.builtins.cap?;
+        let Val::Neutral(Head::Global(g), sp) = self.whnf(ty) else {
+            return None;
+        };
+        let [Elim::App(k, Icit::Expl)] = sp.as_slice() else {
+            return None;
+        };
+        if g != cap {
+            return None;
+        }
+        match self.whnf(k) {
+            Val::Con(c, args) if args.is_empty() => match self.prog.get(c) {
+                Global::Con { data, .. } if Some(*data) == self.prog.builtins.capability => Some(c),
+                _ => None,
+            },
+            _ => None,
         }
     }
 

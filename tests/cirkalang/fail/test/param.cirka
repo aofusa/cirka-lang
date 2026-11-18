@@ -1,0 +1,11 @@
+-- A test receives only capabilities (spec-v0.0.7.md §1.2, E1117).
+module Main
+
+main : IO ()
+main = pure ()
+
+test "takes a number" (n : Int) = pure ()
+
+test "takes a name without a type" x = pure ()
+
+test "takes a capability" (fs : Cap FileSystem) = pure ()

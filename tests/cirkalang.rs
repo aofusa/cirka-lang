@@ -250,7 +250,7 @@ fn cirkalang_run() {
     });
 }
 
-/// Ill-typed programs under tests/cirkalang/fail/{type,own,test,total,proof,refine,thread,net,vulkan,linalg}/ report
+/// Ill-typed programs under tests/cirkalang/fail/{type,own,test,total,proof,refine,thread,net,vulkan,linalg,cap}/ report
 /// the diagnostics in `.stderr` (`test/` is checked with its tests kept, as
 /// by `cirka check`).
 #[test]
@@ -258,6 +258,7 @@ fn cirkalang_type_errors() {
     let mut cases = Vec::new();
     for d in [
         "type", "own", "test", "total", "proof", "refine", "thread", "net", "vulkan", "linalg",
+        "cap",
     ] {
         cases.extend(discover(
             &repo_root().join("tests/cirkalang/fail").join(d),
@@ -302,6 +303,29 @@ fn cirkalang_proofs_are_erased() {
     assert!(
         with == without,
         "the proofs left code behind:\n{with}\n----\n{without}"
+    );
+}
+
+/// Capabilities cost nothing (FEAT-0260, spec-v0.0.7.md §1.6): a program
+/// that passes an erased capability compiles to the same MIR at -O2 as the
+/// same program without it.
+#[test]
+fn cirkalang_capabilities_are_erased() {
+    let root = repo_root().join("tests/cirkalang/run/v007");
+    let mir = |name: &str| {
+        let (core, _) = compile_cirka(&root.join(format!("{name}.cirka"))).unwrap();
+        let mut opts = cirka_driver::pipeline::Options::new("same");
+        opts.opt_level = 2;
+        opts.build_dir = cirka_testkit::work_dir("cirkalang-caps-erased", name);
+        let out = cirka_driver::pipeline::compile_core(core, "same", &opts, false)
+            .unwrap_or_else(|_| panic!("{name} does not compile"));
+        cirka_mir::print::print_module(&out.mir)
+    };
+    let with = mir("cap_erased");
+    let without = mir("cap_none");
+    assert!(
+        with == without,
+        "the capabilities left code behind:\n{with}\n----\n{without}"
     );
 }
 
