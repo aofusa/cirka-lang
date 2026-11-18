@@ -1272,6 +1272,40 @@ fn opt_keeps_polymorphic_aliases_in_dictionaries() {
 // ---- FEAT-0261: evidence passing (spec-v0.0.7.md §2.7) ----
 
 #[test]
+fn opt_applies_an_action_chosen_by_a_case_in_its_branches() {
+    // BUG-0034: `if c then out i else pure ()` as a step of a `do` block
+    // binds the chosen action, then runs it. The action is called only
+    // there, first: it is applied in the branches of the `case`, not built
+    // as a closure in each iteration.
+    let src = format!(
+        "{PRELUDE}(data U () (MkU))
+         (data IO (a) :newtype (IO# (-> Unit# a)))
+         (extern out (Int#) Unit#)
+         (def step (-> Int# Unit# Int#)
+           (lam ((i Int#) (w Unit#))
+             (case i (k Int#) Int#
+               (0 0)
+               (_ (let! (t (IO U) (case (prim eq (prim rem i 3) 0) (b Int#) (IO U)
+                      (0 (cast (lam ((a Unit#)) (con MkU ())) (IO U)))
+                      (_ (cast (lam ((a Unit#)) (let! (v Unit# (extern out i)) (con MkU ())))
+                               (IO U)))))
+                    (let! (x U ((cast t (-> Unit# U)) w))
+                      (step (prim sub i 1) w)))))))
+         (extern arg () Int#)
+         (def main Int# (step (extern arg) unit))"
+    );
+    let mut p = parse_program(FileId(0), &src).unwrap();
+    assert!(lint::lint_program(&p).is_empty(), "{}", print_program(&p));
+    opt::optimize_with_stats(&mut p).unwrap();
+    let all = print_program(&p);
+    assert!(lint::lint_program(&p).is_empty(), "{all}");
+    assert!(
+        !all.contains("lam ((a") && all.contains("extern out"),
+        "{all}"
+    );
+}
+
+#[test]
 fn opt_gives_nested_newtypes_every_state() {
     // `Eff a` is a newtype over `Env -> IO a`: applying the environment
     // runs nothing, so `loop` gets one worker taking the environment and

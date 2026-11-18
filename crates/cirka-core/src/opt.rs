@@ -589,8 +589,6 @@ pub(crate) fn subst_ty(e: &Expr, v: &TyVar, t: &Type) -> Expr {
     }
 }
 
-/// `cast e t`, collapsing `cast (cast e t0) t` to `cast e t` (casts only
-/// change types, and the lint checks the end-to-end cast).
 /// A lambda, possibly under casts and type abstractions.
 fn is_lam(e: &Expr) -> bool {
     match e {
@@ -600,6 +598,31 @@ fn is_lam(e: &Expr) -> bool {
     }
 }
 
+/// Whether the first thing `e` evaluates is a call of the variable `x`
+/// (under casts and type applications) with atoms for arguments: `e`
+/// itself, or the right side of its first strict binding.
+fn calls_first(e: &Expr, x: u32) -> bool {
+    let e = match e {
+        Expr::LetStrict(_, r, _) => r,
+        e => e,
+    };
+    let mut h = e;
+    let mut applied = false;
+    loop {
+        match h {
+            Expr::App(f, a) if a.is_atom() => {
+                applied = true;
+                h = f;
+            }
+            Expr::Cast(y, _) | Expr::TyApp(y, _) => h = y,
+            Expr::Var(v) => return applied && v.id == x,
+            _ => return false,
+        }
+    }
+}
+
+/// `cast e t`, collapsing `cast (cast e t0) t` to `cast e t` (casts only
+/// change types, and the lint checks the end-to-end cast).
 fn cast(e: Expr, t: Type) -> Expr {
     match e {
         Expr::Cast(x, _) => Expr::Cast(x, t),
@@ -1634,6 +1657,26 @@ impl Simp<'_> {
         // and can be inlined at a single use (the steps of a `do` block).
         if is_lam(&r) {
             return self.let_lazy(b, r, k);
+        }
+        // let! t = e in let! x = (cast t τ) a.. in k  ⇒
+        // let! x = (cast e τ) a.. in k  when `t` is used only there
+        // (BUG-0034). Calling `t` is the first thing the rest evaluates
+        // (the arguments are atoms), so `e` is evaluated at the same point;
+        // a function chosen by a `case` (the action of `if c then print x
+        // else pure ()` as a step of a `do` block) is then applied in the
+        // branches instead of being built as a closure and called.
+        let o = self.occ(b.id.id);
+        if o.count == 1
+            && !o.in_lam
+            && b.mult != Mult::One
+            && !self.uses_linear(&r)
+            && matches!(&k, K::Expr(e) if calls_first(e, b.id.id))
+        {
+            self.hit();
+            self.st.inlined_once += 1;
+            self.bind(&b);
+            self.sub.insert(b.id.id, r);
+            return self.run(k);
         }
         // Neither does a cast of a known constructor to its own type.
         if let Expr::Cast(y, t) = &r
