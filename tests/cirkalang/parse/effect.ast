@@ -1,0 +1,5 @@
+(module Main)
+(effect Counter () (sig (tick) (-> Int ())))
+(private effect State ((s : Type)) (sig (get) s) (sig (put replace) (-> s ())))
+(sig (effect) (-> Int Int))
+(def effect (x) x)

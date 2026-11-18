@@ -1,0 +1,12 @@
+module Main
+
+effect Counter where
+  tick : Int -> ()
+
+private effect State (s : Type) where
+  get : s
+  put, replace : s -> ()
+
+-- A function named `effect` is still a function.
+effect : Int -> Int
+effect x = x

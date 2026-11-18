@@ -4,6 +4,7 @@
 pub mod ast;
 pub mod cextern;
 pub mod derive;
+pub mod effect;
 pub mod layout;
 pub mod lexer;
 pub mod parser;

@@ -253,6 +253,10 @@ impl State {
             );
         }
         let _ = expected;
+        // Effects (spec-v0.0.7.md §2.2) use `Std.Effect` (qualified); they
+        // are expanded first, since `tests` blocks may declare them.
+        let uses_effect =
+            cirkalang_syntax::effect::expand(&mut m) && name != cirkalang_syntax::effect::MODULE;
         if self.tests == TestMode::Strip {
             cirkalang_syntax::testing::strip(&mut m);
         } else {
@@ -274,6 +278,10 @@ impl State {
         }
         if uses_foreign && !imports.iter().any(|(n, _)| n == "Foreign") {
             imports.push(("Foreign".to_string(), Span::new(file, 0, 0)));
+        }
+        let effect_mod = cirkalang_syntax::effect::MODULE;
+        if uses_effect && !imports.iter().any(|(n, _)| n == effect_mod) {
+            imports.push((effect_mod.to_string(), Span::new(file, 0, 0)));
         }
         // Aliases (spec-v0.0.2.md §7.1): one module per alias, and an alias
         // is not the name of a module imported without one.
@@ -316,6 +324,7 @@ impl State {
             .filter(|(n, _)| {
                 n == "Prelude"
                     || (uses_foreign && n == "Foreign")
+                    || (uses_effect && n == effect_mod)
                     || m.imports
                         .iter()
                         .any(|i| i.alias.is_none() && i.path.join(".") == *n)
@@ -723,11 +732,12 @@ impl<'s> Resolver<'s> {
                         }
                     }
                     ast::DeclKind::Trait(t) => self.declare_trait(name, t, d.private),
-                    // Tests are removed or expanded when the module is
+                    // Tests and effects are expanded when the module is
                     // loaded; instances are declared when they are resolved.
                     ast::DeclKind::Fixity { .. }
                     | ast::DeclKind::Test { .. }
                     | ast::DeclKind::Tests(_)
+                    | ast::DeclKind::Effect(_)
                     | ast::DeclKind::Impl(_) => {}
                 }
             }
@@ -1141,10 +1151,11 @@ impl<'s> Resolver<'s> {
                         items.push(Item::Impl(it));
                     }
                 }
-                // Tests are removed or expanded when the module is loaded.
+                // Tests and effects are expanded when the module is loaded.
                 ast::DeclKind::Fixity { .. }
                 | ast::DeclKind::Test { .. }
-                | ast::DeclKind::Tests(_) => {}
+                | ast::DeclKind::Tests(_)
+                | ast::DeclKind::Effect(_) => {}
             }
         }
         for d in defs {

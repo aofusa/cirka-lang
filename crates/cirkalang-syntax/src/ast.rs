@@ -152,6 +152,9 @@ pub enum DeclKind {
     Extern(ExternBlock),
     /// `trait [ctx =>] Name params where { sigs; default clauses }`.
     Trait(TraitDecl),
+    /// `effect Name params where { op : type; .. }` (spec-v0.0.7.md
+    /// §2.2): expanded into a data type and functions before resolution.
+    Effect(EffectDecl),
     /// `impl [ctx =>] Trait args [where { clauses }]`.
     Impl(ImplDecl),
 }
@@ -259,6 +262,16 @@ pub struct TraitDecl {
     pub params: Vec<Param>,
     /// `Sig` and `Clause` declarations.
     pub items: Vec<Decl>,
+}
+
+/// An effect and the signatures of its operations.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EffectDecl {
+    pub name: String,
+    pub name_span: Span,
+    pub params: Vec<Param>,
+    /// `Sig` declarations.
+    pub ops: Vec<Decl>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

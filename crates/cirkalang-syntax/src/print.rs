@@ -124,6 +124,16 @@ fn decl(d: &Decl) -> String {
             sigs.extend(b.items.iter().map(extern_item));
             format!("({p}extern {abi:?}{link} {})", sigs.join(" "))
         }
+        DeclKind::Effect(e) => {
+            let ps: Vec<String> = e.params.iter().map(param).collect();
+            let ops: Vec<String> = e.ops.iter().map(decl).collect();
+            format!(
+                "({p}effect {} ({}) {})",
+                e.name,
+                ps.join(" "),
+                ops.join(" ")
+            )
+        }
         DeclKind::Trait(t) => {
             let ctx: Vec<String> = t.context.iter().map(expr).collect();
             let ps: Vec<String> = t.params.iter().map(param).collect();

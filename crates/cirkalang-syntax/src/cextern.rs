@@ -618,7 +618,7 @@ fn prelude_name(n: &str) -> QName {
     }
 }
 
-fn prelude(n: &str, span: Span) -> Expr {
+pub(crate) fn prelude(n: &str, span: Span) -> Expr {
     Expr {
         kind: ExprKind::Var(prelude_name(n)),
         span,
@@ -635,7 +635,7 @@ fn foreign(n: &str, span: Span) -> Expr {
     }
 }
 
-fn var(n: &str, span: Span) -> Expr {
+pub(crate) fn var(n: &str, span: Span) -> Expr {
     Expr {
         kind: ExprKind::Var(QName::simple(n)),
         span,
@@ -649,14 +649,14 @@ fn int(n: u128, span: Span) -> Expr {
     }
 }
 
-fn app(f: Expr, a: Expr, span: Span) -> Expr {
+pub(crate) fn app(f: Expr, a: Expr, span: Span) -> Expr {
     Expr {
         kind: ExprKind::App(Box::new(f), Box::new(a)),
         span,
     }
 }
 
-fn apps(f: Expr, args: Vec<Expr>, span: Span) -> Expr {
+pub(crate) fn apps(f: Expr, args: Vec<Expr>, span: Span) -> Expr {
     args.into_iter().fold(f, |f, a| app(f, a, span))
 }
 
@@ -667,7 +667,7 @@ fn ann(e: Expr, t: Expr, span: Span) -> Expr {
     }
 }
 
-fn arrow(a: Expr, b: Expr, span: Span) -> Expr {
+pub(crate) fn arrow(a: Expr, b: Expr, span: Span) -> Expr {
     Expr {
         kind: ExprKind::Pi {
             mult: None,
@@ -687,7 +687,7 @@ fn do_(stmts: Vec<Stmt>, span: Span) -> Expr {
     }
 }
 
-fn pvar(n: &str, span: Span) -> Pat {
+pub(crate) fn pvar(n: &str, span: Span) -> Pat {
     Pat {
         kind: PatKind::Var(n.into()),
         span,
@@ -701,14 +701,14 @@ fn pwild(span: Span) -> Pat {
     }
 }
 
-fn pcon(c: &str, args: Vec<Pat>, span: Span) -> Pat {
+pub(crate) fn pcon(c: &str, args: Vec<Pat>, span: Span) -> Pat {
     Pat {
         kind: PatKind::Con(QName::simple(c), args),
         span,
     }
 }
 
-fn sig(name: &str, span: Span, ty: Expr) -> DeclKind {
+pub(crate) fn sig(name: &str, span: Span, ty: Expr) -> DeclKind {
     DeclKind::Sig {
         names: vec![(name.to_string(), span)],
         ty,
@@ -717,7 +717,7 @@ fn sig(name: &str, span: Span, ty: Expr) -> DeclKind {
     }
 }
 
-fn clause(name: &str, span: Span, pats: Vec<Pat>, rhs: Expr) -> DeclKind {
+pub(crate) fn clause(name: &str, span: Span, pats: Vec<Pat>, rhs: Expr) -> DeclKind {
     DeclKind::Clause {
         name: name.to_string(),
         name_span: span,

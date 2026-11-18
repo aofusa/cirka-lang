@@ -563,6 +563,9 @@ impl Parser {
             {
                 DeclKind::Extern(self.extern_block()?)
             }
+            Tok::LIdent(path, w) if path.is_empty() && w == "effect" && self.at_effect() => {
+                DeclKind::Effect(self.effect_decl()?)
+            }
             Tok::LIdent(path, w)
                 if path.is_empty()
                     && w == "tests"
@@ -1110,6 +1113,100 @@ impl Parser {
                 Err(())
             }
         }
+    }
+
+    /// Whether `effect` starts an effect declaration (`effect Name params
+    /// where`) rather than a clause of a function named `effect`: the
+    /// name is followed by `where` before any `=`.
+    fn at_effect(&self) -> bool {
+        if !matches!(self.peek_at(1), Tok::UIdent(p, _) if p.is_empty()) {
+            return false;
+        }
+        for k in 2..256 {
+            match self.peek_at(k) {
+                Tok::Kw(Kw::Where) => return true,
+                Tok::Equals | Tok::VSemi | Tok::Semi | Tok::Eof => return false,
+                _ => {}
+            }
+        }
+        false
+    }
+
+    /// `effect Name params where { op : type; .. }` (spec-v0.0.7.md §2.2).
+    fn effect_decl(&mut self) -> R<EffectDecl> {
+        self.bump(); // effect
+        let (name, name_span) = self.type_name()?;
+        let params = self.type_params()?;
+        if !self.at_kw(Kw::Where) {
+            self.error_here("`where`");
+            return Err(());
+        }
+        self.bump();
+        let ops = self.block(|p| p.decl())?;
+        let mut seen: Vec<String> = Vec::new();
+        for d in &ops {
+            let DeclKind::Sig {
+                names,
+                ty,
+                totality: None,
+                trusted: None,
+            } = &d.kind
+            else {
+                self.errs.push(
+                    Diagnostic::error(
+                        "an effect may contain only the signatures of its operations",
+                    )
+                    .with_code("E1122")
+                    .with_label(d.span, "not allowed in an `effect` block"),
+                );
+                continue;
+            };
+            if d.private {
+                self.errs.push(
+                    Diagnostic::error("an operation is as visible as its effect")
+                        .with_code("E1122")
+                        .with_label(d.span, "make the whole `effect` private instead"),
+                );
+            }
+            for (n, sp) in names {
+                if seen.contains(n) {
+                    self.errs.push(
+                        Diagnostic::error(format!("the operation `{n}` is declared twice"))
+                            .with_code("E1122")
+                            .with_label(*sp, "already an operation of this effect"),
+                    );
+                }
+                seen.push(n.clone());
+            }
+            let mut t = ty;
+            while let ExprKind::Pi {
+                mult,
+                implicit,
+                names,
+                dom,
+                cod,
+            } = &t.kind
+            {
+                if mult.is_some() || *implicit || !names.is_empty() {
+                    self.errs.push(
+                        Diagnostic::error("the arguments of an operation are plain values")
+                            .with_code("E1122")
+                            .with_label(
+                                dom.span,
+                                "write `A -> B`: no implicit, dependent or linear arguments",
+                            ),
+                    );
+                    break;
+                }
+                t = cod;
+            }
+        }
+        Ok(EffectDecl {
+            name,
+            name_span,
+            params,
+            ops,
+        })
     }
 
     fn trait_decl(&mut self) -> R<TraitDecl> {
