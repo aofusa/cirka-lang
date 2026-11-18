@@ -1,0 +1,32 @@
+module Main
+
+-- Effect handlers (FEAT-0261, spec-v0.0.7.md §2.7): a loop that performs
+-- two operations of two effects in each step. The handlers are known where
+-- the loop is run: the list of handlers and the dictionaries of `Has` are
+-- specialized away and the handlers are inlined. direct.cirka calls the
+-- same handlers by name and rust/main.rs computes the same values.
+
+import Std.Effect
+
+effect Mix where
+  mix : Int -> Int -> Int
+
+effect Out where
+  out : Int -> ()
+
+-- `n` steps of the hash; every `every` steps, the hash so far is output.
+work : (Has Mix es, Has Out es) => Int -> Int -> Int -> Eff es Int
+work every i acc = if i == 0 then pure acc else do
+  h <- mix acc i
+  if i % every == 0 then out h else pure ()
+  work every (i - 1) h
+
+main : IO ()
+main = do
+  argc <- argCount
+  arg <- if argc > 0 then getArg 0 else pure "1000000"
+  let n = parseInt arg
+  let every = if n < 4 then 1 else n / 4
+  r <- runEff (handle (MkOut (\x => printInt x))
+    (handle (MkMix (\a, b => pure ((a * 31 + b) % 1000000007))) (work every n 0)))
+  printInt r

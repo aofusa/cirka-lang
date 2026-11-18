@@ -5,6 +5,8 @@
 #   mir/main.mir   hand-written MIR            (cirka-mir build)
 #   mir-perceus/main.mir  MIR without dup/drop (cirka-mir build --perceus)
 #   main.cirka     CirkaLang                   (cirka build)
+#   direct.cirka   CirkaLang without the abstraction main.cirka measures
+#                  (bench/effects: the handlers called by name)
 #   own.chs        aCHC with ownership         (achc build)
 #   plain.hs       plain Haskell: aCHC and GHC -O2
 #   rust/main.rs   Rust baseline               (rustc -C opt-level=3)
@@ -39,6 +41,9 @@ for name in "${names[@]}"; do
   fi
   if [ -f "$dir/main.cirka" ] && target/release/cirka build -O2 -o "$bin/$name-cirka" "$dir/main.cirka" 2>/dev/null; then
     cmds+=(-n cirka "$bin/$name-cirka $args")
+  fi
+  if [ -f "$dir/direct.cirka" ] && target/release/cirka build -O2 -o "$bin/$name-cirka-direct" "$dir/direct.cirka" 2>/dev/null; then
+    cmds+=(-n cirka-direct "$bin/$name-cirka-direct $args")
   fi
   if [ -f "$dir/own.chs" ] && target/release/achc build -O2 -o "$bin/$name-chs" "$dir/own.chs" 2>/dev/null; then
     cmds+=(-n achc-own "$bin/$name-chs $args")

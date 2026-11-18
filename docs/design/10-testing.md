@@ -101,12 +101,13 @@ bench/binary-trees/
   plain.hs        -- 素の Haskell (GHC -O2 と aCHC で比較)
   own.chs         -- 一意性・借用を使った aCHC 版
   main.cirka      -- CirkaLang 版
+  direct.cirka    -- 抽象を使わない CirkaLang 版 (bench/effects: ハンドラを名前で呼ぶ。抽象のコストを測る)
   mir/            -- 手書き MIR (M1 の基礎性能検証)
   rust/main.rs    -- Rust 版 (基準)
 ```
 
 - 題材: binary-trees, n-body, spectral-norm, fannkuch-redux, mandelbrot, fasta、配列の in-place 更新、文字列処理。
-  CirkaLang の実用版の題材: CUI ツール (v0.0.2)、HTTP サーバ (v0.0.5)。
+  CirkaLang の実用版の題材: CUI ツール (v0.0.2)、HTTP サーバ (v0.0.5)、効果のハンドラ (v0.0.7、`bench/effects`)。
 - 目標 (00-overview G3): `main.cirka` と `own.chs` が Rust の 1.5 倍以内、`plain.hs` が GHC -O2 と同等。
 - 計測値 (時間・最大 RSS) はチケットと `docs/design/bench-report.md` に記録する。CirkaLang は版ごとの推移も記録する。
 - 時間の差が数 % のときは、コード配置の揺らぎを疑う。関数やループの 32 バイト境界に対する位置だけで ±8% 変わることがある

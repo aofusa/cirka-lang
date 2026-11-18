@@ -1,0 +1,25 @@
+module Main
+
+-- The direct version of main.cirka (FEAT-0261): the loop calls the
+-- handlers by name, as normal functions.
+
+mixD : Int -> Int -> IO Int
+mixD a b = pure ((a * 31 + b) % 1000000007)
+
+outD : Int -> IO ()
+outD x = printInt x
+
+workD : Int -> Int -> Int -> IO Int
+workD every i acc = if i == 0 then pure acc else do
+  h <- mixD acc i
+  if i % every == 0 then outD h else pure ()
+  workD every (i - 1) h
+
+main : IO ()
+main = do
+  argc <- argCount
+  arg <- if argc > 0 then getArg 0 else pure "1000000"
+  let n = parseInt arg
+  let every = if n < 4 then 1 else n / 4
+  r <- workD every n 0
+  printInt r

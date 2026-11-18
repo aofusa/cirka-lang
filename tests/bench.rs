@@ -5,7 +5,8 @@
 //! expected output after it. Every implementation of the directory is
 //! compiled at -O2 and run by the MIR interpreter without leaks:
 //! `plain.hs` / `own.chs` with aCHC (unless the file says
-//! `-- achc: skip`), `main.cirka` with CirkaLang. `rust/main.rs` must print
+//! `-- achc: skip`), `main.cirka` (and `direct.cirka`, the version without
+//! the abstraction it measures) with CirkaLang. `rust/main.rs` must print
 //! the expectation too, and `plain.hs` under GHC when `CIRKA_GHC` is set.
 
 use cirka_diagnostics::{SourceMap, Style, render};
@@ -146,7 +147,7 @@ fn bench_programs() {
                             Err(e) => failed.push(format!("{bench}/ghc: {e}")),
                         }
                     }
-                    for file in ["plain.hs", "own.chs", "main.cirka"] {
+                    for file in ["plain.hs", "own.chs", "main.cirka", "direct.cirka"] {
                         let path = dir.join(file);
                         if !path.exists() || skipped(&path) {
                             continue;
