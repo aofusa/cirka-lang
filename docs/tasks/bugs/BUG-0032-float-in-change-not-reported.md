@@ -48,5 +48,9 @@ CIRKA_STATS=1 ./as 2000     # array_copies が 0 でない
 
 - 修正後: `bench/array-sort` の n = 1,000,000 は 0.09 秒 (ホスト)、n = 2,000 の確保は 9 回、複製は 0 回。
 - 他のパスの数え方も確かめた: strictify・speculate・特殊化 (`spec`・`sat`) は変えた束縛をすべて数える。
+- 2b3434f の早い dce が他にも隠れた依存を表に出していないか: 修正後のコンパイラで、ベンチの題材の最適化後の Core を早い dce の
+  あり・なしで比べた。CirkaLang の 7 題材は同じ (cli-grep は変数名だけ。binary-search と stencil は Z3 がなく比べていない)。
+  aCHC の 11 題材は、引数の読み取り (`read`) や文字の表など一度だけ実行されるライブラリのコードと `main` だけが異なり、
+  早い dce の方が特殊化が進んでいる (fannkuch-redux の `cirkaIntFrom$w`)。
 - MIR には、使われずに解放されるだけの確保 (`alloc` の直後の `drop`、`mkthunk` の直後の `drop`) を除く最適化がない。Core が
   死んだ束縛を残さない限り問題にならないが、残ると今回のように Perceus の `dup` が呼び出しをまたいで一意性を壊す。
