@@ -286,7 +286,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | ID | タイトル | 状態 | 優先度 | 依存 |
 |---|---|---|---|---|
 | [FEAT-0260](features/FEAT-0260-cl-capabilities.md) | ケイパビリティ | done | P1 | 0253 |
-| [FEAT-0261](features/FEAT-0261-cl-effects.md) | 効果システムの試作 | todo | P1 | 0260 |
+| [FEAT-0261](features/FEAT-0261-cl-effects.md) | 効果システムの試作 | in-progress | P1 | 0260 |
 | [FEAT-0262](features/FEAT-0262-cl-session-types.md) | セッション型 | todo | P2 | 0240 |
 | [FEAT-0263](features/FEAT-0263-cl-release-v007.md) | CirkaLang v0.0.7 リリース | todo | P0 | 0261 |
 

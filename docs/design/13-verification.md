@@ -161,8 +161,19 @@ main : Cap FileSystem -> Cap Network -> IO ()
 
 ### 4.2 効果システム (試作)
 
-- Koka 風の行多相な効果型 `a -> <io, exn | e> b`。ケイパビリティは効果の証拠 (evidence) として対応づける。
-- ハンドラは evidence passing でコンパイルし、末尾再開形 (tail-resumptive) のハンドラは通常の関数呼び出しと同じコストにする。継続を捕捉する一般のハンドラは Koka の実装 (Perceus と相性が良い) を参考にする。
+```
+effect State (s : Type) where
+  get : s
+  put : s -> ()
+
+counter : Has (State Int) es => Eff es Int
+```
+
+- 効果の計算 `Eff es a` の行 `es` は効果の型のリストで、行の多相は行の変数と所属の制約 `Has e es` で表す (Koka の `<state<int>|e>` に当たる)。
+  効果はハンドラ (操作の実装の組) の型で、`effect` 宣言がその型と操作を作る。確定した規則は [spec-v0.0.7.md](cirkalang/spec-v0.0.7.md) §2 (FEAT-0261、ADR-104)。
+- ハンドラは evidence passing でコンパイルし、末尾再開形 (tail-resumptive) の操作は、ハンドラが分かる所では通常の関数呼び出しと同じコストにする
+  (共通 Core の特殊化。06-ir.md)。継続を捕捉する一般のハンドラは v0.0.7 では扱わず、Koka の実装 (Perceus と相性が良い) を参考に v0.1.0 で評価する。
+- 能力は効果の本物のハンドラを作るときに要る。効果を使うコードには能力を渡さず、テストでは偽のハンドラを置く (spec-v0.0.7.md §2.6)。
 - 試作の結果で、v0.1.0 で効果システムを標準にするかを決める。
 
 ### 4.3 セッション型

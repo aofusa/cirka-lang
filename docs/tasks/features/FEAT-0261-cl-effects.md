@@ -1,6 +1,6 @@
 # FEAT-0261: 効果システムの試作
 
-- 状態: todo
+- 状態: in-progress
 - トラック: CirkaLang
 - マイルストーン: CirkaLang v0.0.7 効果・能力・セッション型
 - 優先度: P1
