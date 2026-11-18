@@ -1,0 +1,36 @@
+module Main
+
+-- E0507 (BUG-0033): an erased value is never computed, so it must be total.
+-- With `panic` or a function that is not total, a false equality could be
+-- "proved" and `primRewrite` would read an `Int` as a `String`.
+
+coerce : Int -> String
+coerce n = primRewrite (\t => t) String Int (panic "forged") n
+
+partial
+first : List a -> a
+first (x :: _) = x
+
+viaPartial : Int -> String
+viaPartial n = primRewrite (\t => t) String Int (first []) n
+
+spin : Int -> a
+spin n = spin n
+
+viaLoop : Int -> String
+viaLoop n = rewrite (spin 0 : String = Int) in n
+
+viaLet : Int -> String
+viaLet n =
+  let 0 p : (String = Int) = panic "forged"
+  in primRewrite (\t => t) String Int p n
+
+-- Allowed: the value of a run-time `let` is computed (here it panics before
+-- the rewrite), and types are not evidence.
+atRunTime : Int -> String
+atRunTime n =
+  let p : (String = Int) = first []
+  in primRewrite (\t => t) String Int p n
+
+main : IO ()
+main = putStrLn (coerce 42)

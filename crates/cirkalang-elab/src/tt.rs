@@ -705,6 +705,11 @@ pub struct Program {
     /// Where values are checked against refinement types: the `site` of
     /// each `primRefine` (spec-v0.0.4.md §3).
     pub refine_sites: Vec<RefineSite>,
+    /// The globals used in the erased values of definition bodies (proofs
+    /// and indices, not types), with the place of each use: an erased
+    /// value is never computed, so they must be total (spec-v0.0.4.md
+    /// §2.4, BUG-0033).
+    pub erased_uses: Vec<(GName, Span)>,
     /// Every refinement was proved or is checked at run time
     /// (`--contracts=verify|check`): the operations that rely on proofs
     /// may drop their checks (spec-v0.0.4.md §5). `false` (the default)

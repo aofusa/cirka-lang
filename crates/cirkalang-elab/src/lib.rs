@@ -42,6 +42,7 @@ pub fn elaborate_with(rp: &rast::Program, every_extern_item: bool) -> Elaborated
     }
     let mut prog = e.prog;
     prog.refine_sites = e.sites.take();
+    prog.erased_uses = e.erased_uses.take();
     if cfg!(debug_assertions)
         && let Err(errs) = lint::lint_program(&prog)
     {

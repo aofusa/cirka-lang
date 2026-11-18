@@ -127,8 +127,14 @@ pub fn check_with(
     wanted.sort();
     let in_types = used_in_types(prog);
     let proofs = proofs(prog);
+    let erased = erased_uses(prog);
     let refined = !prog.refine_sites.is_empty() && contracts != Contracts::Off;
-    if wanted.is_empty() && in_types.is_empty() && proofs.is_empty() && !refined {
+    if wanted.is_empty()
+        && in_types.is_empty()
+        && proofs.is_empty()
+        && erased.is_empty()
+        && !refined
+    {
         return Checked::default();
     }
     let metas = Metas::default();
@@ -159,6 +165,7 @@ pub fn check_with(
         .copied()
         .chain(in_types.iter().map(|(_, f)| *f))
         .chain(proofs.iter().copied())
+        .chain(erased.iter().map(|(f, _)| *f))
         .collect();
     t.explore(&roots);
     t.decide();
@@ -203,7 +210,80 @@ pub fn check_with(
             );
         }
     }
+    // Erased values (BUG-0033): a proof used in them is reported above
+    // (E0506), as is a definition declared `total` (E0504).
+    for (f, at) in &erased {
+        if proofs.contains(f) || wanted.contains(f) {
+            continue;
+        }
+        let why = match prog.get(*f) {
+            Global::Def { body: Some(_), .. } => t.status.get(f).cloned().flatten(),
+            _ => t.dep_why(*f),
+        };
+        let Some(why) = why else {
+            continue;
+        };
+        let panic = matches!(
+            prog.get(*f),
+            Global::Prim {
+                prim: Prim::Panic,
+                ..
+            }
+        );
+        let (msg, note) = if panic {
+            (
+                "`panic` is used in an erased position".to_string(),
+                "an erased value is never computed: `panic` there does not stop the program, \
+                 and its result would prove anything"
+                    .to_string(),
+            )
+        } else {
+            (
+                format!(
+                    "`{}` is used in an erased position but is not total",
+                    prog.short_name(*f)
+                ),
+                format!(
+                    "{}; an erased value is never computed, so its result would prove anything",
+                    t.explain(*f, &why)
+                ),
+            )
+        };
+        diags.push(
+            Diagnostic::error(msg)
+                .with_code("E0507")
+                .with_label(*at, "erased: never computed")
+                .with_note(note)
+                .with_help(
+                    "use total functions in erased values (proofs, indices), or compute the \
+                     value at run time (spec-v0.0.4.md §2.4)",
+                ),
+        );
+    }
     Checked { diags, unproved }
+}
+
+/// The globals used in erased values (BUG-0033), once per place: the
+/// definitions, `panic`, and the constructors (of data types that may
+/// not be strictly positive).
+fn erased_uses(prog: &Program) -> Vec<(GName, Span)> {
+    let mut seen = HashSet::new();
+    prog.erased_uses
+        .iter()
+        .filter(|(g, _)| {
+            matches!(
+                prog.get(*g),
+                Global::Def { .. }
+                    | Global::Con { .. }
+                    | Global::Prim {
+                        prim: Prim::Panic,
+                        ..
+                    }
+            )
+        })
+        .filter(|u| seen.insert(**u))
+        .copied()
+        .collect()
 }
 
 /// Definitions whose result is a proof: an equality or `Void`.

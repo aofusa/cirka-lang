@@ -26,6 +26,9 @@ pub(super) struct Pending {
     pub cx: Cxt,
     pub goal: Goal,
     pub span: Span,
+    /// Created in an erased value of a definition body that starts at
+    /// this level (BUG-0033): the instance is used as evidence.
+    pub erased: Option<u32>,
 }
 
 pub(super) enum Search {
@@ -164,6 +167,9 @@ impl<'r> Elab<'r> {
                         self.assign(p, &Term::Error);
                         return true;
                     }
+                    if let Some(entry) = p.erased {
+                        self.erased_instance(p, goal, &t, entry);
+                    }
                     self.assign(p, &t);
                     true
                 }
@@ -188,6 +194,57 @@ impl<'r> Elab<'r> {
                 }
             },
         }
+    }
+
+    /// An instance `t` used in an erased value starting at level `entry`
+    /// (BUG-0033): its methods are never called there, so they must be
+    /// total. An implementation's dictionary is a global, whose totality
+    /// `cirkalang-check` decides (with all its methods); a dictionary
+    /// received at run time (a constraint of the definition) is only known
+    /// to the callers, which E0507 reports.
+    fn erased_instance(&self, p: &Pending, goal: &Val, t: &Term, entry: u32) {
+        fn globals(t: &Term, out: &mut Vec<GName>) {
+            match t {
+                Term::Global(g) => out.push(*g),
+                Term::App(f, a, _) => {
+                    globals(f, out);
+                    globals(a, out);
+                }
+                _ => {}
+            }
+        }
+        let mut h = t;
+        while let Term::App(f, _, _) = h {
+            h = f;
+        }
+        if let Term::Var(i) = h
+            && let Some(l) = p.cx.lvl().checked_sub(1 + i)
+            && l < entry
+            && p.cx.mults.get(l as usize).is_some_and(|m| *m != Mult::Zero)
+        {
+            self.report(
+                self.error(
+                    "E0507",
+                    p.span,
+                    format!(
+                        "the instance for `{}` of the caller is used in an erased position",
+                        self.show(&p.cx, goal)
+                    ),
+                )
+                .with_note(
+                    "an erased value is never computed, so the methods used in it are never \
+                     called: the caller's implementation may panic or loop, and their results \
+                     would prove anything",
+                )
+                .with_help("pass the proof at run time, or use an implementation known here"),
+            );
+            return;
+        }
+        let mut gs = Vec::new();
+        globals(t, &mut gs);
+        self.erased_uses
+            .borrow_mut()
+            .extend(gs.into_iter().map(|g| (g, p.span)));
     }
 
     /// An erased variable of `cx` that the dictionary `t` passes at run

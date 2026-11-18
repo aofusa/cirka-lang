@@ -1,0 +1,28 @@
+error[E0507]: `panic` is used in an erased position
+ --> tests/cirkalang/fail/proof/erased_panic.cirka:8:46
+  |
+8 | coerce n = primRewrite (\t => t) String Int (panic "forged") n
+  |                                              ^^^^^ erased: never computed
+  = note: an erased value is never computed: `panic` there does not stop the program, and its result would prove anything
+  = help: use total functions in erased values (proofs, indices), or compute the value at run time (spec-v0.0.4.md §2.4)
+error[E0507]: `first` is used in an erased position but is not total
+  --> tests/cirkalang/fail/proof/erased_panic.cirka:15:50
+   |
+15 | viaPartial n = primRewrite (\t => t) String Int (first []) n
+   |                                                  ^^^^^ erased: never computed
+   = note: `first` is declared `partial`; an erased value is never computed, so its result would prove anything
+   = help: use total functions in erased values (proofs, indices), or compute the value at run time (spec-v0.0.4.md §2.4)
+error[E0507]: `spin` is used in an erased position but is not total
+  --> tests/cirkalang/fail/proof/erased_panic.cirka:21:22
+   |
+21 | viaLoop n = rewrite (spin 0 : String = Int) in n
+   |                      ^^^^ erased: never computed
+   = note: `spin` may not terminate; an erased value is never computed, so its result would prove anything
+   = help: use total functions in erased values (proofs, indices), or compute the value at run time (spec-v0.0.4.md §2.4)
+error[E0507]: `panic` is used in an erased position
+  --> tests/cirkalang/fail/proof/erased_panic.cirka:25:30
+   |
+25 |   let 0 p : (String = Int) = panic "forged"
+   |                              ^^^^^ erased: never computed
+   = note: an erased value is never computed: `panic` there does not stop the program, and its result would prove anything
+   = help: use total functions in erased values (proofs, indices), or compute the value at run time (spec-v0.0.4.md §2.4)

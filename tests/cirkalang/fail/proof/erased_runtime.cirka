@@ -1,0 +1,29 @@
+module Main
+
+-- E0507 (BUG-0033): a function value of the program applied in an erased
+-- position is never called, so its result is no evidence: it may panic or
+-- loop. The same holds for the methods of a trait parameter (its instance
+-- is only known to the caller).
+
+viaArgument : (() -> String = Int) -> Int -> String
+viaArgument f n = primRewrite (\t => t) String Int (f ()) n
+
+data Box : Type where
+  MkBox : (() -> String = Int) -> Box
+
+viaField : Box -> Int -> String
+viaField b n = case b of
+  MkBox f => primRewrite (\t => t) String Int (f ()) n
+
+trait Evidence a where
+  evidence : () -> a
+
+viaTrait : Evidence (String = Int) => Int -> String
+viaTrait n = primRewrite (\t => t) String Int (evidence ()) n
+
+-- Allowed: a function bound in the erased value itself.
+inside : (0 f : () -> String = Int) -> Int -> String
+inside f n = primRewrite (\t => t) String Int ((\g => g ()) f) n
+
+main : IO ()
+main = pure ()

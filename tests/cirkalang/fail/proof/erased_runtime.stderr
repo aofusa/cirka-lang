@@ -1,0 +1,21 @@
+error[E0507]: the run-time function `f` is applied in an erased position
+ --> tests/cirkalang/fail/proof/erased_runtime.cirka:9:52
+  |
+9 | viaArgument f n = primRewrite (\t => t) String Int (f ()) n
+  |                                                    ^^^^^^
+  = note: an erased value is never computed, so a call in it is never made: the function may panic or loop, and its result would prove anything
+  = help: pass the proof at run time, or take the function with multiplicity 0 (its callers then show that it is total)
+error[E0507]: the run-time function `f` is applied in an erased position
+  --> tests/cirkalang/fail/proof/erased_runtime.cirka:16:47
+   |
+16 |   MkBox f => primRewrite (\t => t) String Int (f ()) n
+   |                                               ^^^^^^
+   = note: an erased value is never computed, so a call in it is never made: the function may panic or loop, and its result would prove anything
+   = help: pass the proof at run time, or take the function with multiplicity 0 (its callers then show that it is total)
+error[E0507]: the instance for `Evidence (Equal String Int)` of the caller is used in an erased position
+  --> tests/cirkalang/fail/proof/erased_runtime.cirka:22:48
+   |
+22 | viaTrait n = primRewrite (\t => t) String Int (evidence ()) n
+   |                                                ^^^^^^^^
+   = note: an erased value is never computed, so the methods used in it are never called: the caller's implementation may panic or loop, and their results would prove anything
+   = help: pass the proof at run time, or use an implementation known here

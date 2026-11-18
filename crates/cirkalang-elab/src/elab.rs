@@ -207,6 +207,19 @@ pub struct Elab<'r> {
     shareable: RefCell<Vec<(Cxt, Val, Val, Span, &'static str)>>,
     /// Refinement sites (moved to `Program::refine_sites` at the end).
     pub sites: RefCell<Vec<RefineSite>>,
+    /// The erased value being elaborated (spec-v0.0.4.md §2.4, BUG-0033):
+    /// the level of the context where it starts. `None` at run time and in
+    /// the types outside erased values.
+    erased: Cell<Option<u32>>,
+    /// A type is being elaborated (inside an erased value or not): what
+    /// it uses is no evidence.
+    in_type: Cell<bool>,
+    /// The body of a definition is being elaborated (the functions in the
+    /// types of declarations must already be total, E0505).
+    in_body: Cell<bool>,
+    /// Globals used in erased values (moved to `Program::erased_uses` at
+    /// the end).
+    pub erased_uses: RefCell<Vec<(GName, Span)>>,
     /// Arguments of `ω` parameters whose type was not yet known to be
     /// resource-free, with what they consume (checked at the end).
     deferred_rf: RefCell<Vec<DeferredRf>>,
@@ -259,6 +272,7 @@ impl<'r> Elab<'r> {
             trusted: HashSet::new(),
             measures: HashMap::new(),
             refine_sites: Vec::new(),
+            erased_uses: Vec::new(),
             proofs_trusted: false,
             unused: HashSet::new(),
         };
@@ -342,6 +356,10 @@ impl<'r> Elab<'r> {
             ltype_vars: Cell::new(false),
             shareable: RefCell::new(Vec::new()),
             sites: RefCell::new(Vec::new()),
+            erased: Cell::new(None),
+            in_type: Cell::new(false),
+            in_body: Cell::new(false),
+            erased_uses: RefCell::new(Vec::new()),
             deferred_rf: RefCell::new(Vec::new()),
             fin_spans: RefCell::new(Vec::new()),
             fin_span_default: Cell::new(Span::DUMMY),
@@ -1292,7 +1310,9 @@ impl<'r> Elab<'r> {
         if matches!(e.kind, ExprKind::Unit | ExprKind::Tuple(_)) {
             return self.check(cx, e, &Val::LType, Mult::Zero);
         }
+        let in_type = self.in_type.replace(true);
         let (t, s) = self.infer(cx, e, Mult::Zero);
+        self.in_type.set(in_type);
         match self.whnf(&s) {
             Val::Type | Val::LType | Val::Error => t,
             Val::Neutral(Head::Meta(_), _) => {
@@ -1313,6 +1333,38 @@ impl<'r> Elab<'r> {
     }
 
     fn check(&self, cx: &mut Cxt, e: &rast::Expr, ty: &Val, rig: Mult) -> Term {
+        let saved = (self.erased.get(), self.in_type.get());
+        if rig == Mult::Zero {
+            if self.type_like(ty) {
+                self.in_type.set(true);
+            } else {
+                self.in_type.set(false);
+                if saved.0.is_none() {
+                    self.erased.set(Some(cx.lvl()));
+                }
+            }
+        }
+        let t = self.check_mode(cx, e, ty, rig);
+        self.erased.set(saved.0);
+        self.in_type.set(saved.1);
+        t
+    }
+
+    /// A type, or a function returning one (a type family): an erased
+    /// argument of this type is a type, not evidence (BUG-0033).
+    fn type_like(&self, ty: &Val) -> bool {
+        let mut t = self.whnf(ty);
+        loop {
+            match t {
+                Val::Type | Val::LType => return true,
+                Val::Pi(_, _, _, _, c) => t = self.whnf(&self.ev().inst(&c, Val::Error)),
+                _ => return false,
+            }
+        }
+    }
+
+    /// `check` once the mode (run time, erased value, type) is set.
+    fn check_mode(&self, cx: &mut Cxt, e: &rast::Expr, ty: &Val, rig: Mult) -> Term {
         if let Some(t) = self.check_refined(cx, e, ty, rig) {
             return t;
         }
@@ -1530,6 +1582,7 @@ impl<'r> Elab<'r> {
                     ty: wty.clone(),
                 },
                 span,
+                erased: self.in_erased_value(),
             });
             return meta;
         }
@@ -1599,6 +1652,7 @@ impl<'r> Elab<'r> {
                         cx: cx.clone(),
                         goal: Goal::Instance(goal),
                         span,
+                        erased: self.in_erased_value(),
                     });
                     Some(meta)
                 }
@@ -1726,6 +1780,7 @@ impl<'r> Elab<'r> {
                             cx: cx.clone(),
                             goal: Goal::Instance((*dom).clone()),
                             span,
+                            erased: self.in_erased_value(),
                         });
                     }
                     t = Term::App(Rc::new(t), Rc::new(m), Icit::Impl);
@@ -1765,8 +1820,57 @@ impl<'r> Elab<'r> {
     }
 
     fn infer(&self, cx: &mut Cxt, e: &rast::Expr, rig: Mult) -> (Term, Val) {
+        // An erased expression inferred at run time (`let 0 p = e`, the
+        // proof of `rewrite`): an erased value unless its type is a type.
+        let saved = (self.erased.get(), self.in_type.get());
+        let entered = rig == Mult::Zero && saved.0.is_none() && !saved.1;
+        let mark = self.erased_uses.borrow().len();
+        if entered {
+            self.erased.set(Some(cx.lvl()));
+        }
         let (t, ty) = self.infer_refined(cx, e, rig);
+        if entered && self.type_like(&ty) {
+            self.erased_uses.borrow_mut().truncate(mark);
+        }
+        self.erased.set(saved.0);
+        self.in_type.set(saved.1);
         (t, self.unrefine(ty))
+    }
+
+    /// Whether what is elaborated now is an erased value of a definition
+    /// body (not a type): the globals it uses must be total (BUG-0033).
+    fn in_erased_value(&self) -> Option<u32> {
+        if self.in_body.get() && !self.in_type.get() {
+            self.erased.get()
+        } else {
+            None
+        }
+    }
+
+    /// E0507 (BUG-0033): `x`, a function bound at run time outside the
+    /// erased value being elaborated, is applied in it. The call is never
+    /// made, so its result is no evidence: the function may panic or loop.
+    fn check_erased_call(&self, cx: &Cxt, l: u32, x: &str, span: Span) {
+        if let Some(entry) = self.in_erased_value()
+            && l < entry
+            && cx.mults.get(l as usize).is_some_and(|m| *m != Mult::Zero)
+        {
+            self.report(
+                self.error(
+                    "E0507",
+                    span,
+                    format!("the run-time function `{x}` is applied in an erased position"),
+                )
+                .with_note(
+                    "an erased value is never computed, so a call in it is never made: \
+                     the function may panic or loop, and its result would prove anything",
+                )
+                .with_help(
+                    "pass the proof at run time, or take the function with multiplicity 0 \
+                     (its callers then show that it is total)",
+                ),
+            );
+        }
     }
 
     /// The type without its refinement: `subsetOf A p` is `A`
@@ -1806,7 +1910,12 @@ impl<'r> Elab<'r> {
                 }
             },
             ExprKind::Global(g) => match self.global_type(*g) {
-                Some(t) => (Term::Global(*g), t),
+                Some(t) => {
+                    if self.in_erased_value().is_some() {
+                        self.erased_uses.borrow_mut().push((*g, span));
+                    }
+                    (Term::Global(*g), t)
+                }
                 // A type elaborated before the signature of `g` (the
                 // signatures are elaborated in order): until BUG-0030, an
                 // error term without a diagnostic.
@@ -1958,8 +2067,10 @@ impl<'r> Elab<'r> {
                 if let Some(first) = es.first() {
                     let mut probe = cx.clone();
                     let before = self.diags.borrow().len();
+                    let uses = self.erased_uses.borrow().len();
                     let (_, s) = self.infer(&mut probe, first, Mult::Zero);
                     self.diags.borrow_mut().truncate(before);
+                    self.erased_uses.borrow_mut().truncate(uses);
                     if matches!(self.whnf(&s), Val::Type | Val::LType) {
                         return (self.check(cx, e, &Val::LType, Mult::Zero), Val::Type);
                     }
@@ -1984,6 +2095,11 @@ impl<'r> Elab<'r> {
             h = f;
         }
         args.reverse();
+        if let ExprKind::Local(x) = &h.kind
+            && let Some(l) = cx.lookup(x)
+        {
+            self.check_erased_call(cx, l, x, sp(e));
+        }
         let expect = self.app_expect.borrow_mut().take();
         let (mut t, mut ty) = self.infer(cx, h, rig);
         // Constructor fields are used as often as the constructed value
@@ -2240,6 +2356,15 @@ impl<'r> Elab<'r> {
         for b in bs {
             let saved = self.enter_scope(cx);
             let inner = rig;
+            // The value of `let 0` is checked like a run-time one (its usage
+            // is scaled by 0 below), but it is an erased value (BUG-0033)
+            // unless it is a type.
+            let mode = (self.erased.get(), self.in_type.get());
+            let mark = self.erased_uses.borrow().len();
+            let erased_let = b.mult.map(conv_mult) == Some(Mult::Zero);
+            if erased_let && mode.0.is_none() && !mode.1 {
+                self.erased.set(Some(cx.lvl()));
+            }
             let (vt, ty) = match &b.ty {
                 Some(t) => {
                     let tt = self.check_type(cx, t);
@@ -2251,6 +2376,11 @@ impl<'r> Elab<'r> {
                     self.insert_implicits(cx, t, a, b.rhs.span)
                 }
             };
+            if erased_let && self.type_like(&ty) {
+                self.erased_uses.borrow_mut().truncate(mark);
+            }
+            self.erased.set(mode.0);
+            self.in_type.set(mode.1);
             let uses_linear = cx.uses.iter().enumerate().any(|(l, u)| {
                 u.mult() != Mult::Zero
                     && cx.mults[l] == Mult::One
@@ -5126,7 +5256,9 @@ impl<'r> Elab<'r> {
         let mut cx = Cxt::default();
         self.partial
             .set(matches!(d.totality, Some((rast::Totality::Partial, _))));
+        self.in_body.set(true);
         let body = self.elab_clauses(&mut cx, &name, &d.clauses, &body_ty, d.span);
+        self.in_body.set(false);
         self.partial.set(false);
         self.def_measure(d, &tv);
         let body = self.finish(&cx, &body);
