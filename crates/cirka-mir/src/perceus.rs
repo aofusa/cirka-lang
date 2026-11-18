@@ -14,6 +14,10 @@
 //!   projected variable counts as a (borrowing) use of its source object, so
 //!   the source stays alive as long as the projection is used (Lean 4's
 //!   borrowed projections; drop specialization later fuses the pairs).
+//! - Projections that are consumed somewhere are owned instead, dup'ed at
+//!   their definition (Koka's order), and so are the other projections of a
+//!   source that would otherwise stay alive across such a consumption
+//!   ([`VarInfo::make_eager`], [`VarInfo::free_sources`]).
 //! - Variables that die on a `switch` edge are dropped at the start of the
 //!   target block (the edge is split when the target has other predecessors).
 //!
@@ -198,6 +202,8 @@ pub struct VarInfo {
     /// Projections that are dup'ed right after their definition and then
     /// treated as owned (see [`VarInfo::make_eager`]).
     pub eager: Vec<bool>,
+    /// The source object of each eager projection.
+    pub source: Vec<Option<Var>>,
 }
 
 impl VarInfo {
@@ -250,6 +256,7 @@ impl VarInfo {
             kind,
             parent,
             eager: vec![false; n],
+            source: vec![None; n],
         }
     }
 
@@ -271,11 +278,101 @@ impl VarInfo {
         }
         for v in 0..self.kind.len() {
             if consumed[v] && self.parent[v].is_some() {
-                self.kind[v] = Kind::Owned;
-                self.parent[v] = None;
-                self.eager[v] = true;
+                self.own_eagerly(v);
             }
         }
+    }
+
+    fn own_eagerly(&mut self, v: usize) {
+        self.kind[v] = Kind::Owned;
+        self.source[v] = self.parent[v].take();
+        self.eager[v] = true;
+    }
+
+    /// Where an eager projection is consumed while the object it was
+    /// projected from (or the owner of that object, through borrowed
+    /// projections) is still live, makes eager the projections of the owner
+    /// that keep it alive, when the owner is owned and used only through
+    /// projections and `switch`es (BUG-0036). The owner, and with it a
+    /// second reference to the consumed field, then dies before the
+    /// consumption, so that an in-place update of the field does not copy
+    /// it. Projections last used before the consumption stay borrowed.
+    /// True if anything changed (`lv` is then out of date).
+    pub fn free_sources(&mut self, sigs: &Sigs, f: &Function, lv: &Liveness) -> bool {
+        let n = self.kind.len();
+        // Uses other than as the source of a projection or a scrutinee.
+        let mut other = vec![false; n];
+        for b in &f.blocks {
+            if !matches!(b.term, Terminator::Switch { .. }) {
+                for (v, _) in term_uses(sigs, &b.term) {
+                    other[v.0 as usize] = true;
+                }
+            }
+            for i in &b.instrs {
+                let source = match i {
+                    Instr::Let {
+                        rhs: Rhs::Proj { obj, .. },
+                        ..
+                    } => Some(*obj),
+                    Instr::Let {
+                        rhs: Rhs::Prim(p, args),
+                        ..
+                    } if p.result_borrowed() => args.first().and_then(|a| a.var()),
+                    _ => None,
+                };
+                for (v, _) in instr_uses(sigs, i) {
+                    other[v.0 as usize] |= Some(v) != source;
+                }
+            }
+        }
+        let mut children: HashMap<Var, Vec<Var>> = HashMap::new();
+        for v in 0..n {
+            if let Some(p) = self.parent[v] {
+                children.entry(p).or_default().push(Var(v as u32));
+            }
+        }
+        let mut eager = BTreeSet::new();
+        let check = |uses: Vec<(Var, Mode)>, live: &Set, eager: &mut BTreeSet<Var>| {
+            for (v, m) in uses {
+                if m != Mode::Consume {
+                    continue;
+                }
+                let Some(mut p) = self.source[v.0 as usize] else {
+                    continue;
+                };
+                // A borrowed projection lives as long as its source.
+                while let Some(q) = self.parent[p.0 as usize] {
+                    p = q;
+                }
+                if self.kind[p.0 as usize] == Kind::Owned
+                    && live.contains(&p)
+                    && !other[p.0 as usize]
+                {
+                    let kept = children.get(&p).into_iter().flatten();
+                    eager.extend(kept.filter(|x| live.contains(x)));
+                }
+            }
+        };
+        for (bi, b) in f.blocks.iter().enumerate() {
+            let mut live = lv.live_out[bi].clone();
+            check(term_uses(sigs, &b.term), &live, &mut eager);
+            for (v, _) in ptr_uses(f, self, term_uses(sigs, &b.term)) {
+                live.insert(v);
+            }
+            for ins in b.instrs.iter().rev() {
+                check(instr_uses(sigs, ins), &live, &mut eager);
+                for d in ins.defs() {
+                    live.remove(d);
+                }
+                for (v, _) in ptr_uses(f, self, instr_uses(sigs, ins)) {
+                    live.insert(v);
+                }
+            }
+        }
+        for &v in &eager {
+            self.own_eagerly(v.0 as usize);
+        }
+        !eager.is_empty()
     }
 
     fn kind(&self, v: Var) -> Kind {
@@ -408,7 +505,10 @@ fn owned_dead(info: &VarInfo, vars: &[Var], live: &Set) -> Vec<Var> {
 pub fn insert_fn(sigs: &Sigs, f: &mut Function) {
     let mut info = VarInfo::new(f);
     info.make_eager(sigs, f);
-    let lv = liveness(sigs, f, &info);
+    let mut lv = liveness(sigs, f, &info);
+    while info.free_sources(sigs, f, &lv) {
+        lv = liveness(sigs, f, &info);
+    }
     let n = f.blocks.len();
     let preds = f.predecessors();
     // Drops to prepend to blocks (from switch edges).

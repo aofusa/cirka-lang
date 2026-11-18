@@ -380,6 +380,22 @@ entry:
     assert_eq!(r.leaked, 0);
 }
 
+/// BUG-0036: a field that is only read is dup'ed at the match when a
+/// sibling field is consumed, so the matched object dies at the match and
+/// the in-place update of the sibling does not copy it.
+#[test]
+fn perceus_drops_the_matched_object_before_updating_its_field() {
+    let src = include_str!("../../../tests/mir/perceus/sibling_fields.mir");
+    let mut m = parse(FileId(0), src).unwrap();
+    crate::perceus::run(&mut m);
+    let errs = crate::verify::verify_module(&m);
+    assert!(errs.is_empty(), "{}", crate::verify::render_errors(&errs));
+    let r = crate::interp::run(&m, b"", 1_000_000).unwrap();
+    assert_eq!(r.stdout, "8 0\n8 8\n17 8\n");
+    assert_eq!(r.leaked, 0);
+    assert_eq!(r.stats.array_copies, 0, "{}", print_module(&m));
+}
+
 #[test]
 fn c_signatures_round_trip_and_run() {
     let src = "extern fn abs(i64) -> i64 as c(i32) -> i32\n\

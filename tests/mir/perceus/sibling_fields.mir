@@ -1,0 +1,113 @@
+// max-array-copies: 0
+// An object matched to update its array field in place while another of
+// its fields is still read (BUG-0036): the other field is dup'ed at the
+// match as well, so the object dies there and the array stays unique (the
+// update does not copy it). Borrowing the other field kept the object, and
+// with it a second reference to the array, alive until its last read.
+// `peek` matches an object that its caller keeps (a borrowed parameter):
+// borrowing the field is still free there. In `bump2` the array is two
+// matches deep and a field of the outer object is read after the update:
+// that field is dup'ed, so the outer object dies after the inner match,
+// which is itself borrowed and dies with it.
+type Order { Row = 0 {}, Col = 1 {} }
+type M { M = 0 { o: ptr, xs: ptr } }
+type W { W = 0 { m: ptr, tag: ptr } }
+extern fn cirka_write_i64(i64) -> void
+extern fn cirka_write_char(i64) -> void
+
+fn mk(o: ptr) -> ptr {
+entry:
+  let a = prim bytes_new(16)
+  let c = prim bytes_unique(a)
+  let w = prim bytes_set_i64(c, 0, 7)
+  let v = prim bytes_set_i64(c, 1, 8)
+  let m = alloc M.M(o, c)
+  ret m
+}
+
+fn bump(m: ptr) -> ptr {
+entry:
+  switch m { M.M => alt }
+alt:
+  let o = proj m M.M.o
+  let xs = proj m M.M.xs
+  let c = prim bytes_unique(xs)
+  let x = prim bytes_get_i64(c, 0)
+  let y = prim add(x, 1)
+  let w = prim bytes_set_i64(c, 0, y)
+  switch o { Order.Row => row, Order.Col => col }
+row:
+  let k = prim bytes_set_i64(c, 1, 0)
+  ret c
+col:
+  ret c
+}
+
+fn peek(m: ptr @borrowed) -> i64 {
+entry:
+  switch m { M.M => alt }
+alt:
+  let o = proj m M.M.o
+  let xs = proj m M.M.xs
+  let x = prim bytes_get_i64(xs, 1)
+  switch o { Order.Row => row, Order.Col => col }
+row:
+  ret 0
+col:
+  ret x
+}
+
+fn bump2(w: ptr) -> ptr {
+entry:
+  switch w { W.W => alt }
+alt:
+  let m = proj w W.W.m
+  let t = proj w W.W.tag
+  switch m { M.M => inner }
+inner:
+  let xs = proj m M.M.xs
+  let c = prim bytes_unique(xs)
+  let x = prim bytes_get_i64(c, 0)
+  let y = prim add(x, 10)
+  let v = prim bytes_set_i64(c, 0, y)
+  switch t { Order.Row => row, Order.Col => col }
+row:
+  let k = prim bytes_set_i64(c, 1, 0)
+  ret c
+col:
+  ret c
+}
+
+fn main() -> i64 {
+entry:
+  let r = alloc Order.Row()
+  let m = call mk(r)
+  let c = call bump(m)
+  let x = prim bytes_get_i64(c, 0)
+  let y = prim bytes_get_i64(c, 1)
+  let _ = extern cirka_write_i64(x)
+  let _ = extern cirka_write_char(32)
+  let _ = extern cirka_write_i64(y)
+  let _ = extern cirka_write_char(10)
+  let o = alloc Order.Col()
+  let n = call mk(o)
+  let p = call peek(n)
+  let d = call bump(n)
+  let z = prim bytes_get_i64(d, 0)
+  let _ = extern cirka_write_i64(p)
+  let _ = extern cirka_write_char(32)
+  let _ = extern cirka_write_i64(z)
+  let _ = extern cirka_write_char(10)
+  let r2 = alloc Order.Row()
+  let t2 = alloc Order.Col()
+  let m2 = call mk(r2)
+  let w = alloc W.W(m2, t2)
+  let e = call bump2(w)
+  let e0 = prim bytes_get_i64(e, 0)
+  let e1 = prim bytes_get_i64(e, 1)
+  let _ = extern cirka_write_i64(e0)
+  let _ = extern cirka_write_char(32)
+  let _ = extern cirka_write_i64(e1)
+  let _ = extern cirka_write_char(10)
+  ret 0
+}
