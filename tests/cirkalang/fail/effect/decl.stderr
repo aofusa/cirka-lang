@@ -1,0 +1,20 @@
+error[E1122]: an effect may contain only the signatures of its operations
+ --> tests/cirkalang/fail/effect/decl.cirka:9:3
+  |
+9 |   op x = x + 1
+  |   ^^^^^^^^^^^^ not allowed in an `effect` block
+error[E1122]: the operation `go` is declared twice
+  --> tests/cirkalang/fail/effect/decl.cirka:13:3
+   |
+13 |   go : String -> ()
+   |   ^^ already an operation of this effect
+error[E1122]: the arguments of an operation are plain values
+  --> tests/cirkalang/fail/effect/decl.cirka:16:15
+   |
+16 |   pick : {a : Type} -> a -> a
+   |               ^^^^ write `A -> B`: no implicit, dependent or linear arguments
+error[E1122]: the arguments of an operation are plain values
+  --> tests/cirkalang/fail/effect/decl.cirka:19:20
+   |
+19 |   consume : (1 x : Int) -> ()
+   |                    ^^^ write `A -> B`: no implicit, dependent or linear arguments

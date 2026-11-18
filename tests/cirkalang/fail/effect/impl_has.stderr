@@ -1,0 +1,7 @@
+error[E1259]: `Has` cannot be implemented
+  --> tests/cirkalang/fail/effect/impl_has.cirka:10:6
+   |
+10 | impl Has Counter Nil where
+   |      ^^^^^^^^^^^^^^^
+   = note: the compiler finds an effect in a row from the shape of the row
+   = help: install a handler with `handle`, or add `Has E es =>` to the signature

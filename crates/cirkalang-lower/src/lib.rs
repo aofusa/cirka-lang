@@ -348,6 +348,12 @@ impl<'a> Lower<'a> {
                     (Some(Prim::RIO), [_, a]) => {
                         c::Type::Con("IO".into(), vec![self.lower_ty(tvs, a)])
                     }
+                    // Effects (spec-v0.0.7.md §2.7): the row is erased.
+                    (Some(Prim::Eff), [_]) => c::Type::Con("Eff".into(), Vec::new()),
+                    (Some(Prim::Eff), [_, a]) => {
+                        c::Type::Con("Eff".into(), vec![self.lower_ty(tvs, a)])
+                    }
+                    (Some(Prim::Cell), _) => c::Type::Any,
                     (Some(Prim::Borrow), [a, _, rest @ ..]) => c::Type::Con(
                         "Borrow".into(),
                         std::iter::once(*a)
@@ -1205,14 +1211,25 @@ impl<'a> Lower<'a> {
         c::Type::fun(c::Mult::Many, s, res)
     }
 
-    /// The field type of a `Borrow` / `BorrowIO` type.
+    /// The field type of a `Borrow` / `BorrowIO` / `Eff` type.
     fn borrow_field_of(&self, t: &c::Type) -> c::Type {
         match t {
             c::Type::Con(n, a) if a.len() == 2 && (n == "Borrow" || n == "BorrowIO") => {
                 self.borrow_field(n == "BorrowIO", a[0].clone(), a[1].clone())
             }
+            c::Type::Con(n, a) if a.len() == 1 && n == "Eff" => self.eff_field(a[0].clone()),
             _ => c::Type::Any,
         }
+    }
+
+    /// The field of `Eff# a`: `Handlers -> IO a` (spec-v0.0.7.md §2.7).
+    /// Without the handlers of `Std.Effect`, no computation is built.
+    fn eff_field(&self, a: c::Type) -> c::Type {
+        let h = match self.p.builtins.handlers {
+            Some(h) if !self.p.unused.contains(&h) => c::Type::con(&self.gname(h)),
+            _ => c::Type::Any,
+        };
+        c::Type::fun(c::Mult::Many, h, c::Type::Con("IO".into(), vec![a]))
     }
 
     /// `λf. K f` for the newtype constructor `K` of the result type.
@@ -1462,6 +1479,8 @@ impl<'a> Lower<'a> {
             | Prim::Ref
             | Prim::Borrow
             | Prim::BorrowIO
+            | Prim::Eff
+            | Prim::Cell
             | Prim::Arena
             | Prim::RIO
             | Prim::In
@@ -1474,6 +1493,25 @@ impl<'a> Lower<'a> {
             | Prim::Chan
             | Prim::Handle
             | Prim::Subset => return None,
+            // Effects (spec-v0.0.7.md §2.7) and the cells of handlers
+            // (the runtime's mutable references, arguments borrowed).
+            Prim::EffWrap => self.newtype_wrap(ty, "Eff#"),
+            Prim::EffRun => self.newtype_run(ty, "Eff#"),
+            Prim::CellNew => self.skeleton(ty, 2, |a, r| {
+                rt_call(r, "cirka_mutvar_new", vec![to_any(&a[0])])
+            }),
+            Prim::CellRead => self.skeleton(ty, 2, |a, r| {
+                rt_call(r, "cirka_mutvar_read", vec![a[0].clone()])
+            }),
+            Prim::CellWrite => self.skeleton(ty, 3, |a, _| {
+                self.seq_int(
+                    c::Expr::Extern(
+                        "cirka_mutvar_write".into(),
+                        vec![a[0].clone(), to_any(&a[1])],
+                    ),
+                    self.unit_val(),
+                )
+            }),
             // Threads and synchronization (spec-v0.0.5.md §1.5): calls of
             // the runtime, whose pointer arguments are borrowed and whose
             // results are new references.
@@ -2412,6 +2450,21 @@ impl<'a> Lower<'a> {
                 ctors: vec![c::CtorDecl {
                     name: con.into(),
                     fields: vec![field],
+                    strict: vec![true],
+                }],
+                newtype: true,
+            });
+        }
+        // Eff a = Eff# (Handlers -> IO a) (spec-v0.0.7.md §2.7).
+        {
+            let av = self.tv("a");
+            prog.datas.push(c::DataDecl {
+                name: "Eff".into(),
+                params: vec![(av.clone(), c::Kind::Type)],
+                linear: false,
+                ctors: vec![c::CtorDecl {
+                    name: "Eff#".into(),
+                    fields: vec![self.eff_field(c::Type::Var(av))],
                     strict: vec![true],
                 }],
                 newtype: true,

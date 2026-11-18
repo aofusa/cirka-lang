@@ -1,0 +1,15 @@
+-- The direct version of effect_loop.cirka: the handler is called by name.
+module Main
+
+emitD : Int -> IO ()
+emitD x = if x % 25000 == 0 then print x else pure ()
+
+loopD : Int -> Int -> IO Int
+loopD i acc = if i == 0 then pure acc else do
+  emitD i
+  loopD (i - 1) (acc + i)
+
+main : IO ()
+main = do
+  r <- loopD 100000 0
+  print r

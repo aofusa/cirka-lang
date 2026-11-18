@@ -339,6 +339,8 @@ impl<'r> Elab<'r> {
             maybe: f("Maybe"),
             nothing: f("Nothing"),
             just: f("Just"),
+            has_trait: rp.find(EFFECT_MODULE, "Has"),
+            handlers: rp.find(EFFECT_MODULE, "Handlers"),
         };
         Elab {
             rp,

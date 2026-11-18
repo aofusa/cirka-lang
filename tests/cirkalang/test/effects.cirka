@@ -1,0 +1,44 @@
+-- Code that uses an effect is tested with a fake handler, without the
+-- capability its real handler needs (spec-v0.0.7.md §2.6).
+module Main
+
+import Std.Effect
+import Std.Time as T
+
+effect Timer where
+  now : Int
+
+-- Reads the timer until `n` has passed since `t0`; the number of reads.
+waitFrom : Has Timer es => Int -> Int -> Int -> Eff es Int
+waitFrom n t0 k = do
+  t <- now
+  if t - t0 >= n then pure k else waitFrom n t0 (k + 1)
+
+waitTicks : Has Timer es => Int -> Eff es Int
+waitTicks n = do
+  t0 <- now
+  waitFrom n t0 2
+
+-- The real timer, from the capability.
+realTimer : (0 clk : Cap Clock) -> Eff (Timer :: es) a -> Eff es a
+realTimer clk m = handle (MkTimer (T.monotonic clk)) m
+
+-- A fake timer that advances by one at each read.
+fakeTimer : Has (State Int) es => Eff (Timer :: es) a -> Eff es a
+fakeTimer m = handleWith (\cx => MkTimer (runIn cx (do
+  t <- get
+  put (t + 1)
+  pure t))) m
+
+main : Cap Clock -> IO ()
+main clk = do
+  k <- runEff (realTimer clk (waitTicks 0))
+  print k
+
+test "the fake timer is read once per tick" = do
+  r <- runEff (evalState 0 (fakeTimer (waitTicks 5)))
+  assertEqInt r 6
+
+test "the fake timer starts where it is told" = do
+  r <- runEff (runState 100 (fakeTimer (waitTicks 2)))
+  assertEqInt (snd r) 103

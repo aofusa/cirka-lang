@@ -78,7 +78,11 @@ impl<'r> Elab<'r> {
                     no("`ThreadBound` marks a value that only its thread may use")
                 }
                 // Actions are functions.
-                Some(Prim::IO | Prim::IO1 | Prim::RIO | Prim::Borrow | Prim::BorrowIO) => Ok(()),
+                Some(
+                    Prim::IO | Prim::IO1 | Prim::RIO | Prim::Borrow | Prim::BorrowIO | Prim::Eff,
+                ) => Ok(()),
+                // The cells of handlers are not shared between threads.
+                Some(Prim::Cell) => no("the state of a handler belongs to its thread"),
                 Some(_) => {
                     let mut k = self.global_type(*g).unwrap_or(Val::Error);
                     let mut stuck = false;

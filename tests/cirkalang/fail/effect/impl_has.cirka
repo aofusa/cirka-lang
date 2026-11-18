@@ -1,0 +1,14 @@
+-- `Has` is solved by the compiler from the shape of the row (spec-v0.0.7.md
+-- §2.3): it cannot be implemented.
+module Main
+
+import Std.Effect
+
+effect Counter where
+  tick : Int -> ()
+
+impl Has Counter Nil where
+  evidence h = MkCounter (\n => pure ())
+
+main : IO ()
+main = pure ()

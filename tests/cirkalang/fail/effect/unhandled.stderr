@@ -1,0 +1,14 @@
+error[E1262]: the effect `Counter` is not handled
+  --> tests/cirkalang/fail/effect/unhandled.cirka:17:3
+   |
+17 |   tick 1
+   |   ^^^^
+   = note: the effects here are `es`
+   = help: install a handler of `Counter` around the computation (`handle`, `handleWith`, ...), or add `Has Counter es` to the constraints of the signature
+error[E1262]: the effect `Log` is not handled
+  --> tests/cirkalang/fail/effect/unhandled.cirka:22:3
+   |
+22 |   say "hello"
+   |   ^^^
+   = note: the effects here are `Nil`
+   = help: install a handler of `Log` around the computation (`handle`, `handleWith`, ...), or add `Has Log es` to the constraints of the signature

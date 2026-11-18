@@ -1,0 +1,17 @@
+-- An effect before the one an operation uses may be that effect (a
+-- variable `f`): which handler the operation uses is not known
+-- (spec-v0.0.7.md §2.3), and the constraint must say.
+module Main
+
+import Std.Effect
+
+-- `f` may be `State Int`; the constraint on `es` does not tell.
+under : Has (State Int) es => Eff (f :: es) Int
+under = get
+
+-- The same with `State Int` after `f` in the row.
+after : Eff (f :: State Int :: es) Int
+after = get
+
+main : IO ()
+main = pure ()

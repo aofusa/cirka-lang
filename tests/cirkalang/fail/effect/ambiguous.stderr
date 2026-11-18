@@ -1,0 +1,14 @@
+error[E1254]: cannot tell whether the effect `State Int` is `f`
+  --> tests/cirkalang/fail/effect/ambiguous.cirka:10:9
+   |
+10 | under = get
+   |         ^^^
+   = note: `f` comes first in the effects `f :: es`: if it is `State Int`, its handler is the one used
+   = help: add `Has (State Int) (f :: es)` to the constraints of the signature
+error[E1254]: cannot tell whether the effect `State Int` is `f`
+  --> tests/cirkalang/fail/effect/ambiguous.cirka:14:9
+   |
+14 | after = get
+   |         ^^^
+   = note: `f` comes first in the effects `f :: (State Int :: es)`: if it is `State Int`, its handler is the one used
+   = help: add `Has (State Int) (f :: (State Int :: es))` to the constraints of the signature

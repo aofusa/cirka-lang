@@ -1,0 +1,121 @@
+-- Effects (spec-v0.0.7.md §2): a computation `Eff es a` uses the
+-- operations of the effects in its row `es`; the handlers installed
+-- around it give their meaning. An effect is the type of its handlers, a
+-- record of the implementations of its operations (`effect` declarations
+-- expand to one). Operations are tail-resumptive: the implementation runs
+-- where the operation is called and its result is the operation's.
+--
+-- `Eff es a` passes the handlers to the computation (evidence passing):
+-- an operation takes its handler from the list at the position that
+-- `Has e es` gives. Where the handlers are known, the optimizer inlines
+-- them (spec-v0.0.7.md §2.7).
+module Std.Effect
+
+-- The handlers of the effects `es`, the innermost first.
+data Handlers : List Type -> Type where
+  private HNil : Handlers Nil
+  private HCons : {e : Type} -> {es : List Type} -> e -> Handlers es -> Handlers (e :: es)
+
+-- A computation with the effects `es` and the result `a`. In Core, a
+-- newtype of `Handlers es -> IO a`.
+prim Eff : List Type -> Type -> Type
+private prim primEffWrap : {es : List Type} -> {a : Type} -> (Handlers es -> IO a) -> Eff es a
+private prim primEffRun : {es : List Type} -> {a : Type} -> Eff es a -> Handlers es -> IO a
+
+impl Functor (Eff es) where
+  fmap f m = primEffWrap (\ev => fmap f (primEffRun m ev))
+
+impl Monad (Eff es) where
+  pure x = primEffWrap (\ev => pure x)
+  m >>= k = primEffWrap (\ev => primEffRun m ev >>= \x => primEffRun (k x) ev)
+
+-- The effect `e` is in the row `es`. The compiler chooses between the two
+-- implementations from the row (spec-v0.0.7.md §2.3): the head when it is
+-- `e`, the rest when the head is another effect.
+trait Has (e : Type) (es : List Type) where
+  evidence : Handlers es -> e
+
+impl Has e (e :: es) where
+  evidence (HCons h _) = h
+
+impl Has e es => Has e (f :: es) where
+  evidence (HCons _ t) = evidence t
+
+-- Calls the innermost handler of `e` (what the operations of an `effect`
+-- declaration do).
+perform : Has e es => (e -> IO a) -> Eff es a
+perform op = primEffWrap (\ev => op (evidence ev))
+
+-- An `IO` action in a computation.
+liftIO : IO a -> Eff es a
+liftIO m = primEffWrap (\ev => m)
+
+-- Runs `m` with the handler `h` of the effect `e`.
+handle : e -> Eff (e :: es) a -> Eff es a
+handle h m = primEffWrap (\ev => primEffRun m (HCons h ev))
+
+-- The effects of the place where a handler is installed.
+data Context (es : List Type) = private MkContext (Handlers es)
+
+-- Runs `m` with the effects of a context.
+runIn : Context es -> Eff es a -> IO a
+runIn (MkContext ev) m = primEffRun m ev
+
+-- Runs `m` with the handler that `mk` makes; the handler can use the
+-- effects `es` of its context with `runIn`.
+handleWith : (Context es -> e) -> Eff (e :: es) a -> Eff es a
+handleWith mk m = primEffWrap (\ev => primEffRun m (HCons (mk (MkContext ev)) ev))
+
+-- Runs a computation whose effects are all handled.
+runEff : Eff Nil a -> IO a
+runEff m = primEffRun m HNil
+
+-- ---- cells for the state of handlers ----
+
+private prim Cell : Type -> Type
+private prim primNewCell : {a : Type} -> a -> IO (Cell a)
+private prim primReadCell : {a : Type} -> Cell a -> IO a
+private prim primWriteCell : {a : Type} -> Cell a -> a -> IO ()
+
+-- ---- State ----
+
+effect State (s : Type) where
+  get : s
+  put : s -> ()
+
+modify : Has (State s) es => (s -> s) -> Eff es ()
+modify f = do
+  x <- get
+  put (f x)
+
+-- The result and the final state.
+runState : s -> Eff (State s :: es) a -> Eff es (a, s)
+runState s0 m = do
+  c <- liftIO (primNewCell s0)
+  x <- handle (MkState (primReadCell c) (\v => primWriteCell c v)) m
+  s <- liftIO (primReadCell c)
+  pure (x, s)
+
+evalState : s -> Eff (State s :: es) a -> Eff es a
+evalState s0 m = fmap fst (runState s0 m)
+
+-- ---- Reader ----
+
+effect Reader (r : Type) where
+  ask : r
+
+runReader : r -> Eff (Reader r :: es) a -> Eff es a
+runReader x m = handle (MkReader (pure x)) m
+
+-- ---- Writer ----
+
+effect Writer (w : Type) where
+  tell : w -> ()
+
+-- The result and the values told, in order.
+runWriter : Eff (Writer w :: es) a -> Eff es (a, List w)
+runWriter m = do
+  c <- liftIO (primNewCell Nil)
+  x <- handle (MkWriter (\v => primReadCell c >>= \vs => primWriteCell c (v :: vs))) m
+  vs <- liftIO (primReadCell c)
+  pure (x, reverse vs)

@@ -36,6 +36,10 @@
 (extern cirka_mvar_try_take (Any Any) Any)
 (extern cirka_mvar_try_put (Any Any) Int#)
 (extern cirka_chan_new () Any)
+; Cells of the handlers of effects (spec-v0.0.7.md §2.5).
+(extern cirka_mutvar_new (Any) Any)
+(extern cirka_mutvar_read (Any) Any)
+(extern cirka_mutvar_write (Any Any) Int#)
 (extern cirka_chan_send (Any Any) Int#)
 (extern cirka_chan_recv (Any) Any)
 (extern cirka_chan_try_recv (Any Any) Any)

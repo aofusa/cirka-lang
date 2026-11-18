@@ -1,0 +1,22 @@
+-- same-cost-as: effect_direct.cirka
+-- An operation of an effect whose handler is known costs what calling
+-- the handler directly costs (spec-v0.0.7.md §2.7): the list of handlers
+-- and the dictionary of `Has` are specialized away, and the handler is
+-- inlined into the loop (effect_direct.cirka calls the same code
+-- directly): no more allocations, instructions or reference counts.
+module Main
+
+import Std.Effect
+
+effect Sink where
+  emit : Int -> ()
+
+loop : Has Sink es => Int -> Int -> Eff es Int
+loop i acc = if i == 0 then pure acc else do
+  emit i
+  loop (i - 1) (acc + i)
+
+main : IO ()
+main = do
+  r <- runEff (handle (MkSink (\x => if x % 25000 == 0 then print x else pure ())) (loop 100000 0))
+  print r

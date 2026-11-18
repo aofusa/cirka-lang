@@ -1,0 +1,83 @@
+-- Effects (spec-v0.0.7.md §2): effects declared with `effect`, the
+-- standard ones of `Std.Effect`, rows with several effects, handlers
+-- that use the effects of their context, and the innermost handler of an
+-- effect that is twice in the row.
+module Main
+
+import Std.Effect
+
+effect Counter where
+  tick : Int -> ()
+
+effect Log where
+  say : String -> ()
+
+-- Any row with `Counter` (row polymorphism).
+countdown : Has Counter es => Int -> Eff es ()
+countdown n = if n == 0 then pure () else do
+  tick n
+  countdown (n - 1)
+
+-- Two effects; `get` takes the type of the state from the row.
+bump : (Has (State Int) es, Has Log es) => Int -> Eff es Int
+bump k = do
+  n <- get
+  put (n + k)
+  say ("bump " ++ show k)
+  get
+
+-- `Counter` implemented with the state of its context.
+counting : Has (State Int) es => Eff (Counter :: es) a -> Eff es a
+counting m = handleWith (\cx => MkCounter (\n => runIn cx (modify (\s => s + n)))) m
+
+-- `Log` implemented with the `Writer` of its context.
+logWith : Has (Writer String) es => Eff (Log :: es) a -> Eff es a
+logWith m = handleWith (\cx => MkLog (\s => runIn cx (tell s))) m
+
+-- A handler that drops the messages.
+quiet : Eff (Log :: es) a -> Eff es a
+quiet m = handle (MkLog (\s => pure ())) m
+
+main : IO ()
+main = do
+  -- The state, its result and its final value.
+  r1 <- runEff (runState 10 (do
+    a <- get
+    put (a * 2)
+    b <- get
+    pure (a + b)))
+  print r1
+  -- A user effect handled by a state.
+  r2 <- runEff (runState 0 (counting (countdown 10)))
+  print (snd r2)
+  -- `Counter` below `Log` in the row: found in the rest of the row.
+  r3 <- runEff (runState 0 (counting (quiet (do
+    say "not printed"
+    countdown 4))))
+  print (snd r3)
+  -- Three handlers: the messages go to the writer, in order.
+  r4 <- runEff (runWriter (logWith (runState 1 (do
+    a <- bump 2
+    b <- bump 3
+    pure (a + b)))))
+  print (fst r4)
+  print (snd r4)
+  -- Two states of the same type: the operations use the innermost one.
+  r5 <- runEff (runState 100 (do
+    inner <- runState 1 (do
+      modify (\s => s + 1)
+      pure 7)
+    modify (\s => s + snd inner)
+    pure (fst inner)))
+  print r5
+  -- A reader, and an `IO` action in a computation.
+  y <- runEff (runReader 7 (do
+    a <- ask
+    liftIO (putStrLn "asked")
+    pure (a * 6)))
+  print y
+  -- Many operations: no stack growth, no leaks.
+  r6 <- runEff (evalState 0 (counting (do
+    countdown 10000
+    get)))
+  print r6

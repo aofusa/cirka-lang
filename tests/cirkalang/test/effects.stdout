@@ -1,0 +1,5 @@
+running 2 tests
+test Main "the fake timer is read once per tick" ... ok
+test Main "the fake timer starts where it is told" ... ok
+
+test result: ok. 2 passed; 0 failed; 0 filtered out

@@ -1,0 +1,23 @@
+-- An operation of an effect that is not in the row (spec-v0.0.7.md §2.3):
+-- no handler is installed for it, and the signature does not ask for it.
+module Main
+
+import Std.Effect
+
+effect Counter where
+  tick : Int -> ()
+
+effect Log where
+  say : String -> ()
+
+-- The signature has `Log` but not `Counter`.
+noisy : Has Log es => Eff es ()
+noisy = do
+  say "start"
+  tick 1
+
+-- `runEff` needs every effect handled.
+main : IO ()
+main = runEff (do
+  say "hello"
+  pure ())

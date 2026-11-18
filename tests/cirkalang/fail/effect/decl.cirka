@@ -1,0 +1,22 @@
+-- An effect contains only the signatures of its operations, whose
+-- arguments are plain values, each named once (spec-v0.0.7.md §2.2).
+module Main
+
+import Std.Effect
+
+effect Bad where
+  op : Int -> Int
+  op x = x + 1
+
+effect Twice where
+  go : Int -> ()
+  go : String -> ()
+
+effect Implicit where
+  pick : {a : Type} -> a -> a
+
+effect Linear where
+  consume : (1 x : Int) -> ()
+
+main : IO ()
+main = pure ()

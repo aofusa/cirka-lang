@@ -1,0 +1,59 @@
+-- An effect as the interface of a capability (spec-v0.0.7.md §2.6): the
+-- real handler is made from `Cap FileSystem`, the code using the effect
+-- receives no capability, and a fake handler runs it on files in memory.
+module Main
+
+import Std.Effect
+import Std.Fs as Fs
+import Std.IO (IOError, MkIOError)
+import Std.Process (processId)
+
+effect Files where
+  readText : String -> Result IOError String
+  writeText : String -> String -> Result IOError ()
+
+-- Copies a file, adding a mark; no capability is needed here.
+copyMarked : Has Files es => String -> String -> Eff es Bool
+copyMarked from to = do
+  r <- readText from
+  case r of
+    Ok s => do
+      w <- writeText to (s ++ "!")
+      pure (isOk w)
+    Err e => pure False
+
+-- The real files, through the capability.
+realFiles : (0 fs : Cap FileSystem) -> Eff (Files :: es) a -> Eff es a
+realFiles fs m = handle (MkFiles (\p => Fs.readFile fs p) (\p, s => Fs.writeFile fs p s)) m
+
+-- Files in memory: a list of names and contents in the state.
+lookupFile : String -> List (String, String) -> Result IOError String
+lookupFile p Nil = Err (MkIOError 2)
+lookupFile p ((q, s) :: rest) = if p == q then Ok s else lookupFile p rest
+
+fakeFiles : Has (State (List (String, String))) es => Eff (Files :: es) a -> Eff es a
+fakeFiles m = handleWith (\cx => MkFiles
+  (\p => runIn cx (fmap (lookupFile p) get))
+  (\p, s => runIn cx (do
+    modify (\files => (p, s) :: files)
+    pure (Ok ())))) m
+
+main : Cap FileSystem -> IO ()
+main fs = do
+  pid <- processId
+  let a = "/tmp/cirka-effect-files-" ++ show pid ++ ".txt"
+  let b = a ++ ".out"
+  w <- Fs.writeFile fs a "real"
+  ok <- runEff (realFiles fs (copyMarked a b))
+  r <- Fs.readFile fs b
+  d1 <- Fs.removeFile fs a
+  d2 <- Fs.removeFile fs b
+  print (isOk w && ok && isOk d1 && isOk d2)
+  case r of
+    Ok s => putStrLn s
+    Err e => print e
+  -- The same code on the fake: the file system is not touched.
+  r2 <- runEff (runState (("in", "fake") :: Nil) (fakeFiles (copyMarked "in" "out")))
+  print r2
+  r3 <- runEff (runState Nil (fakeFiles (copyMarked "missing" "out")))
+  print (fst r3)

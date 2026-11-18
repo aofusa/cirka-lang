@@ -250,7 +250,7 @@ fn cirkalang_run() {
     });
 }
 
-/// Ill-typed programs under tests/cirkalang/fail/{type,own,test,total,proof,refine,thread,net,vulkan,linalg,cap}/ report
+/// Ill-typed programs under tests/cirkalang/fail/{type,own,test,total,proof,refine,thread,net,vulkan,linalg,cap,effect}/ report
 /// the diagnostics in `.stderr` (`test/` is checked with its tests kept, as
 /// by `cirka check`).
 #[test]
@@ -258,7 +258,7 @@ fn cirkalang_type_errors() {
     let mut cases = Vec::new();
     for d in [
         "type", "own", "test", "total", "proof", "refine", "thread", "net", "vulkan", "linalg",
-        "cap",
+        "cap", "effect",
     ] {
         cases.extend(discover(
             &repo_root().join("tests/cirkalang/fail").join(d),

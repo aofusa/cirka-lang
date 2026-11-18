@@ -50,6 +50,26 @@ pub(super) enum HeadKey {
     Other,
 }
 
+/// How two effects compare (spec-v0.0.7.md §2.3).
+#[derive(Clone, Copy, PartialEq)]
+enum Rel {
+    Same,
+    /// Different type constructors somewhere: never the same.
+    Apart,
+    /// Not known yet (metas), or not determined by the types (variables).
+    Unknown,
+}
+
+impl Rel {
+    fn and(self, o: Rel) -> Rel {
+        match (self, o) {
+            (Rel::Apart, _) | (_, Rel::Apart) => Rel::Apart,
+            (Rel::Unknown, _) | (_, Rel::Unknown) => Rel::Unknown,
+            _ => Rel::Same,
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum M {
     Yes,
@@ -101,7 +121,9 @@ impl<'r> Elab<'r> {
                 *pending = rest;
             }
             any |= progress;
-            if !progress && !(finish && self.default_literals()) {
+            // Effects are improved before literals are defaulted: the
+            // state of `n <- get; put (n + 1)` comes from the row.
+            if !progress && !(finish && (self.improve_effects() || self.default_literals())) {
                 break;
             }
         }
@@ -176,9 +198,34 @@ impl<'r> Elab<'r> {
                 Search::Stuck => false,
                 Search::NotFound => {
                     let send = self.prog.builtins.send_trait;
+                    let has = self.prog.builtins.has_trait;
                     match self.whnf(goal) {
                         Val::Data(tr, args) if Some(tr) == send && args.len() == 1 => {
                             self.report(self.send_error(&p.cx, &args[0].0, p.span));
+                        }
+                        Val::Data(tr, args) if Some(tr) == has && args.len() == 2 => {
+                            let e = self.show(&p.cx, &args[0].0);
+                            let ep = if e.contains(' ') {
+                                format!("({e})")
+                            } else {
+                                e.clone()
+                            };
+                            self.report(
+                                self.error(
+                                    "E1262",
+                                    p.span,
+                                    format!("the effect `{e}` is not handled"),
+                                )
+                                .with_note(format!(
+                                    "the effects here are `{}`",
+                                    self.show(&p.cx, &args[1].0)
+                                ))
+                                .with_help(format!(
+                                    "install a handler of `{e}` around the computation \
+                                         (`handle`, `handleWith`, ...), or add `Has {ep} es` to \
+                                         the constraints of the signature"
+                                )),
+                            );
                         }
                         _ => self.report(
                             self.error(
@@ -317,7 +364,7 @@ impl<'r> Elab<'r> {
                 self.metas.sol.borrow_mut()[*m as usize] = Some(Val::Error);
                 return;
             }
-            self.report(
+            let d = self.has_stuck(p, goal).unwrap_or_else(|| {
                 self.error(
                     "E1254",
                     p.span,
@@ -326,8 +373,9 @@ impl<'r> Elab<'r> {
                         self.show(&p.cx, goal)
                     ),
                 )
-                .with_help("add a type annotation"),
-            );
+                .with_help("add a type annotation")
+            });
+            self.report(d);
             for (a, _) in &gargs {
                 if let Val::Neutral(Head::Meta(t), _) = self.whnf(a) {
                     self.metas.sol.borrow_mut()[t as usize] = Some(Val::Error);
@@ -335,6 +383,64 @@ impl<'r> Elab<'r> {
             }
             self.metas.sol.borrow_mut()[*m as usize] = Some(Val::Error);
         }
+    }
+
+    /// E1254 for a stuck `Has e es` whose row has an effect before `e` that
+    /// may be `e` (a variable `f` in `f :: es`): which handler the operation
+    /// uses depends on it (spec-v0.0.7.md §2.3).
+    fn has_stuck(&self, p: &Pending, goal: &Val) -> Option<Diagnostic> {
+        let Val::Data(tr, gargs) = self.whnf(goal) else {
+            return None;
+        };
+        let ([(e, _), (row, _)], Some(has)) = (gargs.as_slice(), self.prog.builtins.has_trait)
+        else {
+            return None;
+        };
+        if tr != has {
+            return None;
+        }
+        let lvl = p.cx.lvl();
+        let mut r = self.whnf(row);
+        for _ in 0..MAX_DEPTH {
+            let Val::Con(c, args) = &r else { return None };
+            if Some(*c) != self.prog.builtins.cons || args.len() < 2 {
+                return None;
+            }
+            let f = &args[args.len() - 2];
+            match self.effect_rel(lvl, e, f) {
+                Rel::Apart => r = self.whnf(&args[args.len() - 1]),
+                Rel::Same => return None,
+                Rel::Unknown => {
+                    let es = self.show(&p.cx, e);
+                    let fs = self.show(&p.cx, f);
+                    let paren = |s: &str| {
+                        if s.contains(' ') {
+                            format!("({s})")
+                        } else {
+                            s.to_string()
+                        }
+                    };
+                    return Some(
+                        self.error(
+                            "E1254",
+                            p.span,
+                            format!("cannot tell whether the effect `{es}` is `{fs}`"),
+                        )
+                        .with_note(format!(
+                            "`{fs}` comes first in the effects `{}`: if it is `{es}`, its \
+                             handler is the one used",
+                            self.show(&p.cx, row)
+                        ))
+                        .with_help(format!(
+                            "add `Has {} {}` to the constraints of the signature",
+                            paren(&es),
+                            paren(&self.show(&p.cx, row))
+                        )),
+                    );
+                }
+            }
+        }
+        None
     }
 
     // ---- instance search ----
@@ -397,6 +503,12 @@ impl<'r> Elab<'r> {
                 Search::NotFound => {}
             }
         }
+        if Some(tr) == b.has_trait {
+            if stuck {
+                return Search::Stuck;
+            }
+            return self.has_search(cx, tr, &gargs, depth);
+        }
         for i in self.candidates(tr, &gargs) {
             match self.try_impl(cx, &i, &gargs, depth) {
                 Search::Found(x) => {
@@ -438,6 +550,191 @@ impl<'r> Elab<'r> {
             }
         }
         Search::NotFound
+    }
+
+    /// `Has e es` (spec-v0.0.7.md §2.3): the handler at the head of the
+    /// row when it is `e`, else `e` in the rest of the row. The two
+    /// implementations of `Std.Effect` overlap: the compiler chooses
+    /// between them from the shape of the row.
+    fn has_search(&self, cx: &Cxt, tr: GName, gargs: &[(Val, Icit)], depth: u32) -> Search {
+        let [(e, _), (row, _)] = gargs else {
+            return Search::NotFound;
+        };
+        let impls: Vec<ImplInfo> = self
+            .prog
+            .impls
+            .get(&tr)
+            .map(|v| {
+                v.iter()
+                    .copied()
+                    .filter(|i| self.rp.info(i.dict).module == EFFECT_MODULE)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let (Some(here), Some(there)) = (
+            impls.iter().find(|i| i.nctx == 0),
+            impls.iter().find(|i| i.nctx == 1),
+        ) else {
+            return Search::NotFound;
+        };
+        let i = match self.whnf(row) {
+            Val::Con(c, args) if Some(c) == self.prog.builtins.cons && args.len() >= 2 => {
+                match self.effect_rel(cx.lvl(), e, &args[args.len() - 2]) {
+                    Rel::Same => here,
+                    Rel::Apart => there,
+                    Rel::Unknown => return Search::Stuck,
+                }
+            }
+            Val::Neutral(Head::Meta(_), _) => return Search::Stuck,
+            _ => return Search::NotFound,
+        };
+        let r = self.try_impl(cx, i, gargs, depth);
+        if let Search::Found(_) = r {
+            self.note_impl_use(i.dict);
+        }
+        r
+    }
+
+    /// Whether two effects are the same type, can never be the same, or
+    /// may be (a variable may stand for either).
+    fn effect_rel(&self, lvl: u32, a: &Val, b: &Val) -> Rel {
+        let a = self.whnf(a);
+        let b = self.whnf(b);
+        let rigid = |v: &Val| match v {
+            Val::Data(..) | Val::Con(..) | Val::Pi(..) | Val::Type | Val::LType | Val::Lit(_) => {
+                true
+            }
+            Val::Neutral(Head::Global(g), _) => self.prog.prim_of(*g).is_some(),
+            _ => false,
+        };
+        let all = |xs: Vec<(&Val, &Val)>| {
+            xs.into_iter()
+                .fold(Rel::Same, |r, (x, y)| r.and(self.effect_rel(lvl, x, y)))
+        };
+        match (&a, &b) {
+            (Val::Data(d1, a1), Val::Data(d2, a2)) => {
+                if d1 != d2 || a1.len() != a2.len() {
+                    return Rel::Apart;
+                }
+                all(a1.iter().zip(a2).map(|(x, y)| (&x.0, &y.0)).collect())
+            }
+            (Val::Con(c1, a1), Val::Con(c2, a2)) => {
+                if c1 != c2 || a1.len() != a2.len() {
+                    return Rel::Apart;
+                }
+                all(a1.iter().zip(a2).collect())
+            }
+            // The same variable, or the same unknown (equal whatever it
+            // becomes).
+            (Val::Neutral(h1, s1), Val::Neutral(h2, s2)) if h1 == h2 && s1.len() == s2.len() => {
+                s1.iter().zip(s2).fold(Rel::Same, |r, e| {
+                    r.and(match e {
+                        (Elim::App(x, _), Elim::App(y, _)) => self.effect_rel(lvl, x, y),
+                        _ => Rel::Unknown,
+                    })
+                })
+            }
+            (Val::Pi(_, m1, i1, a1, c1), Val::Pi(_, m2, i2, a2, c2)) => {
+                if m1 != m2 || i1 != i2 {
+                    return Rel::Apart;
+                }
+                let x = Val::var(lvl);
+                self.effect_rel(lvl, a1, a2).and(self.effect_rel(
+                    lvl + 1,
+                    &self.ev().inst(c1, x.clone()),
+                    &self.ev().inst(c2, x),
+                ))
+            }
+            (Val::Type, Val::Type) | (Val::LType, Val::LType) => Rel::Same,
+            (Val::Lit(x), Val::Lit(y)) => {
+                if x == y {
+                    Rel::Same
+                } else {
+                    Rel::Apart
+                }
+            }
+            _ if rigid(&a) && rigid(&b) => Rel::Apart,
+            _ => Rel::Unknown,
+        }
+    }
+
+    /// Improves a stuck `Has e es` whose effect is not fully known (`get`
+    /// in `State ?s`): `e` is the innermost effect of the row with the same
+    /// type constructor (spec-v0.0.7.md §2.3). Returns whether it solved
+    /// a meta (the constraints are then solved again before the next).
+    fn improve_effects(&self) -> bool {
+        let Some(has) = self.prog.builtins.has_trait else {
+            return false;
+        };
+        let goals: Vec<(Cxt, Val)> = self
+            .pending
+            .borrow()
+            .iter()
+            .filter_map(|p| match &p.goal {
+                Goal::Instance(g) => Some((p.cx.clone(), g.clone())),
+                Goal::Int { .. } => None,
+            })
+            .collect();
+        for (cx, goal) in goals {
+            let Val::Data(tr, args) = self.whnf(&goal) else {
+                continue;
+            };
+            if tr != has || args.len() != 2 {
+                continue;
+            }
+            let e = self.whnf(&args[0].0);
+            let Val::Data(d, _) = &e else { continue };
+            if let Some(f) = self.innermost_effect(&cx, has, *d, &e, &args[1].0)
+                && self.effect_rel(cx.lvl(), &e, &f) == Rel::Unknown
+                && self.ev().unify(cx.lvl(), &e, &f).is_ok()
+                && self.effect_rel(cx.lvl(), &e, &f) == Rel::Same
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// The innermost effect of `row` with the type constructor `d` that is
+    /// not apart from `e`: an element of the row, or the effect of a local
+    /// `Has` constraint on the rest of the row.
+    fn innermost_effect(&self, cx: &Cxt, has: GName, d: GName, e: &Val, row: &Val) -> Option<Val> {
+        let candidate = |f: &Val| {
+            matches!(f, Val::Data(d2, _) if *d2 == d)
+                && self.effect_rel(cx.lvl(), e, f) != Rel::Apart
+        };
+        let mut row = self.whnf(row);
+        for _ in 0..MAX_DEPTH {
+            let Val::Con(c, args) = &row else { break };
+            if Some(*c) != self.prog.builtins.cons || args.len() < 2 {
+                break;
+            }
+            let f = self.whnf(&args[args.len() - 2]);
+            if candidate(&f) {
+                return Some(f);
+            }
+            if matches!(f, Val::Neutral(Head::Meta(_), _)) {
+                return None;
+            }
+            row = self.whnf(&args[args.len() - 1]);
+        }
+        for l in (0..cx.lvl()).rev() {
+            if cx.mults[l as usize] == Mult::Zero {
+                continue;
+            }
+            let t = self.ty_val(cx, l);
+            if let Val::Data(lt, largs) = self.whnf(&t)
+                && lt == has
+                && largs.len() == 2
+                && self.effect_rel(cx.lvl(), &largs[1].0, &row) == Rel::Same
+            {
+                let f = self.whnf(&largs[0].0);
+                if candidate(&f) {
+                    return Some(f);
+                }
+            }
+        }
+        None
     }
 
     /// The instances of `tr` that can match the goal `gargs`, in the order
@@ -658,6 +955,21 @@ impl<'r> Elab<'r> {
                 }
                 Some(prev) => self.match_val(lvl, &prev, &goal, sub),
             };
+        }
+        // The same unknown on both sides (a variable of the instance bound
+        // twice, `Has e (e :: es)`): equal whatever it becomes.
+        if let (Val::Neutral(Head::Meta(a), sa), Val::Neutral(Head::Meta(b), sb)) = (&pat, &goal)
+            && a == b
+            && sa.len() == sb.len()
+        {
+            let mut r = M::Yes;
+            for e in sa.iter().zip(sb) {
+                r = r.and(match e {
+                    (Elim::App(x, _), Elim::App(y, _)) => self.match_val(lvl, x, y, sub),
+                    _ => M::Stuck,
+                });
+            }
+            return r;
         }
         if matches!(goal, Val::Neutral(Head::Meta(_), _))
             || matches!(pat, Val::Neutral(Head::Meta(_), _))
@@ -1007,6 +1319,15 @@ impl<'r> Elab<'r> {
                 .with_help("declare the data type in `LType`"),
             );
         }
+        if Some(i.trait_) == b.has_trait && self.rp.info(i.name).module != EFFECT_MODULE {
+            self.report(
+                self.error("E1259", i.head.span, "`Has` cannot be implemented")
+                    .with_note("the compiler finds an effect in a row from the shape of the row")
+                    .with_help(
+                        "install a handler with `handle`, or add `Has E es =>` to the signature",
+                    ),
+            );
+        }
         if Some(i.trait_) == b.send_trait {
             self.report(
                 self.error("E1259", i.head.span, "`Send` cannot be implemented")
@@ -1160,7 +1481,10 @@ impl<'r> Elab<'r> {
         }
         for (a, ia) in impls.iter().enumerate() {
             for (b, ib) in impls.iter().enumerate().skip(a + 1) {
+                // The two implementations of `Has` overlap; the compiler
+                // chooses between them (spec-v0.0.7.md §2.3).
                 if ib.trait_ != ia.trait_
+                    || Some(ia.trait_) == self.prog.builtins.has_trait
                     || orphans.contains(&ia.name)
                     || orphans.contains(&ib.name)
                     || matches!((keys[a], keys[b]), (HeadKey::Con(x), HeadKey::Con(y)) if x != y)

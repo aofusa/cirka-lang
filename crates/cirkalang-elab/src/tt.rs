@@ -407,6 +407,16 @@ pub enum Prim {
     BorrowRun,
     BorrowIOWrap,
     BorrowIORun,
+    // Effects (spec-v0.0.7.md §2): the computation type, its
+    // representation (a newtype of `Handlers es -> IO a`) and the cells
+    // that keep the state of handlers.
+    Eff,
+    EffWrap,
+    EffRun,
+    Cell,
+    CellNew,
+    CellRead,
+    CellWrite,
     // Regions (spec-v0.0.3.md §3): an arena of cells addressed by `Int`.
     Arena,
     RIO,
@@ -590,6 +600,13 @@ impl Prim {
         ("primBorrowRun", Prim::BorrowRun),
         ("primBorrowIOWrap", Prim::BorrowIOWrap),
         ("primBorrowIORun", Prim::BorrowIORun),
+        ("Eff", Prim::Eff),
+        ("primEffWrap", Prim::EffWrap),
+        ("primEffRun", Prim::EffRun),
+        ("Cell", Prim::Cell),
+        ("primNewCell", Prim::CellNew),
+        ("primReadCell", Prim::CellRead),
+        ("primWriteCell", Prim::CellWrite),
         ("Arena", Prim::Arena),
         ("RIO", Prim::RIO),
         ("In", Prim::In),
@@ -662,6 +679,8 @@ impl Prim {
                 | Prim::Ref
                 | Prim::Borrow
                 | Prim::BorrowIO
+                | Prim::Eff
+                | Prim::Cell
                 | Prim::Arena
                 | Prim::RIO
                 | Prim::In
@@ -676,6 +695,10 @@ impl Prim {
         )
     }
 }
+
+/// The module of effects (spec-v0.0.7.md §2): its `Has` is solved by the
+/// compiler.
+pub const EFFECT_MODULE: &str = "Std.Effect";
 
 #[derive(Clone, Debug, Default)]
 pub struct Program {
@@ -845,6 +868,10 @@ pub struct Builtins {
     pub maybe: Option<GName>,
     pub nothing: Option<GName>,
     pub just: Option<GName>,
+    /// `Has` and `Handlers` of `Std.Effect` (spec-v0.0.7.md §2.3), when
+    /// the program uses it.
+    pub has_trait: Option<GName>,
+    pub handlers: Option<GName>,
 }
 
 impl Program {
@@ -955,6 +982,27 @@ fn pt(p: &Program, names: &mut Vec<Name>, t: &Term, prec: u8, s: &mut String) {
             args.reverse();
             if args.iter().all(|(_, i)| *i == Icit::Impl) {
                 pt(p, names, h, prec, s);
+                return;
+            }
+            // An operator applied to its two operands is printed infix
+            // (`f :: es`); the fixities are not known here, so an operand
+            // that is itself infix is parenthesized.
+            let explicit: Vec<&Term> = args
+                .iter()
+                .filter(|(_, i)| *i == Icit::Expl)
+                .map(|(a, _)| &***a)
+                .collect();
+            if let (Term::Global(g), [l, r]) = (h, explicit.as_slice())
+                && p.short_name(*g)
+                    .starts_with(|c: char| !(c.is_alphanumeric() || c == '_' || c == '\''))
+            {
+                paren(s, prec > 0);
+                pt(p, names, l, 1, s);
+                let _ = write!(s, " {} ", p.short_name(*g));
+                pt(p, names, r, 1, s);
+                if prec > 0 {
+                    s.push(')');
+                }
                 return;
             }
             paren(s, prec > 1);
