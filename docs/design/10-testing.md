@@ -116,6 +116,7 @@ bench/binary-trees/
   失敗して `malloc` に切り替わるので、既定のアロケータの命令数は予約を小さくしたランタイムで数える。
 - 正しさ: `bench/<name>/check` (1 行目が小さい引数、続きが期待出力 = Rust 版の出力) に対し、`tests/bench.rs` が各実装を
   `-O2` の MIR インタプリタでリークなしに実行して比較する (`rust/main.rs` と、`CIRKA_GHC` があれば GHC の `plain.hs` も)。
+  スレッドを使う題材 (`bench/session`) は先頭に `-- skip-backend: interp` と書き、ネイティブで実行して比較する。
   in-place 更新が共有の配列を複製しないこと (インタプリタの `array_copies` が 0) も確かめる (BUG-0032)。
   aCHC で作れない `plain.hs` (例: `Data.Array.ST` を使う GHC 専用の基準) は先頭に `-- achc: skip` と書く (FEAT-0043)。
 - v0.0.4 以降は、証明付きコードと証明なしコードの性能が同じであること (消去の確認) も計測する。

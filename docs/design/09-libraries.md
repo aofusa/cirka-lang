@@ -93,7 +93,7 @@ GMP は使わない(静的リンク時の LGPL の扱いを避ける・依存を
 | 名前 | 内容 | 版 |
 |------|------|----|
 | `lib/cirkalang/core` | プリミティブ型・`Maybe`/`Result`/`List`/`Nat`・基本トレイト・`Unique`/`Drop`/`Release`・`Lazy`・証明用の型。配列 (`Data.Array`・`Data.Array.Unboxed`) と文字列のビュー (`Data.String`) は大きさを証明に載せ、示された添字では境界検査をしない (共有の配列は v0.0.4〜v0.0.5、大きさを型に持つ一意な配列 `Sized n a` と文字列のビューは v0.0.6。spec-v0.0.6.md §5) | v0.0.1〜 |
-| `lib/cirkalang/std` | libc ベース: fs / io / env / process / time (v0.0.2)、thread / async / net (v0.0.5)、os (v0.0.5。errno の `Result` 化・子プロセス・シグナル・メモリマップ・ディレクトリ、spec-v0.0.5.md §3)、math (v0.0.6。libm の純粋な関数 `Std.Math`、spec-v0.0.6.md §4.1)、random (v0.0.7。OS の乱数 `Std.Random`)、effect (v0.0.7。効果の計算 `Eff`・`State`・`Reader`・`Writer`、spec-v0.0.7.md §2。試作)。外の資源に名前で触れる操作と時刻・乱数は能力 `Cap k` を取る (v0.0.7、spec-v0.0.7.md §1.3) | v0.0.2〜 |
+| `lib/cirkalang/std` | libc ベース: fs / io / env / process / time (v0.0.2)、thread / async / net (v0.0.5)、os (v0.0.5。errno の `Result` 化・子プロセス・シグナル・メモリマップ・ディレクトリ、spec-v0.0.5.md §3)、math (v0.0.6。libm の純粋な関数 `Std.Math`、spec-v0.0.6.md §4.1)、random (v0.0.7。OS の乱数 `Std.Random`)、effect (v0.0.7。効果の計算 `Eff`・`State`・`Reader`・`Writer`、spec-v0.0.7.md §2。試作)、session (v0.0.7。プロトコルを型に持つチャネル `Channel s`、spec-v0.0.7.md §3。試作)。外の資源に名前で触れる操作と時刻・乱数は能力 `Cap k` を取る (v0.0.7、spec-v0.0.7.md §1.3) | v0.0.2〜 |
 | `lib/cirkalang/vulkan` | `Vulkan.Sys` (vulkan_core.h の bindgen の出力) と安全なラッパ `Vulkan` (Vulkan compute、spec-v0.0.6.md §3) | v0.0.6 |
 | `lib/cirkalang/linalg` | `Linalg`: 行列 `Matrix m n` と OpenBLAS / LAPACKE による線形代数 (下記 1.5、spec-v0.0.6.md §4.2) | v0.0.6 |
 

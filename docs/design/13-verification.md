@@ -179,15 +179,17 @@ counter : Has (State Int) es => Eff es Int
 ### 4.3 セッション型
 
 ```
-Proto : Type
-Proto = Send Int (Recv Bool End)
+proto : Session
+proto = Send Int (Recv Bool End)
 
-send  : (1 c : Chan (Send a p)) -> a -> IO (Chan p)
-recv  : (1 c : Chan (Recv a p)) -> IO (a, Chan p)
-close : (1 c : Chan End) -> IO ()
+send  : Send a => (1 c : Channel (Send a s)) -> a -> IO1 (Channel s)
+recv  : (1 c : Channel (Recv a s)) -> IO1 (a, Channel s)
+close : (1 c : Channel End) -> IO ()
 ```
 
-チャネルは `LType` なので、プロトコルの途中で捨てる・二重に使うことは型エラー。依存型でプロトコルを型レベルの値として書ける。双対性 `Dual p` は型レベル関数で計算する。
+依存型でプロトコルを型の中で使う値 (`Session`) として書き、相手のプロトコル `dual s` は型の中で評価される全域な関数で計算する。
+チャネルの端点は `LType` で、`Drop` を `Channel End` にだけ持つので、プロトコルにない操作・端点の二重の使用・途中での放棄・双対でない相手は型エラーになる。
+v0.0.7 はライブラリ `Std.Session` として試作した (spec-v0.0.7.md §3、ADR-106)。ループは `Rec` / `Var` (de Bruijn 添字) で書く。
 
 ## 5. aCHC での検証 (後期 H6、FEAT-0151〜0154)
 
@@ -222,4 +224,4 @@ safeDiv n d = n `div` d
 | 全域性検査 | なし | 小 |
 | ケイパビリティ | なし (ゼロサイズ型) | なし |
 | 効果型 (末尾再開形) | 関数呼び出しと同等 | 効果推論 |
-| セッション型 | なし (状態は型のみ) | なし |
+| セッション型 | 操作ごとにチャネルの送受信 1 回 (状態は型のみ) | プロトコルの評価 (`dual` など) |
