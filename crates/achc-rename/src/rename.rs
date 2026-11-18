@@ -529,7 +529,9 @@ impl Renamer {
             .map(|e| e.name.clone())
             .collect();
         self.check_sigs(&m.decls, &top_binders);
-        let decls = m.decls.iter().map(|d| self.top_decl(d)).collect();
+        let mut decls: Vec<Decl> = m.decls.iter().map(|d| self.top_decl(d)).collect();
+        let instances = crate::extern_block::extern_instances(name, &decls, &mut self.errors);
+        decls.extend(instances);
         Module {
             name: m.name,
             exports: m.exports,
@@ -730,6 +732,9 @@ impl Renamer {
             Decl::Foreign(f) => {
                 let mut f = f.clone();
                 f.ty = self.ty(&f.ty);
+                if f.ext.is_some() {
+                    f.ty = crate::extern_block::extern_sig(&f.ty, &mut self.errors);
+                }
                 Decl::Foreign(f)
             }
         }

@@ -1,0 +1,5 @@
+error[E0619]: unsupported calling convention `"rust"` of an extern block
+ --> tests/achc/fail/compile/extern_callconv.chs:6:8
+  |
+6 | extern "rust" where
+  |        ^^^^^^ only `"C"` is supported

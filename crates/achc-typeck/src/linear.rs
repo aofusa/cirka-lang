@@ -183,6 +183,14 @@ enum Scope {
     Exprs(Vec<Span>),
     /// After the last statement (this expression) of an `IO` `do` block.
     DoEnd(Span),
+    /// A `case` alternative whose right-hand side is an `IO` `do` block
+    /// (FEAT-0130): a value with `Drop` is dropped at the start of the
+    /// right-hand side (these expressions), one with only `Release` is
+    /// released after the block's last statement (this expression). The
+    /// block may be an action that runs more than once, while the pattern
+    /// is matched once; but `Release` instances are of resources, which are
+    /// made in `IO` (03-type-system.md §3).
+    AltDoEnd(Vec<Span>, Span),
 }
 
 pub(crate) const DROP: &str = "Cirka.Ownership.Drop";
@@ -364,7 +372,7 @@ impl Checker<'_> {
         let t = self.tc.zonk(&t);
         if self.instance(DROP, &t) {
             match scope {
-                Scope::Exprs(spans) if !spans.is_empty() => {
+                Scope::Exprs(spans) | Scope::AltDoEnd(spans, _) if !spans.is_empty() => {
                     for s in spans {
                         self.plan.insertions.push(Insertion {
                             span: *s,
@@ -386,11 +394,11 @@ impl Checker<'_> {
                     });
                     true
                 }
-                Scope::Exprs(_) => false,
+                Scope::Exprs(_) | Scope::AltDoEnd(..) => false,
             }
         } else if self.instance(RELEASE, &t) {
             match scope {
-                Scope::DoEnd(s) => {
+                Scope::DoEnd(s) | Scope::AltDoEnd(_, s) => {
                     self.plan.insertions.push(Insertion {
                         span: *s,
                         after: true,
@@ -645,12 +653,21 @@ impl Checker<'_> {
                     );
                 }
                 (Mult::One, Count::Zero) if self.weaken(x, *sp, scope) => {}
-                (Mult::One, Count::Zero) => self.errors.push(
-                    Diagnostic::error(format!("linear variable `{name}` is not consumed"))
-                        .with_code("E0302")
-                        .with_label(*sp, "bound linearly here")
-                        .with_note("a linear value must be used exactly once"),
-                ),
+                (Mult::One, Count::Zero) => {
+                    let mut d =
+                        Diagnostic::error(format!("linear variable `{name}` is not consumed"))
+                            .with_code("E0302")
+                            .with_label(*sp, "bound linearly here")
+                            .with_note("a linear value must be used exactly once");
+                    if self.owned_ptr_at(*sp) {
+                        d = d.with_help(
+                            "give the pointer to the C function that frees it, or declare that \
+                             function with `free with` in the extern block: the pointer is then \
+                             released at the end of the `IO` block",
+                        );
+                    }
+                    self.errors.push(d)
+                }
                 (Mult::One, Count::Maybe) => self.errors.push(
                     Diagnostic::error(format!(
                         "linear variable `{name}` is not consumed on every path"
@@ -689,6 +706,14 @@ impl Checker<'_> {
             }
         }
         u
+    }
+
+    /// Whether the variable bound at `sp` is an owned C pointer of an
+    /// extern block (FEAT-0130).
+    fn owned_ptr_at(&self, sp: Span) -> bool {
+        self.tc.pat_tys.get(&sp).is_some_and(
+            |t| matches!(self.tc.zonk(t).spine().0, Ty::Con(c) if c == "Unsafe.Extern.OwnedPtr"),
+        )
     }
 
     /// Brings linearly bound variables into scope.
@@ -1085,7 +1110,32 @@ impl Checker<'_> {
         self.pat_vars(&a.pat, Mult::One, linear, &mut bound);
         self.enter(&bound);
         let u = self.rhs(&a.rhs);
-        self.close(u, &bound, &Scope::Exprs(rhs_spans(&a.rhs)))
+        let scope = match self.io_do_end(&a.rhs) {
+            Some(last) => Scope::AltDoEnd(rhs_spans(&a.rhs), last),
+            None => Scope::Exprs(rhs_spans(&a.rhs)),
+        };
+        self.close(u, &bound, &scope)
+    }
+
+    /// The last statement of a right-hand side that is an `IO` `do` block
+    /// (without guards or `where`): the resources a `case` alternative's
+    /// pattern binds are released after it, like those bound in the block
+    /// (FEAT-0130: `Just f -> do ...` for `Maybe` of a resource).
+    fn io_do_end(&self, r: &Rhs) -> Option<Span> {
+        let RhsBody::Plain(e) = &r.body else {
+            return None;
+        };
+        let ExprKind::Do(ss) = &e.kind else {
+            return None;
+        };
+        let io =
+            self.tc.do_tys.get(&e.span).is_some_and(
+                |t| matches!(self.tc.zonk(t).spine().0, Ty::Con(c) if *c == prim("IO")),
+            );
+        match ss.last() {
+            Some(Stmt::Expr(l)) if io && r.wheres.is_empty() => Some(l.span),
+            _ => None,
+        }
     }
 
     /// Whether a scrutinee's usage consumes a linear variable: then the

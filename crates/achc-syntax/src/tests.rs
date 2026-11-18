@@ -350,3 +350,42 @@ fn syntax_errors_do_not_panic() {
         let _ = parse(FileId(0), src);
     }
 }
+
+/// `extern "C"` blocks (CirkaExtern, FEAT-0130): opaque types become empty
+/// data types and functions `foreign import ccall` declarations marked
+/// with the block; `free with` is not taken for type variables.
+#[test]
+fn extern_blocks() {
+    let out = ok(r#"{-# LANGUAGE CirkaExtern #-}
+module M where
+extern "C" link "c" where
+  type CFile
+  fopen :: CString -> CString -> IO (Nullable (OwnedPtr CFile)) free with fclose
+  fclose :: OwnedPtr CFile %1 -> IO CInt
+  fputc, putc :: CInt -> BorrowedPtr CFile -> IO CInt
+extern "C" where { labs :: CLong -> CLong; type T }
+"#);
+    let expected = r#"(module M
+  (language CirkaExtern)
+  (data CFile ()
+  )
+  (foreign import ccall "fopen" fopen (-> CString (-> CString (IO (Nullable (OwnedPtr CFile))))) (extern 0 (link "c") (free-with fclose) (opaque CFile)))
+  (foreign import ccall "fclose" fclose (-> %1 (OwnedPtr CFile) (IO CInt)) (extern 0 (link "c") (opaque CFile)))
+  (foreign import ccall "fputc" fputc (-> CInt (-> (BorrowedPtr CFile) (IO CInt))) (extern 0 (link "c") (opaque CFile)))
+  (foreign import ccall "putc" putc (-> CInt (-> (BorrowedPtr CFile) (IO CInt))) (extern 0 (link "c") (opaque CFile)))
+  (foreign import ccall "labs" labs (-> CLong CLong) (extern 1 (opaque T)))
+  (data T ()
+  )
+)
+"#;
+    assert_eq!(out, expected);
+    // Without the extension, `extern` is an ordinary name.
+    let plain = ok("module M where\nextern \"C\" = 1\n");
+    assert!(plain.contains("(fun extern (\"C\")"), "{plain}");
+    let (_, errs) = parse(
+        FileId(0),
+        "{-# LANGUAGE CirkaExtern #-}\nmodule M where\nextern \"rust\" where\n  f :: Int -> Int\n",
+    );
+    assert_eq!(errs.len(), 1, "{errs:?}");
+    assert_eq!(errs[0].code.as_deref(), Some("E0619"));
+}

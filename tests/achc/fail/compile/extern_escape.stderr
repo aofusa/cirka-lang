@@ -1,0 +1,21 @@
+error[E0320]: a borrowed pointer escapes its scope: the scope `r` would occur in the result `BorrowIO r (BorrowedPtr r CFile)`
+  --> tests/achc/fail/compile/extern_escape.chs:19:37
+   |
+19 |   (f, h) <- withBorrowedIO f (\h -> return h)
+   |                                     ^^^^^^^^
+   = note: a borrowed C pointer (`BorrowedPtr`), or a function or computation using it (`BorrowIO`), cannot leave the `withBorrowed` / `withBorrowedIO` that lent it: the owner may free the pointer after
+   = help: return a value read through the pointer instead
+error[E0320]: a borrowed pointer escapes its scope: the scope `r` would occur in the result `BorrowIO r (BorrowIO r CInt)`
+  --> tests/achc/fail/compile/extern_escape.chs:25:37
+   |
+25 |   (f, a) <- withBorrowedIO f (\h -> return (fgetc h))
+   |                                     ^^^^^^^^^^^^^^^^
+   = note: a borrowed C pointer (`BorrowedPtr`), or a function or computation using it (`BorrowIO`), cannot leave the `withBorrowed` / `withBorrowedIO` that lent it: the owner may free the pointer after
+   = help: return a value read through the pointer instead
+error[E0320]: a borrowed pointer escapes its scope: the scope `r` would occur in the result `Borrow r (Borrow r CLong)`
+  --> tests/achc/fail/compile/extern_escape.chs:31:44
+   |
+31 |   (f, b) <- returnL (withBorrowed f (\h -> return (ftell h)))
+   |                                            ^^^^^^^^^^^^^^^^
+   = note: a borrowed C pointer (`BorrowedPtr`), or a function or computation using it (`BorrowIO`), cannot leave the `withBorrowed` / `withBorrowedIO` that lent it: the owner may free the pointer after
+   = help: return a value read through the pointer instead

@@ -10,6 +10,7 @@
 //! The built-in syntax (`[]`, `:`, `()`, tuples, `->`) belongs to module
 //! `Cirka.Prim`.
 
+mod extern_block;
 mod fixity;
 mod rename;
 mod scope;

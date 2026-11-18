@@ -1,0 +1,12 @@
+error[E0618]: `Maybe CInt` cannot be passed to a C function
+ --> tests/achc/fail/compile/extern_ctypes.chs:9:3
+  |
+9 |   abs :: Maybe CInt -> CInt
+  |   ^^^^^^^^^^^^^^^^^^^^^^^^^
+  = note: marshallable types are Int, Word, Double, Float, Char, Int8..Word64, the C types of Foreign.C.Types, Ptr, FunPtr, OwnedPtr, BorrowedPtr, newtypes of them, and Nullable (Maybe) of a pointer
+error[E0618]: `[Char]` cannot be passed to a C function
+  --> tests/achc/fail/compile/extern_ctypes.chs:10:3
+   |
+10 |   puts :: String -> IO CInt
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: marshallable types are Int, Word, Double, Float, Char, Int8..Word64, the C types of Foreign.C.Types, Ptr, FunPtr, OwnedPtr, BorrowedPtr, newtypes of them, and Nullable (Maybe) of a pointer

@@ -413,6 +413,11 @@ impl Ds {
         let datas: HashMap<&str, &tast::DataDecl> =
             p.datas.iter().map(|d| (d.name.as_str(), d)).collect();
         for f in &p.foreigns {
+            if let Some(l) = &f.link
+                && !out.libs.contains(l)
+            {
+                out.libs.push(l.clone());
+            }
             if matches!(f.callconv.as_str(), "ccall" | "capi") {
                 if let Err(d) = self.ccall(f, &datas, &mut out) {
                     self.errors.push(d);

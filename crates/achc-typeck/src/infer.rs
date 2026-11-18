@@ -586,6 +586,20 @@ impl Tc {
                                  is freed when it ends",
                             )
                             .with_help("return a value read from the region instead (e.g. with `readIn`)")
+                        } else if kind == Some(ScopeKind::Pointer) {
+                            err(
+                                "E0320",
+                                span,
+                                format!(
+                                    "a borrowed pointer escapes its scope: the scope `{name}` would occur in the result `{ac}`"
+                                ),
+                            )
+                            .with_note(
+                                "a borrowed C pointer (`BorrowedPtr`), or a function or computation \
+                                 using it (`BorrowIO`), cannot leave the `withBorrowed` / \
+                                 `withBorrowedIO` that lent it: the owner may free the pointer after",
+                            )
+                            .with_help("return a value read through the pointer instead")
                         } else {
                             err(
                                 "E0604",
@@ -962,6 +976,16 @@ impl Tc {
                     Decl::Data(dd) => self.data_cons(m, dd),
                     Decl::Foreign(f) if f.import => {
                         let s = self.sig_scheme(&f.ty);
+                        if f.ext.is_some()
+                            && let Some((msg, note)) = crate::externs::violation(&s.ty)
+                        {
+                            self.error(
+                                Diagnostic::error(msg)
+                                    .with_code("E0619")
+                                    .with_label(f.span, format!("in the type of `{}`", f.name.name))
+                                    .with_note(note),
+                            );
+                        }
                         let name = format!("{m}.{}", f.name.name);
                         self.globals.insert(name.clone(), s.clone());
                         let tvs = s
@@ -976,6 +1000,8 @@ impl Tc {
                             tvs,
                             ty: s.ty,
                             span: f.span,
+                            ext: f.ext.is_some(),
+                            link: f.ext.as_ref().and_then(|x| x.link.clone()),
                         });
                     }
                     Decl::Foreign(f) => {
@@ -3964,6 +3990,8 @@ fn strip_paren(p: &ast::Pat) -> &ast::Pat {
 pub(crate) enum ScopeKind {
     Borrow,
     Region,
+    /// A C pointer lent by `withBorrowed` / `withBorrowedIO` (FEAT-0130).
+    Pointer,
 }
 
 /// Whether `v` is the scope variable of a borrow or region type in `t`.
@@ -3979,6 +4007,9 @@ fn mentions_region(t: &Ty, v: &str) -> Option<ScopeKind> {
                     }
                     "Cirka.Region.Arena" | "Cirka.Region.RIO" | "Cirka.Region.In"
                     | "Cirka.Region.RefIn" => return Some(ScopeKind::Region),
+                    "Unsafe.Extern.BorrowedPtr" | "Unsafe.Extern.BorrowIO" => {
+                        return Some(ScopeKind::Pointer);
+                    }
                     _ => {}
                 }
             }

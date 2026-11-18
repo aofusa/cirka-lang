@@ -49,6 +49,36 @@ fn achc_syntax_errors() {
     });
 }
 
+/// tests/achc/fail/compile/*.{hs,chs}: programs that the compiler rejects
+/// with the errors in `.stderr` when they use lib/cirka-base itself (not
+/// the small library of the type checker tests), e.g. the types of extern
+/// blocks (FEAT-0130).
+#[test]
+fn achc_compile_errors() {
+    let cases = discover(&repo_root().join("tests/achc/fail/compile"), &["hs", "chs"]);
+    assert!(!cases.is_empty());
+    let root = format!("{}/", repo_root().display());
+    run_suite("achc-compile-fail", &cases, |c| {
+        let mut sm = SourceMap::new();
+        let mut opts = cirka_driver::pipeline::Options::new(&c.name);
+        opts.frontend_flags = c.header.flags();
+        let roots = vec![c.path.parent().unwrap().to_path_buf(), achc::lib_dir()];
+        let errs = match achc::compile(&mut sm, &c.path, &roots, &opts, "test") {
+            Ok(_) => return Outcome::Fail("compiled, but errors are expected".into()),
+            Err(ds) => ds,
+        };
+        let text: String = errs
+            .iter()
+            .map(|d| render(d, &sm, Style::Plain))
+            .collect::<String>()
+            .replace(&root, "");
+        match check_expect(&c.sibling("stderr"), &text) {
+            Ok(()) => Outcome::Pass,
+            Err(e) => Outcome::Fail(e),
+        }
+    });
+}
+
 /// Multi-module programs under tests/achc/modules/<name>/Main.hs
 /// (FEAT-0102): the renamed main module matches `<name>.rn`, or the
 /// diagnostics match `<name>.stderr` when renaming fails.

@@ -133,6 +133,11 @@ pub struct Foreign {
     pub tvs: Vec<(String, Kind)>,
     pub ty: Ty,
     pub span: Span,
+    /// A function of an `extern "C"` block (FEAT-0130): `Maybe` of a
+    /// pointer may be passed and returned (NULL is `Nothing`).
+    pub ext: bool,
+    /// `link "name"` of its extern block.
+    pub link: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]

@@ -11,6 +11,7 @@
 
 mod classes;
 mod deriving;
+mod externs;
 pub mod infer;
 mod linear;
 mod raii;

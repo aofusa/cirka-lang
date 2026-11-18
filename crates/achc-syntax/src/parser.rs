@@ -54,6 +54,21 @@ pub struct Parser {
     region_sugar: bool,
     /// Nesting of `let`/`where` blocks.
     local_depth: u32,
+    /// `CirkaExtern` (or `CirkaOwnership`): `extern "C" where` blocks.
+    extern_on: bool,
+    /// Parsing the type of an extern block's function, which `free with`
+    /// may follow.
+    extern_sig: bool,
+    /// Extern blocks of the module so far.
+    extern_count: usize,
+}
+
+/// An item of an `extern "C"` block.
+enum ExternItem {
+    /// `type T`.
+    Opaque(Ident, Span),
+    /// `f, g :: t [free with h]`.
+    Fun(Vec<Ident>, Type, Option<Ident>, Span),
 }
 
 type PResult<T> = Result<T, ()>;
@@ -73,6 +88,9 @@ impl Parser {
             region_sugar: false,
             strict: false,
             local_depth: 0,
+            extern_on: false,
+            extern_sig: false,
+            extern_count: 0,
         }
     }
 
@@ -194,6 +212,18 @@ impl Parser {
         self.errors.push(
             Diagnostic::error(msg)
                 .with_code("E0102")
+                .with_label(span, label),
+        );
+    }
+
+    /// An error with its own code (not a syntax error).
+    fn error_code(&mut self, code: &str, span: Span, msg: String, label: String) {
+        if self.fuel > 0 {
+            return;
+        }
+        self.errors.push(
+            Diagnostic::error(msg)
+                .with_code(code)
                 .with_label(span, label),
         );
     }
@@ -489,6 +519,7 @@ impl Parser {
         self.strict = on("Strict");
         self.borrow_sugar = on("CirkaBorrow") || on("CirkaOwnership");
         self.region_sugar = on("CirkaRegions") || on("CirkaOwnership");
+        self.extern_on = on("CirkaExtern") || on("CirkaOwnership");
         let start = self.span();
         let mut name = None;
         let mut exports = None;
@@ -829,10 +860,133 @@ impl Parser {
                     name,
                     ty,
                     span: start.to(self.prev_span()),
+                    ext: None,
                 })])
+            }
+            Tok::VarId(None, ref s)
+                if s == "extern" && self.extern_on && matches!(self.peek_real(1), Tok::Str(_)) =>
+            {
+                self.extern_block()
             }
             _ => self.decl(),
         }
+    }
+
+    /// `extern "C" [link "lib"] where` and a block of opaque types
+    /// (`type T`) and C functions (`f, g :: t [free with h]`) (CirkaExtern,
+    /// 08-ffi.md §7.4): `data T` and `foreign import ccall` declarations
+    /// marked with the block.
+    fn extern_block(&mut self) -> PResult<Vec<Decl>> {
+        let start = self.span();
+        self.bump();
+        let conv_span = self.span();
+        let Tok::Str(conv) = self.cur() else {
+            return self.expected("a calling convention (`\"C\"`)");
+        };
+        self.bump();
+        if conv != "C" {
+            self.error_code(
+                "E0619",
+                conv_span,
+                format!("unsupported calling convention `{conv:?}` of an extern block"),
+                "only `\"C\"` is supported".into(),
+            );
+        }
+        let mut link = None;
+        if matches!(self.cur(), Tok::VarId(None, ref s) if s == "link") {
+            self.bump();
+            let Tok::Str(l) = self.cur() else {
+                return self.expected("a library name (`link \"name\"`)");
+            };
+            self.bump();
+            link = Some(l);
+        }
+        if !self.eat_kw(Kw::Where) {
+            return self.expected("`where`");
+        }
+        let block = self.extern_count;
+        self.extern_count += 1;
+        let items = self.block(|p| p.extern_item());
+        let opaque: Vec<String> = items
+            .iter()
+            .filter_map(|i| match i {
+                ExternItem::Opaque(n, _) => Some(n.name.clone()),
+                ExternItem::Fun(..) => None,
+            })
+            .collect();
+        let mut out = Vec::new();
+        for item in items {
+            match item {
+                ExternItem::Opaque(name, span) => out.push(Decl::Data(DataDecl {
+                    newtype: false,
+                    context: Vec::new(),
+                    name,
+                    params: Vec::new(),
+                    param_kinds: Vec::new(),
+                    cons: Vec::new(),
+                    deriving: Vec::new(),
+                    span,
+                })),
+                ExternItem::Fun(names, ty, free_with, span) => {
+                    for name in names {
+                        out.push(Decl::Foreign(ForeignDecl {
+                            import: true,
+                            callconv: Ident {
+                                name: "ccall".into(),
+                                span: start,
+                            },
+                            entity: Some(name.name.clone()),
+                            name,
+                            ty: ty.clone(),
+                            span,
+                            ext: Some(ExternAttrs {
+                                block,
+                                link: link.clone(),
+                                free_with: free_with.clone(),
+                                opaque: opaque.clone(),
+                            }),
+                        }));
+                    }
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    fn extern_item(&mut self) -> PResult<ExternItem> {
+        let start = self.span();
+        if self.eat_kw(Kw::Type) {
+            let name = self.conid()?;
+            return Ok(ExternItem::Opaque(name, start.to(self.prev_span())));
+        }
+        let mut names = vec![self.var_or_parens_op(false)?];
+        while self.eat(&Tok::Comma) {
+            names.push(self.var_or_parens_op(false)?);
+        }
+        self.expect(&Tok::DColon)?;
+        self.extern_sig = true;
+        let ty = self.ty();
+        self.extern_sig = false;
+        let ty = ty?;
+        let free_with = if self.at_free_with() {
+            self.bump();
+            self.bump();
+            Some(self.varid()?)
+        } else {
+            None
+        };
+        Ok(ExternItem::Fun(
+            names,
+            ty,
+            free_with,
+            start.to(self.prev_span()),
+        ))
+    }
+
+    /// `free with` after the type of an extern block's function.
+    fn at_free_with(&self) -> bool {
+        matches!(self.cur(), Tok::VarId(None, ref s) if s == "free")
+            && matches!(self.peek_real(1), Tok::VarId(None, s) if s == "with")
     }
 
     fn decls_block(&mut self) -> Vec<Decl> {
@@ -1564,6 +1718,7 @@ impl Parser {
             self.cur(),
             Tok::VarId(None, _) | Tok::ConId(..) | Tok::LParen | Tok::LBracket
         ) && !matches!(self.cur(), Tok::VarId(None, ref s) if s == "forall")
+            && !(self.extern_sig && self.at_free_with())
         {
             let a = self.atype()?;
             let span = t.span.to(a.span);

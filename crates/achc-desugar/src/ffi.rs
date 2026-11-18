@@ -126,18 +126,42 @@ fn entity(entity: &str, hs_name: &str) -> Result<Entity, String> {
 /// The type constructor of C function pointers.
 const FUN_PTR: &str = "Cirka.Foreign.FunPtr";
 
-/// A function type split into its arguments, whether the result is in
-/// `IO`, and the result.
-fn split_fun(t: &Ty) -> (Vec<Ty>, bool, Ty) {
+/// `Maybe`, whose `Nothing` is NULL for the functions of extern blocks.
+const MAYBE: &str = "Cirka.Base.Maybe";
+
+/// The borrow monads, newtypes of `IO` that the functions of extern blocks
+/// taking borrowed pointers return (08-ffi.md §7.4).
+const BORROW_IO: &str = "Unsafe.Extern.BorrowIO";
+const BORROW: &str = "Unsafe.Borrow.Borrow";
+
+/// A function type split into its arguments (also of linear arrows), the
+/// type of the action when the result is run (`IO t`, and for a function
+/// of an extern block also `BorrowIO r t` / `Borrow r t`), and the result.
+fn split_fun(t: &Ty, ext: bool) -> (Vec<Ty>, Option<Ty>, Ty) {
     let mut args = Vec::new();
     let mut t = t.clone();
-    while let Ty::Fun(a, r) = t {
-        args.push(*a);
-        t = *r;
+    loop {
+        if let Ty::Fun(a, r) = t {
+            args.push(*a);
+            t = *r;
+        } else if let Some((_, a, r)) = as_mul_fun(&t) {
+            let (a, r) = (a.clone(), r.clone());
+            args.push(a);
+            t = r;
+        } else {
+            break;
+        }
     }
-    match t.spine() {
-        (Ty::Con(h), a) if *h == prim("IO") && a.len() == 1 => (args, true, a[0].clone()),
-        _ => (args, false, t.clone()),
+    let run = match t.spine() {
+        (Ty::Con(h), a) if *h == prim("IO") && a.len() == 1 => Some(a[0].clone()),
+        (Ty::Con(h), a) if ext && (h == BORROW_IO || h == BORROW) && a.len() == 2 => {
+            Some(a[1].clone())
+        }
+        _ => None,
+    };
+    match run {
+        Some(r) => (args, Some(t), r),
+        None => (args, None, t.clone()),
     }
 }
 
@@ -201,6 +225,39 @@ impl Ds {
         None
     }
 
+    /// `Maybe p` of a pointer type `p` (also `Nullable p`): a function of an
+    /// extern block passes it as a C pointer that is NULL for `Nothing`
+    /// (08-ffi.md §7.4). Returns `p`.
+    fn nullable(
+        &self,
+        f: &tast::Foreign,
+        t: &Ty,
+        datas: &HashMap<&str, &tast::DataDecl>,
+    ) -> Option<Ty> {
+        if !f.ext {
+            return None;
+        }
+        match t.spine() {
+            (Ty::Con(h), a) if h == MAYBE && a.len() == 1 => self
+                .marshal(a[0], datas)
+                .filter(|m| m.0 == CTy::Ptr)
+                .map(|_| a[0].clone()),
+            _ => None,
+        }
+    }
+
+    /// How `t` crosses the C boundary: a boxed primitive, or a nullable
+    /// pointer represented by its address.
+    fn marshal_arg(
+        &self,
+        f: &tast::Foreign,
+        t: &Ty,
+        datas: &HashMap<&str, &tast::DataDecl>,
+    ) -> Option<(CTy, Base)> {
+        self.marshal(t, datas)
+            .or_else(|| self.nullable(f, t, datas).map(|_| (CTy::Ptr, Base::Int)))
+    }
+
     /// The C types of a function's arguments `args` and result `res`.
     fn marshal_sig(
         &self,
@@ -211,24 +268,28 @@ impl Ds {
     ) -> Result<Marshalled, Diagnostic> {
         let mut params = Vec::new();
         for a in args {
-            match self.marshal(a, datas) {
+            match self.marshal_arg(f, a, datas) {
                 Some(m) => params.push(m),
                 None => {
                     return Err(ffi_error(
                         f,
                         format!("`{}` cannot be passed to a C function", show(a)),
                     )
-                    .with_note(
+                    .with_note(if f.ext {
                         "marshallable types are Int, Word, Double, Float, Char, Int8..Word64, \
-                         the C types of Foreign.C.Types, Ptr and FunPtr, and newtypes of them",
-                    ));
+                         the C types of Foreign.C.Types, Ptr, FunPtr, OwnedPtr, BorrowedPtr, \
+                         newtypes of them, and Nullable (Maybe) of a pointer"
+                    } else {
+                        "marshallable types are Int, Word, Double, Float, Char, Int8..Word64, \
+                         the C types of Foreign.C.Types, Ptr and FunPtr, and newtypes of them"
+                    }));
                 }
             }
         }
         let ret = if *res == Ty::Con(unit_tc()) {
             None
         } else {
-            match self.marshal(res, datas) {
+            match self.marshal_arg(f, res, datas) {
                 Some(m) => Some(m),
                 None => {
                     return Err(ffi_error(
@@ -249,10 +310,13 @@ impl Ds {
         out: &mut c::Program,
     ) -> Result<(), Diagnostic> {
         let ent = entity(&f.entity, &f.name).map_err(|m| ffi_error(f, m))?;
-        let (args, io, res) = split_fun(&f.ty);
+        let (args, action, res) = split_fun(&f.ty, f.ext);
+        let io = action.is_some();
         match ent {
-            Entity::Static(name) => self.call_import(f, Some(name), &args, io, &res, datas, out),
-            Entity::Dynamic => self.call_import(f, None, &args, io, &res, datas, out),
+            Entity::Static(name) => {
+                self.call_import(f, Some(name), &args, action.as_ref(), &res, datas, out)
+            }
+            Entity::Dynamic => self.call_import(f, None, &args, action.as_ref(), &res, datas, out),
             Entity::Addr(sym) => self.addr_import(f, &sym, &args, io, &res, datas, out),
             Entity::Wrapper => self.wrapper_import(f, &args, io, &res, datas, out),
         }
@@ -261,14 +325,14 @@ impl Ds {
     /// A call of the C function `name`, or through the function pointer
     /// passed first (`dynamic`, `name` None): a Core `extern` with a C
     /// signature and a wrapper that unboxes the arguments and boxes the
-    /// result.
+    /// result (run as the action `action`, when there is one).
     #[allow(clippy::too_many_arguments)]
     fn call_import(
         &mut self,
         f: &tast::Foreign,
         name: Option<String>,
         args: &[Ty],
-        io: bool,
+        action: Option<&Ty>,
         res: &Ty,
         datas: &HashMap<&str, &tast::DataDecl>,
         out: &mut c::Program,
@@ -338,10 +402,41 @@ impl Ds {
             ),
             Some((_, b)) => {
                 let boxed = c::Expr::Con(b.box_con().into(), Vec::new(), vec![c::Expr::var(&r)]);
+                let value = match self.nullable(f, res, datas) {
+                    // case r of 0 -> Nothing; _ -> Just (cast (I# r) p)
+                    Some(p) => {
+                        let p_ty = self.ty(&p);
+                        let s = self.id("s");
+                        c::Expr::Case(
+                            Box::new(c::Expr::var(&r)),
+                            c::Binder::new(s, c::Mult::Many, c::Type::int()),
+                            res_ty.clone(),
+                            vec![
+                                c::Alt {
+                                    con: c::AltCon::Int(0),
+                                    rhs: c::Expr::Con(
+                                        "Cirka.Base.Nothing".into(),
+                                        vec![p_ty.clone()],
+                                        Vec::new(),
+                                    ),
+                                },
+                                c::Alt {
+                                    con: c::AltCon::Default,
+                                    rhs: c::Expr::Con(
+                                        "Cirka.Base.Just".into(),
+                                        vec![p_ty.clone()],
+                                        vec![c::Expr::Cast(Box::new(boxed), p_ty)],
+                                    ),
+                                },
+                            ],
+                        )
+                    }
+                    None => c::Expr::Cast(Box::new(boxed), res_ty.clone()),
+                };
                 c::Expr::LetStrict(
                     c::Binder::new(r, c::Mult::Many, b.unboxed()),
                     Box::new(call),
-                    Box::new(c::Expr::Cast(Box::new(boxed), res_ty.clone())),
+                    Box::new(value),
                 )
             }
         };
@@ -349,6 +444,47 @@ impl Ds {
         for i in (0..args.len()).rev() {
             let b = params[i].1;
             let s = self.id("s");
+            if let Some(p) = self.nullable(f, &args[i], datas) {
+                // let! x = case a of Nothing -> 0; Just q -> case cast q Int of I# y -> y
+                let p_ty = self.ty(&p);
+                let (q, y, s2) = (self.id("q"), self.id("y"), self.id("s"));
+                let unbox = c::Expr::Case(
+                    Box::new(c::Expr::Cast(Box::new(c::Expr::var(&q)), b.core_ty())),
+                    c::Binder::new(s2, c::Mult::Many, b.core_ty()),
+                    c::Type::int(),
+                    vec![c::Alt {
+                        con: c::AltCon::Con(
+                            b.box_con().into(),
+                            vec![c::Binder::new(y.clone(), c::Mult::Many, c::Type::int())],
+                        ),
+                        rhs: c::Expr::var(&y),
+                    }],
+                );
+                let addr = c::Expr::Case(
+                    Box::new(c::Expr::var(&arg_ids[i])),
+                    c::Binder::new(s, c::Mult::Many, arg_tys[i].clone()),
+                    c::Type::int(),
+                    vec![
+                        c::Alt {
+                            con: c::AltCon::Con("Cirka.Base.Nothing".into(), Vec::new()),
+                            rhs: c::Expr::Lit(c::Lit::Int(0)),
+                        },
+                        c::Alt {
+                            con: c::AltCon::Con(
+                                "Cirka.Base.Just".into(),
+                                vec![c::Binder::new(q, c::Mult::Many, p_ty)],
+                            ),
+                            rhs: unbox,
+                        },
+                    ],
+                );
+                body = c::Expr::LetStrict(
+                    c::Binder::new(raw[i].clone(), c::Mult::Many, c::Type::int()),
+                    Box::new(addr),
+                    Box::new(body),
+                );
+                continue;
+            }
             body = c::Expr::Case(
                 Box::new(c::Expr::Cast(
                     Box::new(c::Expr::var(&arg_ids[i])),
@@ -365,7 +501,7 @@ impl Ds {
                 }],
             );
         }
-        if io {
+        if let Some(action) = action {
             let w = self.id("w");
             let io_ty = c::Type::Con("IO".into(), vec![res_ty.clone()]);
             body = c::Expr::Cast(
@@ -373,8 +509,13 @@ impl Ds {
                     c::Binder::new(w, c::Mult::Many, c::Type::unit()),
                     Box::new(body),
                 )),
-                io_ty,
+                io_ty.clone(),
             );
+            // A borrow monad of an extern block: a newtype of `IO`.
+            let act_ty = self.ty(action);
+            if !act_ty.alpha_eq(&io_ty) {
+                body = c::Expr::Cast(Box::new(body), act_ty);
+            }
         }
         for (id, t) in arg_ids.iter().zip(&arg_tys).rev() {
             body = c::Expr::Lam(
@@ -416,7 +557,7 @@ impl Ds {
             ));
         }
         let sig = fun_ptr_target(res).map(|ft| {
-            let (fa, _, fr) = split_fun(&ft);
+            let (fa, _, fr) = split_fun(&ft, false);
             match self.marshal_sig(f, &fa, &fr, datas) {
                 Ok(m) => scalar_sig(&m, 0),
                 // A function of other types: only its address is used.
@@ -499,7 +640,8 @@ impl Ds {
             .map(|(v, _)| (v.clone(), Ty::Con(unit_tc())))
             .collect();
         let mono = ft.subst(&sub);
-        let (fargs, fio, fres) = split_fun(&mono);
+        let (fargs, fio, fres) = split_fun(&mono, false);
+        let fio = fio.is_some();
         let m = self.marshal_sig(f, &fargs, &fres, datas)?;
         let (params, ret) = (&m.0, m.1);
         let name = format!("{}$wrapper", f.name);

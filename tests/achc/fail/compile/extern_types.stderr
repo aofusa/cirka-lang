@@ -1,0 +1,36 @@
+error[E0619]: an `OwnedPtr` parameter of a C function must be linear
+  --> tests/achc/fail/compile/extern_types.chs:16:3
+   |
+16 |   fclose :: OwnedPtr CFile -> IO CInt
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ in the type of `fclose`
+   = note: the C function takes the pointer over: write `OwnedPtr T %1 -> ...`
+error[E0619]: an `OwnedPtr` parameter of a C function must be linear
+  --> tests/achc/fail/compile/extern_types.chs:17:3
+   |
+17 |   pclose :: File -> IO CInt
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^ in the type of `pclose`
+   = note: the C function takes the pointer over: write `OwnedPtr T %1 -> ...`
+error[E0619]: a C function that returns an `OwnedPtr` must be an `IO` action
+  --> tests/achc/fail/compile/extern_types.chs:18:3
+   |
+18 |   fdup :: CInt -> OwnedPtr CFile
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ in the type of `fdup`
+   = note: each call makes a new resource: write `... -> IO (OwnedPtr T)`
+error[E0619]: a C function that returns an `OwnedPtr` must be an `IO` action
+  --> tests/achc/fail/compile/extern_types.chs:19:3
+   |
+19 |   fdup2 :: CInt -> Nullable File
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ in the type of `fdup2`
+   = note: each call makes a new resource: write `... -> IO (OwnedPtr T)`
+error[E0619]: the borrowed pointers of a C function must have the scope of its result
+  --> tests/achc/fail/compile/extern_types.chs:20:3
+   |
+20 |   fgetc :: FilePtr r -> IO CInt
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ in the type of `fgetc`
+   = note: write `BorrowedPtr T` in the extern block, not through a type synonym: the compiler adds the scope `r` and returns in `BorrowIO r` / `Borrow r`
+error[E0619]: the borrowed pointers of a C function must have the scope of its result
+  --> tests/achc/fail/compile/extern_types.chs:21:3
+   |
+21 |   fbuf :: FilePtr r -> FilePtr q
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ in the type of `fbuf`
+   = note: write `BorrowedPtr T` in the extern block, not through a type synonym: the compiler adds the scope `r` and returns in `BorrowIO r` / `Borrow r`

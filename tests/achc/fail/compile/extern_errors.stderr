@@ -1,0 +1,27 @@
+error[E0619]: the scope of a borrowed pointer is added by the compiler
+  --> tests/achc/fail/compile/extern_errors.chs:11:12
+   |
+11 |   fgetc :: BorrowedPtr r CFile -> IO CInt
+   |            ^^^^^^^^^^^^^^^^^^^
+   = note: write `BorrowedPtr T` in an extern block
+error[E0619]: `pclose` is not a function of this extern block
+  --> tests/achc/fail/compile/extern_errors.chs:12:42
+   |
+12 |   fopen :: IO (OwnedPtr CFile) free with pclose
+   |                                          ^^^^^^
+error[E0619]: `free with free` needs a result `OwnedPtr T` or `Nullable (OwnedPtr T)` for an opaque type `T` of the block
+  --> tests/achc/fail/compile/extern_errors.chs:13:3
+   |
+13 |   malloc :: CInt -> IO (OwnedPtr CInt) free with free
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: declare the type in the block with `type T`
+error[E0619]: `OwnedPtr CDir` is freed with both `closedir` and `closedir2`
+  --> tests/achc/fail/compile/extern_errors.chs:16:64
+   |
+16 |   fdopendir :: CInt -> IO (Nullable (OwnedPtr CDir)) free with closedir2
+   |                                                                ^^^^^^^^^
+error[E0619]: `ftell` cannot free `OwnedPtr CDir`: its type must be `OwnedPtr CDir %1 -> ...`
+  --> tests/achc/fail/compile/extern_errors.chs:17:41
+   |
+17 |   dirfd :: IO (OwnedPtr CDir) free with ftell
+   |                                         ^^^^^

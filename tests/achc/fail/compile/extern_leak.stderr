@@ -1,0 +1,7 @@
+error[E0302]: linear variable `f` is not consumed
+  --> tests/achc/fail/compile/extern_leak.chs:19:10
+   |
+19 |     Just f -> do
+   |          ^ bound linearly here
+   = note: a linear value must be used exactly once
+   = help: give the pointer to the C function that frees it, or declare that function with `free with` in the extern block: the pointer is then released at the end of the `IO` block

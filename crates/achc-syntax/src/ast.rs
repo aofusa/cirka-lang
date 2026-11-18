@@ -187,6 +187,23 @@ pub struct ForeignDecl {
     pub name: Ident,
     pub ty: Type,
     pub span: Span,
+    /// Set for a function of an `extern "C"` block (FEAT-0130).
+    pub ext: Option<ExternAttrs>,
+}
+
+/// What an `extern "C"` block adds to its functions (CirkaExtern,
+/// 08-ffi.md §7.4). The block itself becomes `data T` and `foreign import
+/// ccall` declarations.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExternAttrs {
+    /// The block's position among the module's extern blocks.
+    pub block: usize,
+    /// `link "name"`: a C library to link.
+    pub link: Option<String>,
+    /// `free with h`: the function of the block that frees the result.
+    pub free_with: Option<Ident>,
+    /// The opaque types (`type T`) of the block.
+    pub opaque: Vec<String>,
 }
 
 /// A class constraint `C t1 .. tn`.

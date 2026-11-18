@@ -311,8 +311,24 @@ impl P {
                 self.line(&format!("(default {})", v.join(" ")));
             }
             Decl::Foreign(f) => {
+                let ext = match &f.ext {
+                    None => String::new(),
+                    Some(x) => {
+                        let mut e = format!(" (extern {}", x.block);
+                        if let Some(l) = &x.link {
+                            e += &format!(" (link {l:?})");
+                        }
+                        if let Some(h) = &x.free_with {
+                            e += &format!(" (free-with {})", h.name);
+                        }
+                        if !x.opaque.is_empty() {
+                            e += &format!(" (opaque {})", x.opaque.join(" "));
+                        }
+                        e + ")"
+                    }
+                };
                 self.line(&format!(
-                    "(foreign {} {} {:?} {} {})",
+                    "(foreign {} {} {:?} {} {}{ext})",
                     if f.import { "import" } else { "export" },
                     f.callconv.name,
                     f.entity.as_deref().unwrap_or(""),

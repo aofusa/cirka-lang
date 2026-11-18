@@ -1,0 +1,12 @@
+res_open (-1): Nothing
+in the block: 2 live
+borrowed id: 1
+closed explicitly: 3
+after the block: 0 live
+in the alternative: 1 live
+after the alternative: 0 live
+res_close_maybe Nothing: -1
+res_close_maybe (res_open 5): 5
+borrowed results: 6 6 -1
+after nullable: 0 live
+closed: 3 1 2 4 5 6
