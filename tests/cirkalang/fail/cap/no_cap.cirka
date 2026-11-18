@@ -1,0 +1,19 @@
+-- An operation that reaches outside the program needs its capability
+-- (spec-v0.0.7.md §1.3): a function that receives none cannot read a file,
+-- and another kind of capability does not do.
+module Main
+
+import Std.Fs (readFile)
+
+leak : String -> IO ()
+leak path = do
+  r <- readFile path
+  pure ()
+
+wrongKind : (0 clk : Cap Clock) -> IO ()
+wrongKind clk = do
+  r <- readFile clk "/etc/hostname"
+  pure ()
+
+main : Cap FileSystem -> IO ()
+main fs = leak "/etc/hostname"

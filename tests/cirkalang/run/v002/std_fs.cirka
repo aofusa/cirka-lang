@@ -5,9 +5,9 @@ import Std.IO as IO
 import Std.Process as P
 
 -- Reads the first `n` bytes and leaves the file to `Release`.
-firstBytes : String -> Int -> IO ()
-firstBytes path n = do
-  r <- Fs.openRead path
+firstBytes : (0 fs : Cap FileSystem) -> String -> Int -> IO ()
+firstBytes fs path n = do
+  r <- Fs.openRead fs path
   case r of
     Err e => print e
     Ok f => do
@@ -17,9 +17,9 @@ firstBytes path n = do
         (f, Err e) => print e
 
 -- Writes through a `File` and closes it explicitly.
-writeLines : String -> IO ()
-writeLines path = do
-  r <- Fs.create path
+writeLines : (0 fs : Cap FileSystem) -> String -> IO ()
+writeLines fs path = do
+  r <- Fs.create fs path
   case r of
     Err e => print e
     Ok f => do
@@ -29,25 +29,25 @@ writeLines path = do
           c <- Fs.close f
           print (isOk w && isOk c)
 
-main : IO ()
-main = do
+main : Cap FileSystem -> IO ()
+main fs = do
   pid <- P.processId
   let path = "/tmp/cirka-std-fs-" ++ show pid ++ ".txt"
-  writeLines path
-  a <- Fs.appendFile path "three\n"
+  writeLines fs path
+  a <- Fs.appendFile fs path "three\n"
   print (isOk a)
-  r <- Fs.readFile path
+  r <- Fs.readFile fs path
   case r of
     Ok s => putStr s
     Err e => print e
-  firstBytes path 5
-  d <- Fs.removeFile path
+  firstBytes fs path 5
+  d <- Fs.removeFile fs path
   print (isOk d)
-  m <- Fs.readFile path
+  m <- Fs.readFile fs path
   case m of
     Ok s => putStr s
     Err e => do
       print (IO.errorCode e)
       putStrLn (IO.message e)
-  w <- Fs.writeFile "/nonexistent-dir/x" "x"
+  w <- Fs.writeFile fs "/nonexistent-dir/x" "x"
   print w

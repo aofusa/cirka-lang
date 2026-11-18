@@ -51,12 +51,12 @@ isOk : Result IOError () -> Bool
 isOk (Ok _) = True
 isOk (Err _) = False
 
-main : IO ()
-main = runLoop (do
-  ra <- bindUdp "127.0.0.1" 0
+main : Cap Network -> IO ()
+main net = runLoop (do
+  ra <- bindUdp net "127.0.0.1" 0
   case ra of
     Ok a => do
-      rb <- bindUdp "127.0.0.1" 0
+      rb <- bindUdp net "127.0.0.1" 0
       case rb of
         Ok b => exchange a b
         Err e => do

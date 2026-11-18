@@ -1,0 +1,63 @@
+-- Capabilities (spec-v0.0.7.md §1): `main` receives them and passes them to
+-- the functions that reach outside the program. They are ordinary values,
+-- kept in records and captured by closures (threads: `cap_thread.cirka`).
+module Main
+
+import Std.Fs as Fs
+import Std.Env as Env
+import Std.Time as T
+import Std.Random as R
+import Std.Process (processId)
+
+-- Capabilities kept in a record (multiplicity ω: a constant at run time).
+data World = MkWorld (Cap FileSystem) (Cap Clock)
+
+-- An erased capability: nothing is passed at run time.
+roundTrip : (0 fs : Cap FileSystem) -> String -> IO Bool
+roundTrip fs path = do
+  w <- Fs.writeFile fs path "abc"
+  r <- Fs.readFile fs path
+  d <- Fs.removeFile fs path
+  pure (isOk w && isOk d && (case r of
+    Ok s => s == "abc"
+    Err e => False))
+
+timed : World -> String -> IO Bool
+timed (MkWorld fs clk) path = do
+  t0 <- T.monotonic clk
+  ok <- roundTrip fs path
+  t1 <- T.monotonic clk
+  pure (ok && t1 >= t0)
+
+-- An action made with a capability is passed without it.
+twice : IO () -> IO ()
+twice act = do
+  act
+  act
+
+-- Uniform numbers in a range (§1.4).
+dice : (0 r : Cap Random) -> Int -> IO Bool
+dice r n = if n == 0 then pure True else do
+  x <- R.randomBelow r 6
+  if x < 0 || x >= 6 then pure False else dice r (n - 1)
+
+main : Cap FileSystem -> Cap Clock -> (0 rnd : Cap Random) -> Cap Environment -> IO ()
+main fs clk rnd env = do
+  pid <- processId
+  let path = "/tmp/cirka-capabilities-" ++ show pid ++ ".txt"
+  ok <- timed (MkWorld fs clk) path
+  print ok
+  okDice <- dice rnd 1000
+  print okDice
+  a <- R.randomInt rnd
+  b <- R.randomInt rnd
+  print (a /= b)
+  one <- R.randomBelow rnd 1
+  print one
+  p <- Env.getEnv env "PATH"
+  print (isJust p)
+  twice (Fs.appendFile fs path "x" >>= \r => print (isOk r))
+  r <- Fs.readFile fs path
+  print r
+  d <- Fs.removeFile fs path
+  print (isOk d)

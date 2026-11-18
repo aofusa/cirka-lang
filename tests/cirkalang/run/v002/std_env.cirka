@@ -2,17 +2,17 @@
 import Std.Env as Env
 import Std.Time as T
 
-main : IO ()
-main = do
+main : Cap Environment -> Cap Clock -> IO ()
+main env clk = do
   as <- Env.args
   print (Prelude.length as)
-  v <- Env.getEnv "CIRKA_TEST_SURELY_UNSET_VARIABLE"
+  v <- Env.getEnv env "CIRKA_TEST_SURELY_UNSET_VARIABLE"
   print v
-  p <- Env.getEnv "PATH"
+  p <- Env.getEnv env "PATH"
   print (isJust p)
-  t0 <- T.monotonic
-  t1 <- T.monotonic
+  t0 <- T.monotonic clk
+  t1 <- T.monotonic clk
   print (t1 >= t0)
-  now <- T.now
+  now <- T.now clk
   -- After 2020-01-01.
   print (now > 1577836800000000000)

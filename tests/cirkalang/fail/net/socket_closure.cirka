@@ -5,11 +5,11 @@ module Main
 import Std.Async
 import Std.Net
 
-main : IO ()
-main = runLoop (do
-  r <- listen "127.0.0.1" 0
+main : Cap Network -> IO ()
+main net = runLoop (do
+  r <- listen net "127.0.0.1" 0
   case r of
-    Ok l => connect "127.0.0.1" 80 (\c => case c of
+    Ok l => connect net "127.0.0.1" 80 (\c => case c of
       Ok s => serve l (\conn => do
         close conn
         close s)

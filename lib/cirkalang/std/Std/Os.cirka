@@ -139,8 +139,8 @@ private uintOf : CUInt -> Int
 uintOf (MkCUInt n) = n
 
 -- The name of the host.
-hostName : IO (Result IOError String)
-hostName = do
+hostName : (0 env : Cap Environment) -> IO (Result IOError String)
+hostName env = do
   h <- cirka_os_hostname
   e <- cirka_errno
   pure (if e /= 0 then Err (MkIOError e) else Ok h)
@@ -219,8 +219,8 @@ raiseSignal sig = do
   pure (checked r)
 
 -- Sends the signal to the process with the id (a child: `Std.Process.kill`).
-sendSignal : Int -> Int -> IO (Result IOError ())
-sendSignal pid sig = do
+sendSignal : (0 p : Cap Process) -> Int -> Int -> IO (Result IOError ())
+sendSignal p pid sig = do
   r <- cirka_os_kill pid sig
   pure (checked r)
 
@@ -305,8 +305,8 @@ readyThen go = do
 data Mapping = MkMapping Handle
 
 -- Maps the file at `path`.
-mapFile : String -> IO (Result IOError Mapping)
-mapFile path = do
+mapFile : (0 fs : Cap FileSystem) -> String -> IO (Result IOError Mapping)
+mapFile fs path = do
   h <- cirka_os_map_file path
   e <- cirka_errno
   pure (if e /= 0 then Err (MkIOError e) else Ok (MkMapping h))

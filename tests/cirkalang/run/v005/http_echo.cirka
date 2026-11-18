@@ -106,8 +106,8 @@ readAll s acc k = recv s 65536 (\s, r => case r of
 
 -- Connects, sends the parts (the later ones 20 ms apart), reads the
 -- responses until the server closes, and passes them to `k`.
-exchange : Int -> List String -> (1 k : String -> IO ()) -> IO ()
-exchange port parts k = connect "127.0.0.1" port (\c => case c of
+exchange : (0 net : Cap Network) -> Int -> List String -> (1 k : String -> IO ()) -> IO ()
+exchange net port parts k = connect net "127.0.0.1" port (\c => case c of
   Ok s => sendParts s parts (\s => readAll s "" (\s, got => do
     close s
     k got))
@@ -124,8 +124,8 @@ isNil _ = False
 -- One keep-alive request per connection, then a closing one. `ok`
 -- counts the connections whose responses were right, `left` those not
 -- done yet: the last one prints the count and stops the loop.
-concurrent : MVar Int -> MVar Int -> Int -> Int -> IO ()
-concurrent ok left port i = exchange port [get ("/c" ++ show i) False ++ get "/last" True] (\got => do
+concurrent : (0 net : Cap Network) -> MVar Int -> MVar Int -> Int -> Int -> IO ()
+concurrent net ok left port i = exchange net port [get ("/c" ++ show i) False ++ get "/last" True] (\got => do
   n <- takeMVar ok
   let right = got == expected ("GET /c" ++ show i) False ++ expected "GET /last" True
   putMVar ok (if right then n + 1 else n)
@@ -145,40 +145,40 @@ get path closing = "GET " ++ path ++ " HTTP/1.1\r\nHost: localhost\r\n" ++ (if c
 expected : String -> Bool -> String
 expected text closing = response (MkRequest "" "" text closing)
 
-startAll : MVar Int -> MVar Int -> Int -> Int -> IO ()
-startAll ok left port i = if i == 50 then pure () else do
-  concurrent ok left port i
-  startAll ok left port (i + 1)
+startAll : (0 net : Cap Network) -> MVar Int -> MVar Int -> Int -> Int -> IO ()
+startAll net ok left port i = if i == 50 then pure () else do
+  concurrent net ok left port i
+  startAll net ok left port (i + 1)
 
-selfTest : Int -> IO ()
-selfTest port =
-  exchange port ["POST /echo HTTP/1.1\r\nHost: localhost\r\nContent-Length: 5\r\n\r\nhelloGET /path?q=1 HTTP/1.1\r\nConnection: close\r\n\r\n"] (\got => do
+selfTest : (0 net : Cap Network) -> Int -> IO ()
+selfTest net port =
+  exchange net port ["POST /echo HTTP/1.1\r\nHost: localhost\r\nContent-Length: 5\r\n\r\nhelloGET /path?q=1 HTTP/1.1\r\nConnection: close\r\n\r\n"] (\got => do
     say "-- pipelined"
     say (showResponse got)
-    exchange port ["POST /split HTTP/1.1\r\nContent-Length: 11\r\nconnection: Close\r\n\r\nhello", " world"] (\got2 => do
+    exchange net port ["POST /split HTTP/1.1\r\nContent-Length: 11\r\nconnection: Close\r\n\r\nhello", " world"] (\got2 => do
       say "-- split"
       say (showResponse got2)
-      exchange port ["NONSENSE\r\n\r\n"] (\got3 => do
+      exchange net port ["NONSENSE\r\n\r\n"] (\got3 => do
         say "-- malformed"
         say (showResponse got3)
         ok <- newMVar 0
         left <- newMVar 50
-        startAll ok left port 0)))
+        startAll net ok left port 0)))
 
-main : IO ()
-main = do
+main : Cap Network -> IO ()
+main net = do
   as <- args
   case as of
     (p :: _) => runLoop (do
-      r <- listen "127.0.0.1" (parseInt p)
+      r <- listen net "127.0.0.1" (parseInt p)
       case r of
         Ok l => server l
         Err e => say ("listen failed: " ++ show e))
     [] => runLoop (do
-      r <- listen "127.0.0.1" 0
+      r <- listen net "127.0.0.1" 0
       case r of
         Ok l => do
           (l, port) <- listenerPort l
           server l
-          selfTest port
+          selfTest net port
         Err e => say ("listen failed: " ++ show e))

@@ -3,6 +3,9 @@
 -- `readFile` / `writeFile` / `appendFile` work on whole files. A `File`
 -- is an open file: a linear value that is closed when it is dropped
 -- (`Release`), or explicitly by `close`, which reports the error.
+--
+-- The operations that name files take the capability `Cap FileSystem`
+-- (spec-v0.0.7.md §1.3); those on an open `File` do not.
 module Std.Fs
 
 import Std.IO (IOError, MkIOError, checked)
@@ -33,16 +36,16 @@ impl Release File where
     pure ()
 
 -- Opens a file for reading.
-openRead : String -> IO1 (Result IOError File)
-openRead path = openMode path 0
+openRead : (0 fs : Cap FileSystem) -> String -> IO1 (Result IOError File)
+openRead fs path = openMode path 0
 
 -- Creates (or truncates) a file for writing.
-create : String -> IO1 (Result IOError File)
-create path = openMode path 1
+create : (0 fs : Cap FileSystem) -> String -> IO1 (Result IOError File)
+create fs path = openMode path 1
 
 -- Opens a file for appending (creating it).
-openAppend : String -> IO1 (Result IOError File)
-openAppend path = openMode path 2
+openAppend : (0 fs : Cap FileSystem) -> String -> IO1 (Result IOError File)
+openAppend fs path = openMode path 2
 
 private openMode : String -> Int -> IO1 (Result IOError File)
 openMode path mode = do
@@ -76,8 +79,8 @@ close (MkFile fd) = do
   pure (checked r)
 
 -- The contents of the file at `path`.
-readFile : String -> IO (Result IOError String)
-readFile path = do
+readFile : (0 fs : Cap FileSystem) -> String -> IO (Result IOError String)
+readFile fs path = do
   fd <- cirka_fs_open path 0
   if fd < 0 then pure (Err (MkIOError (0 - fd))) else readClose fd
 
@@ -89,12 +92,12 @@ readClose fd = do
   pure (if e /= 0 then Err (MkIOError e) else Ok s)
 
 -- Writes `s` to the file at `path` (creating or truncating it).
-writeFile : String -> String -> IO (Result IOError ())
-writeFile path s = writeMode path 1 s
+writeFile : (0 fs : Cap FileSystem) -> String -> String -> IO (Result IOError ())
+writeFile fs path s = writeMode path 1 s
 
 -- Appends `s` to the file at `path` (creating it).
-appendFile : String -> String -> IO (Result IOError ())
-appendFile path s = writeMode path 2 s
+appendFile : (0 fs : Cap FileSystem) -> String -> String -> IO (Result IOError ())
+appendFile fs path s = writeMode path 2 s
 
 private writeMode : String -> Int -> String -> IO (Result IOError ())
 writeMode path mode s = do
@@ -108,16 +111,16 @@ writeClose fd s = do
   pure (if r < 0 then checked r else checked c)
 
 -- Removes the file at `path`.
-removeFile : String -> IO (Result IOError ())
-removeFile path = do
+removeFile : (0 fs : Cap FileSystem) -> String -> IO (Result IOError ())
+removeFile fs path = do
   r <- cirka_fs_remove path
   pure (checked r)
 
 -- ---- directories and metadata (spec-v0.0.5.md §3.4) ----
 
 -- The names in the directory (without `.` and `..`), sorted.
-listDirectory : String -> IO (Result IOError (List String))
-listDirectory path = do
+listDirectory : (0 fs : Cap FileSystem) -> String -> IO (Result IOError (List String))
+listDirectory fs path = do
   names <- cirka_fs_list path
   e <- cirka_errno
   pure (if e /= 0 then Err (MkIOError e) else Ok (sortNames (namesOf names)))
@@ -165,12 +168,12 @@ modifiedTime : FileStatus -> Int
 modifiedTime (MkFileStatus _ _ _ t) = t
 
 -- The metadata of what `path` names (following symbolic links).
-fileStatus : String -> IO (Result IOError FileStatus)
-fileStatus path = statusOf path 1
+fileStatus : (0 fs : Cap FileSystem) -> String -> IO (Result IOError FileStatus)
+fileStatus fs path = statusOf path 1
 
 -- The metadata of `path` itself (a symbolic link is not followed).
-linkStatus : String -> IO (Result IOError FileStatus)
-linkStatus path = statusOf path 0
+linkStatus : (0 fs : Cap FileSystem) -> String -> IO (Result IOError FileStatus)
+linkStatus fs path = statusOf path 0
 
 private statusOf : String -> Int -> IO (Result IOError FileStatus)
 statusOf path follow = do
@@ -192,20 +195,20 @@ kindOf 3 = SymbolicLink
 kindOf _ = OtherFile
 
 -- Creates the directory (permissions `0o777` less the umask).
-makeDirectory : String -> IO (Result IOError ())
-makeDirectory path = do
+makeDirectory : (0 fs : Cap FileSystem) -> String -> IO (Result IOError ())
+makeDirectory fs path = do
   r <- cirka_fs_mkdir path 511
   pure (checked r)
 
 -- Removes the directory, which must be empty.
-removeDirectory : String -> IO (Result IOError ())
-removeDirectory path = do
+removeDirectory : (0 fs : Cap FileSystem) -> String -> IO (Result IOError ())
+removeDirectory fs path = do
   r <- cirka_fs_rmdir path
   pure (checked r)
 
 -- Renames (moves) `from` to `to`, replacing a file at `to`.
-rename : String -> String -> IO (Result IOError ())
-rename from to = do
+rename : (0 fs : Cap FileSystem) -> String -> String -> IO (Result IOError ())
+rename fs from to = do
   r <- cirka_fs_rename from to
   pure (checked r)
 

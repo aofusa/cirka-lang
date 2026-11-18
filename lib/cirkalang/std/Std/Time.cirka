@@ -1,13 +1,14 @@
--- Clocks (spec-v0.0.2.md §8.3).
+-- Clocks (spec-v0.0.2.md §8.3). Reading them needs the capability
+-- `Cap Clock` (spec-v0.0.7.md §1.3).
 module Std.Time
 
 private extern "cirka" where
   cirka_clock_ns : Int -> IO Int
 
 -- Nanoseconds since the Unix epoch (the wall clock).
-now : IO Int
-now = cirka_clock_ns 0
+now : (0 clk : Cap Clock) -> IO Int
+now clk = cirka_clock_ns 0
 
 -- Nanoseconds of a monotonic clock (only differences are meaningful).
-monotonic : IO Int
-monotonic = cirka_clock_ns 1
+monotonic : (0 clk : Cap Clock) -> IO Int
+monotonic clk = cirka_clock_ns 1

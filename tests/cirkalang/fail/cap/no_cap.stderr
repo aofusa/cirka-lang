@@ -1,0 +1,25 @@
+error[E1200]: type mismatch
+  --> tests/cirkalang/fail/cap/no_cap.cirka:10:17
+   |
+10 |   r <- readFile path
+   |                 ^^^^
+   = note: expected `Cap FileSystem`
+   = note:    found `String`
+   = note: this needs the capability `Cap FileSystem`, which only `main` and tests receive
+   = help: take it as a parameter, `(0 c : Cap FileSystem) ->`, and pass it here; `main` receives it as `main : Cap FileSystem -> IO ()` (spec-v0.0.7.md §1.2)
+error[E1200]: type mismatch
+  --> tests/cirkalang/fail/cap/no_cap.cirka:10:8
+   |
+10 |   r <- readFile path
+   |        ^^^^^^^^^^^^^
+   = note: expected `IO (_ path)`
+   = note:    found `String -> IO (Result IOError String)`
+error[E1200]: type mismatch
+  --> tests/cirkalang/fail/cap/no_cap.cirka:15:17
+   |
+15 |   r <- readFile clk "/etc/hostname"
+   |                 ^^^
+   = note: expected `Cap FileSystem`
+   = note:    found `Cap Clock`
+   = note: this needs the capability `Cap FileSystem`, which only `main` and tests receive
+   = help: take it as a parameter, `(0 c : Cap FileSystem) ->`, and pass it here; `main` receives it as `main : Cap FileSystem -> IO ()` (spec-v0.0.7.md §1.2)

@@ -7,21 +7,21 @@ pairUp : Int -> IO (Int, Int)
 pairUp n = pure (n, n + 1)
 
 -- Writes, reads back the first bytes and closes, without nested `case`s.
-roundTrip : String -> IO ()
-roundTrip path = do
-  Ok f <- Fs.create path
+roundTrip : (0 fs : Cap FileSystem) -> String -> IO ()
+roundTrip fs path = do
+  Ok f <- Fs.create fs path
     | Err e => print e
   (f, w) <- Fs.write f "hello\n"
   c <- Fs.close f
-  Ok g <- Fs.openRead path
+  Ok g <- Fs.openRead fs path
     | Err e => print e
   (g, r) <- Fs.read g 5
   _ <- Fs.close g
   print (isOk w && isOk c)
   print r
 
-main : IO ()
-main = do
+main : Cap FileSystem -> IO ()
+main fs = do
   _ <- pairUp 1
   (a, b) <- pairUp 3
   let c = case a of
@@ -30,6 +30,6 @@ main = do
   print (a + b + c)
   pid <- P.processId
   let path = "/tmp/cirka-do-patterns-" ++ show pid ++ ".txt"
-  roundTrip path
-  _ <- Fs.removeFile path
+  roundTrip fs path
+  _ <- Fs.removeFile fs path
   print "done"

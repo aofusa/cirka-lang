@@ -40,15 +40,15 @@ firstArg : List String -> Int
 firstArg (a :: _) = parseInt a
 firstArg Nil = 1000
 
-main : IO ()
-main = do
+main : Cap FileSystem -> IO ()
+main fs = do
   argv <- Env.args
   let n = firstArg argv
   pid <- P.processId
   let path = "/tmp/cirka-bench-cli-grep-" ++ show pid ++ ".txt"
-  w <- Fs.writeFile path (S.build (text (S.builder 0) 0 n))
-  r <- Fs.readFile path
-  d <- Fs.removeFile path
+  w <- Fs.writeFile fs path (S.build (text (S.builder 0) 0 n))
+  r <- Fs.readFile fs path
+  d <- Fs.removeFile fs path
   case r of
     Ok s => report (toStr s)
     Err e => IO.ePutStrLn (show e)

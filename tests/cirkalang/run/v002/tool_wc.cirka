@@ -15,18 +15,18 @@ count s =
 report : Counts -> String
 report (MkCounts l w b) = S.intercalate " " [show l, show w, show b] ++ "\n"
 
-main : IO ()
-main = do
+main : Cap FileSystem -> IO ()
+main fs = do
   input <- IO.getContents
   case input of
     Err e => IO.ePutStrLn (show e)
     Ok s => do
       pid <- P.processId
       let path = "/tmp/cirka-tool-wc-" ++ show pid ++ ".txt"
-      w <- Fs.writeFile path (report (count s))
-      r <- Fs.readFile path
+      w <- Fs.writeFile fs path (report (count s))
+      r <- Fs.readFile fs path
       case r of
         Ok t => putStr t
         Err e => print e
-      d <- Fs.removeFile path
+      d <- Fs.removeFile fs path
       print (isOk w && isOk d)

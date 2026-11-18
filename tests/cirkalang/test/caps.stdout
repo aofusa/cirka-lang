@@ -1,0 +1,6 @@
+running 3 tests
+test Main "a test can write and read files" ... ok
+test Main "erased and unnamed capabilities" ... ok
+test Main "a test without capabilities runs twice" ... ok
+
+test result: ok. 3 passed; 0 failed; 0 filtered out

@@ -1,0 +1,24 @@
+-- skip-backend: interp
+-- A capability is sent to another thread like any other value
+-- (spec-v0.0.7.md §1.1): the thread reads the clock and the file system.
+module Main
+
+import Std.Fs as Fs
+import Std.Time as T
+import Std.Thread (spawn, join)
+import Std.Process (processId)
+
+main : Cap FileSystem -> Cap Clock -> IO ()
+main fs clk = do
+  pid <- processId
+  let path = "/tmp/cirka-cap-thread-" ++ show pid ++ ".txt"
+  w <- Fs.writeFile fs path "from main"
+  t <- spawn (do
+    t0 <- T.monotonic clk
+    r <- Fs.readFile fs path
+    d <- Fs.removeFile fs path
+    pure (t0 > 0 && isOk d && (case r of
+      Ok s => s == "from main"
+      Err e => False)))
+  ok <- join t
+  print (isOk w && ok)

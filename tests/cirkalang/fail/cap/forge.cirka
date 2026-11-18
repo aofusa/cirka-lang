@@ -1,0 +1,24 @@
+-- A capability cannot be forged (spec-v0.0.7.md §1.5). `Cap` has no
+-- constructor, and an erased capability is an erased value, which must be
+-- total (E0507): not `panic` or a loop.
+module Main
+
+import Std.Fs (readFile)
+
+spin : Cap FileSystem
+spin = spin
+
+viaPanic : String -> IO ()
+viaPanic path =
+  let 0 fs : Cap FileSystem = panic "forged"
+  in do
+    r <- readFile fs path
+    pure ()
+
+viaLoop : String -> IO ()
+viaLoop path = do
+  r <- readFile spin path
+  pure ()
+
+main : IO ()
+main = pure ()

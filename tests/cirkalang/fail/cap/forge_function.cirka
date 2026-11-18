@@ -1,0 +1,14 @@
+-- A capability cannot be forged with a run-time function either
+-- (spec-v0.0.7.md §1.5): the call in the erased position is never made,
+-- so the function may panic or loop (E0507).
+module Main
+
+import Std.Fs (readFile)
+
+viaFunction : (() -> Cap FileSystem) -> String -> IO ()
+viaFunction f path = do
+  r <- readFile (f ()) path
+  pure ()
+
+main : IO ()
+main = pure ()

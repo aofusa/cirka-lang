@@ -4,6 +4,9 @@
 -- A child is a linear value: `wait` waits for it to end, and dropping it
 -- waits too, so every child is reaped and its process id stays its own
 -- while the value exists (`kill` never reaches another process).
+--
+-- Starting a program needs the capability `Cap Process` (spec-v0.0.7.md
+-- §1.3); a child, once started, is its own authority.
 module Std.Process
 
 import Foreign (CInt, fromCInt)
@@ -86,8 +89,8 @@ impl Release Child where
     pure ()
 
 -- Starts the command.
-spawn : Command -> IO1 (Result IOError Child)
-spawn (MkCommand p as i o e m) = do
+spawn : (0 cap : Cap Process) -> Command -> IO1 (Result IOError Child)
+spawn cap (MkCommand p as i o e m) = do
   pid <- cirka_os_spawn (argv p as) (flags i o e m)
   if pid < 0 then pure1 (Err (MkIOError (0 - pid))) else spawned pid
 
@@ -158,9 +161,9 @@ kill (MkChild pid i o e) sig = do
   pure1 (MkChild pid i o e, checked r)
 
 -- Runs the command and waits for it to end.
-run : Command -> IO (Result IOError ExitStatus)
-run cmd = do
-  r <- spawn cmd
+run : (0 p : Cap Process) -> Command -> IO (Result IOError ExitStatus)
+run p cmd = do
+  r <- spawn p cmd
   case r of
     Ok c => wait c
     Err e => pure (Err e)
@@ -174,8 +177,8 @@ data Output = MkOutput ExitStatus String String
 -- reading the output go on together, so a command that writes much before
 -- it reads all of its input does not stop; a command that does not read
 -- all of its input just loses the rest.
-output : Command -> String -> IO (Result IOError Output)
-output (MkCommand p as i o e m) input = do
+output : (0 cap : Cap Process) -> Command -> String -> IO (Result IOError Output)
+output cap (MkCommand p as i o e m) input = do
   pid <- cirka_os_spawn (argv p as) (flags Piped Piped (if m then Inherit else Piped) m)
   if pid < 0 then pure (Err (MkIOError (0 - pid))) else collect pid input
 

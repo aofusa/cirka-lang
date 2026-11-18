@@ -19,11 +19,11 @@ readParts f = borrowIO f as h in do
   b <- Fs.readAllB h
   pure (show a ++ " " ++ show b)
 
-main : IO ()
-main = do
+main : Cap FileSystem -> IO ()
+main fs = do
   pid <- P.processId
   let path = "/tmp/cirka-borrow-file-" ++ show pid ++ ".txt"
-  r <- Fs.create path
+  r <- Fs.create fs path
   case r of
     Err e => print e
     Ok f => do
@@ -32,7 +32,7 @@ main = do
         (f, ok) => do
           c <- Fs.close f
           print (ok && isOk c)
-  r2 <- Fs.openRead path
+  r2 <- Fs.openRead fs path
   case r2 of
     Err e => print e
     Ok f => do
@@ -42,5 +42,5 @@ main = do
           putStrLn s
           c <- Fs.close f
           print (isOk c)
-  d <- Fs.removeFile path
+  d <- Fs.removeFile fs path
   print (isOk d)

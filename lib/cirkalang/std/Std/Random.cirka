@@ -1,0 +1,27 @@
+-- Random numbers from the operating system (spec-v0.0.7.md §1.4).
+--
+-- They are not determined by the program, so reading them needs the
+-- capability `Cap Random`. They come from the kernel's generator
+-- (`getrandom`), good enough for keys and tokens.
+module Std.Random
+
+private extern "cirka" where
+  cirka_random_u64 : IO Int
+
+-- 64 uniformly random bits.
+randomInt : (0 r : Cap Random) -> IO Int
+randomInt r = cirka_random_u64
+
+-- A uniformly random number from 0 to `n - 1`; `n` must be positive.
+randomBelow : (0 r : Cap Random) -> Int -> IO Int
+randomBelow r n =
+  if n <= 0 then panic "randomBelow: the bound must be positive"
+  else below n (9223372036854775807 - (9223372036854775807 % n + 1) % n)
+
+-- Rejection sampling: of the 2^63 non-negative values, the first
+-- `last + 1` are a multiple of `n`, so their remainders are uniform.
+private below : Int -> Int -> IO Int
+below n last = do
+  x <- cirka_random_u64
+  let y = if x < 0 then x + 9223372036854775807 + 1 else x
+  if y <= last then pure (y % n) else below n last

@@ -40,8 +40,8 @@ readAll s acc k = recv s 65536 (\s, r => case r of
 
 -- A client: sends its message, ends its side, reads the echo and counts
 -- it in `done` if it matches.
-client : MVar Int -> Int -> Int -> IO ()
-client done port i = connect "127.0.0.1" port (\r => case r of
+client : (0 net : Cap Network) -> MVar Int -> Int -> Int -> IO ()
+client net done port i = connect net "127.0.0.1" port (\r => case r of
   Ok s => do
     let msg = "hello " ++ show i
     sendAll s msg (\s, w => do
@@ -57,19 +57,19 @@ count done = do
   putMVar done (n + 1)
   if n + 1 == 100 then say "100 echoes" else pure ()
 
-startClients : MVar Int -> Int -> Int -> IO ()
-startClients done port i = if i == 100 then pure () else do
-  client done port i
-  startClients done port (i + 1)
+startClients : (0 net : Cap Network) -> MVar Int -> Int -> Int -> IO ()
+startClients net done port i = if i == 100 then pure () else do
+  client net done port i
+  startClients net done port (i + 1)
 
-echoes : IO ()
-echoes = do
-  r <- listen "127.0.0.1" 0
+echoes : (0 net : Cap Network) -> IO ()
+echoes net = do
+  r <- listen net "127.0.0.1" 0
   case r of
     Ok l => do
       (l, port) <- listenerPort l
       done <- newMVar 0
-      startClients done port 0
+      startClients net done port 0
       serveN 100 l
     Err e => say ("listen failed: " ++ show e)
 
@@ -79,16 +79,16 @@ echoes = do
 measure : (1 s : TcpStream) -> IO ()
 measure s = readAll s "" (\s, d => sendAll s (show (strLength d) ++ " " ++ S.fromStr (S.drop (strLength d - 1) (S.toStr d))) (\s, w => close s))
 
-bulk : IO ()
-bulk = do
-  r <- listen "127.0.0.1" 0
+bulk : (0 net : Cap Network) -> IO ()
+bulk net = do
+  r <- listen net "127.0.0.1" 0
   case r of
     Ok l => do
       (l, port) <- listenerPort l
       accept l (\l, c => case c of
         Ok s => measure s
         Err e => say "accept failed")
-      connect "127.0.0.1" port (\c => case c of
+      connect net "127.0.0.1" port (\c => case c of
         Ok s => sendAll s (S.replicate 1048575 "x" ++ "!") (\s, w => do
           s <- shutdownWrite s
           readAll s "" (\s, d => do
@@ -104,9 +104,9 @@ bulk = do
 lateServer : (1 s : TcpStream) -> IO ()
 lateServer s = after 60 (sendAll s "late" (\s, w => close s))
 
-timeouts : IO ()
-timeouts = do
-  r <- listen "127.0.0.1" 0
+timeouts : (0 net : Cap Network) -> IO ()
+timeouts net = do
+  r <- listen net "127.0.0.1" 0
   case r of
     Ok l => do
       (l, port) <- listenerPort l
@@ -118,7 +118,7 @@ timeouts = do
             Ok s2 => say "unexpected connection"
             Err e => say ("accept: " ++ show (e == timedOut)))
         Err e => say "accept failed")
-      connect "127.0.0.1" port (\c => case c of
+      connect net "127.0.0.1" port (\c => case c of
         Ok s => recvTimeout s 100 20 (\s, r1 => case r1 of
           Ok d => say ("too early: " ++ d)
           Err e => do
@@ -131,23 +131,23 @@ timeouts = do
 
 -- ---- errors and names ----
 
-errors : IO ()
-errors = do
-  bad <- listen "not an address" 80
+errors : (0 net : Cap Network) -> IO ()
+errors net = do
+  bad <- listen net "not an address" 80
   case bad of
     Ok l => say "listened on a bad address"
     Err e => say ("bad address: " ++ show e)
-  r <- listen "127.0.0.1" 0
+  r <- listen net "127.0.0.1" 0
   case r of
     Ok l => do
       (l, port) <- listenerPort l
-      busy <- listen "127.0.0.1" port
+      busy <- listen net "127.0.0.1" port
       case busy of
         Ok l2 => say "listened twice"
         Err e => say ("in use: " ++ show (errorCode e))
       closeListener l
       -- Nobody listens on the port any more.
-      connect "127.0.0.1" port (\c => case c of
+      connect net "127.0.0.1" port (\c => case c of
         Ok s => say "connected to nobody"
         Err e => say ("refused: " ++ show e))
     Err e => say "listen failed"
@@ -155,9 +155,9 @@ errors = do
 errorCode : IOError -> Int
 errorCode (MkIOError e) = e
 
-names : IO ()
-names = do
-  r <- listen "127.0.0.1" 0
+names : (0 net : Cap Network) -> IO ()
+names net = do
+  r <- listen net "127.0.0.1" 0
   case r of
     Ok l => do
       (l, port) <- listenerPort l
@@ -165,18 +165,18 @@ names = do
         Ok s => sendAll s "by name" (\s, w => close s)
         Err e => say "accept failed")
       -- An empty name is unknown without asking a name server.
-      resolve "" (\a => case a of
+      resolve net "" (\a => case a of
         Ok addr => say ("resolved " ++ addr)
         Err e => do
           say "unknown name"
-          byName port)
+          byName net port)
     Err e => say "listen failed"
 
 -- `localhost` (from the hosts file) may resolve to ::1 first: connect by
 -- the name only if it resolves to the IPv4 address listened on.
-byName : Int -> IO ()
-byName port = resolve "localhost" (\a => case a of
-  Ok addr => connect (if addr == "127.0.0.1" then "localhost" else "127.0.0.1") port (\c => case c of
+byName : (0 net : Cap Network) -> Int -> IO ()
+byName net port = resolve net "localhost" (\a => case a of
+  Ok addr => connect net (if addr == "127.0.0.1" then "localhost" else "127.0.0.1") port (\c => case c of
     Ok s => readAll s "" (\s, d => do
       say d
       close s)
@@ -187,9 +187,9 @@ byName port = resolve "localhost" (\a => case a of
 
 -- The pending `accept` is dropped with its continuation: the listener is
 -- closed, so its port can be listened on again.
-stopping : MVar Int -> IO ()
-stopping portVar = do
-  r <- listen "127.0.0.1" 0
+stopping : (0 net : Cap Network) -> MVar Int -> IO ()
+stopping net portVar = do
+  r <- listen net "127.0.0.1" 0
   case r of
     Ok l => do
       (l, port) <- listenerPort l
@@ -198,17 +198,17 @@ stopping portVar = do
       stopLoop
     Err e => say "listen failed"
 
-main : IO ()
-main = do
-  runLoop echoes
-  runLoop bulk
-  runLoop timeouts
-  runLoop errors
-  runLoop names
+main : Cap Network -> IO ()
+main net = do
+  runLoop (echoes net)
+  runLoop (bulk net)
+  runLoop (timeouts net)
+  runLoop (errors net)
+  runLoop (names net)
   portVar <- newEmptyMVar
-  runLoop (stopping portVar)
+  runLoop (stopping net portVar)
   port <- takeMVar portVar
-  again <- listen "127.0.0.1" port
+  again <- listen net "127.0.0.1" port
   case again of
     Ok l => do
       say "port free again"

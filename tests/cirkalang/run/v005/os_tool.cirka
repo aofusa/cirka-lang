@@ -70,33 +70,33 @@ readLink path = do
 
 -- ---- tree ----
 
-tree : String -> IO ()
-tree dir = do
+tree : (0 fs : Cap FileSystem) -> String -> IO ()
+tree fs dir = do
   say (dir ++ "/")
-  entries "  " dir
+  entries fs "  " dir
 
-entries : String -> String -> IO ()
-entries indent dir = do
-  r <- listDirectory dir
+entries : (0 fs : Cap FileSystem) -> String -> String -> IO ()
+entries fs indent dir = do
+  r <- listDirectory fs dir
   case r of
     Err e => say (indent ++ "(" ++ errorName e ++ ")")
-    Ok names => entryList indent dir names
+    Ok names => entryList fs indent dir names
 
-entryList : String -> String -> List String -> IO ()
-entryList indent dir [] = pure ()
-entryList indent dir (n :: ns) = do
-  entry indent (dir ++ "/" ++ n) n
-  entryList indent dir ns
+entryList : (0 fs : Cap FileSystem) -> String -> String -> List String -> IO ()
+entryList fs indent dir [] = pure ()
+entryList fs indent dir (n :: ns) = do
+  entry fs indent (dir ++ "/" ++ n) n
+  entryList fs indent dir ns
 
-entry : String -> String -> String -> IO ()
-entry indent path name = do
-  r <- linkStatus path
+entry : (0 fs : Cap FileSystem) -> String -> String -> String -> IO ()
+entry fs indent path name = do
+  r <- linkStatus fs path
   case r of
     Err e => say (indent ++ name ++ ": " ++ errorName e)
     Ok st => case fileKind st of
       Directory => do
         say (indent ++ name ++ "/")
-        entries (indent ++ "  ") path
+        entries fs (indent ++ "  ") path
       RegularFile => say (indent ++ name ++ " (" ++ show (fileSize st) ++ " bytes)")
       SymbolicLink => do
         t <- readLink path
@@ -106,9 +106,9 @@ entry indent path name = do
 -- ---- lines ----
 
 -- The number of line breaks in the file, counted in a mapping of it.
-countLines : String -> IO (Result IOError Int)
-countLines path = do
-  r <- mapFile path
+countLines : (0 fs : Cap FileSystem) -> String -> IO (Result IOError Int)
+countLines fs path = do
+  r <- mapFile fs path
   case r of
     Err e => pure (Err e)
     Ok m => do
@@ -116,18 +116,18 @@ countLines path = do
       c <- mappingCount m 10 0 n
       pure (Ok c)
 
-linesOf : List String -> IO ()
-linesOf [] = pure ()
-linesOf (f :: fs) = do
-  r <- countLines f
+linesOf : (0 fs : Cap FileSystem) -> List String -> IO ()
+linesOf fs [] = pure ()
+linesOf fs (f :: more) = do
+  r <- countLines fs f
   say (f ++ ": " ++ describe show r)
-  linesOf fs
+  linesOf fs more
 
 -- ---- run ----
 
-runCmd : String -> List String -> IO ()
-runCmd prog as = do
-  r <- run (command prog as)
+runCmd : (0 proc : Cap Process) -> String -> List String -> IO ()
+runCmd proc prog as = do
+  r <- run proc (command prog as)
   say ("-- " ++ prog ++ ": " ++ describe show r)
 
 -- ---- signals ----
@@ -178,30 +178,30 @@ drain (Just f) = do
   c <- close f
   pure (okOr "" r)
 
-files : String -> IO ()
-files dir = do
-  check "mkdir" (makeDirectory dir)
-  again <- makeDirectory dir
+files : (0 fs : Cap FileSystem) -> String -> IO ()
+files fs dir = do
+  check "mkdir" (makeDirectory fs dir)
+  again <- makeDirectory fs dir
   say ("mkdir again: " ++ describe done again)
-  check "cd" (setCurrentDirectory dir)
-  cwd <- currentDirectory
+  check "cd" (setCurrentDirectory fs dir)
+  cwd <- currentDirectory fs
   say ("the working directory is the new one: " ++ show (cwd == Ok dir))
-  check "write" (writeFile "a.txt" "one\ntwo\nthree\n")
-  check "mkdir sub" (makeDirectory "sub")
-  check "write" (writeFile "sub/b.txt" "x\ny\n")
-  check "write" (writeFile "sub/c.log" "")
+  check "write" (writeFile fs "a.txt" "one\ntwo\nthree\n")
+  check "mkdir sub" (makeDirectory fs "sub")
+  check "write" (writeFile fs "sub/b.txt" "x\ny\n")
+  check "write" (writeFile fs "sub/c.log" "")
   l1 <- makeLink "a.txt" "link"
   l2 <- makeLink "a.txt" "link"
   say ("symlink: " ++ describe done l1 ++ ", again: " ++ describe done l2)
-  tree "."
-  st <- fileStatus "link"
+  tree fs "."
+  st <- fileStatus fs "link"
   say ("the link leads to a file: " ++ describe (\s => show (fileKind s == RegularFile)) st)
-  linesOf ["a.txt", "sub/b.txt", "sub/c.log", "missing.txt"]
+  linesOf fs ["a.txt", "sub/b.txt", "sub/c.log", "missing.txt"]
 
-mapping : IO ()
-mapping = do
-  r <- mapFile "a.txt"
-  m2 <- mapFile "missing.txt"
+mapping : (0 fs : Cap FileSystem) -> IO ()
+mapping fs = do
+  r <- mapFile fs "a.txt"
+  m2 <- mapFile fs "missing.txt"
   say ("map a missing file: " ++ describe (\_ => "mapped") m2)
   case r of
     Err e => say ("map: " ++ errorName e)
@@ -218,25 +218,25 @@ mapped m = do
   say ("mapped a.txt: " ++ show size ++ " bytes, line breaks at " ++ show first ++ " and " ++ show second
     ++ ", second line " ++ show line ++ ", first byte " ++ show b ++ ", past the end " ++ show out)
 
-processes : IO ()
-processes = do
-  o1 <- output (command "sh" ["-c", "echo out; echo err >&2; exit 3"]) ""
+processes : (0 proc : Cap Process) -> IO ()
+processes proc = do
+  o1 <- output proc (command "sh" ["-c", "echo out; echo err >&2; exit 3"]) ""
   showOutput "sh" o1
-  o2 <- output (command "tr" ["a-z", "A-Z"]) "piped through tr\n"
+  o2 <- output proc (command "tr" ["a-z", "A-Z"]) "piped through tr\n"
   showOutput "tr" o2
-  o3 <- output (mergeErrors (command "sh" ["-c", "echo 1; echo 2 >&2; echo 3"])) ""
+  o3 <- output proc (mergeErrors (command "sh" ["-c", "echo 1; echo 2 >&2; echo 3"])) ""
   showOutput "merged" o3
-  o4 <- output (command "wc" ["-l", "a.txt"]) ""
+  o4 <- output proc (command "wc" ["-l", "a.txt"]) ""
   showOutput "wc" o4
-  missing <- run (command "no-such-program-of-os-tool" [])
+  missing <- run proc (command "no-such-program-of-os-tool" [])
   say ("missing program: " ++ describe show missing)
-  sleeper <- spawn (setStdout Discard (command "sleep" ["10"]))
+  sleeper <- spawn proc (setStdout Discard (command "sleep" ["10"]))
   withChild "sleep" sleeper killed
-  cat <- spawn (setStdin Piped (setStdout Piped (command "cat" [])))
+  cat <- spawn proc (setStdin Piped (setStdout Piped (command "cat" [])))
   withChild "cat" cat throughCat
-  silent <- spawn (setStdin Piped (command "true" []))
+  silent <- spawn proc (setStdin Piped (command "true" []))
   withChild "true" silent toEnded
-  runCmd "sh" ["-c", "exit 0"]
+  runCmd proc "sh" ["-c", "exit 0"]
 
 -- Runs `k` on the child, or tells why it did not start.
 withChild : String -> (1 r : Result IOError Child) -> ((1 c : Child) -> IO ()) -> IO ()
@@ -284,91 +284,91 @@ signalsBlocked = do
 -- A child is waited for on the runtime's thread pool, then a signal sent
 -- to the process arrives on the event loop (the pool's threads, started
 -- before the signal was blocked, do not take it).
-signalsOnTheLoop : IO ()
-signalsOnTheLoop = runLoop (do
-  child <- spawn (command "sh" ["-c", "exit 7"])
-  withChild "sh" child waitThenReceive)
+signalsOnTheLoop : (0 proc : Cap Process) -> IO ()
+signalsOnTheLoop proc = runLoop (do
+  child <- spawn proc (command "sh" ["-c", "exit 7"])
+  withChild "sh" child (waitThenReceive proc))
 
-waitThenReceive : (1 c : Child) -> IO ()
-waitThenReceive c = blocking (wait c) (\st => do
+waitThenReceive : (0 proc : Cap Process) -> (1 c : Child) -> IO ()
+waitThenReceive proc c = blocking (wait c) (\st => do
   say ("waited on the pool: " ++ describe show st)
-  receive)
+  receive proc)
 
-receive : IO ()
-receive = do
+receive : (0 proc : Cap Process) -> IO ()
+receive proc = do
   r <- signals [sigUsr2]
   case r of
     Err e => say ("signals: " ++ errorName e)
     Ok s => do
       pid <- processId
-      check "send" (sendSignal pid sigUsr2)
+      check "send" (sendSignal proc pid sigUsr2)
       nextSignal s (\s, got => do
         closeSignals s
         say ("on the loop: " ++ showSignal got))
 
-facts : IO ()
-facts = do
+facts : (0 env : Cap Environment) -> IO ()
+facts env = do
   uid <- userId
   euid <- effectiveUserId
   ppid <- parentProcessId
-  host <- hostName
+  host <- hostName env
   term <- isTerminal 1
   say ("uid = euid: " ++ show (uid == euid) ++ ", parent > 0: " ++ show (ppid > 0) ++ ", host name: "
     ++ describe (\h => if h == "" then "empty" else "some") host ++ ", output to a terminal: " ++ show term)
 
-cleanup : String -> IO ()
-cleanup dir = do
-  check "rename" (rename "a.txt" "renamed.txt")
-  names <- listDirectory "."
+cleanup : (0 fs : Cap FileSystem) -> String -> IO ()
+cleanup fs dir = do
+  check "rename" (rename fs "a.txt" "renamed.txt")
+  names <- listDirectory fs "."
   say ("after rename: " ++ describe show names)
-  full <- removeDirectory "sub"
+  full <- removeDirectory fs "sub"
   say ("rmdir sub: " ++ describe done full)
-  check "rm" (removeFile "sub/b.txt")
-  check "rm" (removeFile "sub/c.log")
-  check "rm" (removeFile "link")
-  check "rm" (removeFile "renamed.txt")
-  check "rmdir sub" (removeDirectory "sub")
-  check "cd /" (setCurrentDirectory "/")
-  check "rmdir" (removeDirectory dir)
-  gone <- fileStatus dir
+  check "rm" (removeFile fs "sub/b.txt")
+  check "rm" (removeFile fs "sub/c.log")
+  check "rm" (removeFile fs "link")
+  check "rm" (removeFile fs "renamed.txt")
+  check "rmdir sub" (removeDirectory fs "sub")
+  check "cd /" (setCurrentDirectory fs "/")
+  check "rmdir" (removeDirectory fs dir)
+  gone <- fileStatus fs dir
   say ("after cleanup: " ++ describe (\_ => "still there") gone)
 
-selfTest : IO ()
-selfTest = do
+selfTest : (0 env : Cap Environment) -> (0 proc : Cap Process) -> (0 fs : Cap FileSystem) -> IO ()
+selfTest env proc fs = do
   pid <- processId
   let dir = "/tmp/cirka-os-tool-" ++ show pid
-  files dir
-  mapping
-  processes
+  files fs dir
+  mapping fs
+  processes proc
   signalsBlocked
-  signalsOnTheLoop
-  facts
-  cleanup dir
+  signalsOnTheLoop proc
+  facts env
+  cleanup fs dir
 
 usage : IO ()
 usage = do
   say "usage: os_tool [tree DIR... | lines FILE... | run PROG ARG... | signals]"
   exitWith 2
 
-treeAll : List String -> IO ()
-treeAll [] = pure ()
-treeAll (d :: ds) = do
-  tree d
-  treeAll ds
+treeAll : (0 fs : Cap FileSystem) -> List String -> IO ()
+treeAll fs [] = pure ()
+treeAll fs (d :: ds) = do
+  tree fs d
+  treeAll fs ds
 
-dispatch : String -> List String -> IO ()
-dispatch cmd rest =
-  if cmd == "tree" then treeAll rest
-  else if cmd == "lines" then linesOf rest
+dispatch : (0 proc : Cap Process) -> (0 fs : Cap FileSystem) -> String -> List String -> IO ()
+dispatch proc fs cmd rest =
+  if cmd == "tree" then treeAll fs rest
+  else if cmd == "lines" then linesOf fs rest
   else if cmd == "run" then (case rest of
-    (p :: as) => runCmd p as
+    (p :: as) => runCmd proc p as
     [] => usage)
   else if cmd == "signals" then waitForStop
   else usage
 
-main : IO ()
-main = do
+main : Cap Environment -> Cap Process -> Cap FileSystem -> IO ()
+main env proc fs = do
   as <- args
   case as of
-    [] => selfTest
-    (cmd :: rest) => dispatch cmd rest
+    [] => selfTest env proc fs
+    (cmd :: rest) => dispatch proc fs cmd rest

@@ -1,0 +1,14 @@
+error[E0507]: `panic` is used in an erased position
+  --> tests/cirkalang/fail/cap/forge.cirka:13:31
+   |
+13 |   let 0 fs : Cap FileSystem = panic "forged"
+   |                               ^^^^^ erased: never computed
+   = note: an erased value is never computed: `panic` there does not stop the program, and its result would prove anything
+   = help: use total functions in erased values (proofs, indices), or compute the value at run time (spec-v0.0.4.md §2.4)
+error[E0507]: `spin` is used in an erased position but is not total
+  --> tests/cirkalang/fail/cap/forge.cirka:20:17
+   |
+20 |   r <- readFile spin path
+   |                 ^^^^ erased: never computed
+   = note: `spin` may not terminate; an erased value is never computed, so its result would prove anything
+   = help: use total functions in erased values (proofs, indices), or compute the value at run time (spec-v0.0.4.md §2.4)

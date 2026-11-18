@@ -1,0 +1,7 @@
+error[E0507]: the run-time function `f` is applied in an erased position
+  --> tests/cirkalang/fail/cap/forge_function.cirka:10:17
+   |
+10 |   r <- readFile (f ()) path
+   |                 ^^^^^^
+   = note: an erased value is never computed, so a call in it is never made: the function may panic or loop, and its result would prove anything
+   = help: pass the proof at run time, or take the function with multiplicity 0 (its callers then show that it is total)

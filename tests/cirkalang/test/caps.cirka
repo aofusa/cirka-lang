@@ -1,0 +1,28 @@
+-- Tests receive the capabilities they ask for (spec-v0.0.7.md §1.2).
+module Main
+
+import Std.Fs as Fs
+import Std.Time as T
+import Std.Process (processId)
+
+-- Without capabilities, the program itself reaches nothing outside.
+main : IO ()
+main = putStrLn "caps"
+
+test "a test can write and read files" (fs : Cap FileSystem) = do
+  pid <- processId
+  let path = "/tmp/cirka-test-caps-" ++ show pid ++ ".txt"
+  w <- Fs.writeFile fs path "written"
+  r <- Fs.readFile fs path
+  d <- Fs.removeFile fs path
+  assert (isOk w && isOk d) "write and remove"
+  case r of
+    Ok s => assert (s == "written") "read back"
+    Err e => panic (show e)
+
+test "erased and unnamed capabilities" (0 clk : Cap Clock) (_ : Cap Random) = do
+  t0 <- T.monotonic clk
+  t1 <- T.monotonic clk
+  assert (t1 >= t0) "monotonic"
+
+test "a test without capabilities runs twice" = assertEqInt (1 + 1) 2

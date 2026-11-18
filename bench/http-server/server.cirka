@@ -47,11 +47,11 @@ portArg : List String -> Int
 portArg (p :: _) = parseInt p
 portArg [] = 0
 
-main : IO ()
-main = do
+main : Cap Network -> IO ()
+main net = do
   as <- args
   runLoop (do
-    r <- listen "127.0.0.1" (portArg as)
+    r <- listen net "127.0.0.1" (portArg as)
     case r of
       Ok l => do
         (l, port) <- listenerPort l
