@@ -1269,6 +1269,185 @@ fn opt_keeps_polymorphic_aliases_in_dictionaries() {
     assert!(st.specialized >= 1, "{st:?}");
 }
 
+// ---- FEAT-0261: evidence passing (spec-v0.0.7.md §2.7) ----
+
+#[test]
+fn opt_gives_nested_newtypes_every_state() {
+    // `Eff a` is a newtype over `Env -> IO a`: applying the environment
+    // runs nothing, so `loop` gets one worker taking the environment and
+    // the token, and running `loop 3` is a direct call.
+    let src = format!(
+        "{PRELUDE}(data IO (a) :newtype (IO# (-> Unit# a)))
+         (data Env () (E0 Int#))
+         (data Eff (a) :newtype (Eff# (-> Env (IO a))))
+         (def ret (-> Int# (Eff Int))
+           (lam ((x Int#))
+             (cast (lam ((e Env))
+                     (cast (lam ((w Unit#))
+                             (case e (s Env) Int ((E0 k) (con I# () (prim add k x)))))
+                           (IO Int)))
+                   (Eff Int))))
+         (def loop (-> Int# (Eff Int))
+           (lam ((n Int#))
+             (case n (k Int#) (Eff Int)
+               (0 (ret 7))
+               (_ (loop (prim sub n 1))))))
+         (extern arg () Int#)
+         (def main Int#
+           (let! (a Int# (extern arg))
+             (case ((cast ((cast (loop a) (-> Env (IO Int))) (con E0 () 1)) (-> Unit# Int)) unit)
+               (r Int) Int# ((I# v) v))))"
+    );
+    let mut p = parse_program(FileId(0), &src).unwrap();
+    assert!(lint::lint_program(&p).is_empty(), "{}", print_program(&p));
+    let st = opt::optimize_with_stats(&mut p).unwrap();
+    let all = print_program(&p);
+    assert!(lint::lint_program(&p).is_empty(), "{all}");
+    assert!(st.io_arity >= 1, "{st:?}");
+    // One worker takes both states (worker/wrapper then unboxes `Env` and
+    // the result).
+    let w = p
+        .binds
+        .iter()
+        .find(|b| b.name.starts_with("loop$io"))
+        .expect(&all);
+    let t = w.ty.to_string();
+    assert!(
+        t.contains("Unit#") && !t.contains("Eff") && !t.contains("IO"),
+        "{t}\n{all}"
+    );
+    let m = print::print_expr(&p.bind("main").unwrap().expr);
+    assert!(m.contains("loop$io") && !m.contains("lam"), "{m}");
+}
+
+#[test]
+fn opt_specializes_polymorphic_constant_dictionaries() {
+    // `dId` is a dictionary for every type (an instance without a context,
+    // `Λa. D$Dict …`): applied to `Int`, it is a constant, and `loop` is
+    // specialized to it like to a monomorphic dictionary.
+    let src = format!(
+        "{STRICT_INT}(data D (a) (D$Dict (-> a a)))
+         (def idf (forall (a) (-> a a)) (tlam (a) (lam ((x a)) x)))
+         (def dId (forall (a) (D a)) (tlam (a) (con D$Dict (a) (@ idf a))))
+         (def loop (forall (a) (-> (D a) Int# a a))
+           (tlam (a) (lam ((d (D a)) (n Int#) (x a))
+             (case n (k Int#) a
+               (0 x)
+               (_ (case d (s (D a)) a
+                 ((D$Dict f) ((@ loop a) d (prim sub n 1) (f x)))))))))
+         (extern arg () Int#)
+         (def main Int#
+           (let! (c Int# (extern arg))
+             (case ((@ loop Int) (@ dId Int) c (con I# () 7)) (r Int) Int# ((I# v) v))))"
+    );
+    let mut p = parse_program(FileId(0), &src).unwrap();
+    assert!(lint::lint_program(&p).is_empty(), "{}", print_program(&p));
+    let st = opt::optimize_with_stats(&mut p).unwrap();
+    let all = print_program(&p);
+    assert!(lint::lint_program(&p).is_empty(), "{all}");
+    assert!(st.specialized >= 1, "{st:?}\n{all}");
+    assert!(!all.contains("(case d"), "{all}");
+}
+
+#[test]
+fn opt_specializes_static_known_values() {
+    // `h` is a list of handlers (functions in constructors), passed
+    // unchanged and only scrutinized: the call with a known list, bound by
+    // `let`s, gets a copy in which the `case`s on it are gone and the
+    // handler is applied in place. Its free variable `k` becomes a
+    // parameter of the copy.
+    let src = format!(
+        "{PRELUDE}(data H () (H0) (H1 (! (-> Int# Int#)) (! H)))
+         (def loop (-> H Int# Int# Int#)
+           (lam ((h H) (i Int#) (acc Int#))
+             (case (prim ge i 10) (c Int#) Int#
+               (0 (case h (s H) Int#
+                    ((H1 f t) (loop h (prim add i 1) (prim add acc (f i))))
+                    (_ acc)))
+               (_ acc))))
+         (extern arg () Int#)
+         (def main Int#
+           (let! (k Int# (extern arg))
+             (let ((g (-> Int# Int#) (lam ((x Int#)) (prim mul x k))))
+               (let ((h0 H (con H0 ())))
+                 (let ((h H (con H1 () g h0)))
+                   (loop h 0 0))))))"
+    );
+    let mut p = parse_program(FileId(0), &src).unwrap();
+    assert!(lint::lint_program(&p).is_empty(), "{}", print_program(&p));
+    let st = opt::optimize_with_stats(&mut p).unwrap();
+    let all = print_program(&p);
+    assert!(lint::lint_program(&p).is_empty(), "{all}");
+    assert!(st.fun_args >= 1, "{st:?}\n{all}");
+    let m = print::print_expr(&p.bind("main").unwrap().expr);
+    assert!(m.contains("loop$f1") && !m.contains("con H1"), "{m}");
+    let copy = p
+        .binds
+        .iter()
+        .find(|b| b.name.starts_with("loop$f1"))
+        .map(|b| print::print_expr(&b.expr))
+        .expect(&all);
+    assert!(!copy.contains("H1") && copy.contains("prim mul"), "{copy}");
+}
+
+#[test]
+fn opt_knows_constructors_packed_into_any() {
+    // An existential field holds its value cast to `Any` (the handler in
+    // a list of handlers): the cast back to its own type meets a known
+    // constructor, the lambda of its field is applied in place, and the
+    // packed value, now dead, is not built.
+    let src = format!(
+        "{PRELUDE}(data S () (MkS (! (-> Int# Int#))))
+         (extern arg () Int#)
+         (def main Int#
+           (let! (k Int# (extern arg))
+             (let! (h Any (cast (con MkS () (lam ((x Int#)) (prim mul x k))) Any))
+               (let! (t S (cast h S))
+                 (case t (s S) Int# ((MkS f) (f 3)))))))"
+    );
+    let mut p = parse_program(FileId(0), &src).unwrap();
+    assert!(lint::lint_program(&p).is_empty(), "{}", print_program(&p));
+    let st = opt::optimize_with_stats(&mut p).unwrap();
+    let all = print_program(&p);
+    assert!(lint::lint_program(&p).is_empty(), "{all}");
+    let m = print::print_expr(&p.bind("main").unwrap().expr);
+    assert!(
+        !m.contains("MkS") && !m.contains("lam") && m.contains("prim mul"),
+        "{st:?}\n{m}"
+    );
+}
+
+#[test]
+fn opt_keeps_values_that_escape_or_are_unknown() {
+    // `h` is stored in a constructor by `keep` (not only scrutinized), and
+    // `loop` is called with a list read from memory: neither is copied.
+    let src = format!(
+        "{PRELUDE}(data H () (H0) (H1 (! (-> Int# Int#)) (! H)))
+         (data Box () (B (! H)))
+         (def keep (-> H Int# Box)
+           (lam ((h H) (i Int#))
+             (case i (c Int#) Box (0 (con B () h)) (_ (keep h (prim sub i 1))))))
+         (def loop (-> H Int# Int#)
+           (lam ((h H) (i Int#))
+             (case i (c Int#) Int#
+               (0 0)
+               (_ (case h (s H) Int# ((H1 f t) (prim add (f i) (loop h (prim sub i 1)))) (_ 0))))))
+         (extern arg () Int#)
+         (extern readH () H)
+         (def main Int#
+           (let! (k Int# (extern arg))
+             (let ((h H (con H1 () (lam ((x Int#)) (prim mul x k)) (con H0 ()))))
+               (case (keep h k) (b Box) Int#
+                 ((B q) (prim add (loop q 3) (loop (extern readH) 3)))))))"
+    );
+    let mut p = parse_program(FileId(0), &src).unwrap();
+    assert!(lint::lint_program(&p).is_empty(), "{}", print_program(&p));
+    let st = opt::optimize_with_stats(&mut p).unwrap();
+    let all = print_program(&p);
+    assert!(lint::lint_program(&p).is_empty(), "{all}");
+    assert_eq!(st.fun_args, 0, "{all}");
+}
+
 #[test]
 fn opt_keeps_function_arguments_that_change_or_escape() {
     // `f` is not static: the recursive call passes another function, and

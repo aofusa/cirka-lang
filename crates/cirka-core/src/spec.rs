@@ -2,7 +2,8 @@
 //!
 //! A call `f @τ̄ d₁ … dₖ e…` of a top-level function whose leading value
 //! parameters are type class dictionaries, with closed types `τ̄` and
-//! constant dictionaries `dᵢ` (globals bound to a dictionary constructor),
+//! constant dictionaries `dᵢ` (globals bound to a dictionary constructor,
+//! or polymorphic ones `Λā. K …` applied to closed types, FEAT-0261),
 //! becomes a call `f$sN e…` of a copy of `f` with the types and
 //! dictionaries substituted. The simplifier then resolves the method
 //! selections, and the strictness analysis and worker/wrapper see the
@@ -56,9 +57,28 @@ struct Spec {
     new: Vec<(String, Type, Expr)>,
 }
 
-/// The dictionary bound to global `g`, if it is one.
-fn is_dict(p: &Program, g: &str) -> bool {
-    matches!(p.bind(g).map(|b| &b.expr), Some(Expr::Con(k, _, _)) if k.ends_with("$Dict"))
+/// A constant dictionary: a global bound to one, or a polymorphic one
+/// (`Λā. K …`, an instance without a context) applied to closed types.
+fn const_dict(p: &Program, e: &Expr) -> bool {
+    let mut e = e;
+    let mut n = 0;
+    while let Expr::TyApp(h, t) = e {
+        if !closed(t) {
+            return false;
+        }
+        n += 1;
+        e = h;
+    }
+    let Expr::Global(d) = e else { return false };
+    let Some(b) = p.bind(d) else { return false };
+    let mut body = &b.expr;
+    for _ in 0..n {
+        let Expr::TyLam(_, _, x) = body else {
+            return false;
+        };
+        body = x;
+    }
+    matches!(body, Expr::Con(k, _, _) if k.ends_with("$Dict"))
 }
 
 fn closed(t: &Type) -> bool {
@@ -98,25 +118,23 @@ impl Spec {
         let k = args
             .iter()
             .zip(&xs)
-            .take_while(|(a, _)| matches!(a, Expr::Global(d) if is_dict(p, d)))
+            .take_while(|(a, _)| const_dict(p, a))
             .count();
         if k == 0 || self.specs.len() >= MAX_SPECS {
             return None;
         }
-        let dicts: Vec<&str> = args[..k]
-            .iter()
-            .map(|a| match a {
-                Expr::Global(d) => d.as_str(),
-                _ => unreachable!(),
-            })
-            .collect();
+        let dicts: Vec<&Expr> = args[..k].to_vec();
         let key = format!(
             "{f}|{}|{}",
             ts.iter()
                 .map(|t| t.to_string())
                 .collect::<Vec<_>>()
                 .join(","),
-            dicts.join(",")
+            dicts
+                .iter()
+                .map(|d| crate::print::print_expr(d))
+                .collect::<Vec<_>>()
+                .join(",")
         );
         let name = match self.specs.get(&key) {
             Some(n) => n.clone(),
@@ -138,7 +156,7 @@ impl Spec {
                 }
                 for d in &dicts {
                     let Expr::Lam(x, b) = body else { return None };
-                    body = replace_var(*b, x.id.id, &Expr::Global(d.to_string()));
+                    body = replace_var(*b, x.id.id, d);
                 }
                 // Registered only once the copy exists.
                 let mut n = 1;

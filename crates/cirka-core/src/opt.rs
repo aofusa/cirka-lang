@@ -143,6 +143,7 @@ pub fn optimize_with_stats(p: &mut Program) -> Result<Stats, Diagnostic> {
     // Recursive functions called with known functions for parameters they
     // pass along unchanged (FEAT-0061); a second round reaches the calls in
     // the copies.
+    let copies = st.fun_args;
     for _ in 0..2 {
         let n = crate::sat::specialize_fun_args(p, &mut next);
         if n == 0 {
@@ -151,6 +152,18 @@ pub fn optimize_with_stats(p: &mut Program) -> Result<Stats, Diagnostic> {
         st.fun_args += n;
         lint_all(p, "fun-args")?;
         simplify_rounds(p, &mut st, &mut next)?;
+    }
+    // The lambdas of the known values the copies received (the handlers
+    // of effects, spec-v0.0.7.md §2.7) are bound as local functions in
+    // them: those the simplifier did not inline become top-level
+    // functions, called directly instead of allocated on every call.
+    if st.fun_args > copies {
+        let n = crate::strict::lambda_lift(p, &mut next);
+        if n > 0 {
+            st.lifted += n;
+            lint_all(p, "lambda-lift")?;
+            simplify_rounds(p, &mut st, &mut next)?;
+        }
     }
     // Worker/wrapper splits strict functions over boxed numbers; the
     // simplifier then inlines the wrappers and removes the boxes.
@@ -1124,7 +1137,7 @@ struct Simp<'a> {
     env: HashMap<u32, (Mult, bool)>,
     /// Variables known to be bound to a constructor applied to atoms.
     known: HashMap<u32, (String, Vec<Type>, Vec<Expr>)>,
-    /// Variables known to be evaluated (`let!` and case binders).
+    /// Variables known to be evaluated (`let!` and case binders, lambdas).
     evaluated: HashSet<u32>,
     /// Top-level bindings that are constructors applied to atoms
     /// (e.g. type-class dictionaries).
@@ -1191,6 +1204,10 @@ impl Simp<'_> {
     }
 
     fn remember(&mut self, x: u32, r: &Expr) {
+        // A lambda is a value: its variable is evaluated.
+        if is_lam(r) {
+            self.evaluated.insert(x);
+        }
         if let Expr::Con(k, ts, a) = r
             && a.iter().all(|e| e.is_atom())
         {
@@ -1202,6 +1219,21 @@ impl Simp<'_> {
             && let Some(con) = self.cast_known(y, t)
         {
             self.known.insert(x, con);
+        }
+        // A constructor packed into `Any` (an existential field, like the
+        // handler in a list of handlers, spec-v0.0.7.md §2.7): the cast
+        // that unpacks it to its own type meets a known constructor.
+        if let Expr::Cast(y, Type::Any) = r {
+            let con = match &**y {
+                Expr::Con(k, ts, a) if a.iter().all(|e| e.is_atom()) => {
+                    Some((k.clone(), ts.clone(), a.clone()))
+                }
+                Expr::Var(v) => self.known.get(&v.id).cloned(),
+                _ => None,
+            };
+            if let Some(con) = con {
+                self.known.insert(x, con);
+            }
         }
     }
 
@@ -1609,6 +1641,45 @@ impl Simp<'_> {
         {
             return self.let_lazy(b, r, k);
         }
+        // The same under a cast to `Any` (a constructor packed into an
+        // existential field, spec-v0.0.7.md §2.7): it stays known.
+        if let Expr::Cast(inner, Type::Any) = &r
+            && let Expr::Con(c, ts, args) = &**inner
+            && args.iter().any(|a| !a.is_atom())
+            && args
+                .iter()
+                .all(|a| a.is_atom() || (matches!(a, Expr::Con(..)) && a.is_value()) || is_lam(a))
+            && !args.iter().any(|a| self.uses_linear(a))
+            && let Some(fts) = self.field_types(c, ts)
+        {
+            self.hit();
+            self.st.floated += 1;
+            let Expr::Cast(inner, t) = r else {
+                unreachable!()
+            };
+            let Expr::Con(c, ts, args) = *inner else {
+                unreachable!()
+            };
+            let mut binds = Vec::new();
+            let mut atoms = Vec::new();
+            for (a, ft) in args.into_iter().zip(fts) {
+                if a.is_atom() {
+                    atoms.push(a);
+                } else {
+                    let u = Binder::new(Id::new("v", self.next), Mult::Many, ft);
+                    self.next += 1;
+                    self.bind(&u);
+                    atoms.push(Expr::Var(u.id.clone()));
+                    binds.push((u, a));
+                }
+            }
+            let packed = Expr::Cast(Box::new(Expr::Con(c, ts, atoms)), t);
+            let mut body = self.let_strict(b, packed, k);
+            for (u, a) in binds.into_iter().rev() {
+                body = Expr::Let(Bind::NonRec(u, Box::new(a)), Box::new(body));
+            }
+            return body;
+        }
         if let Expr::Con(c, ts, args) = &r
             && args.iter().any(|a| !a.is_atom())
             && args
@@ -1988,8 +2059,9 @@ impl Simp<'_> {
     fn total(&self, e: &Expr) -> bool {
         match e {
             Expr::Lit(_) | Expr::Lam(..) => true,
-            Expr::TyLam(_, _, x) => self.total(x),
-            Expr::Var(_) => self.is_unboxed_var(e),
+            Expr::TyLam(_, _, x) | Expr::Cast(x, _) => self.total(x),
+            // A variable already in WHNF (`let!`, a lambda) needs no work.
+            Expr::Var(v) => self.is_unboxed_var(e) || self.evaluated.contains(&v.id),
             Expr::Prim(op, _, a) => !op.effectful() && a.iter().all(|x| self.total(x)),
             Expr::Con(c, _, a) => {
                 let strict = self

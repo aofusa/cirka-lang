@@ -15,6 +15,11 @@
 //! the call `f$io x̄ w`. Like GHC's "state hack", this assumes an action is
 //! run once: the work of `f` before it returns the action is repeated each
 //! time a shared partial application is run.
+//!
+//! A newtype over `s -> R` whose state `s` is not the token and whose `R`
+//! is IO-like again (`Eff es a`, a newtype of `Handlers -> IO a`) gives a
+//! worker taking every state, `f$io x̄ ev w` (FEAT-0261): applying a state
+//! other than the token runs nothing.
 
 use std::collections::HashMap;
 
@@ -55,9 +60,39 @@ pub(crate) fn io_result(p: &Program, t: &Type) -> Option<(Type, Type)> {
     None
 }
 
+/// The levels of an IO-like type: each state with the type after applying
+/// it. `IO a` has one, `[(Unit#, a)]`; a newtype over `s -> R` with a state
+/// `s` other than the token has the levels of `R` after its own when `R`
+/// is IO-like (`Eff es a`: `[(Handlers, IO a), (Unit#, a)]`). The token
+/// ends the levels: the action an action returns is a value.
+pub(crate) fn io_levels(p: &Program, t: &Type) -> Option<Vec<(Type, Type)>> {
+    let mut levels = vec![io_result(p, t)?];
+    while levels.len() < 4 {
+        let (s, r) = levels.last().unwrap();
+        if s.alpha_eq(&Type::unit()) {
+            break;
+        }
+        match io_result(p, r) {
+            Some(l) => levels.push(l),
+            None => break,
+        }
+    }
+    Some(levels)
+}
+
+/// The type before the state of level `k` is applied: `r` itself for the
+/// first one.
+fn before(levels: &[(Type, Type)], r: &Type, k: usize) -> Type {
+    if k == 0 {
+        r.clone()
+    } else {
+        levels[k - 1].1.clone()
+    }
+}
+
 /// Whether `body` (under the `Λ`s) is the wrapper `λx̄. cast (λw. f$io … w) R`
-/// of `f` made by [`io_arity`] (a name alone is not enough: lambda lifting
-/// may name an unrelated function `f$io`).
+/// of `f` made by [`io_arity`], possibly with several states (a name alone
+/// is not enough: lambda lifting may name an unrelated function `f$io`).
 pub(crate) fn is_wrapper(f: &str, body: &Expr) -> bool {
     let mut e = body;
     while let Expr::Lam(_, x) = e {
@@ -67,7 +102,13 @@ pub(crate) fn is_wrapper(f: &str, body: &Expr) -> bool {
     let Expr::Lam(_, call) = &**x else {
         return false;
     };
-    let mut h = &**call;
+    let mut call = &**call;
+    while let Expr::Cast(x, _) = call
+        && let Expr::Lam(_, inner) = &**x
+    {
+        call = inner;
+    }
+    let mut h = call;
     while let Expr::App(g, _) | Expr::TyApp(g, _) = h {
         h = g;
     }
@@ -126,42 +167,72 @@ fn run(p: &Program, e: Expr, w: &Expr, st: &Type, a: &Type) -> Expr {
     }
 }
 
+/// `cast (λw1. … cast (λwk. call w1 … wk) Rk …) r`: the action of `call`
+/// applied to the states of `levels`.
+fn states_lam(call: Expr, levels: &[(Type, Type)], r: &Type, next: &mut u32) -> Expr {
+    let ws: Vec<Binder> = levels
+        .iter()
+        .map(|(st, _)| fresh("w", st.clone(), next))
+        .collect();
+    let mut e = Expr::app(call, ws.iter().map(|w| Expr::var(&w.id)));
+    for (k, w) in ws.into_iter().enumerate().rev() {
+        e = Expr::Cast(Box::new(Expr::Lam(w, Box::new(e))), before(levels, r, k));
+    }
+    e
+}
+
 /// `λx̄. cast (λw. worker x̄ w) r` with fresh binders like `xs`.
-fn wrapper(worker: Expr, xs: &[Binder], st: &Type, r: &Type, next: &mut u32) -> Expr {
+fn wrapper(worker: Expr, xs: &[Binder], levels: &[(Type, Type)], r: &Type, next: &mut u32) -> Expr {
     let ys: Vec<Binder> = xs
         .iter()
         .map(|x| fresh(&x.id.name, x.ty.clone(), next))
         .collect();
-    let w = fresh("w", st.clone(), next);
-    let call = Expr::app(
-        worker,
-        ys.iter()
-            .map(|y| Expr::var(&y.id))
-            .chain([Expr::var(&w.id)]),
-    );
-    let mut e = Expr::Cast(Box::new(Expr::Lam(w, Box::new(call))), r.clone());
+    let call = Expr::app(worker, ys.iter().map(|y| Expr::var(&y.id)));
+    let mut e = states_lam(call, levels, r, next);
     for y in ys.into_iter().rev() {
         e = Expr::Lam(y, Box::new(e));
     }
     e
 }
 
-/// The worker body `λx̄ w. run(body, w)`.
+/// The worker body `λx̄ w̄. run(body, w̄)`.
 fn worker_body(
     p: &Program,
     xs: &[Binder],
     body: Expr,
-    st: &Type,
-    a: &Type,
+    levels: &[(Type, Type)],
     next: &mut u32,
 ) -> Expr {
-    let w = fresh("w", st.clone(), next);
-    let wv = Expr::var(&w.id);
-    let mut e = Expr::Lam(w, Box::new(run(p, body, &wv, st, a)));
+    let ws: Vec<Binder> = levels
+        .iter()
+        .map(|(st, _)| fresh("w", st.clone(), next))
+        .collect();
+    let mut e = body;
+    for (w, (st, a)) in ws.iter().zip(levels) {
+        e = run(p, e, &Expr::var(&w.id), st, a);
+    }
+    for w in ws.into_iter().rev() {
+        e = Expr::Lam(w, Box::new(e));
+    }
     for x in xs.iter().rev() {
         e = Expr::Lam(x.clone(), Box::new(e));
     }
     e
+}
+
+/// The type of a worker: the parameters, the states, the final result.
+fn worker_type(
+    params: impl DoubleEndedIterator<Item = (Mult, Type)>,
+    levels: &[(Type, Type)],
+) -> Type {
+    let mut t = levels.last().unwrap().1.clone();
+    for (st, _) in levels.iter().rev() {
+        t = Type::Fun(Mult::Many, Box::new(st.clone()), Box::new(t));
+    }
+    for (m, x) in params.rev() {
+        t = Type::Fun(m, Box::new(x), Box::new(t));
+    }
+    t
 }
 
 /// Splits the IO-returning functions (top-level and local `letrec`s).
@@ -194,26 +265,22 @@ pub fn io_arity(p: &mut Program, next: &mut u32) -> usize {
         let Some(r) = result_after(&ty, xs.len()).cloned() else {
             continue;
         };
-        let Some((st, a)) = io_result(p, &r) else {
+        let Some(levels) = io_levels(p, &r) else {
             continue;
         };
         let body = body.clone();
         let name = format!("{}$io", b.name);
         let span = b.span;
-        let mut wty = a.clone();
-        wty = Type::Fun(Mult::Many, Box::new(st.clone()), Box::new(wty));
-        for x in xs.iter().rev() {
-            wty = Type::Fun(x.mult, Box::new(x.ty.clone()), Box::new(wty));
-        }
+        let mut wty = worker_type(xs.iter().map(|x| (x.mult, x.ty.clone())), &levels);
         for (v, kd) in tvs.iter().rev() {
             wty = Type::Forall(v.clone(), kd.clone(), Box::new(wty));
         }
-        let mut wexpr = worker_body(p, &xs, body, &st, &a, next);
+        let mut wexpr = worker_body(p, &xs, body, &levels, next);
         let mut head = Expr::Global(name.clone());
         for (v, _) in &tvs {
             head = Expr::TyApp(Box::new(head), Type::Var(v.clone()));
         }
-        let mut wrap = wrapper(head, &xs, &st, &r, next);
+        let mut wrap = wrapper(head, &xs, &levels, &r, next);
         for (v, kd) in tvs.iter().rev() {
             wexpr = Expr::TyLam(v.clone(), kd.clone(), Box::new(wexpr));
             wrap = Expr::TyLam(v.clone(), kd.clone(), Box::new(wrap));
@@ -236,8 +303,8 @@ pub fn io_arity(p: &mut Program, next: &mut u32) -> usize {
 }
 
 /// A local function split by [`io_arity`]: its worker, parameter types,
-/// result type, state type and IO result.
-type Split = (Id, Vec<Type>, Type, Type, Type);
+/// result type and levels.
+type Split = (Id, Vec<Type>, Type, Vec<(Type, Type)>);
 
 /// Splits the IO-returning functions of the local `letrec`s in `e`.
 fn local(p: &Program, e: Expr, next: &mut u32, n: &mut usize) -> Expr {
@@ -258,13 +325,13 @@ fn local(p: &Program, e: Expr, next: &mut u32, n: &mut usize) -> Expr {
         let Some(r) = result_after(&b.ty, xs.len()) else {
             continue;
         };
-        let Some((st, a)) = io_result(p, r) else {
+        let Some(levels) = io_levels(p, r) else {
             continue;
         };
         *next += 1;
         let w = Id::new(format!("{}$io", b.id.name), *next);
         let ps = xs.iter().map(|x| x.ty.clone()).collect();
-        splits.insert(b.id.id, (w, ps, r.clone(), st, a));
+        splits.insert(b.id.id, (w, ps, r.clone(), levels));
     }
     if splits.is_empty() {
         return Expr::Let(Bind::Rec(bs), body);
@@ -273,18 +340,15 @@ fn local(p: &Program, e: Expr, next: &mut u32, n: &mut usize) -> Expr {
     let mut out = Vec::new();
     for (b, rhs) in bs {
         let rhs = calls(rhs, &splits, next);
-        let Some((w, _, r, st, a)) = splits.get(&b.id.id) else {
+        let Some((w, _, r, levels)) = splits.get(&b.id.id) else {
             out.push((b, rhs));
             continue;
         };
         let (_, xs, body) = split_fun(&rhs);
         let xs = xs.clone();
-        let wexpr = worker_body(p, &xs, body.clone(), st, a, next);
-        let mut wty = Type::Fun(Mult::Many, Box::new(st.clone()), Box::new(a.clone()));
-        for x in xs.iter().rev() {
-            wty = Type::Fun(x.mult, Box::new(x.ty.clone()), Box::new(wty));
-        }
-        let wrap = wrapper(Expr::var(w), &xs, st, r, next);
+        let wexpr = worker_body(p, &xs, body.clone(), levels, next);
+        let wty = worker_type(xs.iter().map(|x| (x.mult, x.ty.clone())), levels);
+        let wrap = wrapper(Expr::var(w), &xs, levels, r, next);
         out.push((Binder::new(w.clone(), Mult::Many, wty), wexpr));
         out.push((b, wrap));
     }
@@ -294,6 +358,7 @@ fn local(p: &Program, e: Expr, next: &mut u32, n: &mut usize) -> Expr {
 
 /// Replaces the saturated calls `f ā` of split local functions by
 /// `cast (λw. f$io ā w) R` (non-atomic arguments bound by `let` first).
+/// With several states, the `cast (λw. …)` are nested.
 fn calls(e: Expr, splits: &HashMap<u32, Split>, next: &mut u32) -> Expr {
     if let Expr::App(..) = e {
         let mut args = Vec::new();
@@ -305,7 +370,7 @@ fn calls(e: Expr, splits: &HashMap<u32, Split>, next: &mut u32) -> Expr {
         args.reverse();
         let args: Vec<Expr> = args.into_iter().map(|a| calls(a, splits, next)).collect();
         if let Expr::Var(f) = &h
-            && let Some((w, ps, r, st, _)) = splits.get(&f.id)
+            && let Some((w, ps, r, levels)) = splits.get(&f.id)
             && args.len() == ps.len()
         {
             let mut lets = Vec::new();
@@ -319,9 +384,8 @@ fn calls(e: Expr, splits: &HashMap<u32, Split>, next: &mut u32) -> Expr {
                     lets.push((x, a));
                 }
             }
-            let wv = fresh("w", st.clone(), next);
-            let call = Expr::app(Expr::var(w), atoms.into_iter().chain([Expr::var(&wv.id)]));
-            let mut e = Expr::Cast(Box::new(Expr::Lam(wv, Box::new(call))), r.clone());
+            let call = Expr::app(Expr::var(w), atoms);
+            let mut e = states_lam(call, levels, r, next);
             for (x, a) in lets.into_iter().rev() {
                 e = Expr::Let(Bind::NonRec(x, Box::new(a)), Box::new(e));
             }

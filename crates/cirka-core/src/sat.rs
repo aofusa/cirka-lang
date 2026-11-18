@@ -22,6 +22,14 @@
 //! own type variables is copied for call sites with ground type arguments;
 //! the copy is monomorphic (a library fold called with a known function,
 //! FEAT-0079).
+//!
+//! A static parameter of a (non-linear) data type that is otherwise only
+//! scrutinized is copied the same way for call sites passing a known
+//! value: a constructor applied to atoms, lambdas and such values, seen
+//! through the `let`s that bind them (FEAT-0261). The `case`s on it in
+//! the copy meet the constructor and go: the handlers of an effect and the
+//! dictionaries that find them are inlined into the loop that uses them
+//! (spec-v0.0.7.md §2.7).
 
 use crate::expr::*;
 use crate::opt::{free_vars, freshen, map_children, replace_var, size, walk};
@@ -44,12 +52,12 @@ struct Target {
     stat: Vec<usize>,
 }
 
-/// Specializes calls passing known functions to static parameters; returns
-/// the number of copies made.
+/// Specializes calls passing known functions (or known values of data
+/// types) to static parameters; returns the number of copies made.
 pub fn specialize_fun_args(p: &mut Program, next: &mut u32) -> usize {
     let mut targets = HashMap::new();
     for b in &p.binds {
-        if let Some(t) = target(&b.name, &b.ty, &b.expr) {
+        if let Some(t) = target(p, &b.name, &b.ty, &b.expr) {
             targets.insert(b.name.clone(), t);
         }
     }
@@ -67,7 +75,8 @@ pub fn specialize_fun_args(p: &mut Program, next: &mut u32) -> usize {
     while i < p.binds.len() {
         let tys = binder_types(&p.binds[i].expr);
         let e = std::mem::replace(&mut p.binds[i].expr, Expr::Lit(Lit::Unit));
-        p.binds[i].expr = s.expr(p, &tys, e, next);
+        let mut known = HashMap::new();
+        p.binds[i].expr = s.expr(p, &tys, &mut known, e, next);
         for (name, ty, expr) in std::mem::take(&mut s.new) {
             made += 1;
             let span = p.binds[i].span;
@@ -95,9 +104,16 @@ fn ty_args(e: &Expr) -> (&Expr, Vec<&Type>) {
     (e, ts)
 }
 
+/// Whether values of `t` can be specialized on: a data type that is not
+/// linear (a known value is rebuilt where it is scrutinized).
+fn known_data(p: &Program, t: &Type) -> bool {
+    matches!(t, Type::Con(n, _) if p.datas.iter().any(|d| d.name == *n && !d.linear && !d.newtype))
+}
+
 /// The static function parameters of `f` (recursive, and polymorphic only
-/// at its own type variables).
-fn target(f: &str, ty: &Type, e: &Expr) -> Option<Target> {
+/// at its own type variables), and its static parameters of data types
+/// that are only scrutinized.
+fn target(p: &Program, f: &str, ty: &Type, e: &Expr) -> Option<Target> {
     let (tvs, xs, body) = split_fun(e);
     if xs.is_empty() || size(e) > MAX_SIZE {
         return None;
@@ -111,13 +127,17 @@ fn target(f: &str, ty: &Type, e: &Expr) -> Option<Target> {
     };
     let n = xs.len();
     let mut cand: Vec<usize> = (0..n)
-        .filter(|&i| xs[i].mult == Mult::Many && matches!(xs[i].ty, Type::Fun(..)))
+        .filter(|&i| {
+            xs[i].mult == Mult::Many
+                && (matches!(xs[i].ty, Type::Fun(..)) || known_data(p, &xs[i].ty))
+        })
         .collect();
     if cand.is_empty() {
         return None;
     }
     // Every use of `f` is a saturated call, and every use of a candidate is
-    // either the head of a call or its own position in a recursive call.
+    // the head of a call (a function), the scrutinee of a `case` (a data
+    // value) or its own position in a recursive call.
     let mut uses_f = 0;
     let mut calls_f = 0;
     let mut uses = vec![0usize; n];
@@ -128,6 +148,13 @@ fn target(f: &str, ty: &Type, e: &Expr) -> Option<Target> {
         Expr::Var(v) => {
             if let Some(i) = ids.iter().position(|&x| x == v.id) {
                 uses[i] += 1;
+            }
+        }
+        Expr::Case(x, ..) => {
+            if let Expr::Var(v) = &**x
+                && let Some(i) = ids.iter().position(|&x| x == v.id)
+            {
+                allowed[i] += 1;
             }
         }
         Expr::App(h, _) => {
@@ -188,11 +215,42 @@ struct Sat {
 /// Placeholder ids for the free variables of a call pattern's key.
 const KEY_ID: u32 = u32::MAX - 1024;
 
+/// The values known for the variables bound by `let`s around a call:
+/// constructors applied to atoms, lambdas and such values, and lambdas.
+type Known = HashMap<u32, Expr>;
+
+/// Nesting of the known values followed.
+const MAX_DEPTH: usize = 8;
+
 impl Sat {
-    fn expr(&mut self, p: &Program, tys: &HashMap<u32, Binder>, e: Expr, next: &mut u32) -> Expr {
-        let Expr::App(..) = e else {
-            return map_children(e, &mut |c| self.expr(p, tys, c, next));
-        };
+    fn expr(
+        &mut self,
+        p: &Program,
+        tys: &HashMap<u32, Binder>,
+        known: &mut Known,
+        e: Expr,
+        next: &mut u32,
+    ) -> Expr {
+        match e {
+            Expr::Let(Bind::NonRec(x, rhs), body) => {
+                let rhs = self.expr(p, tys, known, *rhs, next);
+                if let Some(v) = known_binding(known, &rhs) {
+                    known.insert(x.id.id, v);
+                }
+                let body = self.expr(p, tys, known, *body, next);
+                return Expr::Let(Bind::NonRec(x, Box::new(rhs)), Box::new(body));
+            }
+            Expr::LetStrict(x, rhs, body) => {
+                let rhs = self.expr(p, tys, known, *rhs, next);
+                if let Some(v) = known_binding(known, &rhs) {
+                    known.insert(x.id.id, v);
+                }
+                let body = self.expr(p, tys, known, *body, next);
+                return Expr::LetStrict(x, Box::new(rhs), Box::new(body));
+            }
+            Expr::App(..) => {}
+            e => return map_children(e, &mut |c| self.expr(p, tys, known, c, next)),
+        }
         let mut args = Vec::new();
         let mut h = e;
         while let Expr::App(f, a) = h {
@@ -202,24 +260,26 @@ impl Sat {
         args.reverse();
         let args: Vec<Expr> = args
             .into_iter()
-            .map(|a| self.expr(p, tys, a, next))
+            .map(|a| self.expr(p, tys, known, a, next))
             .collect();
         let (head, ts) = ty_args(&h);
         if let Expr::Global(f) = head {
             let ts: Vec<Type> = ts.into_iter().cloned().collect();
-            if let Some(r) = self.call(p, tys, f, &ts, &args, next) {
+            if let Some(r) = self.call(p, tys, known, f, &ts, &args, next) {
                 return r;
             }
         }
-        let h = self.expr(p, tys, h, next);
+        let h = self.expr(p, tys, known, h, next);
         Expr::app(h, args)
     }
 
     /// The specialized call `f$fN fvs args'` replacing `f args`, if any.
+    #[allow(clippy::too_many_arguments)]
     fn call(
         &mut self,
         p: &Program,
         tys: &HashMap<u32, Binder>,
+        known: &Known,
         f: &str,
         targs: &[Type],
         args: &[Expr],
@@ -230,19 +290,30 @@ impl Sat {
         if args.len() < n || targs.len() != t.tvs.len() || targs.iter().any(has_tyvars) {
             return None;
         }
-        let stat: Vec<usize> = t
-            .stat
-            .iter()
-            .copied()
-            .filter(|&i| known_fun(p, &args[i], f) && !expr_has_tyvars(&args[i]))
-            .collect();
+        // The known function or value passed to each static parameter.
+        let mut stat = Vec::new();
+        let mut vals = Vec::new();
+        for &i in &t.stat {
+            let v = if matches!(t.params[i].ty, Type::Fun(..)) {
+                known_fun(p, &args[i], f).then(|| args[i].clone())
+            } else {
+                // A value bound before may name `f` in a lambda.
+                known_value(known, &args[i], f, 0).filter(|v| !mentions(v, f) && carries_code(p, v))
+            };
+            if let Some(v) = v
+                && !expr_has_tyvars(&v)
+            {
+                stat.push(i);
+                vals.push(v);
+            }
+        }
         if stat.is_empty() {
             return None;
         }
         // Free variables of the passed functions, in a fixed order.
-        let mut fvs: Vec<u32> = stat
+        let mut fvs: Vec<u32> = vals
             .iter()
-            .flat_map(|&i| free_vars(&args[i]))
+            .flat_map(free_vars)
             .collect::<HashSet<u32>>()
             .into_iter()
             .collect();
@@ -259,8 +330,8 @@ impl Sat {
         }
         let key = {
             let mut k = format!("{f}|{stat:?}|{targs:?}");
-            for &i in &stat {
-                let mut a = args[i].clone();
+            for v in &vals {
+                let mut a = v.clone();
                 for (j, v) in fvs.iter().enumerate() {
                     a = replace_var(a, *v, &Expr::Var(Id::new("fv", KEY_ID + j as u32)));
                 }
@@ -275,7 +346,7 @@ impl Sat {
                 if self.specs.len() >= MAX_SPECS {
                     return None;
                 }
-                let name = self.copy(p, f, targs, &stat, args, &fvs, &fv_binders, next)?;
+                let name = self.copy(p, f, targs, &stat, &vals, &fvs, &fv_binders, next)?;
                 self.specs.insert(key, name.clone());
                 name
             }
@@ -289,7 +360,8 @@ impl Sat {
         Some(Expr::app(Expr::Global(name), fv_args.chain(rest)))
     }
 
-    /// Makes the copy of `f` for the functions `args[stat]`.
+    /// Makes the copy of `f` for the functions or values `vals` of the
+    /// parameters `stat`.
     #[allow(clippy::too_many_arguments)]
     fn copy(
         &mut self,
@@ -297,7 +369,7 @@ impl Sat {
         f: &str,
         targs: &[Type],
         stat: &[usize],
-        args: &[Expr],
+        vals: &[Expr],
         fvs: &[u32],
         fv_binders: &[Binder],
         next: &mut u32,
@@ -334,8 +406,8 @@ impl Sat {
             .collect();
         let fv_vars: Vec<Expr> = new_fvs.iter().map(|b| Expr::var(&b.id)).collect();
         let mut body = rewrite(body, f, &name, xs.len(), stat, &fv_vars);
-        for &i in stat {
-            let mut a = args[i].clone();
+        for (&i, v) in stat.iter().zip(vals) {
+            let mut a = v.clone();
             for (v, nb) in fvs.iter().zip(&new_fvs) {
                 a = replace_var(a, *v, &Expr::var(&nb.id));
             }
@@ -434,6 +506,94 @@ fn known_fun(p: &Program, a: &Expr, f: &str) -> bool {
         }
         _ => false,
     }
+}
+
+/// The known value of `e` for a static parameter of a data type: a
+/// constructor (under `cast`s) whose fields are atoms, lambdas not
+/// mentioning `f` (whose copies would specialize without end) or such
+/// values; variables bound to them are replaced by them. Variables bound
+/// to anything else stay: the copy receives them.
+fn known_value(known: &Known, e: &Expr, f: &str, depth: usize) -> Option<Expr> {
+    if depth > MAX_DEPTH {
+        return None;
+    }
+    match e {
+        Expr::Var(v) => known
+            .get(&v.id)
+            .filter(|k| !matches!(k, Expr::Lam(..)))
+            .cloned(),
+        Expr::Cast(x, t) => Some(Expr::Cast(
+            Box::new(known_value(known, x, f, depth)?),
+            t.clone(),
+        )),
+        Expr::Con(k, ts, args) => {
+            let mut out = Vec::with_capacity(args.len());
+            for a in args {
+                out.push(known_field(known, a, f, depth + 1)?);
+            }
+            Some(Expr::Con(k.clone(), ts.clone(), out))
+        }
+        _ => None,
+    }
+}
+
+/// A field of a known value (see [`known_value`]).
+fn known_field(known: &Known, e: &Expr, f: &str, depth: usize) -> Option<Expr> {
+    match e {
+        Expr::Var(v) => Some(known.get(&v.id).cloned().unwrap_or_else(|| e.clone())),
+        Expr::Lit(_) | Expr::Global(_) => Some(e.clone()),
+        Expr::TyApp(..) if matches!(ty_args(e).0, Expr::Global(_)) => Some(e.clone()),
+        Expr::Lam(..) => (!mentions(e, f)).then(|| e.clone()),
+        // A field of an existential type is cast to `Any`.
+        Expr::Cast(x, t) => Some(Expr::Cast(
+            Box::new(known_field(known, x, f, depth)?),
+            t.clone(),
+        )),
+        Expr::Con(..) => known_value(known, e, f, depth),
+        _ => None,
+    }
+}
+
+/// What a `let` binds when it is a known value or a lambda (fields of
+/// known values name lambdas through variables).
+fn known_binding(known: &Known, rhs: &Expr) -> Option<Expr> {
+    match rhs {
+        Expr::Lam(..) => Some(rhs.clone()),
+        _ => known_value(known, rhs, "", 0),
+    }
+}
+
+/// Whether a known value carries code (a lambda or a global function): a
+/// copy for a value of atoms alone (a box `I# x`, a token) gains nothing
+/// that unboxing does not, and would copy every loop over a box.
+fn carries_code(p: &Program, v: &Expr) -> bool {
+    let is_fun = |g: &str| {
+        p.bind(g).is_some_and(|b| {
+            let mut e = &b.expr;
+            while let Expr::TyLam(_, _, x) = e {
+                e = x;
+            }
+            matches!(e, Expr::Lam(..))
+        })
+    };
+    let mut found = false;
+    walk(v, &mut |s| match s {
+        Expr::Lam(..) => found = true,
+        Expr::Global(g) if is_fun(g) => found = true,
+        _ => {}
+    });
+    found
+}
+
+/// Whether `e` mentions the global `f`.
+fn mentions(e: &Expr, f: &str) -> bool {
+    let mut found = false;
+    walk(e, &mut |s| {
+        if matches!(s, Expr::Global(g) if g == f) {
+            found = true;
+        }
+    });
+    found
 }
 
 /// Rewrites the recursive calls `f args` of the copy into
