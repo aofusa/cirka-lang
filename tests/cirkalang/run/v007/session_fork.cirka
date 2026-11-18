@@ -1,0 +1,53 @@
+-- skip-backend: interp
+-- tsan: 1
+-- Session types (spec-v0.0.7.md §3): `fork` starts peers whose endpoints
+-- the main thread uses in turn. The messages have several types (`Int`,
+-- `String`, `List Int`); the endpoints of finished sessions are dropped.
+import Std.Session as S
+import Std.Thread (join)
+
+-- A worker squares numbers until it is stopped, then sends a summary.
+square : S.Session
+square = S.Rec (S.Offer (S.Recv Int (S.Send Int (S.Var 0))) (S.Send String (S.Send (List Int) S.End)))
+
+worker : List Int -> (1 c : S.Channel square) -> IO Int
+worker seen c = do
+  b <- S.offer (S.enter c)
+  case b of
+    S.Left c => do
+      (x, c) <- S.recv c
+      c <- S.send c (x * x)
+      worker (x :: seen) c
+    S.Right c => do
+      c <- S.send c ("squared " ++ show (length seen))
+      c <- S.send c (reverse seen)
+      S.close c
+      pure (length seen)
+
+ask : (1 c : S.Channel (S.dual square)) -> Int -> IO1 (Int, S.Channel (S.dual square))
+ask c x = do
+  c <- S.chooseLeft (S.enter c)
+  c <- S.send c x
+  S.recv c
+
+stop : (1 c : S.Channel (S.dual square)) -> IO (String, List Int)
+stop c = do
+  c <- S.chooseRight (S.enter c)
+  (s, c) <- S.recv c
+  (xs, c) <- S.recv c
+  pure (s, xs)
+
+main : IO ()
+main = do
+  (a, MkUr ta) <- S.fork (worker [])
+  (b, MkUr tb) <- S.fork (worker [])
+  (x, a) <- ask a 3
+  (y, b) <- ask b 4
+  (z, a) <- ask a (x + y)
+  sa <- stop a
+  sb <- stop b
+  na <- join ta
+  nb <- join tb
+  print sa
+  print sb
+  print (x, y, z, na, nb)

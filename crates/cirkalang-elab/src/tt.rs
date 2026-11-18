@@ -462,6 +462,10 @@ pub enum Prim {
     ChanRecv,
     ChanTryRecv,
     ChanLength,
+    /// `primUnsafeCastChan : Chan a -> Chan b` (spec-v0.0.7.md §3.4): the
+    /// same channel with another type of elements, for `Std.Session`,
+    /// whose two channels carry the values of every step of a protocol.
+    ChanCast,
     /// `primCLayout {a} p k` (spec-v0.0.6.md §1.9): the size (`k = 0`),
     /// alignment (1) or offset of field `k - 2` of the C struct or union
     /// `a`, computed by the lowering.
@@ -646,6 +650,7 @@ impl Prim {
         ("primRecv", Prim::ChanRecv),
         ("primTryRecv", Prim::ChanTryRecv),
         ("primChanLength", Prim::ChanLength),
+        ("primUnsafeCastChan", Prim::ChanCast),
         ("primCLayout", Prim::CLayout),
     ];
 

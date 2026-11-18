@@ -1,0 +1,38 @@
+-- A step out of the protocol is a type error (spec-v0.0.7.md §3.3): a
+-- value of another type, an operation in the wrong order, ending early,
+-- and the operation of the other endpoint.
+module Main
+
+import Std.Session as S
+
+ask : S.Session
+ask = S.Send Int (S.Recv Bool S.End)
+
+wrongType : (1 c : S.Channel ask) -> IO Bool
+wrongType c = do
+  c <- S.send c "three"
+  (b, c) <- S.recv c
+  S.close c
+  pure b
+
+wrongOrder : (1 c : S.Channel ask) -> IO Bool
+wrongOrder c = do
+  (b, c) <- S.recv c
+  c <- S.send c 3
+  S.close c
+  pure b
+
+early : (1 c : S.Channel ask) -> IO ()
+early c = do
+  c <- S.send c 3
+  S.close c
+
+offerInstead : (1 c : S.Channel (S.Choose ask S.End)) -> IO ()
+offerInstead c = do
+  b <- S.offer c
+  case b of
+    S.Left c => S.close c
+    S.Right c => S.close c
+
+main : IO ()
+main = pure ()

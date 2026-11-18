@@ -1565,6 +1565,9 @@ impl<'a> Lower<'a> {
                     vec![c::Expr::Extern("cirka_chan_len".into(), vec![a[0].clone()])],
                 )
             }),
+            // A channel is the runtime's object whatever its elements
+            // (spec-v0.0.7.md §3.4): the cast is the channel itself.
+            Prim::ChanCast => self.skeleton(ty, 1, |a, _| a[0].clone()),
             // `delay f` = `let t = f () in Lazy# t`: the lazy `let` is a
             // thunk, evaluated once by `force`.
             Prim::Delay => self.skeleton(ty, 1, |a, r| {

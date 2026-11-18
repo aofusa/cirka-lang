@@ -1,0 +1,29 @@
+error[E0302]: linear value `c` is not consumed
+  --> tests/cirkalang/fail/session/abandon.cirka:13:3
+   |
+13 |   c <- S.send c 3
+   |   ^
+   = note: `Channel (Recv Bool End)` has no `Drop` or `Release` implementation: those of `Channel` are for other arguments
+   = help: consume it by pattern matching or by passing it to a function
+error[E0302]: linear value `c` is not consumed
+  --> tests/cirkalang/fail/session/abandon.cirka:18:5
+   |
+18 |     c <- S.chooseLeft c
+   |     ^
+   = note: `Channel ask` has no `Drop` or `Release` implementation: those of `Channel` are for other arguments
+   = help: consume it by pattern matching or by passing it to a function
+error[E0302]: linear value `c` is not consumed
+  --> tests/cirkalang/fail/session/abandon.cirka:25:13
+   |
+25 | anyProtocol c = pure ()
+   |             ^
+   = note: `Channel s` has no `Drop` or `Release` implementation: those of `Channel` are for other arguments
+   = help: consume it by pattern matching or by passing it to a function
+error[E0303]: linear variable `c` is used more than once
+  --> tests/cirkalang/fail/session/abandon.cirka:30:15
+   |
+29 |   d <- S.send c 3
+   |               - first use
+30 |   e <- S.send c 4
+   |               ^
+   = help: use it only once, or make it shareable with `freeze`

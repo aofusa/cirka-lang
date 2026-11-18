@@ -1,0 +1,36 @@
+-- Endpoints are linear and can be dropped only at `End` (spec-v0.0.7.md
+-- §3.3): leaving a session before its end, in one branch or in code for
+-- any protocol, and using an endpoint twice are type errors.
+module Main
+
+import Std.Session as S
+
+ask : S.Session
+ask = S.Send Int (S.Recv Bool S.End)
+
+leave : (1 c : S.Channel ask) -> IO Int
+leave c = do
+  c <- S.send c 3
+  pure 0
+
+leaveOne : Bool -> (1 c : S.Channel (S.Choose ask S.End)) -> IO ()
+leaveOne q c = if q then do
+    c <- S.chooseLeft c
+    pure ()
+  else do
+    c <- S.chooseRight c
+    S.close c
+
+anyProtocol : (1 c : S.Channel s) -> IO ()
+anyProtocol c = pure ()
+
+twice : (1 c : S.Channel ask) -> IO Bool
+twice c = do
+  d <- S.send c 3
+  e <- S.send c 4
+  (b, d) <- S.recv d
+  (b2, e) <- S.recv e
+  pure (b && b2)
+
+main : IO ()
+main = pure ()

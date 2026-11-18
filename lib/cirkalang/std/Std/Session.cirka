@@ -1,0 +1,143 @@
+-- Session types (spec-v0.0.7.md §3): channels between two threads whose
+-- use follows a protocol written in their type.
+--
+-- A protocol is a value of `Session` used in types: `Channel s` is an
+-- endpoint that does `s`, and each operation takes the endpoint and gives
+-- back one that does the rest of the protocol. The other endpoint does
+-- `dual s`. Endpoints are linear and can be dropped only at `End`, so a
+-- step out of the protocol, a second use of an endpoint and leaving a
+-- session before its end are type errors.
+--
+-- The values travel through two FIFO channels of `Std.Thread`, one for
+-- each direction, which carry values of any type: the protocol makes the
+-- receiver expect the type the sender sent. Only the types follow the
+-- protocol; at run time an operation is one operation on a channel.
+module Std.Session
+
+import Std.Thread as T
+
+-- What an endpoint does next.
+data Session : Type where
+  -- Sends a value of type `a`, then does `s`.
+  Send : (0 a : Type) -> (s : Session) -> Session
+  -- Receives a value of type `a`, then does `s`.
+  Recv : (0 a : Type) -> (s : Session) -> Session
+  -- Chooses to do `s` or `t`; the other endpoint offers both.
+  Choose : (s : Session) -> (t : Session) -> Session
+  -- Does `s` or `t`, as the other endpoint chooses.
+  Offer : (s : Session) -> (t : Session) -> Session
+  -- A loop: `s`, in which `Var 0` is the loop again (`Var k`, the loop
+  -- `k` levels out).
+  Rec : (s : Session) -> Session
+  Var : (k : Int) -> Session
+  -- The end of the session.
+  End : Session
+
+-- The protocol of the other endpoint: what one sends the other receives,
+-- what one chooses the other offers.
+dual : Session -> Session
+dual (Send a s) = Recv a (dual s)
+dual (Recv a s) = Send a (dual s)
+dual (Choose s t) = Offer (dual s) (dual t)
+dual (Offer s t) = Choose (dual s) (dual t)
+dual (Rec s) = Rec (dual s)
+dual (Var k) = Var k
+dual End = End
+
+-- `s` with the loop `k` levels out (`Var k`) replaced by `r`, which has no
+-- `Var` of its own.
+subst : Int -> Session -> Session -> Session
+subst k r (Send a s) = Send a (subst k r s)
+subst k r (Recv a s) = Recv a (subst k r s)
+subst k r (Choose s t) = Choose (subst k r s) (subst k r t)
+subst k r (Offer s t) = Offer (subst k r s) (subst k r t)
+subst k r (Rec s) = Rec (subst (k + 1) r s)
+subst k r (Var j) = if j == k then r else Var j
+subst k r End = End
+
+-- One turn of the loop `Rec s`: its body, in which `Var 0` is the loop.
+unroll : Session -> Session
+unroll s = subst 0 (Rec s) s
+
+-- The same channel with another type of elements (a library-only
+-- primitive): the two channels of an endpoint carry the values of every
+-- step of its protocol.
+private prim primUnsafeCastChan : {a : Type} -> {b : Type} -> T.Chan a -> T.Chan b
+
+-- An endpoint of a channel that follows the protocol `s`: the channel it
+-- sends on and the one it receives from.
+data Channel (s : Session) : LType where
+  private MkChannel : (ω o : T.Chan ()) -> (ω i : T.Chan ()) -> Channel s
+
+-- A finished session may be dropped, which closes it. No other endpoint
+-- can be dropped.
+impl Drop (Channel End) where
+  drop (MkChannel o i) = ()
+
+-- Sends `x` (never waits).
+send : Prelude.Send a => (1 c : Channel (Send a s)) -> a -> IO1 (Channel s)
+send (MkChannel o i) x = do
+  T.send (primUnsafeCastChan o) x
+  pure1 (MkChannel o i)
+
+-- Receives a value, waiting while none has come.
+recv : (1 c : Channel (Recv a s)) -> IO1 (a, Channel s)
+recv (MkChannel o i) = do
+  x <- T.recv (primUnsafeCastChan i)
+  pure1 (x, MkChannel o i)
+
+-- Chooses the first protocol.
+chooseLeft : (1 c : Channel (Choose s t)) -> IO1 (Channel s)
+chooseLeft (MkChannel o i) = do
+  T.send (primUnsafeCastChan o) True
+  pure1 (MkChannel o i)
+
+-- Chooses the second protocol.
+chooseRight : (1 c : Channel (Choose s t)) -> IO1 (Channel t)
+chooseRight (MkChannel o i) = do
+  T.send (primUnsafeCastChan o) False
+  pure1 (MkChannel o i)
+
+-- The protocol the other endpoint chose.
+data Branch (s : Session) (t : Session) : LType where
+  Left : (1 c : Channel s) -> Branch s t
+  Right : (1 c : Channel t) -> Branch s t
+
+-- Waits for the choice of the other endpoint.
+offer : (1 c : Channel (Offer s t)) -> IO1 (Branch s t)
+offer (MkChannel o i) = do
+  b <- T.recv (primUnsafeCastChan i)
+  pure1 (if b then Left (MkChannel o i) else Right (MkChannel o i))
+
+-- Enters a loop (nothing happens at run time).
+enter : (1 c : Channel (Rec s)) -> Channel (unroll s)
+enter (MkChannel o i) = MkChannel o i
+
+-- Ends the session.
+close : (1 c : Channel End) -> IO ()
+close (MkChannel o i) = pure ()
+
+-- The action of `peer` on the endpoint that sends on `o` and receives
+-- from `i` (made when the thread starts, not captured by the action).
+private runPeer : ((1 c : Channel s) -> IO b) -> T.Chan () -> T.Chan () -> IO b
+runPeer peer o i = peer (MkChannel o i)
+
+-- Starts `peer` on a new thread with an endpoint of a new channel, and
+-- returns the other endpoint and the thread (to `join`).
+fork : Prelude.Send b => ((1 c : Channel s) -> IO b) -> IO1 (Channel (dual s), Ur (T.Thread b))
+fork peer = do
+  q1 <- T.newChan
+  q2 <- T.newChan
+  t <- T.spawn (runPeer peer q1 q2)
+  pure1 (MkChannel q2 q1, MkUr t)
+
+-- Runs `self` here and `peer` on a new thread, on the two endpoints of a
+-- new channel; waits for both and returns their results.
+connect : Prelude.Send b => ((1 c : Channel s) -> IO a) -> ((1 c : Channel (dual s)) -> IO b) -> IO (a, b)
+connect self peer = do
+  q1 <- T.newChan
+  q2 <- T.newChan
+  t <- T.spawn (runPeer peer q2 q1)
+  x <- self (MkChannel q1 q2)
+  y <- T.join t
+  pure (x, y)

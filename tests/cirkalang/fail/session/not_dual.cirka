@@ -1,0 +1,27 @@
+-- The two endpoints of a channel follow dual protocols (spec-v0.0.7.md
+-- §3.3): a peer whose protocol is not the dual of the other one's is a
+-- type error.
+module Main
+
+import Std.Session as S
+
+ask : S.Session
+ask = S.Send Int (S.Recv Bool S.End)
+
+client : (1 c : S.Channel ask) -> IO Bool
+client c = do
+  c <- S.send c 3
+  (b, c) <- S.recv c
+  pure b
+
+-- Receives twice: the client sends an `Int` and receives a `Bool`.
+both : (1 c : S.Channel (S.Recv Int (S.Recv Bool S.End))) -> IO ()
+both c = do
+  (n, c) <- S.recv c
+  (b, c) <- S.recv c
+  S.close c
+
+main : IO ()
+main = do
+  (b, u) <- S.connect client both
+  print b

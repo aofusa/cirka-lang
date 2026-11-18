@@ -1,0 +1,32 @@
+error[E1200]: type mismatch
+  --> tests/cirkalang/fail/session/violation.cirka:13:17
+   |
+13 |   c <- S.send c "three"
+   |                 ^^^^^^^
+   = note: expected `Int`
+   = note:    found `String`
+error[E1200]: type mismatch
+  --> tests/cirkalang/fail/session/violation.cirka:20:20
+   |
+20 |   (b, c) <- S.recv c
+   |                    ^
+   = note: expected `Channel (Recv (_ c) (_ c))`
+   = note:    found `Channel ask`
+   = note: expected (unfolded) `Channel (Recv (_ c) (_ c))`
+   = note:    found (unfolded) `Channel (Send Int (Recv Bool End))`
+error[E1200]: type mismatch
+  --> tests/cirkalang/fail/session/violation.cirka:28:11
+   |
+28 |   S.close c
+   |           ^
+   = note: expected `Channel End`
+   = note:    found `Channel (Recv Bool End)`
+error[E1200]: type mismatch
+  --> tests/cirkalang/fail/session/violation.cirka:32:16
+   |
+32 |   b <- S.offer c
+   |                ^
+   = note: expected `Channel (Offer (_ c) (_ c))`
+   = note:    found `Channel (Choose ask End)`
+   = note: expected (unfolded) `Channel (Offer (_ c) (_ c))`
+   = note:    found (unfolded) `Channel (Choose (Send Int (Recv Bool End)) End)`

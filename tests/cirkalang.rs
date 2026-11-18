@@ -258,7 +258,7 @@ fn cirkalang_type_errors() {
     let mut cases = Vec::new();
     for d in [
         "type", "own", "test", "total", "proof", "refine", "thread", "net", "vulkan", "linalg",
-        "cap", "effect",
+        "cap", "effect", "session",
     ] {
         cases.extend(discover(
             &repo_root().join("tests/cirkalang/fail").join(d),

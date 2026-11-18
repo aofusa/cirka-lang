@@ -1,0 +1,49 @@
+-- skip-backend: interp
+-- tsan: 1
+-- Session types (spec-v0.0.7.md §3): a client asks a server for sums
+-- until it quits. The protocol is a loop with a choice in it; the server
+-- writes out the dual protocol, which is checked against `S.dual adder`.
+import Std.Session as S
+
+-- The client's side.
+adder : S.Session
+adder = S.Rec (S.Choose (S.Send Int (S.Send Int (S.Recv Int (S.Var 0)))) S.End)
+
+-- Asks for the sums of the pairs, then quits.
+sums : List (Int, Int) -> (1 c : S.Channel adder) -> IO Int
+sums [] c = do
+  c <- S.chooseRight (S.enter c)
+  S.close c
+  pure 0
+sums ((x, y) :: ps) c = do
+  c <- S.chooseLeft (S.enter c)
+  c <- S.send c x
+  c <- S.send c y
+  (n, c) <- S.recv c
+  print n
+  r <- sums ps c
+  pure (n + r)
+
+-- The server's side, written out.
+server : S.Session
+server = S.Rec (S.Offer (S.Recv Int (S.Recv Int (S.Send Int (S.Var 0)))) S.End)
+
+-- Answers until the client quits; the number of sums. The finished
+-- session is dropped, which closes it.
+serve : Int -> (1 c : S.Channel server) -> IO Int
+serve k c = do
+  b <- S.offer (S.enter c)
+  case b of
+    S.Left c => do
+      (x, c) <- S.recv c
+      (y, c) <- S.recv c
+      c <- S.send c (x + y)
+      serve (k + 1) c
+    S.Right c => pure k
+
+main : IO ()
+main = do
+  (t, k) <- S.connect (sums [(1, 2), (3, 4), (5, 6)]) (serve 0)
+  print (t, k)
+  (u, j) <- S.connect (sums []) (serve 0)
+  print (u, j)
