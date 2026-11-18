@@ -97,6 +97,37 @@ fn run_rust(name: &str, src: &Path, arg: &str) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+/// `-- skip-backend: interp` in the first lines: the program uses threads,
+/// which the MIR interpreter does not run (bench/session), and is built
+/// and run natively instead.
+fn native_only(path: &Path) -> bool {
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .take(5)
+        .any(|l| l.trim() == "-- skip-backend: interp")
+}
+
+/// The output of the program built at -O2 and run natively, without leaks.
+fn run_native(name: &str, core: cirka_core::Program, arg: &str) -> Result<String, String> {
+    cirka_driver::native::ensure_runtime_built()?;
+    let mut opts = cirka_driver::pipeline::Options::new(name);
+    opts.opt_level = 2;
+    opts.build_dir = cirka_testkit::work_dir("bench", name);
+    let out = cirka_driver::pipeline::compile_core(core, name, &opts, false)
+        .map_err(|ds| ds[0].message.clone())?;
+    let cfg = cirka_driver::Config::from_env();
+    let exe = opts.build_dir.join("prog");
+    cirka_driver::native::build_mir(&cfg, &out.mir, &opts.build_dir, &exe, &Default::default())?;
+    let mut cmd = std::process::Command::new(&exe);
+    cmd.arg(arg).env("CIRKA_LEAK_CHECK", "1");
+    let r = cirka_testkit::run_with_stdin(cmd, None).map_err(|e| e.to_string())?;
+    if r.code != 0 {
+        return Err(format!("exit {}\n{}{}", r.code, r.stdout, r.stderr));
+    }
+    Ok(r.stdout)
+}
+
 fn skipped(path: &Path) -> bool {
     std::fs::read_to_string(path)
         .unwrap_or_default()
@@ -154,7 +185,12 @@ fn bench_programs() {
                         }
                         let name = format!("{bench}-{}", file.replace('.', "-"));
                         ran += 1;
-                        match compile(&path).and_then(|core| run_interp(&name, core, arg)) {
+                        let run = if native_only(&path) {
+                            run_native
+                        } else {
+                            run_interp
+                        };
+                        match compile(&path).and_then(|core| run(&name, core, arg)) {
                             Ok(out) if out == want => {}
                             Ok(out) => failed.push(format!(
                                 "{bench}/{file}: output differs\n{}",

@@ -1,0 +1,42 @@
+-- skip-backend: interp
+module Main
+
+-- Ping-pong over a session channel (FEAT-0262): the main thread sends `n`
+-- numbers to a peer thread, which answers each with the number plus one.
+-- The protocol is a loop that the main thread chooses to go on or to end.
+import Std.Session as S
+
+pingpong : S.Session
+pingpong = S.Rec (S.Choose (S.Send Int (S.Recv Int (S.Var 0))) S.End)
+
+client : Int -> Int -> (1 c : S.Channel pingpong) -> IO Int
+client i acc c = if i == 0 then do
+    c <- S.chooseRight (S.enter c)
+    S.close c
+    pure acc
+  else do
+    c <- S.chooseLeft (S.enter c)
+    c <- S.send c i
+    (r, c) <- S.recv c
+    client (i - 1) ((acc * 31 + r) % 1000000007) c
+
+server : Int -> (1 c : S.Channel (S.dual pingpong)) -> IO Int
+server k c = do
+  b <- S.offer (S.enter c)
+  case b of
+    S.Left c => do
+      (x, c) <- S.recv c
+      c <- S.send c (x + 1)
+      server (k + 1) c
+    S.Right c => do
+      S.close c
+      pure k
+
+main : IO ()
+main = do
+  argc <- argCount
+  arg <- if argc > 0 then getArg 0 else pure "100000"
+  let n = parseInt arg
+  (h, k) <- S.connect (client n 0) (server 0)
+  printInt h
+  printInt k

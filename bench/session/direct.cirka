@@ -1,0 +1,40 @@
+-- skip-backend: interp
+module Main
+
+-- The direct version of main.cirka (FEAT-0262): the same messages (the
+-- choice, the number, the answer) on channels of `Std.Thread`, without
+-- session types.
+import Std.Thread as T
+
+client : T.Chan Bool -> T.Chan Int -> T.Chan Int -> Int -> Int -> IO Int
+client go out inp i acc = if i == 0 then do
+    T.send go False
+    pure acc
+  else do
+    T.send go True
+    T.send out i
+    r <- T.recv inp
+    client go out inp (i - 1) ((acc * 31 + r) % 1000000007)
+
+server : T.Chan Bool -> T.Chan Int -> T.Chan Int -> Int -> IO Int
+server go inp out k = do
+  b <- T.recv go
+  if b then do
+    x <- T.recv inp
+    T.send out (x + 1)
+    server go inp out (k + 1)
+  else pure k
+
+main : IO ()
+main = do
+  argc <- argCount
+  arg <- if argc > 0 then getArg 0 else pure "100000"
+  let n = parseInt arg
+  go <- T.newChan
+  up <- T.newChan
+  down <- T.newChan
+  t <- T.spawn (server go up down 0)
+  h <- client go up down n 0
+  k <- T.join t
+  printInt h
+  printInt k
