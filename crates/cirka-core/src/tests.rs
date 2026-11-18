@@ -297,6 +297,34 @@ fn opt_strict_let_of_returned_call_is_the_call() {
 }
 
 #[test]
+fn opt_removes_dead_constructor_bindings_float_in_made_lazy() {
+    // A dead strict binding of a constructor (the case binder of a pair a
+    // `case` took apart, BUG-0032) stays in the simplifier: building `SP`
+    // evaluates its strict fields, and `u` may be a thunk. Float-in makes
+    // it lazy (a constructor of atoms is a value), which is a change: the
+    // simplifier runs again and removes it. Kept, it would hold a second
+    // reference to `u` (a unique array copied by every write).
+    let src = format!(
+        "{STRICT_INT}(data SP (a b) (SP (! a) (! b)))
+         (def f (-> Int Int# Int#)
+           (lam ((u Int) (n Int#))
+             (let! (b (SP Int Int) (con SP (Int Int) u u))
+               (case (prim le n 0) (c Int#) Int#
+                 (0 (f u (prim sub n 1)))
+                 (_ (case u (s Int) Int# ((I# v) v)))))))
+         (extern arg () Int#)
+         (def main Int#
+           (let! (x Int# (extern arg))
+             (f (con I# () x) x)))"
+    );
+    let mut p = parse_program(FileId(0), &src).unwrap();
+    let st = opt::optimize_with_stats(&mut p).unwrap();
+    let all = print_program(&p);
+    assert!(lint::lint_program(&p).is_empty(), "{all}");
+    assert!(!all.contains("con SP"), "{st:?}\n{all}");
+}
+
+#[test]
 fn opt_worker_wrapper_unboxes_parameters_passed_evaluated() {
     // `loop` returns `acc` without using `step` when `n` is 0, so it is not
     // strict in `step`; but every call passes `step` evaluated (a

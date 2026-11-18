@@ -1,0 +1,45 @@
+-- max-array-copies: 0
+-- An in-place quicksort of a unique unboxed array (bench/array-sort,
+-- BUG-0032). Each `case` takes apart a pair holding the array; the pair
+-- itself must not stay alive, or the array is shared during the recursive
+-- calls and every write copies it.
+module Main
+
+import Data.Array.Unboxed as U
+import Data.Array.Unboxed (UArray, (!))
+
+fill : (1 u : Unique (UArray Int)) -> Int -> Int -> Int -> Unique (UArray Int)
+fill u i n s =
+  if i >= n then u
+  else
+    let s2 = (s * 1103515245 + 12345) % 2147483648 in
+    fill (U.write u i (s2 % 1000)) (i + 1) n s2
+
+-- Lomuto partition of [lo, hi] around the last element.
+partition : (1 u : Unique (UArray Int)) -> Int -> Int -> (Unique (UArray Int), Int)
+partition u lo hi = case U.read u hi of
+  (u, MkUr p) => loop u p hi lo lo
+
+loop : (1 u : Unique (UArray Int)) -> Int -> Int -> Int -> Int -> (Unique (UArray Int), Int)
+loop u p hi i j =
+  if j >= hi then (U.swap u i hi, i)
+  else case U.read u j of
+    (u, MkUr x) =>
+      if x < p then loop (U.swap u i j) p hi (i + 1) (j + 1)
+      else loop u p hi i (j + 1)
+
+qsort : (1 u : Unique (UArray Int)) -> Int -> Int -> Unique (UArray Int)
+qsort u lo hi =
+  if lo >= hi then u
+  else case partition u lo hi of
+    (u, m) => qsort (qsort u lo (m - 1)) (m + 1) hi
+
+sorted : UArray Int -> Int -> Bool
+sorted a i = if i >= U.size a then True else a ! (i - 1) <= a ! i && sorted a (i + 1)
+
+main : IO ()
+main = do
+  let n = 2000
+  let a = freeze (qsort (fill (U.zeros n) 0 n 12345) 0 (n - 1))
+  putStrLn (show (sorted a 1))
+  putStrLn (showInt (a ! 0) ++ " " ++ showInt (a ! 1000) ++ " " ++ showInt (a ! (n - 1)))

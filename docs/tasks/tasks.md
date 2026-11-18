@@ -341,5 +341,6 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [BUG-0029](bugs/BUG-0029-checker-evaluates-array-loops.md) | 検査器が配列を作る繰り返しを評価して指数時間・メモリを使う | done | major | FEAT-0254 |
 | [BUG-0030](bugs/BUG-0030-type-uses-later-function-silently.md) | 型が後で宣言する関数を使うと、診断なしに誤りの項になる | done | minor | FEAT-0254 |
 | [BUG-0031](bugs/BUG-0031-same-call-translated-differently.md) | 同じ呼び出しが証明義務の中で深さによって別の項に訳され、仮定と目標が一致しない | done | major | FEAT-0254 |
+| [BUG-0032](bugs/BUG-0032-float-in-change-not-reported.md) | float-in が正格な束縛を遅延にした変更を報告せず、死んだ組が一意な配列を共有にする | done | major | FEAT-0255 |
 
 新しいチケットは `features/_TEMPLATE.md` / `bugs/_TEMPLATE.md` をコピーして作成する。

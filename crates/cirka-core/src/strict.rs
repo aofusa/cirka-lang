@@ -901,7 +901,10 @@ fn wrap_strict(binds: Vec<(Binder, Expr)>, body: Expr) -> Expr {
 /// thunk) on every iteration what only its exit uses. A small binding used
 /// by several alternatives is copied into each (FEAT-0064): an alternative
 /// that scrutinizes it then evaluates it in place, without a thunk. Returns
-/// the number of bindings moved into an alternative.
+/// the number of changes: bindings moved into an alternative, and strict
+/// bindings of constructor values made lazy. The simplifier must run after
+/// either (BUG-0032): it removes a dead lazy binding, but not a dead strict
+/// one, which would keep the values of its fields shared.
 pub fn float_in(p: &mut Program, next: &mut u32) -> usize {
     let mut n = 0;
     for b in &mut p.binds {
@@ -923,10 +926,12 @@ fn float_expr(e: Expr, n: &mut usize, next: &mut u32) -> Expr {
         }
         // A constructor of atoms is a value: binding it strictly or lazily
         // is the same (FEAT-0065: the boxes rebuilt by a product wrapper).
+        // Made lazy, it is a change even when it stays in place (BUG-0032).
         Expr::LetStrict(b, r, body)
             if b.mult == Mult::Many
                 && matches!(&*r, Expr::Con(_, _, a) if a.iter().all(Expr::is_atom)) =>
         {
+            *n += 1;
             let body = float_expr(*body, n, next);
             sink(b, *r, body, n, next)
         }

@@ -68,7 +68,8 @@ pub struct Stats {
     pub strictified: usize,
     /// Uniqueness checks of values known to be unique (`uniq`).
     pub unique_checks: usize,
-    /// Lazy bindings moved into the only `case` alternative using them.
+    /// Lazy bindings moved into the only `case` alternative using them, and
+    /// strict bindings of constructor values made lazy (`float_in`).
     pub floated_in: usize,
     /// Thunks replaced by evaluating cheap expressions now (`speculate`).
     pub speculated: usize,
@@ -180,7 +181,9 @@ pub fn optimize_with_stats(p: &mut Program) -> Result<Stats, Diagnostic> {
         simplify_rounds(p, &mut st, &mut next)?;
     }
     // Copies scrutinized in their alternative become strict; a second
-    // round then sinks what only the other alternatives still use.
+    // round then sinks what only the other alternatives still use. The
+    // simplifier runs after any change, also when float-in only made
+    // constructor bindings lazy: the dead ones go then (BUG-0032).
     for _ in 0..2 {
         let n = crate::strict::float_in(p, &mut next);
         if n == 0 {
