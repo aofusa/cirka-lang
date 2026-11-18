@@ -129,7 +129,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0087](features/FEAT-0087-simplifier-convergence.md) | 深く入れ子の式で Core の単純化を早く収束させる | todo | P2 | 0255 |
 | [FEAT-0088](features/FEAT-0088-io-action-under-case-closure.md) | 場合分けの後の IO の動作をクロージャにしない (状態トークンの適用を結合点の中に押し込む) | done | P2 | 0252 |
 | [FEAT-0089](features/FEAT-0089-static-object-rc.md) | 静的なオブジェクト (引数のない構成子・文字列リテラル) の dup/drop の除去 | done | P2 | BUG-0034 |
-| [FEAT-0090](features/FEAT-0090-case-of-case-linear.md) | 線形な値を返す case の case-of-case (`Std.Session` の `offer` の確保) | todo | P2 | FEAT-0262 |
+| [FEAT-0090](features/FEAT-0090-case-of-case-linear.md) | 線形な値を返す case の case-of-case (`Std.Session` の `offer` の確保) | done | P2 | FEAT-0262 |
 
 
 ## aCHC
