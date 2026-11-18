@@ -187,6 +187,7 @@ void   *cirka_read_line(void);
 void   *cirka_getenv(void *name);
 int64_t cirka_env_has(void *name);
 int64_t cirka_clock_ns(int64_t clock);
+int64_t cirka_random_u64(void);
 int64_t cirka_cstring_new(void *s);
 void   *cirka_cstring_peek(int64_t p, int64_t n);
 

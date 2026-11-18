@@ -1870,6 +1870,14 @@ impl Interp<'_> {
                 };
                 Ok(Val::I(ns))
             }
+            "cirka_random_u64" => (|| {
+                use std::io::Read;
+                let mut b = [0u8; 8];
+                std::fs::File::open("/dev/urandom")
+                    .and_then(|mut f| f.read_exact(&mut b))
+                    .map_err(|e| Exit::Panic(format!("getrandom failed: {e}")))?;
+                Ok(Val::I(i64::from_ne_bytes(b)))
+            })(),
             "cirka_cstring_new" => (|| {
                 let mut b = self.bytes(a[0])?.clone();
                 b.push(0);

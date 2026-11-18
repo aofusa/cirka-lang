@@ -123,7 +123,8 @@ int    main(int argc, char** argv);              // ランタイムが提供。c
   記述子か 0、失敗は `-errno`。`cirka_fd_read(fd, max)` (`max < 0` で最後まで。記述子 0 は標準入力のバッファを通す) は文字列を返し、
   失敗は空の文字列と `errno` (`cirka_errno` で読む。成功時は 0)。`cirka_fd_write(fd, s)` は記述子 1・2 への書き込みの前に標準出力を書き出す。
   ほかに `cirka_strerror` (ロケールに依存しない固定の文言)、`cirka_stdin_eof` / `cirka_read_line`、`cirka_getenv` / `cirka_env_has`、
-  `cirka_clock_ns` (0 は実時間、1 は単調時計)、`cirka_cstring_new` / `cirka_cstring_peek` (`withCString` / `peekCString`)。
+  `cirka_clock_ns` (0 は実時間、1 は単調時計)、`cirka_random_u64` (`getrandom` の 64 ビット。CirkaLang v0.0.7 の `Std.Random`)、
+  `cirka_cstring_new` / `cirka_cstring_peek` (`withCString` / `peekCString`)。
   MIR インタプリタは同じ関数を自前で (ファイルは自身の記述子の表で) 実装する。
 - `IORef` は `MUTVAR` オブジェクト (1 ワードの RC 管理フィールド)。`cirka_mutvar_new` / `read` (dup して返す) / `write`
   (新しい値を dup し、古い値を drop)。外部関数のポインタ引数は借用なので、所有権の受け渡しはランタイム側で数える。

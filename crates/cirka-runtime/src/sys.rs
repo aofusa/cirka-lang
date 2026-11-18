@@ -2,7 +2,7 @@
 
 #![allow(non_camel_case_types)]
 
-use core::ffi::{c_char, c_int, c_long, c_void};
+use core::ffi::{c_char, c_int, c_long, c_uint, c_void};
 
 pub type size_t = usize;
 pub type ssize_t = isize;
@@ -188,6 +188,7 @@ unsafe extern "C" {
     pub fn __errno_location() -> *mut c_int;
     pub fn getenv(name: *const c_char) -> *const c_char;
     pub fn clock_gettime(clock: c_int, ts: *mut timespec) -> c_int;
+    pub fn getrandom(buf: *mut c_void, n: size_t, flags: c_uint) -> ssize_t;
     pub fn _exit(code: c_int) -> !;
     pub fn abort() -> !;
     pub fn memset(p: *mut c_void, c: c_int, n: size_t) -> *mut c_void;

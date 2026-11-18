@@ -326,6 +326,29 @@ pub extern "C" fn cirka_clock_ns(clock: i64) -> i64 {
     ts.tv_sec * 1_000_000_000 + ts.tv_nsec
 }
 
+/// 64 random bits from the kernel's generator (`Std.Random`, CirkaLang
+/// spec-v0.0.7.md §1.4). The kernel always gives them once it is seeded,
+/// so a failure other than an interruption ends the program.
+#[unsafe(no_mangle)]
+pub extern "C" fn cirka_random_u64() -> i64 {
+    const EINTR: i32 = 4;
+    let mut buf = [0u8; 8];
+    let mut got = 0;
+    while got < buf.len() {
+        // SAFETY: `buf[got..]` is writable for `buf.len() - got` bytes.
+        let n = unsafe { sys::getrandom(buf.as_mut_ptr().add(got).cast(), buf.len() - got, 0) };
+        if n < 0 {
+            // SAFETY: the calling thread's errno.
+            if unsafe { *sys::__errno_location() } == EINTR {
+                continue;
+            }
+            crate::io::fatal(b"cirka: getrandom failed", 1);
+        }
+        got += n as usize;
+    }
+    i64::from_ne_bytes(buf)
+}
+
 /// A NUL-terminated copy of `s` in C memory (freed with `free`), as an
 /// address (`withCString`).
 ///
