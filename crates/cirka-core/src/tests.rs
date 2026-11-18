@@ -917,7 +917,9 @@ fn opt_applies_through_casts() {
 fn opt_gives_io_functions_the_state_token() {
     // `loop` returns an IO action (a newtype over `Unit# -> a`): it gets a
     // worker `loop$io` taking the token, and running `loop 3` becomes a
-    // direct call without building the action's closure (BUG-0011).
+    // direct call without building the action's closure (BUG-0011). With
+    // the casts of the result to its own type gone, CPR then returns the
+    // `Int` unboxed (`loop$io$c`, FEAT-0090).
     let src = format!(
         "{PRELUDE}(data IO (a) :newtype (IO# (-> Unit# a)))
          (def ret (-> Int (IO Int)) (lam ((x Int)) (cast (lam ((w Unit#)) x) (IO Int))))
@@ -936,7 +938,7 @@ fn opt_gives_io_functions_the_state_token() {
     assert!(lint::lint_program(&p).is_empty(), "{all}");
     assert!(st.io_arity >= 1, "{st:?}");
     let m = print::print_expr(&p.bind("main").unwrap().expr);
-    assert!(m.contains("(loop$io 3 unit)"), "{m}");
+    assert!(m.contains("(loop$io$c 3 unit)"), "{m}");
 }
 
 #[test]
@@ -2260,4 +2262,66 @@ fn speculate_keeps_what_may_fail_or_cost() {
         big = format!("(prim add {big} b)");
     }
     assert_eq!(speculated_let("", "Int", &format!("(con I# () {big})")), 0);
+}
+
+// ---- FEAT-0090: case-of-case of let-wrapped constructors ----
+
+/// A chain of `n` extern calls threading `p` and `q`: an alternative
+/// larger than `INLINE_SIZE`, so that only the shape of the inner results
+/// allows the case-of-case.
+fn extern_chain(n: usize) -> String {
+    let mut s = format!("(prim add r{} q)", n - 1);
+    for k in (0..n).rev() {
+        let prev = if k == 0 {
+            "p".to_string()
+        } else {
+            format!("r{}", k - 1)
+        };
+        s = format!("(let! (r{k} Int# (extern work {prev} q)) {s})");
+    }
+    s
+}
+
+#[test]
+fn opt_case_of_case_through_let_wrapped_constructors_and_a_cast() {
+    // `offer` of `Std.Session` after inlining: each branch builds an
+    // endpoint and wraps it, the result goes through a cast to its own
+    // type (from `IO1`'s bind), and the caller takes it apart right away.
+    // Neither the branch nor the endpoint is allocated.
+    let big = extern_chain(16);
+    let src = format!(
+        "{STRICT_INT}(data Ch () (MkCh Int# Int#))
+         (data Br () (L (! Ch)) (R (! Ch)))
+         (extern flag () Int#)
+         (extern work (Int# Int#) Int#)
+         (def main Int#
+           (let! (a Int# (extern flag))
+             (let! (t Br (case a (k Int#) Br
+                           (0 (let ((c Ch (con MkCh () a a))) (con R () c)))
+                           (_ (let! (c Ch (con MkCh () a 7)) (con L () c)))))
+               (let! (x Br (cast t Br))
+                 (case x (s Br) Int#
+                   ((L c) (case c (u Ch) Int# ((MkCh p q) {big})))
+                   ((R c) (case c (u Ch) Int# ((MkCh p q) (prim add p q)))))))))"
+    );
+    let (m, st) = opt_main(&src);
+    assert!(!m.contains("con") && !m.contains("cast"), "{m}");
+    assert_eq!(m.matches("extern work").count(), 16, "{m}");
+    assert!(st.known_case >= 2, "{st:?}");
+}
+
+#[test]
+fn opt_keeps_casts_that_change_the_type() {
+    // Only a cast to the variable's own type goes: `Any` and back stays a
+    // pair of casts the lint accepts.
+    let src = format!(
+        "{STRICT_INT}(extern arg () Int#)
+         (extern keep (Any) Int#)
+         (def main Int#
+           (let! (a Int# (extern arg))
+             (let! (b Int (con I# () a))
+               (extern keep (cast b Any)))))"
+    );
+    let (m, _) = opt_main(&src);
+    assert!(m.contains("(cast"), "{m}");
 }

@@ -1,0 +1,31 @@
+; FEAT-0090: a case of a case whose alternatives return constructors under
+; lets, behind a cast to its own type (`offer` of `Std.Session` after
+; inlining). The optimizer moves the outer alternatives into the inner
+; ones, where they meet the constructors: the same output, and neither
+; the branch nor the endpoint is allocated.
+(data Ch () (MkCh Int# Int#))
+(data Br () (L (! Ch)) (R (! Ch)))
+(extern cirka_write_i64 (Int#) Unit#)
+(extern cirka_write_char (Int#) Unit#)
+
+(def pick (-> Int# Int#)
+  (lam ((a Int#))
+    (let! (t Br (case a (k Int#) Br
+                  (0 (let ((c Ch (con MkCh () a 5))) (con R () c)))
+                  (_ (let! (c Ch (con MkCh () a 7)) (con L () c)))))
+      (let! (x Br (cast t Br))
+        (case x (s Br) Int#
+          ((L c) (case c (u Ch) Int# ((MkCh p q) (prim mul p q))))
+          ((R c) (case c (u Ch) Int# ((MkCh p q) (prim add p q)))))))))
+
+(def go (-> Int# Int# Int#)
+  (lam ((i Int#) (acc Int#))
+    (case i (k Int#) Int#
+      (0 acc)
+      (_ (let! (v Int# (pick (prim rem i 2)))
+           (go (prim sub i 1) (prim add (prim mul acc 10) v)))))))
+
+(def main Int#
+  (let! (a Unit# (extern cirka_write_i64 (go 4 0)))
+    (let! (b Unit# (extern cirka_write_char 10))
+      0)))

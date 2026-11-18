@@ -283,6 +283,7 @@ fn simplify_rounds(p: &mut Program, st: &mut Stats, next: &mut u32) -> Result<()
                 occ,
                 sub: HashMap::new(),
                 env: HashMap::new(),
+                tys: HashMap::new(),
                 known: HashMap::new(),
                 evaluated: HashSet::new(),
                 known_globals: &kg,
@@ -1158,6 +1159,9 @@ struct Simp<'a> {
     sub: HashMap<u32, Expr>,
     /// Multiplicity and unboxedness of every binder seen so far.
     env: HashMap<u32, (Mult, bool)>,
+    /// The type of every binder seen so far (a cast of a variable to its
+    /// own type is removed).
+    tys: HashMap<u32, Type>,
     /// Variables known to be bound to a constructor applied to atoms.
     known: HashMap<u32, (String, Vec<Type>, Vec<Expr>)>,
     /// Variables known to be evaluated (`let!` and case binders, lambdas).
@@ -1188,6 +1192,7 @@ impl Simp<'_> {
 
     fn bind(&mut self, b: &Binder) {
         self.env.insert(b.id.id, (b.mult, b.ty.is_unboxed()));
+        self.tys.insert(b.id.id, b.ty.clone());
     }
 
     fn occ(&self, x: u32) -> Occ {
@@ -1965,7 +1970,8 @@ impl Simp<'_> {
     /// Whether `case (case .. of alts2) as b of alts` may become a case in
     /// each alternative of the inner one: no linear binders, and either a
     /// single inner alternative or inner results whose shape is known
-    /// (so the copies of `alts` reduce), unless `alts` is small.
+    /// (constructors, possibly under lets, literals or panics: the copies
+    /// of `alts` reduce), unless `alts` is small.
     fn case_of_case_ok(&self, b: &Binder, alts: &[Alt], alts2: &[Alt]) -> bool {
         let linear = |a: &Alt| match &a.con {
             AltCon::Con(_, fs) => fs.iter().any(|f| f.mult != Mult::Many),
@@ -1974,9 +1980,11 @@ impl Simp<'_> {
         if b.mult != Mult::Many || alts2.iter().any(linear) {
             return false;
         }
+        // A constructor under lets (`let t = K .. in K2 t`, FEAT-0090): the
+        // case of it floats the lets out and meets the constructor.
         let known = alts2
             .iter()
-            .all(|a| matches!(a.rhs, Expr::Con(..) | Expr::Lit(_) | Expr::Panic(..)));
+            .all(|a| matches!(a.rhs, Expr::Lit(_) | Expr::Panic(..)) || single_con_tail(&a.rhs));
         // Linear fields of the outer alternatives: only when every copy is
         // reduced right away by case-of-known-constructor (a linear `Unique`
         // buffer threaded through a record, FEAT-0079).
@@ -2000,10 +2008,18 @@ impl Simp<'_> {
         known || small
     }
 
-    /// `cast(e, t)`, without the cast of a constructor to its own type.
+    /// `cast(e, t)`, without the cast of a constructor or a variable to
+    /// its own type (what is left of the cast of a λ that an application
+    /// went through, e.g. the result of `IO1`'s bind, FEAT-0090).
     fn cast_to(&mut self, e: Expr, t: Type) -> Expr {
         match cast(e, t) {
             Expr::Cast(x, t) => {
+                if let Expr::Var(v) = &*x
+                    && self.tys.get(&v.id).is_some_and(|vt| vt.alpha_eq(&t))
+                {
+                    self.hit();
+                    return *x;
+                }
                 if let Expr::Con(k, ts, _) = &*x
                     && self
                         .p
