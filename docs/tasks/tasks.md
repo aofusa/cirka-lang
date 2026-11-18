@@ -128,7 +128,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0086](features/FEAT-0086-cl-server-request-allocs.md) | サーバの要求ごとの確保を減らす (継続・Result・文字列のビュー) | todo | P1 | 0243 |
 | [FEAT-0087](features/FEAT-0087-simplifier-convergence.md) | 深く入れ子の式で Core の単純化を早く収束させる | todo | P2 | 0255 |
 | [FEAT-0088](features/FEAT-0088-io-action-under-case-closure.md) | 場合分けの後の IO の動作をクロージャにしない (状態トークンの適用を結合点の中に押し込む) | done | P2 | 0252 |
-| [FEAT-0089](features/FEAT-0089-static-object-rc.md) | 静的なオブジェクト (引数のない構成子・文字列リテラル) の dup/drop の除去 | todo | P2 | BUG-0034 |
+| [FEAT-0089](features/FEAT-0089-static-object-rc.md) | 静的なオブジェクト (引数のない構成子・文字列リテラル) の dup/drop の除去 | done | P2 | BUG-0034 |
 
 
 ## aCHC
