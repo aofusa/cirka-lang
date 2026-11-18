@@ -1,0 +1,116 @@
+// Static objects (FEAT-0089): constructors without fields and string
+// constants are immortal, so Perceus gives them no `dup` or `drop`, nor a
+// block parameter that every jump passes one of them. Such a parameter
+// that nothing uses is then removed, with its arguments and the
+// allocations that made them. `step` is `if c then out i else pure ()` as
+// a step of a loop (both branches give `()` to the join point, which
+// dropped it); `label` joins string constants; `count` keeps `True` or
+// `False` in a loop parameter. In `pick` the join point may also receive
+// a heap object: its parameter keeps its reference count.
+type Unit { MkUnit = 0 {} }
+type Bool { False = 0 {}, True = 1 {} }
+type Opt { None = 0 {}, Some = 1 { v: i64 } }
+extern fn cirka_write_i64(i64) -> void
+extern fn cirka_write_char(i64) -> void
+extern fn cirka_write_bytes(ptr) -> void
+
+fn step(i: i64, n: i64, acc: i64) -> i64 {
+entry:
+  let p = prim eq(i, n)
+  switch p { 0 => body, default => done }
+done:
+  ret acc
+body:
+  let r = prim rem(i, 3)
+  switch r { 0 => out, default => skip }
+out:
+  let _ = extern cirka_write_i64(i)
+  let _ = extern cirka_write_char(32)
+  let u = alloc Unit.MkUnit()
+  jump join(u)
+skip:
+  let u2 = alloc Unit.MkUnit()
+  jump join(u2)
+join(res: ptr):
+  let i2 = prim add(i, 1)
+  let a2 = prim add(acc, i)
+  tailcall step(i2, n, a2)
+}
+
+fn label(k: i64) -> i64 {
+entry:
+  switch k { 0 => zero, default => other }
+zero:
+  jump join("zero ")
+other:
+  let s = lit "other "
+  jump join(s)
+join(t: ptr):
+  let _ = extern cirka_write_bytes(t)
+  ret k
+}
+
+fn count(n: i64) -> i64 {
+entry:
+  let e = alloc Bool.False()
+  jump loop(e, 0)
+loop(flag: ptr, i: i64):
+  let p = prim lt(i, n)
+  switch p { 0 => fin, default => more }
+more:
+  let i2 = prim add(i, 1)
+  let r = prim rem(i2, 3)
+  switch r { 0 => three, default => other }
+three:
+  let t = alloc Bool.True()
+  jump loop(t, i2)
+other:
+  jump loop(flag, i2)
+fin:
+  switch flag { Bool.False => no, Bool.True => yes }
+no:
+  ret 0
+yes:
+  ret 1
+}
+
+fn pick(k: i64) -> i64 {
+entry:
+  switch k { 0 => none, default => some }
+none:
+  let n = alloc Opt.None()
+  jump join(n)
+some:
+  let b = alloc Opt.Some(k)
+  jump join(b)
+join(o: ptr):
+  switch o { Opt.None => isnone, Opt.Some => issome }
+isnone:
+  ret 0
+issome:
+  let v = proj o Opt.Some.v
+  ret v
+}
+
+fn main() -> i64 {
+entry:
+  let a = call step(0, 10, 0)
+  let _ = extern cirka_write_i64(a)
+  let _ = extern cirka_write_char(10)
+  let b = call label(0)
+  let c = call label(1)
+  let _ = extern cirka_write_char(10)
+  let d = call count(2)
+  let e = call count(4)
+  let _ = extern cirka_write_i64(d)
+  let _ = extern cirka_write_char(32)
+  let _ = extern cirka_write_i64(e)
+  let _ = extern cirka_write_char(10)
+  let f = call pick(0)
+  let g = call pick(7)
+  let _ = extern cirka_write_i64(f)
+  let _ = extern cirka_write_char(32)
+  let _ = extern cirka_write_i64(g)
+  let _ = extern cirka_write_char(10)
+  ret 0
+}

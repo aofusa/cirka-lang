@@ -20,12 +20,16 @@
 //!   ([`VarInfo::make_eager`], [`VarInfo::free_sources`]).
 //! - Variables that die on a `switch` edge are dropped at the start of the
 //!   target block (the edge is split when the target has other predecessors).
+//! - Static objects (constructors without fields, string constants, and
+//!   block parameters that only receive them; [`Function::static_vars`])
+//!   are immortal: they get no `dup` or `drop`, and block parameters and
+//!   definitions of them that nothing uses then are removed (FEAT-0089).
 //!
 //! Functions that already contain `dup`, `drop`, `drop_reuse` or `reuse` are
 //! considered hand-annotated and left unchanged.
 
 use crate::ir::*;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 /// How an instruction uses a variable.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -38,6 +42,8 @@ pub enum Mode {
 pub struct Sigs {
     pub funcs: HashMap<String, Vec<Own>>,
     pub externs: HashMap<String, Vec<Own>>,
+    /// Constructors without fields (static objects).
+    pub fieldless: HashSet<CtorRef>,
 }
 
 impl Sigs {
@@ -53,7 +59,27 @@ impl Sigs {
                 .iter()
                 .map(|e| (e.name.clone(), e.params.iter().map(|p| p.1).collect()))
                 .collect(),
+            fieldless: m
+                .types
+                .iter()
+                .enumerate()
+                .flat_map(|(ty, t)| {
+                    t.ctors
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, c)| c.fields.is_empty())
+                        .map(move |(ctor, _)| CtorRef {
+                            ty: ty as u32,
+                            ctor: ctor as u32,
+                        })
+                })
+                .collect(),
         }
+    }
+
+    /// The static variables of `f` ([`Function::static_vars`]).
+    pub fn static_vars(&self, f: &Function) -> Vec<bool> {
+        f.static_vars(|c| self.fieldless.contains(&c))
     }
 
     fn func_own(&self, f: &str, i: usize) -> Mode {
@@ -504,6 +530,12 @@ fn owned_dead(info: &VarInfo, vars: &[Var], live: &Set) -> Vec<Var> {
 /// Inserts dup/drop into one function.
 pub fn insert_fn(sigs: &Sigs, f: &mut Function) {
     let mut info = VarInfo::new(f);
+    // Static objects have no reference count (FEAT-0089).
+    for (v, s) in sigs.static_vars(f).into_iter().enumerate() {
+        if s {
+            info.kind[v] = Kind::Scalar;
+        }
+    }
     info.make_eager(sigs, f);
     let mut lv = liveness(sigs, f, &info);
     while info.free_sources(sigs, f, &lv) {
@@ -665,6 +697,61 @@ pub fn insert_fn(sigs: &Sigs, f: &mut Function) {
     }
     blocks.extend(new_blocks);
     f.blocks = blocks;
+    prune_static(sigs, f);
+}
+
+/// Removes the block parameters that only carry static objects and that
+/// nothing uses (their `drop` is gone), their arguments, and the
+/// definitions of static objects that nothing uses then (an `alloc` of a
+/// constructor without fields, a string constant; FEAT-0089).
+fn prune_static(sigs: &Sigs, f: &mut Function) {
+    let statics = sigs.static_vars(f);
+    loop {
+        let mut uses = vec![0u32; f.var_names.len()];
+        for b in &f.blocks {
+            for i in &b.instrs {
+                for (v, _) in instr_uses(sigs, i) {
+                    uses[v.0 as usize] += 1;
+                }
+            }
+            for (v, _) in term_uses(sigs, &b.term) {
+                uses[v.0 as usize] += 1;
+            }
+        }
+        let unused = |v: &Var| statics[v.0 as usize] && uses[v.0 as usize] == 0;
+        let dead: Vec<Vec<bool>> = f
+            .blocks
+            .iter()
+            .map(|b| b.params.iter().map(unused).collect())
+            .collect();
+        let mut changed = false;
+        for b in &mut f.blocks {
+            if let Terminator::Jump(t, args) = &mut b.term
+                && let Some(d) = dead.get(t.0 as usize)
+                && d.contains(&true)
+            {
+                let mut k = d.iter();
+                args.retain(|_| !k.next().copied().unwrap_or(false));
+                changed = true;
+            }
+            let before = b.instrs.len();
+            b.instrs.retain(|i| match i {
+                Instr::Let {
+                    var: Some(v),
+                    rhs: Rhs::Alloc { reuse: None, .. } | Rhs::Lit(_),
+                } => !unused(v),
+                _ => true,
+            });
+            changed |= b.instrs.len() != before;
+        }
+        for (b, d) in f.blocks.iter_mut().zip(&dead) {
+            let mut k = d.iter();
+            b.params.retain(|_| !k.next().copied().unwrap_or(false));
+        }
+        if !changed {
+            break;
+        }
+    }
 }
 
 /// Removes all reference-counting instructions (used to test the pass on

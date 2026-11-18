@@ -11,6 +11,11 @@
 //! - consumed variables must not be used again,
 //! - borrowed variables must not be consumed without `dup`,
 //! - reuse tokens are used by at most one `alloc` of the same size.
+//!
+//! Static objects ([`Function::static_vars`]: constructors without fields,
+//! string constants and block parameters that only receive them) are
+//! immortal: like constants, they may be used and consumed any number of
+//! times, and need no `drop` (FEAT-0089).
 
 use crate::ir::*;
 use cirka_diagnostics::Diagnostic;
@@ -173,6 +178,8 @@ enum Origin {
     BorrowedFrom(Var),
     /// Reuse token from `drop_reuse`.
     Token,
+    /// Static immortal object (no reference count).
+    Static,
 }
 
 struct FnVerifier<'a> {
@@ -224,6 +231,11 @@ impl<'a> FnVerifier<'a> {
                         }
                     }
                 }
+            }
+        }
+        for (v, s) in f.static_vars(|c| m.fieldless(c)).into_iter().enumerate() {
+            if s {
+                origin[v] = Origin::Static;
             }
         }
         FnVerifier {
@@ -363,7 +375,7 @@ impl<'a> FnVerifier<'a> {
             None => false,
             Some(c) if *c > 0 => true,
             Some(_) => match self.origin[v.0 as usize] {
-                Origin::Scalar | Origin::BorrowedParam => true,
+                Origin::Scalar | Origin::BorrowedParam | Origin::Static => true,
                 Origin::BorrowedFrom(p) => self.alive(st, p, depth + 1),
                 Origin::Owned | Origin::Token => false,
             },
@@ -402,7 +414,7 @@ impl<'a> FnVerifier<'a> {
         if !self.check_defined(st, v) {
             return;
         }
-        if !self.f.ty(v).is_ptr() {
+        if !self.f.ty(v).is_ptr() || matches!(self.origin[v.0 as usize], Origin::Static) {
             return;
         }
         let c = st.vars.get_mut(&v).unwrap();
@@ -491,7 +503,9 @@ impl<'a> FnVerifier<'a> {
                 if matches!(self.origin[v.0 as usize], Origin::Token) {
                     self.error(format!("`dup` of reuse token `{}`", self.name(*v)));
                 }
-                if let Some(c) = st.vars.get_mut(v) {
+                if let Some(c) = st.vars.get_mut(v)
+                    && !matches!(self.origin[v.0 as usize], Origin::Static)
+                {
                     *c += 1;
                 }
             }

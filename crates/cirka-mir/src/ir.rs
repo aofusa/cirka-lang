@@ -335,6 +335,66 @@ impl Function {
         self.params.iter().map(|p| self.ty(p.var)).collect()
     }
 
+    /// Variables that hold static immortal objects, whose `dup` and `drop`
+    /// do nothing (FEAT-0089): the results of `alloc` of a constructor
+    /// without fields (`fieldless`) and string constants, and the
+    /// parameters of blocks to which every jump passes such a variable or a
+    /// string constant.
+    pub fn static_vars(&self, fieldless: impl Fn(CtorRef) -> bool) -> Vec<bool> {
+        let mut st = vec![false; self.var_names.len()];
+        for b in &self.blocks {
+            for i in &b.instrs {
+                if let Instr::Let { var: Some(v), rhs } = i {
+                    st[v.0 as usize] = match rhs {
+                        Rhs::Alloc { ctor, .. } => fieldless(*ctor),
+                        Rhs::Lit(Const::Str(_)) => true,
+                        _ => false,
+                    };
+                }
+            }
+        }
+        // Block parameters are static until a jump passes them something
+        // else (assumed first, for the parameters of loops).
+        let mut jumped = vec![false; self.blocks.len()];
+        for b in &self.blocks {
+            if let Terminator::Jump(t, _) = &b.term
+                && let Some(j) = jumped.get_mut(t.0 as usize)
+            {
+                *j = true;
+            }
+        }
+        for (bi, b) in self.blocks.iter().enumerate().skip(1) {
+            if jumped[bi] {
+                for p in &b.params {
+                    st[p.0 as usize] = self.ty(*p).is_ptr();
+                }
+            }
+        }
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for b in &self.blocks {
+                let Terminator::Jump(t, args) = &b.term else {
+                    continue;
+                };
+                let Some(target) = self.blocks.get(t.0 as usize) else {
+                    continue;
+                };
+                for (p, a) in target.params.iter().zip(args) {
+                    let ok = match a {
+                        Operand::Var(v) => st[v.0 as usize],
+                        Operand::Const(c) => matches!(c, Const::Str(_)),
+                    };
+                    if !ok && st[p.0 as usize] {
+                        st[p.0 as usize] = false;
+                        changed = true;
+                    }
+                }
+            }
+        }
+        st
+    }
+
     /// Predecessor lists for every block.
     pub fn predecessors(&self) -> Vec<Vec<BlockId>> {
         let mut preds = vec![Vec::new(); self.blocks.len()];
@@ -450,6 +510,12 @@ impl Module {
 
     pub fn ctor(&self, c: CtorRef) -> &CtorDef {
         &self.types[c.ty as usize].ctors[c.ctor as usize]
+    }
+
+    /// Whether the constructor has no fields: its objects are one static
+    /// immortal object (the backend and the interpreter allocate none).
+    pub fn fieldless(&self, c: CtorRef) -> bool {
+        self.ctor(c).fields.is_empty()
     }
 
     pub fn ctor_name(&self, c: CtorRef) -> String {
