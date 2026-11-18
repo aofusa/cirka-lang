@@ -129,6 +129,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0087](features/FEAT-0087-simplifier-convergence.md) | 深く入れ子の式で Core の単純化を早く収束させる | todo | P2 | 0255 |
 | [FEAT-0088](features/FEAT-0088-io-action-under-case-closure.md) | 場合分けの後の IO の動作をクロージャにしない (状態トークンの適用を結合点の中に押し込む) | done | P2 | 0252 |
 | [FEAT-0089](features/FEAT-0089-static-object-rc.md) | 静的なオブジェクト (引数のない構成子・文字列リテラル) の dup/drop の除去 | done | P2 | BUG-0034 |
+| [FEAT-0090](features/FEAT-0090-case-of-case-linear.md) | 線形な値を返す case の case-of-case (`Std.Session` の `offer` の確保) | todo | P2 | FEAT-0262 |
 
 
 ## aCHC
@@ -288,7 +289,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 |---|---|---|---|---|
 | [FEAT-0260](features/FEAT-0260-cl-capabilities.md) | ケイパビリティ | done | P1 | 0253 |
 | [FEAT-0261](features/FEAT-0261-cl-effects.md) | 効果システムの試作 | done | P1 | 0260 |
-| [FEAT-0262](features/FEAT-0262-cl-session-types.md) | セッション型 | todo | P2 | 0240 |
+| [FEAT-0262](features/FEAT-0262-cl-session-types.md) | セッション型 | done | P2 | 0240 |
 | [FEAT-0263](features/FEAT-0263-cl-release-v007.md) | CirkaLang v0.0.7 リリース | todo | P0 | 0261 |
 
 ### CX 遠隔環境での GUI 検証 (任意)
@@ -347,5 +348,6 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [BUG-0034](bugs/BUG-0034-io-step-chosen-by-case-allocates.md) | `do` の途中の `if c then act else pure ()` が、選んだ動作を反復ごとにクロージャとして作る | done | major | FEAT-0261 |
 | [BUG-0035](bugs/BUG-0035-thunk-used-in-several-alternatives.md) | 複数の選択肢で使う遅延束縛が、使わない反復でもサンクとして確保される | done | major | BUG-0034 |
 | [BUG-0036](bugs/BUG-0036-borrowed-sibling-keeps-parent.md) | 読むだけのフィールドの借用が、マッチしたオブジェクトを生かし、別のフィールドの in-place 更新がコピーになる | done | major | BUG-0034 |
+| [BUG-0037](bugs/BUG-0037-cascading-instance-error.md) | 引数の型が合わないと、その引数で決まる型の制約が E1254 として重ねて報告される | todo | minor | FEAT-0262 |
 
 新しいチケットは `features/_TEMPLATE.md` / `bugs/_TEMPLATE.md` をコピーして作成する。
