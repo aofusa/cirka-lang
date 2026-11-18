@@ -28,7 +28,7 @@ aCHC は前期と後期に分けて進める (ADR-025, ADR-027)。前期 (H1–H
 | `CirkaDrop` | `Drop` / `Release` による自動解放 (RAII) | §4 |
 | `CirkaBorrow` | `borrow` 構文糖 | §5 |
 | `CirkaRegions` | `region` 構文糖 | §6 |
-| `CirkaExtern` | `extern "C" { ... }` ブロック、`import "C"` | §7 |
+| `CirkaExtern` | `extern "C" where` ブロック、`import "C"` | §7 |
 
 個別に有効化することもできる。型・関数は `Cirka.*` モジュールに定義され、構文糖はそれらへの脱糖にすぎない。
 
@@ -281,17 +281,17 @@ liftIO     :: IO a -> RIO r a
 Haskell 2010 の `foreign import ccall` はそのまま使える(`.hs` でも可)。Cirka モードでは加えて:
 
 ```haskell
-extern "C" {
+extern "C" where
   type CFile                                        -- 不透明型
-  fopen  :: CString -> CString -> IO (Nullable (OwnedPtr CFile))
+  fopen  :: CString -> CString -> IO (Nullable (OwnedPtr CFile)) free with fclose
   fclose :: OwnedPtr CFile %1 -> IO CInt
   strlen :: BorrowedPtr CChar -> CSize              -- IO なし = 純粋と宣言 (利用者の責任)
-}
 
 import "C" "math.h" (sin, cos)                     -- ヘッダから型を取得 (achc bindgen)
 ```
 
-詳細は [08-ffi.md](08-ffi.md)。
+詳細は [08-ffi.md](08-ffi.md)。extern ブロックは FEAT-0130 で実装した (08 §7.4)。`import "C"` の糖衣は未実装で、
+今は `achc bindgen --extern` でヘッダから extern ブロックを書き出す (08 §6)。
 
 ## 8. 評価戦略に関する追加規則
 

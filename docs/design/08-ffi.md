@@ -34,48 +34,57 @@ aCHC と CirkaLang は宣言の構文だけが異なる。本書の §1〜§7 �
 {-# LANGUAGE CirkaExtern #-}
 module File where
 
-extern "C" link "c" {
+import Cirka.Extern
+import Cirka.Ownership (Release (..))
+import Foreign.C.String (CString)
+import Foreign.C.Types (CChar, CInt, CSize)
+import Foreign.Ptr (Ptr)
+
+extern "C" link "c" where
   type CFile                                               -- 不透明型
 
   fopen  :: CString -> CString -> IO (Nullable (OwnedPtr CFile))
   fclose :: OwnedPtr CFile %1 -> IO CInt
   fgets  :: Ptr CChar -> CInt -> BorrowedPtr CFile -> IO (Nullable (Ptr CChar))
   strlen :: CString -> CSize                                -- IO なし = 純粋と宣言
-  printf :: CString -> CVarArgs -> IO CInt                  -- 可変長引数
-
-  struct Timespec { tv_sec :: CLong, tv_nsec :: CLong }     -- C と同じレイアウト
-  clock_gettime :: CInt -> MutPtr Timespec -> IO CInt
-}
 
 -- 安全なラッパ (利用者が書く)
 type File :: LType
 newtype File = File (OwnedPtr CFile)
 
 instance Release File where
-  release (File p) = () <$ fclose p
-
-openFile :: String -> String -> IO (Maybe File)
-openFile path mode =
-  withCString path \cp -> withCString mode \cm ->
-    fmap File . toMaybe <$> fopen cp cm
+  release (File p) = do
+    _ <- fclose p
+    return ()
 ```
+
+ブロックはレイアウト (`class … where` と同じ。明示の `{ …; … }` も書ける) で、項目は不透明型 `type T` と関数の宣言だけである。
+C の構造体・共用体・列挙・可変長引数・コールバックは、Haskell 2010 の `foreign import` (§7.1・§7.2) と `Storable` で書く
+(CirkaLang の extern ブロックはそれらも宣言できる。§8)。実装は §7.4。
 
 - 戻り値に `IO` がない宣言は **純粋** とみなす(宣言者の責任。`strlen` 等)。
 - `extern` 内の `BorrowedPtr T` には、コンパイラがスコープ変数 `r` を補い、結果型を借用モナドに持ち上げる
   (§4)。例: `fgets` の実際の型は `Ptr CChar -> CInt -> BorrowedPtr r CFile -> BorrowIO r (Nullable (Ptr CChar))`。
 - `OwnedPtr T %1` を受け取る関数は所有権を C 側へ移す(以後 aCHC 側は解放しない)。
-- `OwnedPtr T` には既定の `Drop` も `Release` もない(どの関数で解放すべきか分からないため)。必ずラッパ型で `Drop`/`Release` を定義するか、
-  `extern` 宣言に `free with fclose` 属性を付けると `Release` が自動生成される:
-  `fopen :: CString -> CString -> IO (Nullable (OwnedPtr CFile)) free with fclose`
+- `OwnedPtr T` を受け取る引数は線形の矢印 (`%1 ->`) で宣言する (E0619)。
+- `OwnedPtr T` には既定の `Drop` も `Release` もない(どの関数で解放すべきか分からないため)。解放を忘れると E0302 になる。
+  ラッパ型で `Drop`/`Release` を定義するか、`extern` 宣言に `free with fclose` 属性を付けると `Release (OwnedPtr T)` が自動生成される:
+  `fopen :: CString -> CString -> IO (Nullable (OwnedPtr CFile)) free with fclose`。
+  `T` は同じブロックの不透明型に限り、`T` ごとに解放する関数は 1 つ (インスタンスが他のモジュールと重ならないため。§7.4)。
 
 ## 4. 借用ポインタ
 
 ```haskell
-type BorrowIO :: Region -> Type -> Type    -- IO を行える借用モナド (liftIO :: IO a -> BorrowIO r a)
+type BorrowIO :: Type -> Type -> Type      -- IO を行える借用モナド
+liftIO          :: IO a -> BorrowIO r a
+liftBorrow      :: Borrow r a -> BorrowIO r a
 withBorrowed    :: OwnedPtr a %1 -> (forall r. BorrowedPtr r a -> Borrow r b)   %1 -> (OwnedPtr a, b)
 withBorrowedIO  :: OwnedPtr a %1 -> (forall r. BorrowedPtr r a -> BorrowIO r b) %1 -> IO (OwnedPtr a, b)
 withCString     :: String -> (CString -> IO b) -> IO b    -- GHC 互換 (生ポインタ。脱出は検査しない)
 ```
+
+`Borrow r` は純粋な `borrow` の中でも実行されるので (02 §5)、`IO` の外部関数は `Borrow r` ではなく `BorrowIO r` に持ち上げる。
+`BorrowIO r` を実行できるのは `withBorrowedIO` (`IO`) だけである。型は `Cirka.Extern` にある。
 
 `BorrowedPtr r a` は [02 §5](02-language-extensions.md) の借用と同じく、ポインタを使う計算の型に必ず `r` が現れるように
 `Borrow r` / `BorrowIO r` に閉じ込めて脱出を防ぐ(純粋関数や `IO` のクロージャにすると `r` を含まない型で持ち出せてしまうため)。
@@ -104,6 +113,7 @@ cirka bindgen [options] header.h [-o math.cirka] [-- clang の引数...]
   --pure=PATTERNS        IO なしで宣言する関数 (`sin` など。純粋かどうかは宣言者の責任)
   --link=LIB             リンクするライブラリ (CirkaLang は `link "LIB"`、aCHC は注釈)
   --module=NAME          モジュール名 (aCHC の既定は出力ファイル名、CirkaLang は既定で書かない)
+  --extern               aCHC: 関数と不透明型を extern "C" ブロックで書く (FEAT-0130。CirkaLang は常に extern ブロック)
   -I DIR  -D NAME[=V]  -U NAME   clang へ渡す
 ```
 
@@ -147,7 +157,10 @@ clang の組み込みヘッダの宣言は出さず、予約された名前の `
 式にならないもの・ポインタ・有限でない浮動小数は出さない。`static const` の整数の変数 (Vulkan の 64 ビットのフラグ) と列挙定数も定数にする。
 
 **aCHC のプリンタ。** Haskell 2010 の FFI と `Storable` で書くので、`.hs` (GHC でも) と `.chs` のどちらでも使える。
-extern ブロックで書く出力は FEAT-0130 で加える。
+`--extern` (FEAT-0130) は関数と不透明型を `extern "C"` ブロック (§7.4) に書き、最初の `--link` をブロックの `link` にする (残りは注釈)。
+関数は C の名前で宣言する。ポインタは `Ptr` のままなので、利用者が `OwnedPtr` / `BorrowedPtr` に変えて `free with` を付ける出発点になる。
+Haskell の変数名にならない名前 (大文字で始まる・予約語) と、生成したコードが使う名前 (`peek` など)・フィールドの名前と重なるものは、
+ブロックの外で `c_` の `foreign import` にする。`CirkaExtern` を使うので GHC では使えない。
 - 関数は `foreign import ccall "sym" c_sym :: …`。値の名前は C の名前に `c_` を付ける (Haskell の予約語や Prelude と衝突せず、大文字で始まる C の名前も使える)。
   構造体の値渡しと可変長引数は Haskell 2010 の FFI で書けないので飛ばす (注釈)。関数ポインタの `typedef` には `dyn_T` (`dynamic`) と `wrap_T` (`wrapper`) を出す。
 - 構造体は同名の構成子のレコード (フィールドは `<型名の先頭を小文字にしたもの>_<フィールド>`) と、clang のオフセットで読み書きする `Storable` のインスタンス。
@@ -298,6 +311,34 @@ aCHC は `Foreign.C.Error.getErrno` がこれを呼ぶ。
   同じ記号の宣言は 1 つの C の宣言にまとめ、型が違えば E1271 (可変長の関数は固定部と結果を比べる)。
 - C のポインタが指す値の読み書き・`alloca` 系は `Foreign` (core) の `Storable` で、新しい Core の構文は要らない。
   コールバックの解放は `Foreign.freeFunPtr` (`cirka_callback_free`)。
+
+### 7.4 aCHC の extern ブロック (FEAT-0130)
+
+- 構文: `extern "C" [link "名前"] where` とレイアウトのブロック。`CirkaExtern` (`CirkaOwnership`・`.chs` で既定) のときだけ、トップレベルの
+  宣言の先頭の `extern` に文字列が続くものを extern ブロックと読む (`extern` は予約語ではない)。呼び出し規約は `"C"` だけ (E0619)。
+  `link "名前"` は §7.3 のリンクするライブラリに加わる (CLI の `-l名前` と同じ)。
+- 項目は不透明型 `type T` (構成子のない `data T`、種 `Type`) と関数の宣言 `f, g :: 型 [free with h]` で、関数は同じ名前の C の関数を取り込む
+  (別の名前は `foreign import ccall "名前"`)。構文解析は、ブロックを `data T` と `foreign import ccall` に展開し、ブロックの印を付ける。
+- 型は `Unsafe.Extern` で定義し、`Cirka.Extern` が構成子を除いて再公開する (`Ptr` から `OwnedPtr` を作る構成子は unsafe 相当)。
+  名前の解決の後に、`Unsafe.Extern.BorrowedPtr` の 1 引数の適用に型変数 `r` (シグネチャにあれば `r1`、`r2`…) を補い、結果の `IO t` を
+  `BorrowIO r t` に、`IO` のない結果 `t` を `Borrow r t` に変える (§4)。2 引数で書いた `BorrowedPtr` は E0619。
+  名前で判断するので、利用者が同じ名前の型を定義しても変わらない。結果の `BorrowedPtr` も同じ `r` になり、引数の借用の中だけで使える
+  (`strchr :: BorrowedPtr CChar -> CInt -> Nullable (BorrowedPtr CChar)` の結果は引数の文字列を指す)。
+- `free with h`: `h` は同じブロックの関数で `OwnedPtr T %1 -> …` の形、`T` は同じブロックの不透明型、`free with` を付けた宣言の結果は
+  `OwnedPtr T` か `Nullable (OwnedPtr T)` (`IO` の中でもよい)。`instance Release (OwnedPtr T) where release = releaseWith h` を生成する
+  (`releaseWith` は `h` の結果を捨てる)。同じ `T` に別の関数を書くと E0619。
+- 型の検査: 引数・結果は §7.1 の C に渡せる型 (`OwnedPtr`・`BorrowedPtr` は `Ptr` の newtype なのでポインタ) と、ポインタになる型 `p` の
+  `Maybe p` (`Nullable p` は `Maybe p` の別名) で、それ以外は E0618。型検査器は型の別名を展開した型で次を確かめる (E0619):
+  `OwnedPtr` (`Maybe` の中も) の引数は線形。`OwnedPtr` を返す関数は `IO` の動作 (呼ぶたびに新しい資源を作るので、純粋な呼び出しが
+  共有・移動されると資源が複製される)。`BorrowedPtr` の領域はどれも結果の借用モナドの領域 (型の別名で領域を書くと、補完と持ち上げを
+  すり抜けて借用の外に出せてしまう)。
+- 借用の脱出: `withBorrowed` / `withBorrowedIO` の外に `BorrowedPtr` や、それを使う関数・計算を返すと E0320 (`Ref` と同じ rank-2 の型の検査)。
+- RAII: `free with` を付けた `OwnedPtr` は、束縛した `IO` の `do` ブロックの終わりで解放する (02 §4)。`case` の選択肢の右辺が `IO` の
+  `do` ブロックなら、パターンが束縛した `Release` だけの値はそのブロックの終わりで解放する (`Just f -> do …`、03 §3.1)。
+  `Release` を持たない `OwnedPtr` を使わずに捨てると E0302 で、解放する C の関数に渡すか `free with` を付けるよう示す。
+- 脱糖: `Maybe p` は C の境界で NULL ⇔ `Nothing` に変換する (引数は `Nothing` を 0 に、結果は 0 を `Nothing` に)。結果が `BorrowIO r t` /
+  `Borrow r t` の関数は `IO` と同じラッパを作り、その型に cast する (どちらも `IO` の newtype)。aCHC の Core のデータ型は線形の印を持たない
+  (線形性は aCHC の型検査器が見る) ので、`Ptr` と `OwnedPtr` の間の cast は Core Lint を通る。
 
 ## 8. CirkaLang の記法
 
