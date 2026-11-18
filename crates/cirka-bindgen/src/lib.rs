@@ -32,6 +32,9 @@ pub struct Options {
     /// Libraries to link.
     pub links: Vec<String>,
     pub module: Option<String>,
+    /// aCHC: declare the functions and opaque types in an `extern "C"`
+    /// block (FEAT-0130) instead of Haskell 2010 `foreign import`s.
+    pub extern_block: bool,
 }
 
 /// The external tools, from the environment (`.env`).

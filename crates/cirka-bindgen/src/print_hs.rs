@@ -1,7 +1,9 @@
 //! The aCHC printer (08-ffi.md §6): Haskell 2010 FFI imports and records
 //! with `Storable` instances that read and write the fields at clang's
 //! offsets. The output is plain Haskell, usable from `.hs` (also with GHC)
-//! and `.chs`.
+//! and `.chs`. With `--extern` the functions and opaque types are in an
+//! `extern "C"` block instead (FEAT-0130), where the user can give the
+//! pointers owned and borrowed types.
 
 use crate::Options;
 use crate::model::*;
@@ -85,11 +87,47 @@ const TAKEN_TYPES: &[&str] = &[
     "GT",
 ];
 
+/// Keywords, which an extern block cannot declare as functions.
+const KEYWORDS: &[&str] = &[
+    "case", "class", "data", "default", "deriving", "do", "else", "foreign", "if", "import", "in",
+    "infix", "infixl", "infixr", "instance", "let", "module", "newtype", "of", "then", "type",
+    "where", "forall", "mdo", "rec", "proc", "family", "pattern", "role", "extern",
+];
+
+/// The values that the generated code uses, which a function of an extern
+/// block (named as in C) must not hide.
+const USED_VALUES: &[&str] = &[
+    "peekArray",
+    "pokeArray",
+    "plusPtr",
+    "castPtr",
+    "peekByteOff",
+    "pokeByteOff",
+    "peek",
+    "poke",
+    "return",
+    "take",
+    "fmap",
+    "sizeOf",
+    "alignment",
+];
+
 struct Names {
     types: HashMap<String, String>,
     values: HashMap<String, String>,
     taken_types: HashSet<String>,
     taken_values: HashSet<String>,
+    /// The functions declared in the extern block (keys), by their C names.
+    in_block: HashSet<String>,
+}
+
+/// Whether a function of an extern block can have the name of the C
+/// function: a Haskell variable name that is not a keyword.
+fn block_name(name: &str) -> bool {
+    name.starts_with(|c: char| c.is_ascii_lowercase() || c == '_')
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && name != "_"
+        && !KEYWORDS.contains(&name)
 }
 
 fn fresh(taken: &mut HashSet<String>, base: String) -> String {
@@ -120,12 +158,13 @@ fn lower_first(name: &str) -> String {
 }
 
 impl Names {
-    fn new(h: &Header) -> Names {
+    fn new(h: &Header, extern_block: bool) -> Names {
         let mut n = Names {
             types: HashMap::new(),
             values: HashMap::new(),
             taken_types: TAKEN_TYPES.iter().map(|s| s.to_string()).collect(),
             taken_values: HashSet::new(),
+            in_block: HashSet::new(),
         };
         for it in &h.items {
             match &it.def {
@@ -133,6 +172,8 @@ impl Names {
                     let t = fresh(&mut n.taken_types, capitalized(&it.name));
                     n.types.insert(it.key.clone(), t);
                 }
+                // Named after the other values in an extern block.
+                Def::Function(_) if extern_block => {}
                 Def::Const(_) | Def::Function(_) => {
                     let v = fresh(&mut n.taken_values, format!("c_{}", it.name));
                     n.values.insert(it.key.clone(), v);
@@ -155,6 +196,30 @@ impl Names {
                 for (i, f) in r.fields.iter().enumerate() {
                     let v = fresh(&mut n.taken_values, format!("{prefix}_{}", f.name));
                     n.values.insert(format!("{}#{i}", it.key), v);
+                }
+            }
+        }
+        // The functions of an extern block have the names of the C
+        // functions; the others are imported as `c_<name>`.
+        if extern_block {
+            n.taken_values
+                .extend(USED_VALUES.iter().map(|s| s.to_string()));
+            for it in &h.items {
+                if let Def::Alias(Ty::FunPtr(_)) = &it.def {
+                    let t = &n.types[&it.key];
+                    n.taken_values.insert(format!("dyn_{t}"));
+                    n.taken_values.insert(format!("wrap_{t}"));
+                }
+            }
+            for it in &h.items {
+                if let Def::Function(_) = &it.def {
+                    if block_name(&it.name) && n.taken_values.insert(it.name.clone()) {
+                        n.values.insert(it.key.clone(), it.name.clone());
+                        n.in_block.insert(it.key.clone());
+                    } else {
+                        let v = fresh(&mut n.taken_values, format!("c_{}", it.name));
+                        n.values.insert(it.key.clone(), v);
+                    }
                 }
             }
         }
@@ -221,6 +286,8 @@ struct Printer<'a> {
     h: &'a Header,
     n: Names,
     out: String,
+    /// The items of the extern block (`--extern`).
+    block: String,
 }
 
 impl Printer<'_> {
@@ -289,6 +356,15 @@ impl Printer<'_> {
     fn item(&mut self, it: &Item, opts: &Options) {
         let mut o = String::new();
         match &it.def {
+            Def::Opaque(why) if opts.extern_block => {
+                match why {
+                    Some(w) => writeln!(self.block, "  -- | {} (opaque: {w})", it.name),
+                    None => writeln!(self.block, "  -- | {} (opaque)", it.name),
+                }
+                .ok();
+                writeln!(self.block, "  type {}", self.n.ty(&it.key)).ok();
+                return;
+            }
             Def::Opaque(why) => {
                 match why {
                     Some(w) => writeln!(o, "-- | {} (opaque: {w})", it.name),
@@ -313,6 +389,11 @@ impl Printer<'_> {
             Def::Function(f) => {
                 if let Some(why) = self.not_callable(&f.sig) {
                     writeln!(o, "-- skipped {}: {why}", it.name).ok();
+                } else if self.n.in_block.contains(&it.key) {
+                    let pure = f.sig.ret != Ty::Void
+                        && opts.pure.as_ref().is_some_and(|p| p.matches(&it.name));
+                    writeln!(self.block, "  {} :: {}", it.name, self.sig(&f.sig, pure)).ok();
+                    return;
                 } else {
                     let pure = f.sig.ret != Ty::Void
                         && opts.pure.as_ref().is_some_and(|p| p.matches(&it.name));
@@ -484,19 +565,40 @@ fn string(s: &str) -> String {
 pub fn print(h: &Header, opts: &Options, source: &str) -> String {
     let mut p = Printer {
         h,
-        n: Names::new(h),
+        n: Names::new(h, opts.extern_block),
         out: String::new(),
+        block: String::new(),
     };
     let module = opts.module.as_deref().unwrap_or("Bindings");
+    // An extern block links its library (`link "lib"`): one, so the others
+    // are notes like without a block.
+    let block_links = h.items.iter().any(|it| p.n.in_block.contains(&it.key));
+    let (link, notes) = match opts.links.split_first() {
+        Some((l, rest)) if block_links => (Some(l), rest),
+        _ => (None, opts.links.as_slice()),
+    };
     let mut o = String::new();
     writeln!(o, "-- Generated by `achc bindgen` from {source}.").ok();
-    writeln!(
-        o,
-        "-- Pointers are raw `Ptr`s: wrap the functions in safe types."
-    )
-    .ok();
-    for l in &opts.links {
+    if opts.extern_block {
+        writeln!(
+            o,
+            "-- Pointers are raw `Ptr`s: give them owned or borrowed types in the\n\
+             -- extern block (`OwnedPtr`, `BorrowedPtr`, `free with`) or wrap the\n\
+             -- functions in safe types."
+        )
+        .ok();
+    } else {
+        writeln!(
+            o,
+            "-- Pointers are raw `Ptr`s: wrap the functions in safe types."
+        )
+        .ok();
+    }
+    for l in notes {
         writeln!(o, "-- Link with -l{l}.").ok();
+    }
+    if opts.extern_block {
+        writeln!(o, "{{-# LANGUAGE CirkaExtern #-}}").ok();
     }
     writeln!(o, "module {module} where\n").ok();
     for m in [
@@ -512,6 +614,14 @@ pub fn print(h: &Header, opts: &Options, source: &str) -> String {
     p.out = o;
     for it in &h.items {
         p.item(it, opts);
+    }
+    if !p.block.is_empty() {
+        match link {
+            Some(l) => writeln!(p.out, "\nextern \"C\" link {} where", string(l)),
+            None => writeln!(p.out, "\nextern \"C\" where"),
+        }
+        .ok();
+        p.out.push_str(&p.block);
     }
     p.out
 }

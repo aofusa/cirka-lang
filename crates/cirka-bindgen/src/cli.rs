@@ -12,6 +12,8 @@ const USAGE: &str = "usage: TOOL bindgen [options] HEADER.h [-o FILE] [-- CLANG-
   --pure=PATTERNS       functions declared without IO
   --link=LIB            a library to link
   --module=NAME         the module name
+  --extern              aCHC: an `extern \"C\"` block instead of `foreign import`s
+                        (CirkaLang always writes an extern block)
   -I DIR  -D NAME[=V]  -U NAME   passed to clang";
 
 /// The arguments of `bindgen`.
@@ -51,6 +53,7 @@ pub fn parse_args(args: &[String]) -> Result<Args, String> {
             s if s.starts_with("--pure=") => opts.pure = value("--pure=").map(|v| Globs::parse(&v)),
             s if s.starts_with("--link=") => opts.links.extend(value("--link=")),
             s if s.starts_with("--module=") => opts.module = value("--module="),
+            "--extern" => opts.extern_block = true,
             s if s.starts_with('-') => return Err(format!("unknown option `{s}`")),
             s => {
                 if header.is_some() {
@@ -128,6 +131,8 @@ mod tests {
         assert_eq!(a.opts.clang_args, ["-I", "inc", "-DX=1", "-std=c11"]);
         assert_eq!(a.opts.links, ["vulkan"]);
         assert!(a.opts.allowlist.unwrap().matches("vkCreateInstance"));
+        assert!(!a.opts.extern_block);
+        assert!(args("--extern h.h").unwrap().opts.extern_block);
         assert!(args("h.h g.h").is_err());
         assert!(args("--bogus h.h").is_err());
         assert!(args("").is_err());

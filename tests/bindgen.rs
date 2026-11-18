@@ -9,7 +9,8 @@
 //!   `Main.cirka` uses; each program prints `Main.stdout` (or its own
 //!   `Main.hs.stdout` / `Main.cirka.stdout`). A `<name>.c`
 //!   next to the header is a C library linked with the program, as are
-//!   the `--link=` libraries. With `CIRKA_GHC`, GHC runs `Main.hs` too.
+//!   the `--link=` libraries. With `CIRKA_GHC`, GHC runs `Main.hs` too
+//!   (not with `--extern`, whose extern block is aCHC's, FEAT-0130).
 //! - Whole system headers (`math.h`, `vulkan_core.h`) are converted to
 //!   both languages.
 //!
@@ -304,8 +305,9 @@ fn bindgen_run() {
             if let Err(e) = run_with(tool, bin, ext, c, &work, &link, &expected) {
                 return Outcome::Fail(e);
             }
-            // GHC runs the same program with the same generated module.
-            if ext == "hs" {
+            // GHC runs the same program with the same generated module
+            // (Haskell 2010 FFI, not an extern block).
+            if ext == "hs" && !opts.extern_block {
                 let mut ghc_args: Vec<String> = Vec::new();
                 if c.sibling("c").exists() {
                     ghc_args.push(c.sibling("c").display().to_string());
