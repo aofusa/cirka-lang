@@ -3,6 +3,65 @@
 CirkaLang の版ごとの変更を記録する。プロトタイプ (v0.0.x) の間は版間の互換性を保証しない
 (`cirka.toml` の `edition` で対象版を明示する)。aCHC は版を持たないので記録しない。
 
+## CirkaLang v0.0.6
+
+Vulkan compute・数値計算: C の構造体・共用体・列挙・コールバックを持つ実用の C ライブラリ (zlib・Vulkan・OpenBLAS / LAPACKE) を、
+抽象型と RAII とリージョンで安全に包んで使える。一意な配列と文字列のビューの添字を証明で示し、検査なしで読み書きできる。
+仕様は [docs/design/cirkalang/spec-v0.0.6.md](docs/design/cirkalang/spec-v0.0.6.md) (v0.0.5 からの差分)。`cirka.toml` の `edition` は `"0.0.6"`。
+
+### 追加
+
+- FFI: extern ブロックに不透明型・型の別名・定数・列挙・構造体・共用体 (`packed` も)・記号名の指定を書ける。構造体と共用体は値で渡せる。
+  C の型 `CBool`・`CArray`・`FunPtr` と `Storable`、可変長引数 (`...`)、関数ポインタの呼び出し (`"dynamic"`)・コールバック (`"wrapper"`)・
+  記号のアドレス (`"&sym"`)、任意のライブラリのリンク (`link "z"`)。ABI は共通基盤の x86_64 SysV (FEAT-0047、ADR-092)。extern ブロックの項目の先頭の `type` `const` `enum` `struct` `union` `packed` は
+  文脈キーワードで、予約語ではない。
+  サンプルは zlib を RAII で包む `tests/cirkalang/run/v006/zlib.cirka` (FEAT-0250)。
+- `cirka bindgen`: C のヘッダから extern ブロックを書く (共通の bindgen、FEAT-0048)。extern ブロックの項目は使うものだけを検査・変換するので、
+  `vulkan_core.h` 全体 (約 2 万行) を import するプログラムの `cirka check` は 51.4 秒から 2.0 秒になった (`--extern-items`、FEAT-0255、ADR-095)。
+- 非公開の構成子: 構成子に `private` を付けると、型は他のモジュールから抽象型になる (E1106。FEAT-0256、ADR-096)。
+- Vulkan compute: bindgen で書いた `Vulkan.Sys` と、安全なラッパ `Vulkan` (リージョンによる資源の管理、SPIR-V のシェーダ、部分集合型による
+  ワークグループ数、検証レイヤー)。Docker 内では Mesa lavapipe で動く。サンプル `tests/cirkalang/run/v006/vulkan_compute.cirka` (FEAT-0251、ADR-097)。
+- 数学・線形代数: libm の純粋な関数 `Std.Math`、次元を型に持つ行列 `Matrix m n` と OpenBLAS / LAPACKE による `Linalg` (`gemm` は一意なら in-place)、
+  unboxed 配列と C のメモリの間のコピー (FEAT-0252、ADR-098)。BLAS / LAPACK には unboxed 配列の領域をコピーなしで渡す (FEAT-0257、ADR-099)。
+- 一意な配列と文字列のビューの大きさ: 大きさを型に持つ一意な配列 `Sized n a` (`readS`・`writeS`・`modifyS`・`swapS` は示した添字を検査なしで
+  読み書きする)、unboxed 配列の `index` と `fromList`・`generate`・`map` の大きさの契約。文字列のビュー `Str` は範囲を構成子の不変条件に持ち、
+  `index` と `Data.String` の繰り返しの読み出しに検査がない。`toStr`・`take`・`drop`・`slice` は結果の長さを契約で示す (FEAT-0254、ADR-100)。
+- 検証: 分解していない値のフィールドにも構成子の不変条件を仮定する。展開する定義に渡した、結果に部分集合型を持つ全域な関数の呼び出しは、
+  その部分集合型を保つ。一つの証明義務の中で同じ呼び出しは同じ項に訳す (FEAT-0254、BUG-0031)。
+- 共通基盤の最適化: 呼び出しを返すだけの `let!` を呼び出しにする (`ensures` を持つ関数の自己呼び出しを末尾呼び出しに戻し、戻り値を unboxed にする。FEAT-0254)。
+- ベンチ: `bench/stencil` (`Sized` に書く 3 点ステンシル)。
+- 修正: ランタイムの `siginfo_t` が 8 バイト短く `sigtimedwait` がスタックを壊した (BUG-0025)、残りの引数が 8 個を超える部分適用が C0200 になった
+  (BUG-0027)、ネイティブのプログラムが libm の一部の関数をランタイムの compiler-builtins から取った (BUG-0028)、検査器が配列を作る繰り返しを
+  評価して指数時間かかった (BUG-0029)、型が後で宣言する関数を使うと診断なしに誤りの項になった (BUG-0030)、同じ呼び出しが深さによって
+  別の項に訳され証明できなかった (BUG-0031)、Core の最適化が `case` の分解した組を残し、一意な配列が共有になって in-place の
+  クイックソートが 2 乗の時間になった (BUG-0032。v0.0.6 の開発中に入り、リリースのベンチで見つけた)。
+
+### 変更 (互換性のない変更)
+
+- `edition = "0.0.5"` のパッケージは受け付けない (`"0.0.6"` に変える)。
+- 型 (シグネチャ・契約) の中では前に宣言した関数だけを使える (E1121)。
+- `Data.String.MkStr` は範囲 `0 <= i && i <= j && j <= strLength s` を不変条件に持ち、直接作るときは示す必要がある。
+- `Data.Array.Unboxed.generate` の関数は添字を部分集合型 `{i : Int | 0 <= i && i < n}` で受け取る (添字を `Int` として使う関数はそのまま渡せる)。
+
+### 性能 ([bench-report.md](docs/design/bench-report.md) の「CirkaLang v0.0.6」)
+
+- 既存の題材は v0.0.5 から悪化しない (v0.0.5 のコンパイラで作ったプログラムとの交互の比較で 0.93〜1.02 倍): array-sort 1.08、
+  binary-search 1.49、binary-trees 0.44、cli-grep 1.68、mandelbrot 1.00、n-body 1.49、spectral-norm 0.98、string-split 1.43 (Rust=1)。
+  G3 (Rust の 1.5 倍以内) の未達は cli-grep だけになった (FEAT-0080)。
+- 新しい題材 `bench/stencil` (`Sized` に書く 3 点ステンシル) は 1.01: 証明が 4 つの読み書きの境界検査をすべて除く (FEAT-0254)。
+- HTTP サーバは v0.0.5 と同等 (16 接続で 60.1k / 76.3k 要求/s、時間で 1.27 倍)。
+- `Linalg` の 512×512 の積は C から `cblas_dgemm` を直接呼ぶ場合の 1.02 倍 (FEAT-0257)。
+
+### 既知の制限
+
+- FFI: ビットフィールド・`long double`・可変長のコールバック・構造体を包む型の値渡しは扱わない。構造体を値で渡す呼び出しは引数ごとに `malloc` する。
+  コールバックはネイティブのプログラムでだけ動く。
+- Vulkan: 同期実行だけ (`dispatch` ごとにコマンドバッファとフェンスを作る)、キューは 1 つ、バッファはホストから見えるメモリだけ。
+  画像・グラフィックスのパイプライン・ウィンドウは対象外 (ウィンドウを使う GUI は遠隔の macOS / Windows で任意に検証する。FEAT-0290)。
+- `Linalg`: 要素は `Float` (`double`) だけ。BLAS は `dgemm` だけを包み、固有値・特異値分解・最小二乗法はない。
+- `Sized` の大きさを変える操作 (追加・連結) はない。一意な文字列 (`Builder`) への書き込みの検査は残る。文字列リテラルの長さは証明から見えない。
+- 型の中の多重定義された演算 (`Tagged (2 + 5) Bool`) でインスタンスの解決が ICE になる (BUG-0026)。
+
 ## CirkaLang v0.0.5
 
 並行性・サーバ・syscall: スレッドと値の共有、線形なソケットと一度だけ実行される継続による非同期 I/O、子プロセス・シグナル・ディレクトリなどの OS の機能を、

@@ -1,4 +1,4 @@
-error[E1004]: `mutual` is not supported in CirkaLang v0.0.5
+error[E1004]: `mutual` is not supported in CirkaLang v0.0.6
  --> reserved.cirka:1:1
   |
 1 | mutual

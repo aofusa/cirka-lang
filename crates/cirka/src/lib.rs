@@ -17,7 +17,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 /// The version of the language implemented (`edition` in `cirka.toml`).
-pub const EDITION: &str = "0.0.5";
+pub const EDITION: &str = "0.0.6";
 
 /// Frontend stages accepted by `--dump=`.
 pub const DUMPS: &[&str] = &["rn", "tt"];

@@ -1,6 +1,6 @@
 [package]
 name = "app"
-edition = "0.0.5"
+edition = "0.0.6"
 
 [dependencies]
 util = { path = "../util" }
