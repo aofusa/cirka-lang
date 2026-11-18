@@ -1,0 +1,55 @@
+-- max-array-copies: 0
+-- max-allocs: 100
+-- An IO function defined by clauses, called in a loop on a value from a
+-- case (FEAT-0088): `bumpIO` matches a buffer, then runs an action on C
+-- memory whose size is a branch (`max n 1`) and reads the result back into
+-- the array of the buffer, in place when nothing else shares it. Its
+-- argument comes from `withOrder`, whose two branches meet in a join
+-- point. Each call updates the array in place and allocates nothing: the
+-- action is applied where it is chosen, with no closure holding the array.
+-- (A pure function that runs such an action on top-level values built the
+-- closure until BUG-0034; cirka-core tests that form.)
+import Foreign
+import Data.Array.Unboxed as U
+
+data Order = RowMajor | ColMajor deriving (Eq, Show)
+
+data Buf = MkBuf Int Order (U.UArray Float)
+
+-- The buffer in order `o`: itself when it is in that order, otherwise a
+-- new array (negated, a stand-in for reordering).
+withOrder : Order -> Buf -> Buf
+withOrder o b = case b of
+  MkBuf n p xs => if o == p then b else MkBuf n o (U.map negate xs)
+
+-- Adds 1 to every element of the buffer in C memory.
+bumpIO : Buf -> IO Buf
+bumpIO (MkBuf n o xs) = allocaArray (max n 1) (\p => do
+  pokeUArray p xs
+  bumpAt p 0 n
+  out <- peekUArrayInto xs p
+  pure (MkBuf n o out))
+
+bumpAt : Ptr Float -> Int -> Int -> IO ()
+bumpAt p i n = if i >= n then pure () else do
+  x <- peekElemOff p i
+  pokeElemOff p i (x + 1.0)
+  bumpAt p (i + 1) n
+
+-- `bumpIO` `k` times, through `withOrder o`.
+repeatIO : Order -> Int -> Buf -> IO Buf
+repeatIO o k b = if k == 0 then pure b else do
+  c <- bumpIO (withOrder o b)
+  repeatIO o (k - 1) c
+
+printBuf : Buf -> IO ()
+printBuf (MkBuf n o xs) = print (n, o, U.toList xs)
+
+main : IO ()
+main = do
+  -- An array made by an action: nothing else shares it.
+  (xs, done) <- newUArrayWith 4 (\q => pokeArray q (1.0 :: 2.0 :: 3.0 :: 4.0 :: Nil))
+  b <- bumpIO (withOrder ColMajor (MkBuf 4 RowMajor xs))
+  printBuf b
+  c <- repeatIO ColMajor 1000 b
+  printBuf c

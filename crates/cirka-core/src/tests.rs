@@ -1306,6 +1306,48 @@ fn opt_applies_an_action_chosen_by_a_case_in_its_branches() {
 }
 
 #[test]
+fn opt_runs_an_action_chosen_by_cases_in_a_pure_function() {
+    // FEAT-0088: a pure function runs an IO function defined by clauses
+    // (`gemm a b c = primUnsafeRunIO (gemmIO a b c)` of FEAT-0252) on
+    // top-level values. The action is chosen by the cases on them, after a
+    // strict binding (the size of the memory, a `max`), and applied to
+    // `unit` under a cast. It is applied in the branches, not built as a
+    // closure that holds the fields (the array that the action updates in
+    // place).
+    let src = format!(
+        "{PRELUDE}(data B () (MkB Int# Int#))
+         (data IO (a) :newtype (IO# (-> Unit# a)))
+         (extern out (Int# Int#) Unit#)
+         (extern arg () Int#)
+         (def ga B (let! (u Int# (extern arg)) (con MkB () u 3)))
+         (def gb B (let! (u Int# (extern arg)) (con MkB () 4 u)))
+         (def step (-> Int# Int#)
+           (lam ((i Int#))
+             (case i (k Int#) Int#
+               (0 0)
+               (_ (let! (t (IO B) (case ga (sa B) (IO B)
+                      ((MkB p q) (case gb (sb B) (IO B)
+                        ((MkB n x) (let! (m Int# (case (prim le n 1) (c Int#) Int# (0 n) (_ 1)))
+                          (cast (lam ((w Unit#))
+                                  (let! (v Unit# (extern out (prim mul m p) x)) (con MkB () (prim add n q) x)))
+                                (IO B))))))))
+                    (let! (r B (cast ((cast t (-> Unit# B)) unit) B))
+                      (case r (sr B) Int#
+                        ((MkB y z) (prim add z (step (prim sub i y)))))))))))
+         (def main Int# (step (extern arg)))"
+    );
+    let mut p = parse_program(FileId(0), &src).unwrap();
+    assert!(lint::lint_program(&p).is_empty(), "{}", print_program(&p));
+    opt::optimize_with_stats(&mut p).unwrap();
+    let all = print_program(&p);
+    assert!(lint::lint_program(&p).is_empty(), "{all}");
+    assert!(
+        !all.contains("lam ((w") && all.contains("extern out"),
+        "{all}"
+    );
+}
+
+#[test]
 fn opt_moves_an_action_into_the_alternatives_that_run_it() {
     // BUG-0035: `when (i `mod` 3 == 0) (put (digits i))` as a step of a
     // `do` block. The action `m` (a partial application whose argument
