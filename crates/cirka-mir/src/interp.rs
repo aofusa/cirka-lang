@@ -70,6 +70,9 @@ pub struct Stats {
     /// Executed instructions (a machine-independent measure of the work
     /// done, compared by the zero-cost tests of FEAT-0061).
     pub steps: u64,
+    /// Copies of shared arrays made by in-place updates (`bytes_unique`,
+    /// `array_unique`): the native runtime's `array_copies`.
+    pub array_copies: u64,
 }
 
 /// Result of running a program.
@@ -1301,6 +1304,7 @@ impl<'m> Interp<'m> {
                     };
                     let bs = bs.clone();
                     let size = 16 + bs.len().div_ceil(8) * 8;
+                    self.stats.array_copies += 1;
                     self.drop_val(a[0])?;
                     Val::P(self.alloc(kind::BYTES, 0, vec![], Payload::Bytes(bs), size))
                 }
@@ -1318,6 +1322,7 @@ impl<'m> Interp<'m> {
                     for &f in &fields {
                         self.dup(f)?;
                     }
+                    self.stats.array_copies += 1;
                     self.drop_val(a[0])?;
                     Val::P(self.alloc(kind::ARRAY, 0, fields, Payload::Array, 16 + 8 * n))
                 }

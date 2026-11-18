@@ -41,6 +41,8 @@ CIRKA_STATS=1 ./as 2000     # array_copies が 0 でない
 - [x] 回帰テストを追加: `cirka-core` の `opt_removes_dead_constructor_bindings_float_in_made_lazy` (修正前は死んだ `SP` の束縛が残る)、
       `tests/cirkalang/run/v006/uarray_quicksort.cirka` (`-- max-array-copies: 0`。修正前は複製 14,338 回)
 - [x] 修正: float-in はコンストラクタの束縛を遅延にしたことも変更として数え、パイプラインはその後に simplify を走らせる (06-ir.md §1.5)
+- [x] 見逃しの対策: `tests/bench.rs` の `bench_programs` (ベンチの題材を小さな入力で実行する) は結果しか見ていなかった。
+      MIR インタプリタも共有の配列の複製を数え (`array_copies`)、ベンチの題材が複製しないことを確かめる (修正を戻すと `array-sort` が 5,916 回の複製で失敗する)
 
 ## メモ
 

@@ -67,6 +67,14 @@ fn run_interp(name: &str, core: cirka_core::Program, arg: &str) -> Result<String
             r.exit_code, r.leaked, r.stdout, r.stderr
         ));
     }
+    // In-place updates of the bench programs never copy (BUG-0032: a kept
+    // reference made every write of bench/array-sort copy the array).
+    if r.stats.array_copies != 0 {
+        return Err(format!(
+            "{} copies of shared arrays by in-place updates",
+            r.stats.array_copies
+        ));
+    }
     Ok(r.stdout)
 }
 
