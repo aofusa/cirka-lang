@@ -772,3 +772,51 @@ valgrind の下では既定のアロケータの 64 GiB の予約が失敗して
 - **計測で見つけた後退**: `ensures` を加えた `Data.String` の関数は、自己呼び出しの結果を `primRefine` (恒等関数) に通すので、Core に
   `let! r = f x in r` が残った。末尾呼び出しでなくなり、CPR も戻り値を unboxed にできず (`skipSpace$w` が `I#` を確保して返す)、string-split は
   2.2 倍遅くなった (591 ms)。Core の簡約で、呼び出しを返すだけの `let!` を呼び出しにして直した (06-ir.md §1.3)。
+
+## CirkaLang v0.0.6 (FEAT-0253)
+
+計測: `bench/run.sh` (`CIRKA_BENCH_RUNS=3`) と `bench/http-server/run.sh` (Docker コンテナ内、2026-11-18)。`cirka build -O2` と `rustc -C opt-level=3`。
+最初の計測はホストの他の作業 (ディスクの I/O 待ちで負荷 4〜8) と重なったので捨て、負荷が 2 以下に下がってから計測し直した。
+
+| ベンチ | CirkaLang v0.0.6 | Rust | 比 (Rust=1) | v0.0.5 の比 |
+|--------|-----------------:|-----:|------------:|------------:|
+| array-sort | 0.099 s | 0.092 s | 1.08 | 1.10 |
+| binary-search | 0.354 s | 0.238 s | 1.49 | 1.48 |
+| binary-trees (深さ 21) | 9.90 s | 22.43 s | 0.44 | 0.44 |
+| cli-grep | 0.291 s | 0.173 s | 1.68 | 1.79 |
+| mandelbrot | 0.099 s | 0.099 s | 1.00 | 1.05 |
+| n-body (500 万ステップ) | 0.575 s | 0.387 s | 1.49 | 1.49 |
+| spectral-norm | 0.181 s | 0.186 s | 0.98 | 1.04 |
+| stencil (1,000,000 要素 × 100 回) | 0.164 s | 0.163 s | 1.01 | — |
+| string-split | 0.263 s | 0.184 s | 1.43 | 1.59 |
+| http-server (16 接続、スループット) | 60,148 要求/s | 76,313 要求/s | 1.27 | 1.28 |
+
+- G3 (Rust の 1.5 倍以内) は 10 題材中 9 つで達成。string-split は FEAT-0254 の証明 (`Data.String` の読み出しの検査が消え、命令数が 3.7% 減る) で
+  1.5 倍以内に入り、未達は cli-grep だけになった (FEAT-0080)。n-body 1.49 と binary-search 1.49 は境界にある。
+- 新しい題材 stencil は Rust と同等 (FEAT-0254 の節)。最大 RSS は CirkaLang 17.2 MB、Rust 17.5 MB。
+- 最大 RSS は binary-trees 199 MB (v0.0.5 は 198 MB、Rust 264 MB)、cli-grep 56 MB (Rust 45 MB)、string-split 45 MB (Rust 23 MB)。
+- HTTP サーバは 1 / 16 / 64 接続で 33,769 / 60,148 / 58,576 要求/s (Rust 29,711 / 76,313 / 75,019)。v0.0.5 と同じく並行な接続で
+  Rust の 0.79 倍、p99 は CirkaLang の方が小さい (16 接続で 309 µs 対 404 µs)。要求ごとの確保を減らすのは FEAT-0086。
+- **リリースのベンチで見つけた後退**: 最初の計測で array-sort が終わらなかった (18 時間で止めた)。v0.0.6 の開発中の FEAT-0255 の変更
+  (2b3434f、早い段階の DCE) が、float-in の数え漏れを表に出し、`case` の分解した組が残って一意な配列が共有になり、in-place の
+  クイックソートが書き込みのたびに配列を複製していた (n = 2000 で 14,338 回)。BUG-0032 で直し (複製 0 回、0.099 s)、
+  ベンチの題材が配列を複製しないことを `tests/bench.rs` で確かめるようにした。
+
+### v0.0.5 との交互の比較
+
+日による揺らぎ (Rust の時間でも 3% ほど) と後退を分けるため、v0.0.5 のコンパイラ (タグ `cirkalang-v0.0.5`) で作ったプログラムと今のプログラムを
+交互に実行して比べた (ホスト、`-O2`、中央値。binary-trees は 5 回、他は 11 回)。binary-search と stencil は検証に Z3 が要るのでホストでは作れず、
+比べていない (Docker の計測では binary-search は 0.350 s → 0.354 s)。
+
+| ベンチ | v0.0.5 | v0.0.6 | 比 |
+|--------|-------:|-------:|---:|
+| array-sort | 97 ms | 98 ms | 1.01 |
+| binary-trees | 9.91 s | 10.08 s | 1.02 |
+| cli-grep | 323 ms | 301 ms | 0.93 |
+| mandelbrot | 108 ms | 102 ms | 0.94 |
+| n-body | 590 ms | 590 ms | 1.00 |
+| spectral-norm | 184 ms | 180 ms | 0.98 |
+| string-split | 267 ms | 258 ms | 0.97 |
+
+- 悪化した題材はない。binary-trees の 1.02 は揺らぎの範囲 (5 回の範囲が重なる)。生成した LLVM IR の違いは、`main` のループで作る 2 つの箱の
+  確保と解放の順序と、`make$w` の葉の節の 2 つのフィールド (同じ静的な葉を指す) の順序だけで、木を作り辿る繰り返しは同じ。
