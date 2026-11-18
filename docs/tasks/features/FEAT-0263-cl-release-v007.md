@@ -23,3 +23,9 @@
 
 ## メモ
 
+- **非互換 (CHANGELOG に書く)**: 外の資源に名前で触れる std の操作と時刻・乱数が、最初の引数に能力 `Cap k` を取る (FEAT-0260、spec-v0.0.7.md §1.3)。
+  v0.0.6 のプログラムは `main` で能力を受け取り、操作に渡すよう書き換える。リポジトリでは std の操作を使うテスト 11 本
+  (`fail/net/socket_*`、`run/v002/std_env`・`std_fs`・`tool_wc`、`run/v003/borrow_file`・`do_patterns`、`run/v005/http_echo`・`net_tcp`・`net_udp`・`os_tool`)
+  とベンチ 2 本 (`cli-grep`、`http-server`) を書き換えた。
+- `main` の型の誤り (E1200) の文言が変わった (能力を受け取った後に `IO ()` であること)。
+
