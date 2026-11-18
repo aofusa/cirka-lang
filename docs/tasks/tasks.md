@@ -20,7 +20,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | aCHC | H1 Haskell 最小フロントエンド | 6 / 6 |
 | aCHC | H2 Haskell 実用化 (スコープ縮小版) | 10 / 10 |
 | aCHC | H3 所有権拡張 (.chs) | 9 / 9 |
-| aCHC | H4 FFI 拡張と評価 | 1 / 2 |
+| aCHC | H4 FFI 拡張と評価 | 2 / 2 |
 | aCHC | H5 高度な型システム (CirkaLang v0.0.4 の後) | 0 / 5 |
 | aCHC | H6 依存型と検証 (CirkaLang v0.0.4 の後) | 0 / 5 |
 | aCHC | H7 効果・能力・セッション型 (CirkaLang v0.0.7 の後) | 0 / 5 |
@@ -176,7 +176,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 
 | ID | タイトル | 状態 | 優先度 | 依存 |
 |---|---|---|---|---|
-| [FEAT-0130](features/FEAT-0130-hs-extern-block.md) | extern "C" ブロック (aCHC) | todo | P1 | 0116, 0122, 0047 |
+| [FEAT-0130](features/FEAT-0130-hs-extern-block.md) | extern "C" ブロック (aCHC) | done | P1 | 0116, 0122, 0047 |
 | [FEAT-0132](features/FEAT-0132-achc-evaluation.md) | aCHC の評価レポート | done | P0 | 0117, 0125, 0043 |
 
 ### H5 高度な型システム (CirkaLang v0.0.4 の後)
