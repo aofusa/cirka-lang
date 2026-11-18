@@ -348,6 +348,6 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [BUG-0034](bugs/BUG-0034-io-step-chosen-by-case-allocates.md) | `do` の途中の `if c then act else pure ()` が、選んだ動作を反復ごとにクロージャとして作る | done | major | FEAT-0261 |
 | [BUG-0035](bugs/BUG-0035-thunk-used-in-several-alternatives.md) | 複数の選択肢で使う遅延束縛が、使わない反復でもサンクとして確保される | done | major | BUG-0034 |
 | [BUG-0036](bugs/BUG-0036-borrowed-sibling-keeps-parent.md) | 読むだけのフィールドの借用が、マッチしたオブジェクトを生かし、別のフィールドの in-place 更新がコピーになる | done | major | BUG-0034 |
-| [BUG-0037](bugs/BUG-0037-cascading-instance-error.md) | 引数の型が合わないと、その引数で決まる型の制約が E1254 として重ねて報告される | todo | minor | FEAT-0262 |
+| [BUG-0037](bugs/BUG-0037-cascading-instance-error.md) | 引数の型が合わないと、その引数で決まる型の制約が E1254 として重ねて報告される | done | minor | FEAT-0262 |
 
 新しいチケットは `features/_TEMPLATE.md` / `bugs/_TEMPLATE.md` をコピーして作成する。

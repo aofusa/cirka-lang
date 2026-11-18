@@ -7,9 +7,3 @@ error[E1200]: type mismatch
    = note:    found `(1 c : Channel (Recv Int (Recv Bool End))) -> IO Unit`
    = note: expected (unfolded) `(1 c : Channel (Recv Int (Send Bool End))) -> IO _`
    = note:    found (unfolded) `(1 c : Channel (Recv Int (Recv Bool End))) -> IO Unit`
-error[E1254]: cannot determine which instance of `Send _` to use
-  --> tests/cirkalang/fail/session/not_dual.cirka:26:13
-   |
-26 |   (b, u) <- S.connect client both
-   |             ^^^^^^^^^
-   = help: add a type annotation

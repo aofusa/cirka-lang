@@ -196,6 +196,13 @@ impl<'r> Elab<'r> {
                     true
                 }
                 Search::Stuck => false,
+                // A goal on a type that is already an error (the part of a
+                // mismatched type that unification left unsolved, BUG-0037)
+                // is not reported again.
+                Search::NotFound if mentions_error(&self.quote(&p.cx, goal)) => {
+                    self.assign(p, &Term::Error);
+                    true
+                }
                 Search::NotFound => {
                     let send = self.prog.builtins.send_trait;
                     let has = self.prog.builtins.has_trait;

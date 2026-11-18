@@ -1,6 +1,6 @@
 # BUG-0037: 引数の型が合わないと、その引数で決まる型の制約が E1254 として重ねて報告される
 
-- 状態: todo
+- 状態: done
 - 重大度: minor
 - 発見箇所: FEAT-0262 (`tests/cirkalang/fail/session/not_dual.cirka`)
 - 関連: FEAT-0262
@@ -37,10 +37,13 @@ E1200 だけを報告する。型が合わなかった型の中の未解決の�
 ## 原因
 
 `unify_or_err` は、領域が脱出する場合だけ期待される型のメタ変数に失敗の印を付ける (`fail_metas`)。ほかの不一致では付けない。
+また、失敗の印を付けても、インスタンスの探索は誤りの型 (`Val::Error`) を含む目標を「実装がない」(E1253 `no instance for Show <error>`) と報告する。
 
 ## 修正
 
-- [ ] 回帰テストを追加
-- [ ] 修正
+- [x] 回帰テストを追加 (`tests/cirkalang/fail/type/mismatch_cascade.cirka`: `Show b => (Int -> b) -> ..` に `String -> String` を渡す。
+      修正前は E1200 の後に E1254 `Show _`。`fail/session/not_dual` の E1254 `Send _` も消えた)
+- [x] 修正: `unify_or_err` は、型が合わないとき両方の型の未解決のメタ変数に失敗の印を付ける。インスタンスの探索は、
+      見つからなかった目標が誤りの型を含むなら報告せずに誤りの項を当てる (誤りは前に報告済み)
 
 ## メモ

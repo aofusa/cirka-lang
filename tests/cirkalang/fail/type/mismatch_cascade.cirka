@@ -1,0 +1,14 @@
+-- A mismatched argument is reported once (BUG-0037): the type variable
+-- that the argument would have fixed (`b`, with `Show b`) stays unknown,
+-- and its constraint is not reported again as an instance that cannot be
+-- determined (E1254).
+module Main
+
+apply : Show b => (Int -> b) -> Int -> String
+apply f x = show (f x)
+
+twice : String -> String
+twice s = s ++ s
+
+main : IO ()
+main = putStrLn (apply twice 3)

@@ -1,0 +1,7 @@
+error[E1200]: type mismatch
+  --> tests/cirkalang/fail/type/mismatch_cascade.cirka:14:24
+   |
+14 | main = putStrLn (apply twice 3)
+   |                        ^^^^^
+   = note: expected `Int -> _`
+   = note:    found `String -> String`

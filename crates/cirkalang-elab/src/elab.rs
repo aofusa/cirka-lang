@@ -1318,6 +1318,10 @@ impl<'r> Elab<'r> {
                              `main` receives it as `main : Cap {k} -> IO ()` (spec-v0.0.7.md §1.2)"
                         ));
                 }
+                // The unsolved parts of the two types are not reported again
+                // (as instances that cannot be determined, BUG-0037).
+                self.fail_metas(&self.quote(cx, expected));
+                self.fail_metas(&self.quote(cx, actual));
                 self.report(d);
                 false
             }
