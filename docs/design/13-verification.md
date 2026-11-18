@@ -147,12 +147,17 @@ data Range : Type where
 ### 4.1 ケイパビリティ
 
 ```
-readFile : (1 cap : Cap FileSystem) -> Path -> IO (Cap FileSystem, Result IOError String)
+readFile : (0 fs : Cap FileSystem) -> String -> IO (Result IOError String)
+
+main : Cap FileSystem -> Cap Network -> IO ()
 ```
 
-- 能力トークンで、関数がどの種類の副作用 (ファイル・ネットワーク・時刻・乱数・プロセス) を使うかを型に表す。テストでは偽の能力を渡せる。
-- 能力を取らない生の IO プリミティブは `std` の外に公開しない。
-- 能力はゼロサイズ型として最適化で消える。
+- 能力トークンで、関数がどの種類の副作用 (ファイル・ネットワーク・時刻・乱数・プロセス・環境変数) を使うかを型に表す。
+  確定した規則は [spec-v0.0.7.md](cirkalang/spec-v0.0.7.md) §1 (FEAT-0260、ADR-103)。
+- 能力 `Cap k` は構成子を持たず、`main` とテストの引数としてだけ得られる。共有でき (線形でない)、標準ライブラリは多重度 0 で取るので実行時に何も残らない。
+  当初案の線形なトークン (操作ごとに能力を返す) は、安全性が同じで書き方が重いので採らなかった。
+- 能力を取らない生の IO プリミティブは `std` の外に公開しない (`private extern`)。利用者が書く `extern` ブロックは信頼の境界 (Rust の `unsafe` に当たる) である。
+- 偽の資源を使うテストは、能力を効果の証拠として扱う効果のハンドラ (§4.2、FEAT-0261) で書く。
 
 ### 4.2 効果システム (試作)
 
