@@ -130,6 +130,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0088](features/FEAT-0088-io-action-under-case-closure.md) | 場合分けの後の IO の動作をクロージャにしない (状態トークンの適用を結合点の中に押し込む) | done | P2 | 0252 |
 | [FEAT-0089](features/FEAT-0089-static-object-rc.md) | 静的なオブジェクト (引数のない構成子・文字列リテラル) の dup/drop の除去 | done | P2 | BUG-0034 |
 | [FEAT-0090](features/FEAT-0090-case-of-case-linear.md) | 線形な値を返す case の case-of-case (`Std.Session` の `offer` の確保) | done | P2 | FEAT-0262 |
+| [FEAT-0091](features/FEAT-0091-beat-rust.md) | Rust を上回る性能 (Rust より遅い題材の原因の調査と改善) | in-progress | P1 | 0263 |
 
 
 ## aCHC
@@ -290,7 +291,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0260](features/FEAT-0260-cl-capabilities.md) | ケイパビリティ | done | P1 | 0253 |
 | [FEAT-0261](features/FEAT-0261-cl-effects.md) | 効果システムの試作 | done | P1 | 0260 |
 | [FEAT-0262](features/FEAT-0262-cl-session-types.md) | セッション型 | done | P2 | 0240 |
-| [FEAT-0263](features/FEAT-0263-cl-release-v007.md) | CirkaLang v0.0.7 リリース | todo | P0 | 0261 |
+| [FEAT-0263](features/FEAT-0263-cl-release-v007.md) | CirkaLang v0.0.7 リリース | done | P0 | 0261 |
 
 ### CX 遠隔環境での GUI 検証 (任意)
 
