@@ -73,6 +73,8 @@ pub struct Stats {
     pub floated_in: usize,
     /// Thunks replaced by evaluating cheap expressions now (`speculate`).
     pub speculated: usize,
+    /// Copies of loops specialized to literal arguments (`unroll`).
+    pub unrolled: usize,
     /// Bindings restored because Lint rejected them (release builds only).
     pub reverted: usize,
 }
@@ -221,6 +223,14 @@ pub fn optimize_with_stats(p: &mut Program) -> Result<Stats, Diagnostic> {
     if split > 0 {
         st.worker_wrapper += split;
         lint_all(p, "worker-wrapper")?;
+        simplify_rounds(p, &mut st, &mut next)?;
+    }
+    // Loops whose `Int#` parameters start from literals and end on literal
+    // bounds run the same way every time: copied per tuple of literals,
+    // they become straight-line code (FEAT-0094).
+    st.unrolled = crate::unroll::unroll_literal_loops(p, &mut next);
+    if st.unrolled > 0 {
+        lint_all(p, "unroll")?;
         simplify_rounds(p, &mut st, &mut next)?;
     }
     st.unique_checks = crate::uniq::redundant_unique(p);
@@ -2441,7 +2451,7 @@ fn box_tails(e: &Expr, kc: &str) -> Option<bool> {
 }
 
 /// Constant folding of primitive operations on literals.
-fn fold(op: PrimOp, a: &[Expr]) -> Option<Lit> {
+pub(crate) fn fold(op: PrimOp, a: &[Expr]) -> Option<Lit> {
     use PrimOp::*;
     let int = |i: usize| match a.get(i) {
         Some(Expr::Lit(Lit::Int(n))) => Some(*n),

@@ -1,0 +1,41 @@
+; Loops over literal bounds (FEAT-0094): copied for each tuple of literal
+; arguments they reach and inlined into straight-line code. The results
+; are those of the loops; a loop bounded by a variable is left alone.
+(extern cirka_write_i64 (Int#) Unit#)
+(extern cirka_write_char (Int#) Unit#)
+(extern cirka_argc () Int#)
+
+; acc + the sum of i * j over 0 <= i < j < 4.
+(def pairs (-> Int# Int# Int# Int#)
+  (lam ((acc Int#) (i Int#) (j Int#))
+    (case (prim le 4 i) (c Int#) Int#
+      (0 (case (prim le 4 j) (d Int#) Int#
+           (0 (pairs (prim add acc (prim mul i j)) i (prim add j 1)))
+           (_ (pairs acc (prim add i 1) (prim add i 2)))))
+      (_ acc))))
+
+; acc + n times (0 + 1 + 2): the step count stays a parameter.
+(def steps (-> Int# Int# Int# Int#)
+  (lam ((acc Int#) (n Int#) (i Int#))
+    (case (prim le n 0) (c Int#) Int#
+      (0 (case (prim le 3 i) (d Int#) Int#
+           (0 (steps (prim add acc i) n (prim add i 1)))
+           (_ (steps acc (prim sub n 1) 0))))
+      (_ acc))))
+
+; acc + 0 + 1 + ... + (n - 1).
+(def count (-> Int# Int# Int# Int#)
+  (lam ((acc Int#) (i Int#) (n Int#))
+    (case (prim le n i) (c Int#) Int#
+      (0 (count (prim add acc i) (prim add i 1) n))
+      (_ acc))))
+
+(def main Int#
+  (let! (a Int# (extern cirka_argc))
+    (let! (u1 Unit# (extern cirka_write_i64 (pairs a 0 1)))
+      (let! (u2 Unit# (extern cirka_write_char 10))
+        (let! (u3 Unit# (extern cirka_write_i64 (steps a 1000 0)))
+          (let! (u4 Unit# (extern cirka_write_char 10))
+            (let! (u5 Unit# (extern cirka_write_i64 (count a 0 (prim add a 100))))
+              (let! (u6 Unit# (extern cirka_write_char 10))
+                0))))))))

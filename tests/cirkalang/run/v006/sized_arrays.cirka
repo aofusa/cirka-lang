@@ -29,11 +29,15 @@ reverse n s lo hi = if lo >= hi then s else reverse n (A.swapS s lo hi) (lo + 1)
 
 main : IO ()
 main = do
-  let sq = U.freezeS (squares 8 (U.zerosS 8) 0)
+  -- The loops start from an index that is not a literal (0 when run):
+  -- loops over literals would be unrolled into `main` (FEAT-0094).
+  argc <- argCount
+  let z = argc * 0
+  let sq = U.freezeS (squares 8 (U.zerosS 8) z)
   print (U.toList sq)
   -- The size of the frozen array is known (8): no check either.
   print (U.index sq 7)
-  print (U.toList (U.freezeS (prefix 5 (U.newS 5 1.5) 1)))
+  print (U.toList (U.freezeS (prefix 5 (U.newS 5 1.5) (z + 1))))
   let ws = A.fromList ("a" :: "b" :: "c" :: "d" :: Nil)
   print (A.toList (A.freezeS (reverse (A.size ws) (A.thawS (A.size ws) ws) 0 (A.size ws - 1))), A.toList ws)
   -- A negative size makes an empty array, which no index fits.

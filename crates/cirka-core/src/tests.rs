@@ -917,12 +917,14 @@ fn opt_applies_through_casts() {
 #[test]
 fn opt_gives_io_functions_the_state_token() {
     // `loop` returns an IO action (a newtype over `Unit# -> a`): it gets a
-    // worker `loop$io` taking the token, and running `loop 3` becomes a
+    // worker `loop$io` taking the token, and running `loop a` becomes a
     // direct call without building the action's closure (BUG-0011). With
     // the casts of the result to its own type gone, CPR then returns the
-    // `Int` unboxed (`loop$io$c`, FEAT-0090).
+    // `Int` unboxed (`loop$io$c`, FEAT-0090). (The count is not a literal:
+    // a loop on literals would be unrolled, FEAT-0094.)
     let src = format!(
         "{PRELUDE}(data IO (a) :newtype (IO# (-> Unit# a)))
+         (extern arg () Int#)
          (def ret (-> Int (IO Int)) (lam ((x Int)) (cast (lam ((w Unit#)) x) (IO Int))))
          (def loop (-> Int# (IO Int))
            (lam ((n Int#))
@@ -930,7 +932,8 @@ fn opt_gives_io_functions_the_state_token() {
                (0 (ret (con I# () 7)))
                (_ (loop (prim sub n 1))))))
          (def main Int#
-           (case ((cast (loop 3) (-> Unit# Int)) unit) (r Int) Int# ((I# v) v)))"
+           (let! (a Int# (extern arg))
+             (case ((cast (loop a) (-> Unit# Int)) unit) (r Int) Int# ((I# v) v))))"
     );
     let mut p = parse_program(FileId(0), &src).unwrap();
     assert!(lint::lint_program(&p).is_empty());
@@ -939,14 +942,14 @@ fn opt_gives_io_functions_the_state_token() {
     assert!(lint::lint_program(&p).is_empty(), "{all}");
     assert!(st.io_arity >= 1, "{st:?}");
     let m = print::print_expr(&p.bind("main").unwrap().expr);
-    assert!(m.contains("(loop$io$c 3 unit)"), "{m}");
+    assert!(m.contains("(loop$io$c a unit)"), "{m}");
 }
 
 #[test]
 fn opt_gives_state_functions_the_state() {
     // `loop` returns a newtype over a state function `Int -> P Int Int`
     // (CirkaLang's `Borrow`, FEAT-0220): like an IO action, it gets a
-    // worker `loop$io` taking the state, and running `loop 3` becomes a
+    // worker `loop$io` taking the state, and running `loop c` becomes a
     // direct call; CPR then sees through the cast of the tail call.
     let src = format!(
         "{PRELUDE}(data P (a b) (MkP a b))
@@ -958,9 +961,11 @@ fn opt_gives_state_functions_the_state() {
              (case n (k Int#) (St Int Int)
                (0 (done (con I# () 7)))
                (_ (loop (prim sub n 1))))))
+         (extern arg () Int#)
          (def main Int#
-           (case ((cast (loop 3) (-> Int (P Int Int))) (con I# () 1)) (r (P Int Int)) Int#
-             ((MkP a b) (case b (q Int) Int# ((I# v) v)))))"
+           (let! (c Int# (extern arg))
+             (case ((cast (loop c) (-> Int (P Int Int))) (con I# () 1)) (r (P Int Int)) Int#
+               ((MkP a b) (case b (q Int) Int# ((I# v) v))))))"
     );
     let mut p = parse_program(FileId(0), &src).unwrap();
     assert!(lint::lint_program(&p).is_empty());
@@ -1180,7 +1185,7 @@ fn opt_specializes_static_function_arguments() {
                (_ acc))))
          (def main Int#
            (let! (k Int# (extern arg))
-             (sumf (lam ((x Int)) (case x (s Int) Int ((I# y) (con I# () (prim mul y k))))) 0 0)))"
+             (sumf (lam ((x Int)) (case x (s Int) Int ((I# y) (con I# () (prim mul y k))))) k 0)))"
     );
     let mut p = parse_program(FileId(0), &src).unwrap();
     assert!(lint::lint_program(&p).is_empty());
@@ -1506,7 +1511,7 @@ fn opt_specializes_static_known_values() {
              (let ((g (-> Int# Int#) (lam ((x Int#)) (prim mul x k))))
                (let ((h0 H (con H0 ())))
                  (let ((h H (con H1 () g h0)))
-                   (loop h 0 0))))))"
+                   (loop h k 0))))))"
     );
     let mut p = parse_program(FileId(0), &src).unwrap();
     assert!(lint::lint_program(&p).is_empty(), "{}", print_program(&p));
@@ -2325,4 +2330,63 @@ fn opt_keeps_casts_that_change_the_type() {
     );
     let (m, _) = opt_main(&src);
     assert!(m.contains("(cast"), "{m}");
+}
+
+// ---- FEAT-0094: loops on literal arguments ----
+
+const FIXED_LOOPS: &str = "(extern arg () Int#)
+(def pairs (-> Int# Int# Int# Int#)
+  (lam ((acc Int#) (i Int#) (j Int#))
+    (case (prim le 3 i) (c Int#) Int#
+      (0 (case (prim le 3 j) (d Int#) Int#
+           (0 (pairs (prim add acc (prim mul i j)) i (prim add j 1)))
+           (_ (pairs acc (prim add i 1) (prim add i 2)))))
+      (_ acc))))
+(def count (-> Int# Int# Int# Int#)
+  (lam ((acc Int#) (i Int#) (n Int#))
+    (case (prim le n i) (c Int#) Int#
+      (0 (count (prim add acc i) (prim add i 1) n))
+      (_ acc))))
+(def steps (-> Int# Int# Int# Int#)
+  (lam ((acc Int#) (n Int#) (i Int#))
+    (case (prim le n 0) (c Int#) Int#
+      (0 (case (prim le 2 i) (d Int#) Int#
+           (0 (steps (prim add acc i) n (prim add i 1)))
+           (_ (steps acc (prim sub n 1) 0))))
+      (_ acc))))
+(def tree (-> Int# Int# Int#)
+  (lam ((acc Int#) (n Int#))
+    (case (prim lt n 2) (c Int#) Int#
+      (0 (prim add (tree acc (prim sub n 1)) (tree acc (prim sub n 2))))
+      (_ acc))))
+(def main Int#
+  (let! (a Int# (extern arg))
+    (prim add (pairs a 0 1)
+      (prim add (count a 0 (prim add a 9))
+        (prim add (steps a 1000 0) (tree a 10))))))";
+
+#[test]
+fn unrolls_loops_with_literal_bounds() {
+    let mut p = parse_program(FileId(0), FIXED_LOOPS).unwrap();
+    let mut next = p.max_id() + 1;
+    let n = unroll::unroll_literal_loops(&mut p, &mut next);
+    assert!(lint::lint_program(&p).is_empty(), "{}", print_program(&p));
+    let main = print::print_expr(&p.bind("main").unwrap().expr);
+    // `pairs a 0 1` calls the copy for i = 0, j = 1, in which the six
+    // others are inlined (one tail call reaches each).
+    assert!(main.contains("(pairs$kx_0_1 a)"), "{main}");
+    assert!(p.bind("pairs$kx_0_2").is_none(), "{}", print_program(&p));
+    // `steps a 1000 0`: a copy per step would be too many, so the step
+    // count stays a parameter and only the inner loop is unrolled.
+    assert!(main.contains("(steps$kx_x_0 a 1000)"), "{main}");
+    // A loop bounded by a variable, and a recursion that is not a loop,
+    // are left alone.
+    assert!(main.contains("(count a 0"), "{main}");
+    assert!(main.contains("(tree a 10)"), "{main}");
+    assert_eq!(n, 7 + 3, "{}", print_program(&p));
+    // The pipeline unrolls them too, and the copies stay well typed.
+    let mut p = parse_program(FileId(0), FIXED_LOOPS).unwrap();
+    let st = opt::optimize_with_stats(&mut p).unwrap();
+    assert!(lint::lint_program(&p).is_empty(), "{}", print_program(&p));
+    assert_eq!(st.unrolled, 10, "{st:?}");
 }

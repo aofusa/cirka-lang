@@ -18,6 +18,7 @@ pub mod strict;
 pub mod ty;
 pub mod uniq;
 pub mod unpack;
+pub mod unroll;
 pub mod ww;
 
 pub use ctype::{CAgg, CType, CTypes, Layout, Pass, Piece};

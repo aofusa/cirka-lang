@@ -1,0 +1,13 @@
+-- The loops of fixed_loops.cirka written out by hand (FEAT-0094).
+module Main
+
+rounds : Int -> Int -> Int -> Int
+rounds w n acc = if n <= 0 then acc else rounds w (n - 1) (acc + w + 0 + w + 1 + w + 2)
+
+main : IO ()
+main = do
+  argc <- argCount
+  let w = argc + 1
+  printInt (0 + (w + 0) * (w + 1) + (w + 0) * (w + 2) + (w + 0) * (w + 3)
+    + (w + 1) * (w + 2) + (w + 1) * (w + 3) + (w + 2) * (w + 3))
+  printInt (rounds w (argc + 100) 0)

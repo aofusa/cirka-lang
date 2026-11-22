@@ -1,0 +1,27 @@
+-- same-cost-as: fixed_loops_hand.cirka
+-- Loops over literal bounds (FEAT-0094): the pairs (i, j) with
+-- 0 <= i < j < 4, and a loop over 0..2 called in every iteration of a
+-- loop whose count is a variable, become straight-line code. They cost no
+-- more than the same sums written out (fixed_loops_hand.cirka): no
+-- comparisons of the indices, no calls.
+module Main
+
+pairs : Int -> Int -> Int -> Int -> Int
+pairs w i j acc =
+  if i >= 4 then acc
+  else if j >= 4 then pairs w (i + 1) (i + 2) acc
+  else pairs w i (j + 1) (acc + (w + i) * (w + j))
+
+-- acc + w + (w + 1) + (w + 2)
+inner : Int -> Int -> Int -> Int
+inner w k acc = if k >= 3 then acc else inner w (k + 1) (acc + w + k)
+
+rounds : Int -> Int -> Int -> Int
+rounds w n acc = if n <= 0 then acc else rounds w (n - 1) (inner w 0 acc)
+
+main : IO ()
+main = do
+  argc <- argCount
+  let w = argc + 1
+  printInt (pairs w 0 1 0)
+  printInt (rounds w (argc + 100) 0)
