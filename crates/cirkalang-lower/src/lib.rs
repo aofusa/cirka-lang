@@ -1842,6 +1842,14 @@ impl<'a> Lower<'a> {
                     )
                 })
             }),
+            // `primStrResize u n`: `u` with `n` bytes, in place when the
+            // allocator can (FEAT-0096).
+            Prim::StrResize => self.skeleton(ty, 2, |a, r| {
+                let u = a[0].clone();
+                self.unbox_ints(vec![a[1].clone()], r, |k| {
+                    prim(O::BytesResize, vec![u, k[0].clone()])
+                })
+            }),
             Prim::IntToStr => self.skeleton(ty, 1, |a, r| {
                 self.unbox(a[0].clone(), "I#", "Int", c::Type::int(), r, |u| {
                     g("cirka$int_to_bytes", vec![u])

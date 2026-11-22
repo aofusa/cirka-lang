@@ -610,6 +610,9 @@ pub enum Prim {
     BytesGetF64,
     BytesSetF64,
     BytesUnique,
+    /// `bytes_resize(b, n)`: consumes `b`; `b` with `max(n, 0)` bytes, in
+    /// place when unique and the allocator can (FEAT-0096).
+    BytesResize,
     ArraySetShared,
     BytesSetI64Shared,
     BytesSetF64Shared,
@@ -700,6 +703,7 @@ impl Prim {
         Prim::BytesGetF64,
         Prim::BytesSetF64,
         Prim::BytesUnique,
+        Prim::BytesResize,
         Prim::ArraySetShared,
         Prim::BytesSetI64Shared,
         Prim::BytesSetF64Shared,
@@ -778,6 +782,7 @@ impl Prim {
             BytesGetF64 => "bytes_get_f64",
             BytesSetF64 => "bytes_set_f64",
             BytesUnique => "bytes_unique",
+            BytesResize => "bytes_resize",
             ArraySetShared => "array_set_shared",
             BytesSetI64Shared => "bytes_set_i64_shared",
             BytesSetF64Shared => "bytes_set_f64_shared",
@@ -900,6 +905,8 @@ impl Prim {
             BytesSetF64 => (&[Ptr, I64, F64], I64),
             // bytes_unique(b): like array_unique for BYTES.
             BytesUnique => (&[Ptr], Ptr),
+            // bytes_resize(b, n): consumes b (FEAT-0096).
+            BytesResize => (&[Ptr, I64], Ptr),
             // Stores through a mutable borrow (FEAT-0124): the object may be
             // shared with its borrowed owner; otherwise like the plain stores.
             ArraySetShared => (&[Ptr, I64, Ptr], I64),
@@ -934,7 +941,7 @@ impl Prim {
         match self.checked() {
             Prim::ArrayNew => &[1],
             Prim::ArraySet | Prim::ArraySetShared | Prim::ThunkInit => &[2],
-            Prim::ArrayUnique | Prim::BytesUnique => &[0],
+            Prim::ArrayUnique | Prim::BytesUnique | Prim::BytesResize => &[0],
             _ => &[],
         }
     }

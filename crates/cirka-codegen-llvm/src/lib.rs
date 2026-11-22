@@ -103,6 +103,7 @@ const RUNTIME_DECLS: &[(&str, &str)] = &[
     ("cirka_array_new", "ptr @cirka_array_new(i64, ptr)"),
     ("cirka_array_unique", "ptr @cirka_array_unique(ptr)"),
     ("cirka_bytes_unique", "ptr @cirka_bytes_unique(ptr)"),
+    ("cirka_bytes_resize", "ptr @cirka_bytes_resize(ptr, i64)"),
     ("cirka_cycle_candidate", "void @cirka_cycle_candidate(ptr)"),
     ("cirka_cycles_enable", "void @cirka_cycles_enable()"),
     ("cirka_mark_shared", "void @cirka_mark_shared(ptr)"),
@@ -1288,6 +1289,10 @@ impl<'m> Gen<'m> {
             )),
             ArrayUnique => self.unique(c, dst, &a[0], "cirka_array_unique"),
             BytesUnique => self.unique(c, dst, &a[0], "cirka_bytes_unique"),
+            BytesResize => c.line(&format!(
+                "{dst} = call ptr @cirka_bytes_resize(ptr {}, i64 {})",
+                a[0], a[1]
+            )),
             BytesGetI64 | BytesSetI64 | BytesGetF64 | BytesSetF64 | BytesSetI64Shared
             | BytesSetF64Shared => {
                 // 8-byte words: index < len / 8.

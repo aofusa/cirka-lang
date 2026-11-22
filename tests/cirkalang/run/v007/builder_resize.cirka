@@ -1,0 +1,38 @@
+-- Large strings resized in place (FEAT-0096): the Builder grows its
+-- buffer in place and `build` cuts it to the bytes written without a
+-- copy; `readFile` reads a regular file into a string of its size, and
+-- other files (here of /proc, whose size is 0) by doubling.
+import Data.String as S
+import Data.String (Builder, toStr)
+import Std.Fs as Fs
+import Std.Process as P
+
+-- "i," for i from `i` to `n - 1`.
+nums : (1 b : Builder) -> Int -> Int -> Builder
+nums b i n = if i >= n then b else nums (S.append (S.appendInt b i) ",") (i + 1) n
+
+main : Cap FileSystem -> IO ()
+main fs = do
+  -- Over 1 MiB: the buffer is a block of mmap when it last grows.
+  let s = S.build (nums (S.builder 0) 0 200000)
+  printInt (strLength s)
+  putStrLn (S.fromStr (S.take 24 (toStr s)))
+  putStrLn (S.fromStr (S.drop (strLength s - 14) (toStr s)))
+  pid <- P.processId
+  let path = "/tmp/cirka-builder-resize-" ++ show pid ++ ".txt"
+  w <- Fs.writeFile fs path s
+  r <- Fs.readFile fs path
+  d <- Fs.removeFile fs path
+  case r of
+    Ok t => do
+      printInt (strLength t)
+      print (t == s)
+    Err e => print e
+  p <- Fs.readFile fs "/proc/self/status"
+  case p of
+    Ok t => print (S.startsWith (toStr t) "Name:")
+    Err e => print e
+  -- Small builders: an empty one, one with spare room, one grown twice.
+  printInt (strLength (S.build (S.builder 0)))
+  putStrLn (S.build (S.append (S.builder 100) "abc"))
+  putStrLn (S.build (S.append (S.append (S.builder 0) "0123456789abcdefghij") "klmnopqrstuvwxyz0123456789"))

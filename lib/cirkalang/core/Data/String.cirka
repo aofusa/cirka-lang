@@ -19,6 +19,9 @@ private prim primStrRangeEq : String -> Int -> String -> Int -> Int -> Bool
 private prim primStrNew : Int -> Unique String
 private prim primStrWrite : (1 u : Unique String) -> Int -> String -> Int -> Int -> Unique String
 private prim primStrSetByte : (1 u : Unique String) -> Int -> Int -> Unique String
+-- `u` with `n` bytes (the first ones kept, those added 0), in place when
+-- the allocator can (FEAT-0096).
+private prim primStrResize : (1 u : Unique String) -> Int -> Unique String
 private prim primStrIndexProved : String -> Int -> Int
 
 -- `MkStr s i j` is the bytes `[i, j)` of `s`.
@@ -373,19 +376,25 @@ data Builder : LType where
 builder : Int -> Builder
 builder cap = let c = if cap < 16 then 16 else cap in MkBuilder (primStrNew c) 0 c
 
--- The text built (one copy of the bytes).
+-- The text built: the buffer cut to the bytes written, in place.
 build : (1 b : Builder) -> String
-build (MkBuilder buf n cap) = primStrSlice (freeze buf) 0 n
+build (MkBuilder buf n cap) = freeze (primStrResize buf n)
 
--- Room for `k` more bytes. (Recursive, so it stays a call whose result
--- is returned unboxed, instead of being inlined into every append with
--- its rarely taken growing path.)
+-- Room for `k` more bytes: the test is inlined into every append, the
+-- growing (`grow`) stays a call.
 private reserve : (1 b : Builder) -> Int -> Builder
 reserve (MkBuilder buf n cap) k =
+  if n + k <= cap then MkBuilder buf n cap else grow (MkBuilder buf n cap) k
+
+-- Doubles the capacity (or more, to fit `k` more bytes), in place when the
+-- allocator can. (Recursive, so it stays a call whose result is returned
+-- unboxed instead of being inlined into every append.)
+private grow : (1 b : Builder) -> Int -> Builder
+grow (MkBuilder buf n cap) k =
   if n + k <= cap then MkBuilder buf n cap
   else
     let c2 = if cap * 2 >= n + k then cap * 2 else n + k in
-    reserve (MkBuilder (primStrWrite (primStrNew c2) 0 (freeze buf) 0 n) n c2) k
+    grow (MkBuilder (primStrResize buf c2) n c2) k
 
 append : (1 b : Builder) -> String -> Builder
 append b s = appendRange b s 0 (strLength s)

@@ -494,3 +494,45 @@ fn byte_copy_search_and_compare() {
         cirka_drop(t);
     }
 }
+
+#[test]
+fn bytes_resize_in_place_and_by_copy() {
+    use crate::bytes::cirka_bytes_resize;
+    let _g = crate::test_lock();
+    // SAFETY: fresh BYTES objects owned by the test; each resize consumes
+    // its argument and returns the object to use instead.
+    unsafe {
+        let s = crate::cirka_bytes_new(3);
+        core::ptr::copy_nonoverlapping(b"abc".as_ptr(), word(s, 1) as *mut u8, 3);
+        // A small object grows out of the region; then a large one, beyond
+        // what malloc serves by mmap, grows in place.
+        let s = cirka_bytes_resize(s, 1000);
+        assert_eq!(&crate::io::bytes_of(s)[..4], b"abc\0");
+        assert!(crate::io::bytes_of(s)[3..].iter().all(|&b| b == 0));
+        *(word(s, 1) as *mut u8).add(999) = b'z';
+        let s = cirka_bytes_resize(s, 4 << 20);
+        let b = crate::io::bytes_of(s);
+        assert_eq!(
+            (b.len(), &b[..3], b[999], b[(4 << 20) - 1]),
+            (4 << 20, &b"abc"[..], b'z', 0)
+        );
+        // Shrinking keeps the first bytes (the memory too, unless less
+        // than half is still used); a negative size is empty.
+        let s = cirka_bytes_resize(s, 3 << 20);
+        assert_eq!(crate::io::bytes_of(s).len(), 3 << 20);
+        let s = cirka_bytes_resize(s, 2);
+        assert_eq!(crate::io::bytes_of(s), b"ab");
+        // A shared object is copied; the original keeps its bytes.
+        cirka_dup(s);
+        let t = cirka_bytes_resize(s, 4);
+        assert_ne!(s, t);
+        assert_eq!(
+            (crate::io::bytes_of(s), crate::io::bytes_of(t)),
+            (&b"ab"[..], &b"ab\0\0"[..])
+        );
+        let t = cirka_bytes_resize(t, -1);
+        assert_eq!(crate::io::bytes_of(t), b"");
+        cirka_drop(s);
+        cirka_drop(t);
+    }
+}

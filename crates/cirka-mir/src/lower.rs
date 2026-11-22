@@ -1199,6 +1199,7 @@ impl<'p> Lowerer<'p> {
             PrimOp::BytesGetF => P::BytesGetF64,
             PrimOp::BytesSetF => P::BytesSetF64,
             PrimOp::BytesUnique => P::BytesUnique,
+            PrimOp::BytesResize => P::BytesResize,
             PrimOp::ArraySetShared => P::ArraySetShared,
             PrimOp::BytesSet64Shared => P::BytesSetI64Shared,
             PrimOp::BytesSetFShared => P::BytesSetF64Shared,

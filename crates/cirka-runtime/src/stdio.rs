@@ -103,6 +103,9 @@ pub unsafe extern "C" fn cirka_fs_remove(path: Obj) -> i64 {
 /// reads through the stdin buffer shared with `readInt`.
 #[unsafe(no_mangle)]
 pub extern "C" fn cirka_fd_read(fd: i64, max: i64) -> Obj {
+    if max < 0 && fd != 0 {
+        return read_all(fd as i32);
+    }
     let mut cap = if max < 0 { 4096 } else { (max as usize).max(1) };
     // SAFETY: malloc'ed buffer of `cap` bytes, grown by copying.
     unsafe {
@@ -153,6 +156,62 @@ pub extern "C" fn cirka_fd_read(fd: i64, max: i64) -> Obj {
         sys::free(buf as *mut c_void);
         set_errno(err);
         o
+    }
+}
+
+/// Reads `fd` to the end (FEAT-0096): a regular file into a buffer of its
+/// size (`fstat`, plus one byte so that the read seeing the end needs no
+/// room), anything else into one of 4 KiB doubled with `realloc` as it
+/// fills. The buffer is laid out as a BYTES object (header and length
+/// first), so a large result becomes the string itself without a copy;
+/// it counts as one allocation, as the string of `cirka_bytes_from` did.
+/// After a failure the string is empty and `errno` is set.
+fn read_all(fd: i32) -> Obj {
+    // SAFETY: `st` is written by `fstat`; `buf` holds 16 bytes of header
+    // and length and then `cap` bytes (rounded up to words, as for any
+    // BYTES object), of which `len` are read.
+    unsafe {
+        let mut st: sys::stat_t = core::mem::zeroed();
+        let size = if sys::fstat(fd, &mut st) == 0
+            && st.st_mode & sys::S_IFMT == sys::S_IFREG
+            && st.st_size > 0
+        {
+            st.st_size as usize
+        } else {
+            0
+        };
+        let mut cap = if size > 0 { size + 1 } else { 4096 };
+        let mut buf = sys::malloc(crate::bytes::bytes_size(cap)) as *mut u8;
+        if buf.is_null() {
+            io::fatal(b"out of memory", 251);
+        }
+        let mut len = 0usize;
+        let mut err = 0;
+        loop {
+            if len == cap {
+                cap *= 2;
+                buf = sys::realloc(buf as *mut c_void, crate::bytes::bytes_size(cap)) as *mut u8;
+                if buf.is_null() {
+                    io::fatal(b"out of memory", 251);
+                }
+            }
+            let n = sys::read(fd, buf.add(16 + len) as *mut c_void, cap - len);
+            if n < 0 {
+                let e = errno();
+                if e == EINTR {
+                    continue;
+                }
+                err = e;
+                len = 0;
+                break;
+            }
+            if n == 0 {
+                break;
+            }
+            len += n as usize;
+        }
+        set_errno(err);
+        crate::bytes::adopt(buf, cap, len)
     }
 }
 

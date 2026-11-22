@@ -1309,6 +1309,34 @@ impl<'m> Interp<'m> {
                     Val::P(self.alloc(kind::BYTES, 0, vec![], Payload::Bytes(bs), size))
                 }
             }
+            BytesResize => {
+                let Val::P(ptr) = a[0] else {
+                    return fault("bytes_resize on a non-pointer");
+                };
+                let n = i(1).max(0) as usize;
+                let size = 16 + n.div_ceil(8) * 8;
+                let o = self.obj_mut(ptr)?;
+                let Payload::Bytes(bs) = &mut o.payload else {
+                    return fault("bytes_resize on a non-bytes object");
+                };
+                if o.rc == 1 {
+                    // In place, counted as a new object and the old one
+                    // freed (as the native runtime counts it, whether it
+                    // reallocates or copies).
+                    bs.resize(n, 0);
+                    o.size = size;
+                    self.stats.allocs += 1;
+                    self.stats.max_live = self.stats.max_live.max(self.live + 1);
+                    self.stats.frees += 1;
+                    a[0]
+                } else {
+                    let mut bs = bs.clone();
+                    bs.resize(n, 0);
+                    self.stats.array_copies += 1;
+                    self.drop_val(a[0])?;
+                    Val::P(self.alloc(kind::BYTES, 0, vec![], Payload::Bytes(bs), size))
+                }
+            }
             ArrayUnique => {
                 let Val::P(p) = a[0] else {
                     return fault("array_unique on a non-pointer");

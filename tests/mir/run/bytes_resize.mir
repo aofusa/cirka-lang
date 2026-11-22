@@ -1,0 +1,54 @@
+extern fn cirka_write_i64(i64) -> void
+extern fn cirka_write_char(i64) -> void
+extern fn cirka_write_bytes(ptr) -> void
+
+// bytes_resize (FEAT-0096): a unique string grows and shrinks keeping its
+// first bytes, the bytes added being 0; a shared one is copied and the
+// original keeps its bytes. A small string grows out of the region (a
+// copy), a large one in place (realloc; mremap for a block of mmap).
+fn show(s: ptr @borrowed, i: i64) -> i64 {
+entry:
+  let b = prim bytes_get(s, i)
+  let _ = extern cirka_write_i64(b)
+  let _ = extern cirka_write_char(32)
+  ret 0
+}
+
+fn main() -> i64 {
+entry:
+  let s = prim bytes_new(2)
+  let _ = prim bytes_set(s, 0, 79)
+  let _ = prim bytes_set(s, 1, 75)
+  let t = prim bytes_resize(s, 1000)
+  let _ = call show(t, 0)
+  let _ = call show(t, 1)
+  let _ = call show(t, 999)
+  let _ = prim bytes_set(t, 999, 7)
+  let u = prim bytes_resize(t, 3000000)
+  let _ = call show(u, 1)
+  let _ = call show(u, 999)
+  let _ = call show(u, 2999999)
+  let l = prim bytes_len(u)
+  let _ = extern cirka_write_i64(l)
+  let _ = extern cirka_write_char(10)
+  let v = prim bytes_resize(u, 2)
+  let _ = extern cirka_write_bytes(v)
+  let _ = extern cirka_write_char(10)
+  dup v
+  let w = prim bytes_resize(v, 5)
+  let lv = prim bytes_len(v)
+  let lw = prim bytes_len(w)
+  let _ = extern cirka_write_i64(lv)
+  let _ = extern cirka_write_char(32)
+  let _ = extern cirka_write_i64(lw)
+  let _ = extern cirka_write_char(32)
+  let _ = call show(w, 4)
+  let _ = extern cirka_write_char(10)
+  let x = prim bytes_resize(w, -3)
+  let lx = prim bytes_len(x)
+  let _ = extern cirka_write_i64(lx)
+  let _ = extern cirka_write_char(10)
+  drop v
+  drop x
+  ret 0
+}

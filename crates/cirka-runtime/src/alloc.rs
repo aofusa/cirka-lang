@@ -23,7 +23,9 @@ use crate::tls;
 use core::ffi::c_void;
 
 pub const CLASSES: usize = 32;
-const MAX_SMALL: usize = 8 * CLASSES;
+/// The largest object served from the region (larger ones come from
+/// `malloc`).
+pub(crate) const MAX_SMALL: usize = 8 * CLASSES;
 const PAGE_SHIFT: usize = 16;
 const PAGE: usize = 1 << PAGE_SHIFT;
 const REGION: usize = 64 << 30;
@@ -112,7 +114,7 @@ fn add_stats(t: &mut Stats, s: &Stats) {
 /// Counts an allocation. A thread that frees objects of other threads may
 /// have freed more than it allocated: `live` is then "negative" (wrapped).
 #[inline(always)]
-fn stat_alloc() {
+pub(crate) fn stat_alloc() {
     // SAFETY: this thread's statistics.
     let s = unsafe { stats() };
     s.allocs += 1;
@@ -354,10 +356,14 @@ unsafe fn refill(class: usize) {
     }
 }
 
-/// Returns an object's memory to the allocator.
+/// Returns an object's memory to the allocator. Always inlined: it is the
+/// hot end of every free (`release`, `cirka_free_raw`), and left to the
+/// inliner it stayed a call there or not depending on unrelated code in
+/// the crate (FEAT-0096: 8 % on binary-trees).
 ///
 /// # Safety
 /// `o` must have been allocated by `cirka_alloc` and be dead.
+#[inline(always)]
 pub unsafe fn dealloc(o: Obj) {
     #[cfg(feature = "debug-rt")]
     {
@@ -379,6 +385,39 @@ pub unsafe fn dealloc(o: Obj) {
         } else {
             sys::free(o as *mut c_void);
         }
+    }
+}
+
+/// Resizes the memory of `o`, an object from `malloc`, to `size` bytes
+/// with `realloc`, keeping its first bytes (glibc moves a block served by
+/// `mmap` with `mremap`: neither copying nor touching the pages again).
+/// `None` when `o` is in the region of small objects or the checked
+/// runtime tracks it: the caller then copies.
+///
+/// # Safety
+/// `o` must be a live object owned by the caller alone (no other reference
+/// to it exists, so it may move).
+pub unsafe fn resize_system(o: Obj, size: usize) -> Option<Obj> {
+    #[cfg(feature = "debug-rt")]
+    {
+        let _ = (o, size);
+        None
+    }
+    #[cfg(not(feature = "debug-rt"))]
+    // SAFETY: an object outside the region came from `malloc` / `calloc`
+    // (both allocator modes serve large objects that way, and every object
+    // in mode 2); it is not in use elsewhere.
+    unsafe {
+        let r = REGION_STATE.get();
+        let a = o as usize;
+        if r.mode == 1 && a >= r.base && a < r.base + REGION {
+            return None;
+        }
+        let p = sys::realloc(o as *mut c_void, size.max(8));
+        if p.is_null() {
+            crate::io::fatal(b"out of memory", 2);
+        }
+        Some(p as Obj)
     }
 }
 

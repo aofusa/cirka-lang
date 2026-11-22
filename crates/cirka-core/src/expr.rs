@@ -107,6 +107,10 @@ pub enum PrimOp {
     BytesSetF,
     /// `bytes_unique b`: consumes `b`; `b` itself when unique, otherwise a copy.
     BytesUnique,
+    /// `bytes_resize b n`: consumes `b`; `b` with `max(n, 0)` bytes (its
+    /// first bytes kept, those added zero), in place when `b` is unique
+    /// and the allocator can (FEAT-0096).
+    BytesResize,
     /// Stores through a mutable borrow (FEAT-0124): the object may be
     /// shared with its borrowed owner.
     ArraySetShared,
@@ -179,6 +183,7 @@ impl PrimOp {
         PrimOp::BytesGetF,
         PrimOp::BytesSetF,
         PrimOp::BytesUnique,
+        PrimOp::BytesResize,
         PrimOp::ArraySetShared,
         PrimOp::BytesSet64Shared,
         PrimOp::BytesSetFShared,
@@ -238,6 +243,7 @@ impl PrimOp {
             BytesGetF => "bytes_getf",
             BytesSetF => "bytes_setf",
             BytesUnique => "bytes_unique",
+            BytesResize => "bytes_resize",
             ArraySetShared => "array_set_shared",
             BytesSet64Shared => "bytes_set64_shared",
             BytesSetFShared => "bytes_setf_shared",
@@ -302,6 +308,7 @@ impl PrimOp {
                 (vec![Type::bytes(), i(), d()], Type::unit())
             }
             BytesUnique => (vec![Type::bytes()], Type::bytes()),
+            BytesResize => (vec![Type::bytes(), i()], Type::bytes()),
             PtrEq => (vec![elem.clone(), elem], i()),
         }
     }
@@ -328,6 +335,7 @@ impl PrimOp {
                 | BytesGetF
                 | BytesSetF
                 | BytesUnique
+                | BytesResize
                 | ArraySetShared
                 | BytesSet64Shared
                 | BytesSetFShared

@@ -2,7 +2,8 @@
 //! searching for a byte and comparing ranges of BYTES objects with the C
 //! library's `memmove`, `memchr` and `memcmp` (vectorized), instead of
 //! loops over one byte at a time. Ranges out of bounds panic, as the
-//! checked byte accesses they replace do.
+//! checked byte accesses they replace do. Also resizing a BYTES object in
+//! place (FEAT-0096).
 
 use crate::object::{Obj, word};
 use crate::start::panic_msg;
@@ -119,5 +120,109 @@ pub unsafe extern "C" fn cirka_bytes_eq(s: Obj, i: i64, t: Obj, j: i64, n: i64) 
             out_of_bounds();
         }
         (memcmp(at(s, i).cast(), at(t, j).cast(), n as usize) == 0) as i64
+    }
+}
+
+/// The size of the allocation of a BYTES object of `n` bytes (as
+/// `cirka_bytes_new` allocates it; a BYTES object always has at least as
+/// much memory as this for its length).
+#[inline(always)]
+pub(crate) fn bytes_size(n: usize) -> usize {
+    16 + n.div_ceil(8) * 8
+}
+
+/// `b` (consumed) with `n` bytes: its first `min(len b, n)` bytes are
+/// kept and, when `zero`, those added are 0 (otherwise they are left as
+/// they are, for a caller that writes them at once). A unique object from
+/// `malloc` is resized in place with `realloc` (FEAT-0096); a shrunk one
+/// keeps its memory unless less than half of it is still used. Otherwise
+/// the bytes go to a new object, and `b` is dropped. Resizing a unique
+/// object counts as an allocation and a free whichever way it goes, so
+/// that every runtime and the MIR interpreter count the same.
+///
+/// # Safety
+/// `b` must be a live BYTES object owned by the caller.
+pub(crate) unsafe fn resize(b: Obj, n: usize, zero: bool) -> Obj {
+    // SAFETY: `b` is a live BYTES object of `old` bytes, owned by the
+    // caller; when unique nobody else refers to it, so it may move.
+    unsafe {
+        let old = len(b) as usize;
+        let keep = old.min(n);
+        if crate::object::rc(b) == 1 {
+            if n <= old {
+                crate::alloc::stat_alloc();
+                crate::alloc::stat_free();
+                *word(b, 0) = n;
+                if bytes_size(n) < bytes_size(old) / 2
+                    && let Some(p) = crate::alloc::resize_system(b, bytes_size(n))
+                {
+                    return p;
+                }
+                return b;
+            }
+            if let Some(p) = crate::alloc::resize_system(b, bytes_size(n)) {
+                crate::alloc::stat_alloc();
+                crate::alloc::stat_free();
+                *word(p, 0) = n;
+                if zero {
+                    core::ptr::write_bytes(at(p, old as i64), 0, n - old);
+                }
+                return p;
+            }
+        } else {
+            // A copy because the string is shared (not because it grows).
+            crate::alloc::stats().array_copies += 1;
+        }
+        let o = crate::cirka_bytes_new(n as i64);
+        core::ptr::copy_nonoverlapping(at(b, 0), at(o, 0), keep);
+        crate::object::cirka_drop(b);
+        o
+    }
+}
+
+/// `bytes_resize b n` (FEAT-0096): `b` (consumed) with `max(n, 0)` bytes,
+/// its first bytes kept and those added 0; in place when `b` is unique
+/// and the allocator can.
+///
+/// # Safety
+/// `b` must be a live BYTES object owned by the caller.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cirka_bytes_resize(b: Obj, n: i64) -> Obj {
+    // SAFETY: forwarded.
+    unsafe { resize(b, n.max(0) as usize, true) }
+}
+
+/// The string of the `len` bytes at `buf + 16`, `buf` being a block of
+/// `bytes_size(cap)` bytes from `malloc` (consumed): the block itself, its
+/// header and length written, when it is large (it is then shrunk with
+/// `realloc` if less than half of it is used); otherwise (and on the
+/// checked runtime, whose objects it tracks) a copy, and the block is
+/// freed. Counts one allocation.
+///
+/// # Safety
+/// `buf` must come from `malloc` with `bytes_size(cap)` bytes, `len <= cap`.
+pub(crate) unsafe fn adopt(buf: *mut u8, cap: usize, len: usize) -> Obj {
+    // SAFETY: as documented; a block outside the region is freed with
+    // `free` (`dealloc`), as every large object is.
+    unsafe {
+        if cfg!(feature = "debug-rt") || bytes_size(len) <= crate::alloc::MAX_SMALL {
+            let o = crate::cirka_bytes_from(buf.add(16), len);
+            crate::sys::free(buf as *mut c_void);
+            return o;
+        }
+        let mut o = buf as Obj;
+        if bytes_size(len) < bytes_size(cap) / 2 {
+            let p = crate::sys::realloc(buf as *mut c_void, bytes_size(len));
+            if !p.is_null() {
+                o = p as Obj;
+            }
+        }
+        (*o).rc = 1;
+        (*o).tag = 0;
+        (*o).nptr = 0;
+        (*o).kind = crate::object::BYTES;
+        *word(o, 0) = len;
+        crate::alloc::stat_alloc();
+        o
     }
 }
