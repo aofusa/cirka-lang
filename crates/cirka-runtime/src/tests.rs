@@ -453,3 +453,44 @@ fn objects_freed_by_another_thread() {
     assert_eq!(after.allocs - before.allocs, 10_000);
     assert_eq!(after.frees - before.frees, 10_000);
 }
+
+/// The byte string operations of the support library (FEAT-0095).
+#[test]
+fn byte_copy_search_and_compare() {
+    use crate::bytes::*;
+    let _g = crate::test_lock();
+    // A BYTES object holding `s`.
+    let mk = |s: &[u8]| {
+        let o = crate::cirka_bytes_new(s.len() as i64);
+        // SAFETY: a fresh BYTES object has room for `s.len()` bytes after
+        // its length word.
+        unsafe { core::ptr::copy_nonoverlapping(s.as_ptr(), word(o, 1) as *mut u8, s.len()) };
+        o
+    };
+    unsafe {
+        let s = mk(b"item7 tag7 \n");
+        let t = mk(b"..........");
+        // Copies, also within one object (the ranges may overlap).
+        assert_eq!(cirka_bytes_copy(t, 2, s, 0, 5), 0);
+        assert_eq!(crate::io::bytes_of(t), b"..item7...");
+        cirka_bytes_copy(t, 3, t, 2, 5);
+        assert_eq!(crate::io::bytes_of(t), b"..iitem7..");
+        cirka_bytes_copy(t, 0, s, 0, 0);
+        cirka_bytes_copy(t, 0, s, 100, -1);
+        assert_eq!(crate::io::bytes_of(t), b"..iitem7..");
+        // The first index of a byte in a range; -1 when absent, for an
+        // empty range and for a value that is no byte.
+        assert_eq!(cirka_bytes_index(s, b'7' as i64, 0, 12), 4);
+        assert_eq!(cirka_bytes_index(s, b'7' as i64, 5, 12), 9);
+        assert_eq!(cirka_bytes_index(s, b'7' as i64, 5, 9), -1);
+        assert_eq!(cirka_bytes_index(s, b'\n' as i64, 3, 3), -1);
+        assert_eq!(cirka_bytes_index(s, b'7' as i64 + 256, 0, 12), -1);
+        // Ranges compared.
+        assert_eq!(cirka_bytes_eq(s, 6, t, 3, 3), 0);
+        assert_eq!(cirka_bytes_eq(s, 0, t, 3, 5), 1);
+        assert_eq!(cirka_bytes_eq(s, 1, s, 6, 1), 1);
+        assert_eq!(cirka_bytes_eq(s, 50, t, 50, 0), 1);
+        cirka_drop(s);
+        cirka_drop(t);
+    }
+}

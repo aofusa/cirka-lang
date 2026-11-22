@@ -10,6 +10,7 @@
 
 pub mod alloc;
 pub mod bigint;
+pub mod bytes;
 pub mod callback;
 pub mod cycles;
 pub mod debug;

@@ -1,0 +1,32 @@
+-- Byte-level string operations through memchr, memcmp and memmove
+-- (FEAT-0095): searches that match at the ends of a view or only in part,
+-- empty and too long patterns, comparisons of slices, and a builder grown
+-- by many appends (each growth copies what was built so far).
+import Data.String as S
+import Data.String (Str, Builder, toStr)
+
+-- `k` appends of "ab" and the decimal digits of the index.
+grow : (1 b : Builder) -> Int -> Int -> Builder
+grow b i k = if i >= k then b else grow (S.appendInt (S.append b "ab") i) (i + 1) k
+
+main : IO ()
+main = do
+  let t = toStr "tag tag7 xtag7\nabc tag\n\ntag7"
+  putStrLn (show (S.lines t))
+  putStrLn (show (S.indexOf t "tag7"))
+  putStrLn (show (S.indexOf t "tag8"))
+  putStrLn (show (S.indexOf t ""))
+  putStrLn (show (S.indexOf (toStr "tag") "tag7"))
+  putStrLn (show (S.indexOfChar t '7'))
+  putStrLn (show (S.contains (S.slice t 0 7) "tag7"))
+  putStrLn (show (S.contains (S.slice t 4 8) "tag7"))
+  putStrLn (show (S.contains (S.slice t 10 14) "tag7"))
+  putStrLn (show (S.splitOn "tag" (toStr "xtagytagtag")))
+  putStrLn (show (S.slice t 9 14 == toStr "xtag7"))
+  putStrLn (show (S.slice t 9 14 == toStr "xtag8"))
+  putStrLn (show (S.startsWith t "tag t"))
+  putStrLn (show (S.endsWith t "\ntag7"))
+  let built = S.build (grow (S.builder 0) 0 1000)
+  printInt (strLength built)
+  putStrLn (show (S.indexOf (toStr built) "ab999"))
+  putStrLn (show (S.take 12 (toStr built)))

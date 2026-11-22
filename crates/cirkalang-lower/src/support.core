@@ -19,6 +19,11 @@
 (extern cirka_bytes_fill (Bytes Int#) Int#)
 (extern cirka_bytes_addr (Bytes) Int#)
 (extern cirka_bytes_touch (Bytes) Int#)
+; Copying, byte search and comparison with memmove / memchr / memcmp
+; (FEAT-0095).
+(extern cirka_bytes_copy (Bytes Int# Bytes Int# Int#) Int#)
+(extern cirka_bytes_index (Bytes Int# Int# Int#) Int#)
+(extern cirka_bytes_eq (Bytes Int# Bytes Int# Int#) Int#)
 ; Regions (spec-v0.0.3.md §3).
 (extern cirka_region_new () Any)
 (extern cirka_region_free (Any) Int#)
@@ -56,13 +61,10 @@
 
 ; ---- strings (Bytes) ----
 
+; a[i..n] == b[i..n] (1 or 0), both at least n long.
 (def cirka$bytes_eq_loop (-> Bytes Bytes Int# Int# Int#)
   (lam ((a Bytes) (b Bytes) (i Int#) (n Int#))
-    (case (prim lt i n) (c Int#) Int#
-      (0 1)
-       (_ (case (prim eq (prim bytes_get a i) (prim bytes_get b i)) (d Int#) Int#
-            (0 0)
-             (_ (cirka$bytes_eq_loop a b (prim add i 1) n)))))))
+    (extern cirka_bytes_eq a i b i (prim sub n i))))
 
 (def cirka$bytes_eq (-> Bytes Bytes Int#)
   (lam ((a Bytes) (b Bytes))
@@ -75,10 +77,8 @@
 ; threaded through the result so it stays unique for `bytes_set`.
 (def cirka$bytes_copy (-> Bytes Bytes Int# Int# Int# Bytes)
   (lam ((dst Bytes) (src Bytes) (off Int#) (i Int#) (n Int#))
-    (case (prim lt i n) (c Int#) Bytes
-      (0 dst)
-       (_ (let! (u Unit# (prim bytes_set dst (prim add off i) (prim bytes_get src i)))
-            (cirka$bytes_copy dst src off (prim add i 1) n))))))
+    (let! (u Int# (extern cirka_bytes_copy dst (prim add off i) src i (prim sub n i)))
+      dst)))
 
 (def cirka$bytes_concat (-> Bytes Bytes Bytes)
   (lam ((a Bytes) (b Bytes))
@@ -179,10 +179,8 @@
 ; Copies src[i..i+n] to dst[off..] and returns dst.
 (def cirka$bytes_copy_at (-> Bytes Int# Bytes Int# Int# Bytes)
   (lam ((dst Bytes) (off Int#) (src Bytes) (i Int#) (n Int#))
-    (case (prim lt 0 n) (c Int#) Bytes
-      (0 dst)
-       (_ (let! (u Unit# (prim bytes_set dst off (prim bytes_get src i)))
-            (cirka$bytes_copy_at dst (prim add off 1) src (prim add i 1) (prim sub n 1)))))))
+    (let! (u Int# (extern cirka_bytes_copy dst off src i n))
+      dst)))
 
 ; A copy of s[i..j], with i and j clamped to the string.
 (def cirka$bytes_slice (-> Bytes Int# Int# Bytes)
@@ -192,13 +190,10 @@
         (let! (b Int# (cirka$clamp j a n))
           (cirka$bytes_copy_at (prim bytes_new (prim sub b a)) 0 s a (prim sub b a)))))))
 
+; The first index in [i, j) of byte b, or -1.
 (def cirka$bytes_find_byte_loop (-> Bytes Int# Int# Int# Int#)
   (lam ((s Bytes) (b Int#) (i Int#) (j Int#))
-    (case (prim lt i j) (c Int#) Int#
-      (0 -1)
-       (_ (case (prim eq (prim bytes_get s i) b) (d Int#) Int#
-            (0 (cirka$bytes_find_byte_loop s b (prim add i 1) j))
-             (_ i))))))
+    (extern cirka_bytes_index s b i j)))
 
 ; The first index in [i, j) (clamped) of byte b, or -1.
 (def cirka$bytes_find_byte (-> Bytes Int# Int# Int# Int#)
@@ -207,13 +202,10 @@
       (let! (a Int# (cirka$clamp i 0 n))
         (cirka$bytes_find_byte_loop s b a (cirka$clamp j a n))))))
 
+; s[i..i+n] == t[j..j+n] (1 or 0) for ranges in bounds.
 (def cirka$bytes_range_eq_loop (-> Bytes Int# Bytes Int# Int# Int#)
   (lam ((s Bytes) (i Int#) (t Bytes) (j Int#) (n Int#))
-    (case (prim lt 0 n) (c Int#) Int#
-      (0 1)
-       (_ (case (prim eq (prim bytes_get s i) (prim bytes_get t j)) (d Int#) Int#
-            (0 0)
-             (_ (cirka$bytes_range_eq_loop s (prim add i 1) t (prim add j 1) (prim sub n 1))))))))
+    (extern cirka_bytes_eq s i t j n)))
 
 ; s[i..i+n] == t[j..j+n] (0 when a range is out of bounds).
 (def cirka$bytes_range_eq (-> Bytes Int# Bytes Int# Int# Int#)

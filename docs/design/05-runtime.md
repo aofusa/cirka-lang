@@ -70,6 +70,11 @@ int64_t cirka_region_cell(void* r, void* v);     // v (借用) を持つ新し�
 void*   cirka_region_get(int64_t cell);          // セルの値 (呼び出し側の参照)
 int64_t cirka_region_set(int64_t cell, void* v); // セルの値を v (借用) に置き換え、古い値を drop
 void*  cirka_bytes_unique(void* b);              // 同上 (BYTES)
+
+// バイト列の操作 (FEAT-0095)。範囲は入口で 1 回検査し、外れていれば panic ("index out of bounds")
+int64_t cirka_bytes_copy(void* dst, int64_t off, void* src, int64_t i, int64_t n); // memmove。dst は一意 (書き込み中)
+int64_t cirka_bytes_index(void* s, int64_t b, int64_t i, int64_t j);  // memchr。[i, j) で最初の b の位置、なければ -1
+int64_t cirka_bytes_eq(void* s, int64_t i, void* t, int64_t j, int64_t n); // memcmp。等しければ 1
 void*  cirka_apply_n(void* fun, size_t n, void** args);   // 未知関数の適用 (eval/apply)
 
 // 並行性 (§9、FEAT-0045)。ポインタ引数は借用

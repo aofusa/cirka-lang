@@ -134,6 +134,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0092](features/FEAT-0092-strict-arrays.md) | 正格な配列 (要素を評価してから格納し、読み出しで force しない) | done | P1 | 0091 |
 | [FEAT-0093](features/FEAT-0093-exhaustive-switch.md) | すべての構成子を覆う switch の既定の腕をなくす | done | P1 | 0091 |
 | [FEAT-0094](features/FEAT-0094-literal-loop-unrolling.md) | リテラルの範囲のループの展開 (固定の回数のループを添字が定数の直線のコードにする) | done | P1 | 0091 |
+| [FEAT-0095](features/FEAT-0095-libc-byte-ops.md) | 文字列のバイト操作 (コピー・バイトの探索・範囲の比較) を C ライブラリで行う | done | P1 | 0091 |
 
 
 ## aCHC

@@ -1672,6 +1672,57 @@ impl<'m> Interp<'m> {
                     Err(e) => Err(Exit::Panic(file_error(&path, "withFile", &e))),
                 }
             }
+            // Byte string operations of the support library (FEAT-0095).
+            "cirka_bytes_copy" => {
+                let (off, i, n) = (a[1].int(), a[3].int(), a[4].int());
+                if n <= 0 {
+                    return Ok(Val::I(0));
+                }
+                let fits = |i: i64, len: usize| i >= 0 && n <= len as i64 - i;
+                let src = self.bytes(a[2])?;
+                if !fits(i, src.len()) {
+                    return Err(Exit::Panic("index out of bounds".into()));
+                }
+                let chunk = src[i as usize..(i + n) as usize].to_vec();
+                let Val::P(p) = a[0] else {
+                    return fault("expected a bytes object");
+                };
+                match &mut self.obj_mut(p)?.payload {
+                    Payload::Bytes(d) if fits(off, d.len()) => {
+                        d[off as usize..(off + n) as usize].copy_from_slice(&chunk);
+                        Ok(Val::I(0))
+                    }
+                    Payload::Bytes(_) => Err(Exit::Panic("index out of bounds".into())),
+                    _ => fault("expected a bytes object"),
+                }
+            }
+            "cirka_bytes_index" => {
+                let (b, i, j) = (a[1].int(), a[2].int(), a[3].int());
+                if i >= j {
+                    return Ok(Val::I(-1));
+                }
+                let s = self.bytes(a[0])?;
+                if i < 0 || j > s.len() as i64 {
+                    return Err(Exit::Panic("index out of bounds".into()));
+                }
+                let found = s[i as usize..j as usize]
+                    .iter()
+                    .position(|&x| i64::from(x) == b);
+                Ok(Val::I(found.map_or(-1, |k| i + k as i64)))
+            }
+            "cirka_bytes_eq" => {
+                let (i, j, n) = (a[1].int(), a[3].int(), a[4].int());
+                if n <= 0 {
+                    return Ok(Val::I(1));
+                }
+                let fits = |i: i64, len: usize| i >= 0 && n <= len as i64 - i;
+                let (s, t) = (self.bytes(a[0])?, self.bytes(a[2])?);
+                if !fits(i, s.len()) || !fits(j, t.len()) {
+                    return Err(Exit::Panic("index out of bounds".into()));
+                }
+                let eq = s[i as usize..(i + n) as usize] == t[j as usize..(j + n) as usize];
+                Ok(Val::I(eq as i64))
+            }
             "cirka_bytes_store" => {
                 let b = self.bytes(a[0])?.clone();
                 crate::ffi::bytes_store(a[1].int(), &b)
