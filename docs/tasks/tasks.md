@@ -132,6 +132,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0090](features/FEAT-0090-case-of-case-linear.md) | 線形な値を返す case の case-of-case (`Std.Session` の `offer` の確保) | done | P2 | FEAT-0262 |
 | [FEAT-0091](features/FEAT-0091-beat-rust.md) | Rust を上回る性能 (Rust より遅い題材の原因の調査と改善) | in-progress | P1 | 0263 |
 | [FEAT-0092](features/FEAT-0092-strict-arrays.md) | 正格な配列 (要素を評価してから格納し、読み出しで force しない) | done | P1 | 0091 |
+| [FEAT-0093](features/FEAT-0093-exhaustive-switch.md) | すべての構成子を覆う switch の既定の腕をなくす | done | P1 | 0091 |
 
 
 ## aCHC

@@ -506,6 +506,23 @@ impl<'m> Gen<'m> {
         c.label(&done);
     }
 
+    /// Whether the arms of a switch are every constructor of one type.
+    fn covers_all_ctors(&self, arms: &[(Case, BlockId)]) -> bool {
+        let Some((Case::Ctor(first), _)) = arms.first() else {
+            return false;
+        };
+        let mut seen = vec![false; self.m.types[first.ty as usize].ctors.len()];
+        for (case, _) in arms {
+            match case {
+                Case::Ctor(c) if c.ty == first.ty && (c.ctor as usize) < seen.len() => {
+                    seen[c.ctor as usize] = true;
+                }
+                _ => return false,
+            }
+        }
+        seen.iter().all(|s| *s)
+    }
+
     fn emit_panic(&mut self, c: &mut FnCtx<'_>, msg: &str) {
         let (g, len) = self.panic_msg(msg);
         c.line(&format!("call void @cirka_panic(ptr {g}, i64 {len})"));
@@ -1391,6 +1408,24 @@ impl<'m> Gen<'m> {
                 default,
             } => {
                 let s = var(*scrut);
+                // A switch over every constructor of a type cannot miss:
+                // its last arm takes the default, so one constructor needs
+                // no test of the tag (FEAT-0093). The checking runtime keeps
+                // the panic, which catches an unevaluated scrutinee.
+                let (arms, default) = match (default, arms.split_last()) {
+                    (None, Some((last, rest)))
+                        if !self.opts.debug_rt && self.covers_all_ctors(arms) =>
+                    {
+                        (rest, Some(&last.1))
+                    }
+                    _ => (&arms[..], default.as_ref()),
+                };
+                if arms.is_empty()
+                    && let Some(d) = default
+                {
+                    c.line(&format!("br label %{}", bb_label(d.0 as usize)));
+                    return;
+                }
                 let dflt = match default {
                     Some(d) => bb_label(d.0 as usize),
                     None => self.fresh_label("sw.none"),
@@ -1892,6 +1927,77 @@ entry:
             ir.lines()
                 .any(|l| l.contains("load i16") && l.ends_with("!tbaa !5")),
             "{ir}"
+        );
+    }
+
+    /// A switch over every constructor (FEAT-0093) has no default to
+    /// panic in: one constructor needs no test of the tag. An incomplete
+    /// switch and the checking runtime keep the panic.
+    #[test]
+    fn exhaustive_switches_need_no_default() {
+        let src = "type B { B = 0 { x: i64 } }
+type L { Nil = 0 {}, Cons = 1 { h: i64, t: ptr } }
+
+fn get(b: ptr @borrowed) -> i64 {
+entry:
+  switch b { B.B => one }
+one:
+  let x = proj b B.B.x
+  ret x
+}
+
+fn head(l: ptr @borrowed) -> i64 {
+entry:
+  switch l { L.Cons => cons }
+cons:
+  let h = proj l L.Cons.h
+  ret h
+}
+
+fn main() -> i64 {
+entry:
+  let b = alloc B.B(7)
+  let r = call get(b)
+  drop b
+  ret r
+}
+";
+        let m = cirka_mir::parse::parse(cirka_diagnostics::FileId(0), src).unwrap();
+        // The definition of the function `name` in `ir`.
+        let func = |ir: &str, name: &str| -> String {
+            let sig = format!("@\"_C{}{name}\"(", name.len());
+            let start = ir
+                .lines()
+                .position(|l| l.starts_with("define") && l.contains(&sig))
+                .unwrap();
+            ir.lines()
+                .skip(start)
+                .take_while(|l| *l != "}")
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let ir = emit(&m, Options::default());
+        let get = func(&ir, "get");
+        assert!(
+            !get.contains("load i16") && !get.contains("switch"),
+            "{get}"
+        );
+        assert!(!get.contains("cirka_panic"), "{get}");
+        // `head` covers `Cons` only: a `Nil` panics.
+        let head = func(&ir, "head");
+        assert!(head.contains("switch i16"), "{head}");
+        assert!(head.contains("cirka_panic"), "{head}");
+        let checked = emit(
+            &m,
+            Options {
+                debug_rt: true,
+                ..Options::default()
+            },
+        );
+        let get = func(&checked, "get");
+        assert!(
+            get.contains("switch i16") && get.contains("cirka_panic"),
+            "{get}"
         );
     }
 

@@ -21,7 +21,7 @@
 | `drop x` | インライン: `rc > 1 → store rc-1`、`rc == 1 → call @cirka_free_object`、`rc < 0 → call @cirka_dec_ref_slow` |
 | `dup y₁..yₖ; drop x` / `dup y₁..yₖ; let t = drop_reuse x` (yᵢ は x のフィールドの射影) | **drop 特殊化**: `rc(x) == 1` なら dup と対応するフィールドの drop を打ち消し、残りのポインタフィールドだけ drop して `x` のセルを解放 (または再利用トークンにする)。そうでなければ yᵢ を dup して x を drop |
 | `alloc` | インライン: スレッドローカルなフリーリストから pop、空なら `call @cirka_alloc`。ヘッダを store |
-| `switch` | `switch i16 tag` (ヘッダの tag を load) |
+| `switch` | `switch i16 tag` (ヘッダの tag を load)。既定の腕がなければ既定の行き先は `panic`。ただし腕が型のすべての構成子を覆うとき (Core → MIR は網羅的でない照合に明示の `panic` の腕を付ける) は最後の腕を既定の行き先にし、腕が 1 つなら tag を読まず無条件に分岐する。検査付きのランタイム (`debug_rt`) では `panic` を残す (FEAT-0093) |
 | `force` | `kind == THUNK/IND` の判定をインライン、評価が必要な場合のみ `call @cirka_force` |
 
 - 属性・メタデータ (FEAT-0058、16-performance.md §3): 生成するすべての関数に `nounwind` (panic=abort の間)。オブジェクトのヘッダ (RC・タグ) と
