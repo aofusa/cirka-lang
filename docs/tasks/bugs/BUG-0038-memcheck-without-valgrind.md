@@ -1,6 +1,6 @@
 # BUG-0038: `scripts/memcheck.sh` が実行テストを valgrind の下で走らせていない
 
-- 状態: todo
+- 状態: in-progress
 - 重大度: major
 - 発見箇所: FEAT-0096 (新しいランタイムの経路を valgrind で確かめようとしたとき)
 - 関連: FEAT-0004, FEAT-0013, FEAT-0096
@@ -33,9 +33,11 @@ FEAT-0004 で `memcheck.sh` の雛形に環境変数を置いたが、テスト�
 
 ## 修正
 
-- [ ] `CIRKA_VALGRIND=1` のとき、ネイティブの実行を `valgrind -q --error-exitcode=… --leak-check=no` で包む
-  (TSan の実行は除く。valgrind の誤りは専用の終了コードと標準エラーで判定する)
-- [ ] 回帰テスト: valgrind が誤りを報告するプログラム (範囲外の読み込み) を、包む処理が失敗として検出すること
+- [x] `CIRKA_VALGRIND=1` のとき、ネイティブの実行を `valgrind -q --error-exitcode=97 --leak-check=no` で包む
+  (`cirka_testkit::valgrind_command`。TSan の実行は除く。valgrind の誤りは専用の終了コード 97 と標準エラーの報告で判定する。
+  テストが期待する終了コードは 0・1・3 だけ)。valgrind のコマンドは `.env` の `CIRKA_VALGRIND_BIN`
+- [x] 回帰テスト (`tests/harness_selftest.rs`): 解放した領域を読む C のプログラムを、包む処理が誤りとして検出し、
+  その読み込みをしない実行は通ること (valgrind か C コンパイラがなければ飛ばす)
 - [ ] `scripts/memcheck.sh` を Docker 内で全テストに対して走らせ、見つかった誤りを直す (範囲外のものは別のバグチケットに)
 
 ## メモ

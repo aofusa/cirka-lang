@@ -398,6 +398,41 @@ pub struct RunOutput {
     pub code: i32,
 }
 
+/// The exit code of a program run by [`valgrind_command`] when valgrind
+/// found errors (no test expects it: they exit with 0, 1 or 3).
+pub const VALGRIND_ERROR_CODE: i32 = 97;
+
+/// Whether the native programs of the tests run under valgrind's memcheck
+/// (`CIRKA_VALGRIND=1`, set by `scripts/memcheck.sh`: BUG-0038).
+pub fn under_valgrind() -> bool {
+    std::env::var("CIRKA_VALGRIND").is_ok_and(|v| v == "1")
+}
+
+/// A command running `exe` under valgrind's memcheck (`CIRKA_VALGRIND_BIN`):
+/// errors (invalid reads and writes, uses of uninitialized values, bad
+/// frees) make it exit with [`VALGRIND_ERROR_CODE`]. Leaks are left to
+/// the runtime's own check (`CIRKA_LEAK_CHECK=1`).
+pub fn valgrind_command(exe: &Path) -> Command {
+    let bin = std::env::var("CIRKA_VALGRIND_BIN")
+        .ok()
+        .filter(|b| !b.is_empty())
+        .unwrap_or_else(|| "valgrind".into());
+    let mut cmd = Command::new(bin);
+    cmd.args([
+        "-q",
+        &format!("--error-exitcode={VALGRIND_ERROR_CODE}"),
+        "--leak-check=no",
+    ])
+    .arg(exe);
+    cmd
+}
+
+/// The report of a run by [`valgrind_command`] in which valgrind found
+/// errors.
+pub fn valgrind_errors(out: &RunOutput) -> Option<&str> {
+    (out.code == VALGRIND_ERROR_CODE && out.stderr.contains("==")).then_some(out.stderr.as_str())
+}
+
 /// Runs `cmd` with optional stdin, capturing output.
 pub fn run_with_stdin(mut cmd: Command, stdin: Option<&[u8]>) -> std::io::Result<RunOutput> {
     use std::io::Write;

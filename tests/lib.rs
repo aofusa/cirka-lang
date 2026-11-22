@@ -320,7 +320,14 @@ pub fn check_native_linked(
             cirka_testkit::save_failure(suite, &c.name, &[("out.ll", &ir)]);
             return Outcome::Fail(format!("opt -passes=verify failed:\n{e}"));
         }
-        let mut cmd = std::process::Command::new(&exe);
+        // Under scripts/memcheck.sh, through valgrind (BUG-0038); not with
+        // ThreadSanitizer, which instruments the program itself.
+        let memcheck = cirka_testkit::under_valgrind() && rt != RuntimeKind::Tsan;
+        let mut cmd = if memcheck {
+            cirka_testkit::valgrind_command(&exe)
+        } else {
+            std::process::Command::new(&exe)
+        };
         cmd.env("CIRKA_STATS", "1").env("CIRKA_LEAK_CHECK", "1");
         if let Some(a) = alloc {
             cmd.env("CIRKA_ALLOC", a);
@@ -337,6 +344,9 @@ pub fn check_native_linked(
         };
         if out.stderr.contains("ThreadSanitizer") {
             return Outcome::Fail(format!("[{name}] ThreadSanitizer report:\n{}", out.stderr));
+        }
+        if memcheck && let Some(report) = cirka_testkit::valgrind_errors(&out) {
+            return Outcome::Fail(format!("[{name}] valgrind reported errors:\n{report}"));
         }
         if out.stdout != reference.stdout {
             cirka_testkit::save_failure(suite, &c.name, &[("out.ll", &ir)]);
