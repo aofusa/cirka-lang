@@ -1206,15 +1206,17 @@ impl<'p> Lowerer<'p> {
         };
         let mut ops = Vec::new();
         for (i, a) in args.iter().enumerate() {
-            // Array elements are stored lazily.
-            let lazy_elem = matches!(
-                (op, i),
-                (PrimOp::ArrayNew, 1)
-                    | (
-                        PrimOp::ArraySet | PrimOp::ArraySetShared | PrimOp::ArraySetUnchecked,
-                        2
-                    )
-            );
+            // Array elements are stored lazily, unless the arrays of the
+            // program hold values (ADR-107): then they are evaluated first.
+            let lazy_elem = !self.p.strict_arrays
+                && matches!(
+                    (op, i),
+                    (PrimOp::ArrayNew, 1)
+                        | (
+                            PrimOp::ArraySet | PrimOp::ArraySetShared | PrimOp::ArraySetUnchecked,
+                            2
+                        )
+                );
             ops.push(if lazy_elem {
                 self.lazy(fb, env, a)?
             } else {
@@ -1223,7 +1225,7 @@ impl<'p> Lowerer<'p> {
         }
         let r = mp.signature().1;
         let v = fb.let_("p", r, Rhs::Prim(mp, ops));
-        if matches!(op, PrimOp::ArrayGet | PrimOp::ArrayGetUnchecked) {
+        if matches!(op, PrimOp::ArrayGet | PrimOp::ArrayGetUnchecked) && !self.p.strict_arrays {
             // Elements may be thunks.
             return Some(self.force(fb, Operand::Var(v)));
         }

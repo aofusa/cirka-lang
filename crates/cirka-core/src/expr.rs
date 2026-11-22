@@ -619,6 +619,10 @@ pub struct Program {
     /// Collect garbage cycles at run time (`--cycles=collect`,
     /// 04-memory-model.md §5). Set by the frontend; not part of the text form.
     pub collect_cycles: bool,
+    /// Array elements are values (06-ir.md §3, ADR-107): Core → MIR
+    /// evaluates an element before storing it and does not force what it
+    /// reads. Set by a strict frontend; not part of the text form.
+    pub strict_arrays: bool,
     /// The C libraries the program uses (`-l<lib>` when linking; loaded
     /// by the interpreter, 08-ffi.md §7.3). Set by the frontend; not part
     /// of the text form.

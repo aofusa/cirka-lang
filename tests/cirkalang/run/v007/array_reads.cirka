@@ -1,0 +1,38 @@
+-- max-rc-ops: 6000
+-- Reading a boxed array (FEAT-0092, ADR-107): CirkaLang arrays hold
+-- values, so a read neither forces the element nor takes a reference to
+-- it (an element that is only matched is borrowed from the array). The
+-- loops read about 5 600 elements; with a `dup` and a `drop` for each read
+-- (lazy elements), the run took 16 171 reference count operations, and
+-- now about 5 000 (those of building and freeing the array). An array of
+-- lazy values keeps them unevaluated: reading one does not force it.
+module Main
+
+import Data.Array as A
+import Data.Lazy
+
+-- The position of `key` in the sorted part `[lo, hi)` of `arr`, or -1.
+search : A.Array Int -> Int -> Int -> Int -> Int
+search arr key lo hi =
+  if lo >= hi then -1
+  else
+    let mid = lo + (hi - lo) / 2
+        x = arr A.! mid
+    in if x == key then mid
+       else if x < key then search arr key (mid + 1) hi
+       else search arr key lo mid
+
+-- The positions found for the keys 0, 7, 14, ... below 3 000, plus one,
+-- summed (a key that is not found counts 0).
+queries : A.Array Int -> Int -> Int -> Int
+queries arr k acc =
+  if k >= 3000 then acc
+  else queries arr (k + 7) (acc + search arr k 0 (A.size arr) + 1)
+
+main : IO ()
+main = do
+  let arr = A.generate 1000 (\i => 3 * i + 1)
+  printInt (A.foldl (\s, x => s + x) 0 arr)
+  printInt (queries arr 0 0)
+  let lazies = A.fromList [now 1, delay (\_ => panic "never forced"), now 3]
+  printInt (force (lazies A.! 0) + force (lazies A.! 2))

@@ -66,6 +66,27 @@ fn check_limits(c: &Case, name: &str, stderr: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The `-- max-rc-ops: N` header (FEAT-0092): the reference count operations
+/// (`dup`, `drop` and the fields dropped with an object) of the interpreter's
+/// run of the -O2 program.
+pub fn check_max_rc_ops(c: &Case, r: &cirka_mir::interp::RunResult) -> Result<(), String> {
+    let Some(limit) = c.header.get("max-rc-ops") else {
+        return Ok(());
+    };
+    let limit: u64 = limit
+        .trim()
+        .parse()
+        .map_err(|_| "bad `max-rc-ops` header".to_string())?;
+    if r.stats.rc_ops <= limit {
+        Ok(())
+    } else {
+        Err(format!(
+            "rc_ops = {}, more than max-rc-ops: {limit}",
+            r.stats.rc_ops
+        ))
+    }
+}
+
 /// Builds `m` natively with the debug and release runtimes, runs it and
 /// compares stdout, exit code and allocation counts with the interpreter's
 /// `reference` result (when `interp_ok`; otherwise the stdout and exit code

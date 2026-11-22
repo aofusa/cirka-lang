@@ -3287,3 +3287,41 @@ entry:
     assert_eq!(r.leaked, 0);
     assert_eq!(r.stats.allocs, 1, "{:?}", r.stats);
 }
+
+// ---- FEAT-0092: strict arrays ----
+
+/// Lowers a program that stores computed elements in a boxed array and reads
+/// one back, with the arrays of the program strict (ADR-107) or not; returns
+/// the printed module (before Perceus) and checks that it computes 25
+/// without leaks.
+fn array_store_and_read(strict: bool) -> String {
+    let src = "(data Int () (I# Int#))
+         (def sq (-> Int# Int) (lam ((n Int#)) (con I# () (prim mul n n))))
+         (def main Int#
+           (let! (arr (Array Int) (prim array_new (Int) 3 (sq 4)))
+             (let! (w Unit# (prim array_set (Int) arr 1 (sq 5)))
+               (case (prim array_get (Int) arr 1) (e Int) Int#
+                 ((I# v) v)))))";
+    let mut core = cirka_core::parse_program(FileId(0), src).unwrap();
+    core.strict_arrays = strict;
+    let mut m = lower::lower_program(&core).unwrap();
+    let printed = print_module(&m);
+    crate::perceus::run(&mut m);
+    let r = crate::interp::run(&m, b"", 1_000_000).unwrap();
+    assert_eq!((r.exit_code, r.leaked), (25, 0));
+    printed
+}
+
+#[test]
+fn strict_arrays_store_values_and_read_without_forcing() {
+    // Lazy elements (aCHC): the stores build thunks, the read forces.
+    let lazy = array_store_and_read(false);
+    assert!(lazy.contains("mkthunk"), "{lazy}");
+    assert!(lazy.contains("force"), "{lazy}");
+    // Strict elements (CirkaLang): the stores call `sq` first, and the read
+    // is a value.
+    let strict = array_store_and_read(true);
+    assert!(!strict.contains("mkthunk"), "{strict}");
+    assert!(!strict.contains("force"), "{strict}");
+    assert!(strict.contains("call sq(4)"), "{strict}");
+}

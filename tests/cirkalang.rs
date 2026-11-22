@@ -225,6 +225,9 @@ fn cirkalang_run() {
             reference = Some((out.mir, r));
         }
         let (m, r) = reference.unwrap();
+        if interp_ok && let Err(e) = cirka_integration::check_max_rc_ops(c, &r) {
+            return Outcome::Fail(format!("-O2: {e}"));
+        }
         // `-- same-cost-as: hand.cirka` (FEAT-0061), compared at -O2.
         let hand = |p: &std::path::Path| {
             let (core, _) = compile_cirka(p)?;

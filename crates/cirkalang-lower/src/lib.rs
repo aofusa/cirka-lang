@@ -2389,6 +2389,9 @@ impl<'a> Lower<'a> {
                 ))]);
             }
         };
+        // CirkaLang values are never thunks (`let` is strict and `Lazy a`
+        // is the constructor `Lazy#`): arrays hold values (ADR-107).
+        prog.strict_arrays = true;
         for (n, con, rep) in [
             ("Int", "I#", c::Type::int()),
             ("UInt", "W#", c::Type::int()),
