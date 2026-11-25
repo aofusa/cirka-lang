@@ -12,8 +12,8 @@
 
 use crate::object::{self, MVAR, Obj, cirka_drop, cirka_dup, cirka_mark_shared, word};
 use crate::sys;
-use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::cell::{Cell, UnsafeCell};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 /// Set by the first `spawn` and never reset.
 static MT: AtomicBool = AtomicBool::new(false);
@@ -151,6 +151,9 @@ pub const TAG_THREAD: u16 = 2;
 pub struct SyncBox {
     mutex: sys::pthread_mutex_t,
     cond: sys::pthread_cond_t,
+    /// Counts the changes that may let a waiter go on (under the mutex): a
+    /// waiter watches it before it sleeps (FEAT-0099).
+    changes: AtomicU32,
     /// `MVar` and thread handle: the value, or null when empty.
     slot: Obj,
     /// Channel: a ring buffer of `cap` slots; `len` values from `head`.
@@ -188,7 +191,47 @@ pub unsafe fn new_sync(tag: u16, slot: Obj) -> Obj {
 }
 
 /// The box's mutex, held until dropped.
-struct Locked(*mut SyncBox);
+struct Locked {
+    b: *mut SyncBox,
+    /// Whether sleeping waiters must be woken once the mutex is released.
+    notify: Cell<bool>,
+}
+
+/// How long a waiter spins with the processor's pause hint, then in all,
+/// before it sleeps on the condition variable (FEAT-0099). A thread
+/// running on another processor answers within a microsecond or two (a
+/// ping-pong over channels), while sleeping costs system calls on both
+/// sides and the scheduler's latency to wake up (several microseconds).
+const PAUSE_NS: u64 = 5_000;
+const SPIN_NS: u64 = 20_000;
+
+/// Watches `changes` until it differs from `seen` (true) or `SPIN_NS` have
+/// passed (false): with pause hints first, then giving the processor away
+/// between looks, so that a thread that would make the change on this
+/// processor can run.
+fn spin_for_change(changes: &AtomicU32, seen: u32) -> bool {
+    let changed = || changes.load(Ordering::Acquire) != seen;
+    let start = crate::evloop::now_ns();
+    loop {
+        for _ in 0..32 {
+            if changed() {
+                return true;
+            }
+            core::hint::spin_loop();
+        }
+        if crate::evloop::now_ns().wrapping_sub(start) >= PAUSE_NS {
+            break;
+        }
+    }
+    while crate::evloop::now_ns().wrapping_sub(start) < SPIN_NS {
+        if changed() {
+            return true;
+        }
+        // SAFETY: no preconditions.
+        unsafe { sys::sched_yield() };
+    }
+    changed()
+}
 
 impl Locked {
     /// # Safety
@@ -198,7 +241,10 @@ impl Locked {
         unsafe {
             let b = *word(o, 0) as *mut SyncBox;
             sys::pthread_mutex_lock(&mut (*b).mutex);
-            Locked(b)
+            Locked {
+                b,
+                notify: Cell::new(false),
+            }
         }
     }
 
@@ -207,33 +253,58 @@ impl Locked {
     #[allow(clippy::mut_from_ref)]
     fn b(&self) -> &mut SyncBox {
         // SAFETY: the box is live and its mutex is held.
-        unsafe { &mut *self.0 }
+        unsafe { &mut *self.b }
     }
 
-    /// Waits for a change by another thread. In a process with one thread
-    /// nothing can change: GHC's `BlockedIndefinitelyOnMVar`. The mutex is
-    /// released first: the exit sequence (the leak check) visits the box.
+    /// Waits for a change by another thread; callers test their condition
+    /// again after it returns. The mutex is released while the thread
+    /// watches the box for a change (FEAT-0099), then the thread sleeps on
+    /// the condition variable unless the change came. A change is counted
+    /// under the mutex, which is held from the last look to the sleep, so
+    /// none is missed. In a process with one thread nothing can change:
+    /// GHC's `BlockedIndefinitelyOnMVar`. The mutex is released first: the
+    /// exit sequence (the leak check) visits the box.
     fn wait(&self) {
+        let b = self.b;
         if !is_mt() {
             // SAFETY: the mutex is held by this thread; `panic_msg` does not
             // return, so the guard never unlocks it again.
-            unsafe { sys::pthread_mutex_unlock(&mut (*self.0).mutex) };
+            unsafe { sys::pthread_mutex_unlock(&mut (*b).mutex) };
             crate::start::panic_msg(b"thread blocked indefinitely in an MVar operation");
         }
-        // SAFETY: the mutex is held by this thread.
-        unsafe { sys::pthread_cond_wait(&mut (*self.0).cond, &mut (*self.0).mutex) };
+        // SAFETY: the box is live and its mutex is held by this thread; it
+        // is held again when this returns.
+        unsafe {
+            let seen = (*b).changes.load(Ordering::Relaxed);
+            sys::pthread_mutex_unlock(&mut (*b).mutex);
+            let changed = spin_for_change(&(*b).changes, seen);
+            sys::pthread_mutex_lock(&mut (*b).mutex);
+            if !changed && (*b).changes.load(Ordering::Relaxed) == seen {
+                sys::pthread_cond_wait(&mut (*b).cond, &mut (*b).mutex);
+            }
+        }
     }
 
+    /// Lets the waiters go on: counts the change now, and wakes the
+    /// sleeping ones once the mutex is released (woken before, they would
+    /// block on the mutex at once).
     fn wake(&self) {
-        // SAFETY: a live condition variable.
-        unsafe { sys::pthread_cond_broadcast(&mut (*self.0).cond) };
+        // SAFETY: the box is live and its mutex is held.
+        unsafe { (*self.b).changes.fetch_add(1, Ordering::Release) };
+        self.notify.set(true);
     }
 }
 
 impl Drop for Locked {
     fn drop(&mut self) {
-        // SAFETY: the mutex is held by this thread.
-        unsafe { sys::pthread_mutex_unlock(&mut (*self.0).mutex) };
+        // SAFETY: the mutex is held by this thread. The caller borrows the
+        // object, so the box is still live after the mutex is released.
+        unsafe {
+            sys::pthread_mutex_unlock(&mut (*self.b).mutex);
+            if self.notify.get() {
+                sys::pthread_cond_broadcast(&mut (*self.b).cond);
+            }
+        }
     }
 }
 

@@ -209,7 +209,7 @@ struct Loop {
 const NO_TIMER: u32 = u32::MAX;
 
 /// Nanoseconds of the monotonic clock.
-fn now_ns() -> u64 {
+pub(crate) fn now_ns() -> u64 {
     let mut ts = sys::timespec {
         tv_sec: 0,
         tv_nsec: 0,

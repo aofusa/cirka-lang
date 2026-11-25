@@ -276,6 +276,59 @@ fn mvar_and_channel_between_threads() {
     }
 }
 
+/// A ping-pong over two channels: each side waits for the other, first
+/// watching the box, then sleeping (FEAT-0099). The answers come quickly
+/// (caught while watching) and, at the end, after the waiter slept: no
+/// change is missed either way.
+#[test]
+fn ping_pong_between_threads() {
+    use crate::sync::*;
+    let _g = crate::test_lock();
+    set_mt();
+    unsafe {
+        let up = cirka_chan_new();
+        let down = cirka_chan_new();
+        cirka_mark_shared(up);
+        cirka_mark_shared(down);
+        let (uu, du) = (up as usize, down as usize);
+        let t = std::thread::spawn(move || {
+            let (up, down) = (uu as Obj, du as Obj);
+            loop {
+                let v = cirka_chan_recv(up);
+                let x = *word(v, 0);
+                cirka_drop(v);
+                if x == usize::MAX {
+                    break;
+                }
+                if x == 9_999 {
+                    // Longer than the waiter watches: it sleeps.
+                    std::thread::sleep(std::time::Duration::from_millis(30));
+                }
+                let r = con(0, &[x + 1], 0);
+                cirka_chan_send(down, r);
+                cirka_drop(r);
+            }
+            crate::alloc::thread_exit();
+        });
+        let mut sum = 0;
+        for i in 0..10_000 {
+            let v = con(0, &[i], 0);
+            cirka_chan_send(up, v);
+            cirka_drop(v);
+            let r = cirka_chan_recv(down);
+            sum += *word(r, 0);
+            cirka_drop(r);
+        }
+        assert_eq!(sum, 10_000 * 10_001 / 2);
+        let stop = con(0, &[usize::MAX], 0);
+        cirka_chan_send(up, stop);
+        cirka_drop(stop);
+        t.join().unwrap();
+        cirka_drop(up);
+        cirka_drop(down);
+    }
+}
+
 /// A shared thunk forced by several threads at once is evaluated by one of
 /// them; the others wait and all get the same value.
 #[test]
