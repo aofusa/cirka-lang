@@ -1,0 +1,26 @@
+-- max-allocs: 8
+-- `++` with an empty side is the other side, not a copy, and an empty
+-- slice is the static empty string (FEAT-1003). The strings are made at
+-- run time, so that the simplifier does not fold them. `max-allocs` is
+-- the count with this rule: each concatenation with an empty side or
+-- empty slice that copied would add one.
+import Data.String as S
+import Data.String (toStr)
+
+join3 : String -> String -> String -> String
+join3 a b c = a ++ b ++ c
+
+main : IO ()
+main = do
+  let a = show 12345
+  let e = S.fromStr (S.drop 5 (toStr a))
+  printInt (strLength e)
+  putStrLn (e ++ a)
+  putStrLn (a ++ e)
+  printInt (strLength (e ++ e))
+  putStrLn (join3 e a e)
+  putStrLn (join3 a e a)
+  putStrLn (S.toUpper (toStr ("x" ++ e)))
+  putStrLn (a ++ "|" ++ e ++ "|")
+  print (e == "")
+  print ((e ++ a) == a)

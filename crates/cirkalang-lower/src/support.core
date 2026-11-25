@@ -80,13 +80,21 @@
     (let! (u Int# (extern cirka_bytes_copy dst (prim add off i) src i (prim sub n i)))
       dst)))
 
+; `a ++ b`. When one side is empty the result is the other one, not a copy
+; (FEAT-1003): a buffer that only ever had bytes appended to an empty one,
+; or an answer appended to nothing yet, is not copied. In-place writes go
+; through `bytes_unique`, so the result need not be fresh.
 (def cirka$bytes_concat (-> Bytes Bytes Bytes)
   (lam ((a Bytes) (b Bytes))
     (let! (la Int# (prim bytes_len a))
       (let! (lb Int# (prim bytes_len b))
-        (let! (r Bytes (prim bytes_new (prim add la lb)))
-          (let! (r1 Bytes (cirka$bytes_copy r a 0 0 la))
-            (cirka$bytes_copy r1 b la 0 lb)))))))
+        (case la (ca Int#) Bytes
+          (0 b)
+          (_ (case lb (cb Int#) Bytes
+               (0 a)
+               (_ (let! (r Bytes (prim bytes_new (prim add la lb)))
+                    (let! (r1 Bytes (cirka$bytes_copy r a 0 0 la))
+                      (cirka$bytes_copy r1 b la 0 lb)))))))))))
 
 (def cirka$ndigits (-> Int# Int# Int#)
   (lam ((v Int#) (acc Int#))
@@ -182,13 +190,16 @@
     (let! (u Int# (extern cirka_bytes_copy dst off src i n))
       dst)))
 
-; A copy of s[i..j], with i and j clamped to the string.
+; s[i..j], with i and j clamped to the string: a copy, except that an empty
+; slice is the static empty string, not a new object (FEAT-1003).
 (def cirka$bytes_slice (-> Bytes Int# Int# Bytes)
   (lam ((s Bytes) (i Int#) (j Int#))
     (let! (n Int# (prim bytes_len s))
       (let! (a Int# (cirka$clamp i 0 n))
         (let! (b Int# (cirka$clamp j a n))
-          (cirka$bytes_copy_at (prim bytes_new (prim sub b a)) 0 s a (prim sub b a)))))))
+          (case (prim sub b a) (m Int#) Bytes
+            (0 "")
+            (_ (cirka$bytes_copy_at (prim bytes_new m) 0 s a m))))))))
 
 ; The first index in [i, j) of byte b, or -1.
 (def cirka$bytes_find_byte_loop (-> Bytes Int# Int# Int# Int#)
