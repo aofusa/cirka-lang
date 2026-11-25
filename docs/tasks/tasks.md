@@ -16,7 +16,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | 共通基盤 | M1 バックエンド基盤 | 7 / 7 |
 | 共通基盤 | M2 Perceus | 3 / 3 |
 | 共通基盤 | M3 共通 Core と Core→MIR | 4 / 4 |
-| 共通基盤 | SX 共通基盤の拡張 (各トラックの必要に応じて) | 34 / 50 |
+| 共通基盤 | SX 共通基盤の拡張 (各トラックの必要に応じて) | 43 / 61 |
 | aCHC | H1 Haskell 最小フロントエンド | 6 / 6 |
 | aCHC | H2 Haskell 実用化 (スコープ縮小版) | 10 / 10 |
 | aCHC | H3 所有権拡張 (.chs) | 9 / 9 |
@@ -363,5 +363,6 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [BUG-0039](bugs/BUG-0039-small-function-inlining-exponential.md) | 小さい関数の連鎖 (次の関数を 2 か所から呼ぶ) をインライン化すると 1 回の簡約で指数的に複製し、Core の最適化が終わらない | done | major | FEAT-0097 |
 | [BUG-0040](bugs/BUG-0040-z3-counterexample-depends-on-load.md) | 検証の反例が Z3 の実行時間で変わり、負荷が高いと `verify/fail/overflow` の期待出力と食い違う | todo | minor | BUG-0038 |
 | [BUG-0041](bugs/BUG-0041-test-case-without-limits.md) | テストハーネスにケースごとの時間とメモリの上限がなく、終わらない 1 ケースがホストのメモリを使い切る | done | major | FEAT-0097 |
+| [BUG-0042](bugs/BUG-0042-valgrind-bypasses-size-classes.md) | valgrind の下ではランタイムのアロケータが大きさのクラスを使わず、すべてを malloc で確保する (64 GiB の予約が断られる) | done | minor | FEAT-1001 |
 
 新しいチケットは `features/_TEMPLATE.md` / `bugs/_TEMPLATE.md` をコピーして作成する。

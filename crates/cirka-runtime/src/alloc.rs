@@ -29,10 +29,15 @@ pub(crate) const MAX_SMALL: usize = 8 * CLASSES;
 const PAGE_SHIFT: usize = 16;
 const PAGE: usize = 1 << PAGE_SHIFT;
 const REGION: usize = 64 << 30;
+/// The smallest region `init` reserves when the address space is limited
+/// (valgrind, `ulimit -v`) before it falls back to the system allocator.
+const MIN_REGION: usize = 1 << 30;
 const PAGES: usize = REGION / PAGE;
 
 struct Region {
     base: usize,
+    /// Bytes reserved (at most `REGION`).
+    size: usize,
     next_page: usize,
     /// 0 = not initialized, 1 = cirka allocator, 2 = system allocator.
     mode: u8,
@@ -40,6 +45,7 @@ struct Region {
 
 static REGION_STATE: Global<Region> = Global::new(Region {
     base: 0,
+    size: 0,
     next_page: 0,
     mode: 0,
 });
@@ -188,25 +194,50 @@ fn init() -> u8 {
         r.mode = 2;
         return 2;
     }
-    // SAFETY: anonymous private mapping; MAP_NORESERVE only reserves
+    // SAFETY: anonymous private mappings; MAP_NORESERVE only reserves
     // address space, physical pages are committed on first touch.
-    let p = unsafe {
+    let region = reserve(REGION, MIN_REGION, |size| unsafe {
         sys::mmap(
             core::ptr::null_mut(),
-            REGION,
+            size,
             sys::PROT_READ | sys::PROT_WRITE,
             sys::MAP_PRIVATE | sys::MAP_ANONYMOUS | sys::MAP_NORESERVE,
             -1,
             0,
         )
-    };
-    if p == sys::MAP_FAILED {
-        r.mode = 2;
-    } else {
-        r.base = p as usize;
-        r.mode = 1;
+    });
+    match region {
+        Some((base, size)) => {
+            r.base = base;
+            r.size = size;
+            r.mode = 1;
+        }
+        None => r.mode = 2,
     }
     r.mode
+}
+
+/// The largest mapping `map` gives of `max` bytes, then half as many, down
+/// to `min` (BUG-0042): where the address space is limited (valgrind
+/// refuses 64 GiB, `ulimit -v`), a smaller region keeps the size classes
+/// instead of `malloc` for every object. Its base and size.
+#[cfg_attr(feature = "debug-rt", allow(dead_code))]
+fn reserve(
+    max: usize,
+    min: usize,
+    mut map: impl FnMut(usize) -> *mut c_void,
+) -> Option<(usize, usize)> {
+    let mut size = max;
+    loop {
+        let p = map(size);
+        if p != sys::MAP_FAILED {
+            return Some((p as usize, size));
+        }
+        if size / 2 < min {
+            return None;
+        }
+        size /= 2;
+    }
 }
 
 /// Allocates `size` bytes (the caller initializes the header).
@@ -335,7 +366,7 @@ unsafe fn refill(class: usize) {
             return;
         }
         let r = REGION_STATE.get();
-        if r.next_page >= PAGES {
+        if r.next_page >= r.size / PAGE {
             crate::io::fatal(b"out of memory (region exhausted)", 2);
         }
         let page = r.next_page;
@@ -377,7 +408,7 @@ pub unsafe fn dealloc(o: Obj) {
     unsafe {
         let r = REGION_STATE.get();
         let a = o as usize;
-        if r.mode == 1 && a >= r.base && a < r.base + REGION {
+        if r.mode == 1 && a >= r.base && a < r.base + r.size {
             let class = PAGE_CLASS.get()[(a - r.base) >> PAGE_SHIFT] as usize;
             let lists = &mut (*tls::heap()).free_lists;
             *(o as *mut *mut u8) = lists[class];
@@ -410,7 +441,7 @@ pub unsafe fn resize_system(o: Obj, size: usize) -> Option<Obj> {
     unsafe {
         let r = REGION_STATE.get();
         let a = o as usize;
-        if r.mode == 1 && a >= r.base && a < r.base + REGION {
+        if r.mode == 1 && a >= r.base && a < r.base + r.size {
             return None;
         }
         let p = sys::realloc(o as *mut c_void, size.max(8));
@@ -461,5 +492,23 @@ mod tests {
             dealloc(b as Obj);
             dealloc(c as Obj);
         }
+    }
+    /// Where the address space is limited, the region is the largest half,
+    /// quarter, ... of 64 GiB that is given, down to the minimum (BUG-0042).
+    #[test]
+    fn a_smaller_region_when_the_large_one_is_refused() {
+        let mut tried = std::vec::Vec::new();
+        let got = reserve(REGION, MIN_REGION, |size| {
+            tried.push(size);
+            if size <= 8 << 30 {
+                0x1000_0000 as *mut c_void
+            } else {
+                sys::MAP_FAILED
+            }
+        });
+        assert_eq!(got, Some((0x1000_0000, 8 << 30)));
+        assert_eq!(tried, [64 << 30, 32 << 30, 16 << 30, 8 << 30]);
+        let none = reserve(REGION, MIN_REGION, |_| sys::MAP_FAILED);
+        assert_eq!(none, None);
     }
 }
