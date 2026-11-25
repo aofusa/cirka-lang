@@ -246,7 +246,23 @@
                (_ (cirka$bytes_find_loop s a (prim sub b m) p (prim bytes_get p 0) m)))))))))
 
 ; Copies s[i..j] (clamped) to u at off (clamped to fit) and returns u.
+; When the ranges fit (the common case) nothing is clamped: the test is
+; written as the bounds checks of the inline copy (07-backend.md), so LLVM
+; drops those, and a constant length makes the copy a few moves
+; (FEAT-0097).
 (def cirka$bytes_write (-> Bytes Int# Bytes Int# Int# Bytes)
+  (lam ((u Bytes) (off Int#) (s Bytes) (i Int#) (j Int#))
+    (let! (n Int# (prim sub j i))
+      (case (prim or (prim or (prim lt n 0) (prim lt i 0))
+                     (prim or (prim lt (prim sub (prim bytes_len s) i) n)
+                              (prim or (prim lt off 0)
+                                       (prim lt (prim sub (prim bytes_len u) off) n))))
+            (bad Int#) Bytes
+        (0 (cirka$bytes_copy_at u off s i n))
+        (_ (cirka$bytes_write_clamped u off s i j))))))
+
+; cirka$bytes_write when a range does not fit.
+(def cirka$bytes_write_clamped (-> Bytes Int# Bytes Int# Int# Bytes)
   (lam ((u Bytes) (off Int#) (s Bytes) (i Int#) (j Int#))
     (let! (n Int# (prim bytes_len s))
       (let! (a Int# (cirka$clamp i 0 n))

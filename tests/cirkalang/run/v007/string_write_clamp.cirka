@@ -1,0 +1,32 @@
+-- Appending copies the text into the builder's buffer at the count it
+-- holds (`primStrWrite`), clamped to the room after it (FEAT-0097: a
+-- range that fits takes a path without clamping, whose test the bounds
+-- checks of the inline copy share; any other range the clamping one).
+-- A `Builder` has no invariant, so a program can make one claim any count
+-- and capacity: the offset is then past the end of the buffer, before its
+-- start, or so large that adding the length wraps around. (The ranges of
+-- the source are kept in the string by `MkStr`'s invariant; the tests of
+-- `cirka$bytes_write` reach those.)
+import Data.String as S
+import Data.String (Builder)
+
+-- `b` claiming `n` bytes written and room for `cap`.
+claim : (1 b : Builder) -> Int -> Int -> Builder
+claim (S.MkBuilder buf _ _) n cap = S.MkBuilder buf n cap
+
+-- 16 dots with `s` appended at `off` (room for 1000000 claimed, so the
+-- buffer does not grow), cut back to the 16 bytes.
+w : Int -> String -> String
+w off s =
+  S.build (claim (S.append (claim (S.append (S.builder 16) "................") off 1000000) s) 16 16)
+
+main : IO ()
+main = do
+  putStrLn (w 2 "abc")
+  putStrLn (w 13 "abc")
+  putStrLn (w 14 "abc")
+  putStrLn (w 16 "abc")
+  putStrLn (w 99 "abc")
+  putStrLn (w (-2) "abc")
+  putStrLn (w 9223372036854775807 "abc")
+  putStrLn (w 17 "")

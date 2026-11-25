@@ -117,6 +117,14 @@ const RUNTIME_DECLS: &[(&str, &str)] = &[
     ("llvm.floor.f64", "double @llvm.floor.f64(double)"),
     ("llvm.ceil.f64", "double @llvm.ceil.f64(double)"),
     ("llvm.trunc.f64", "double @llvm.trunc.f64(double)"),
+    // The inline byte operations (FEAT-0097). A program's own declaration
+    // of `memcmp` / `memchr` (FFI) gives way to these, of the C signature.
+    (
+        "llvm.memmove.p0.p0.i64",
+        "void @llvm.memmove.p0.p0.i64(ptr, ptr, i64, i1)",
+    ),
+    ("memcmp", "i32 @memcmp(ptr, ptr, i64)"),
+    ("memchr", "ptr @memchr(ptr, i32, i64)"),
 ];
 
 struct Gen<'m> {
@@ -456,6 +464,170 @@ impl<'m> Gen<'m> {
             llty(ty)
         ));
         r
+    }
+
+    /// The byte operations of the support library (`cirka_bytes_copy`,
+    /// `cirka_bytes_eq`, `cirka_bytes_index`: FEAT-0095) inline, with the
+    /// meaning of the runtime functions (FEAT-0097): no call, one bounds
+    /// check, and LLVM expands a copy or comparison of a constant length
+    /// into loads and stores. `false` (nothing emitted) for any other
+    /// extern.
+    fn bytes_op(
+        &mut self,
+        c: &mut FnCtx<'_>,
+        dst: &str,
+        d: &cirka_mir::ExternDecl,
+        args: &[Operand],
+    ) -> bool {
+        use Ty::{I64, Ptr};
+        let sig: &[Ty] = match d.symbol() {
+            "cirka_bytes_copy" | "cirka_bytes_eq" => &[Ptr, I64, Ptr, I64, I64],
+            "cirka_bytes_index" => &[Ptr, I64, I64, I64],
+            _ => return false,
+        };
+        let params: Vec<Ty> = d.params.iter().map(|p| p.0).collect();
+        if d.kind != ExternKind::Call
+            || d.c_sig.is_some()
+            || params != sig
+            || d.ret != Some(I64)
+            || args.len() != sig.len()
+        {
+            return false;
+        }
+        let a: Vec<String> = args.iter().map(|o| self.operand(o)).collect();
+        match d.symbol() {
+            "cirka_bytes_copy" => {
+                // dst[off..off + n] = src[i..i + n] when n > 0; then 0.
+                let (to, off, from, i, n) = (&a[0], &a[1], &a[2], &a[3], &a[4]);
+                let go = self.fresh_label("bcopy.go");
+                let done = self.fresh_label("bcopy.done");
+                let pos = c.t();
+                c.line(&format!("{pos} = icmp sgt i64 {n}, 0"));
+                c.line(&format!("br i1 {pos}, label %{go}, label %{done}"));
+                c.label(&go);
+                let bad_to = Self::range_bad(c, to, off, n);
+                let bad_from = Self::range_bad(c, from, i, n);
+                let bad = c.t();
+                c.line(&format!("{bad} = or i1 {bad_to}, {bad_from}"));
+                self.check(c, &bad, "index out of bounds");
+                let p = Self::byte_ptr(c, to, off);
+                let q = Self::byte_ptr(c, from, i);
+                c.line(&format!(
+                    "call void @llvm.memmove.p0.p0.i64(ptr {p}, ptr {q}, i64 {n}, i1 false)"
+                ));
+                c.line(&format!("br label %{done}"));
+                c.label(&done);
+                c.line(&format!("{dst} = add i64 0, 0"));
+            }
+            "cirka_bytes_eq" => {
+                // s[i..i + n] == t[j..j + n] (1 or 0); 1 when n <= 0.
+                let (s, i, t, j, n) = (&a[0], &a[1], &a[2], &a[3], &a[4]);
+                let go = self.fresh_label("beq.go");
+                let done = self.fresh_label("beq.done");
+                let pred = c.cur.clone();
+                let pos = c.t();
+                c.line(&format!("{pos} = icmp sgt i64 {n}, 0"));
+                c.line(&format!("br i1 {pos}, label %{go}, label %{done}"));
+                c.label(&go);
+                let bad_s = Self::range_bad(c, s, i, n);
+                let bad_t = Self::range_bad(c, t, j, n);
+                let bad = c.t();
+                c.line(&format!("{bad} = or i1 {bad_s}, {bad_t}"));
+                self.check(c, &bad, "index out of bounds");
+                let p = Self::byte_ptr(c, s, i);
+                let q = Self::byte_ptr(c, t, j);
+                let r = c.t();
+                c.line(&format!(
+                    "{r} = call i32 @memcmp(ptr {p}, ptr {q}, i64 {n})"
+                ));
+                let z = c.t();
+                c.line(&format!("{z} = icmp eq i32 {r}, 0"));
+                let zi = c.t();
+                c.line(&format!("{zi} = zext i1 {z} to i64"));
+                let last = c.cur.clone();
+                c.line(&format!("br label %{done}"));
+                c.label(&done);
+                c.line(&format!(
+                    "{dst} = phi i64 [ 1, %{pred} ], [ {zi}, %{last} ]"
+                ));
+            }
+            _ => {
+                // The first index in [i, j) of the byte b in s, or -1 (also
+                // when b is no byte value).
+                let (s, b, i, j) = (&a[0], &a[1], &a[2], &a[3]);
+                let go = self.fresh_label("bidx.go");
+                let search = self.fresh_label("bidx.search");
+                let done = self.fresh_label("bidx.done");
+                let pred = c.cur.clone();
+                let some = c.t();
+                c.line(&format!("{some} = icmp slt i64 {i}, {j}"));
+                c.line(&format!("br i1 {some}, label %{go}, label %{done}"));
+                c.label(&go);
+                let n = c.t();
+                c.line(&format!("{n} = sub i64 {j}, {i}"));
+                let bad = Self::range_bad(c, s, i, &n);
+                self.check(c, &bad, "index out of bounds");
+                let byte = c.t();
+                c.line(&format!("{byte} = icmp ult i64 {b}, 256"));
+                let checked = c.cur.clone();
+                c.line(&format!("br i1 {byte}, label %{search}, label %{done}"));
+                c.label(&search);
+                let base = Self::byte_ptr(c, s, "0");
+                let p = Self::byte_ptr(c, s, i);
+                let b32 = c.t();
+                c.line(&format!("{b32} = trunc i64 {b} to i32"));
+                let r = c.t();
+                c.line(&format!(
+                    "{r} = call ptr @memchr(ptr {p}, i32 {b32}, i64 {n})"
+                ));
+                let none = c.t();
+                c.line(&format!("{none} = icmp eq ptr {r}, null"));
+                let at = c.t();
+                c.line(&format!("{at} = ptrtoint ptr {r} to i64"));
+                let at0 = c.t();
+                c.line(&format!("{at0} = ptrtoint ptr {base} to i64"));
+                let k = c.t();
+                c.line(&format!("{k} = sub i64 {at}, {at0}"));
+                let res = c.t();
+                c.line(&format!("{res} = select i1 {none}, i64 -1, i64 {k}"));
+                let found = c.cur.clone();
+                c.line(&format!("br label %{done}"));
+                c.label(&done);
+                c.line(&format!(
+                    "{dst} = phi i64 [ -1, %{pred} ], [ -1, %{checked} ], [ {res}, %{found} ]"
+                ));
+            }
+        }
+        true
+    }
+
+    /// Whether `[start, start + n)`, for `n > 0`, is not within the bytes of
+    /// the BYTES object `o`: `start < 0 || n > len o - start` (the form of
+    /// the checks of `cirka$bytes_write`, so that LLVM can merge them).
+    fn range_bad(c: &mut FnCtx<'_>, o: &str, start: &str, n: &str) -> String {
+        let len = Self::load_field(c, o, 0, Ty::I64);
+        let neg = c.t();
+        c.line(&format!("{neg} = icmp slt i64 {start}, 0"));
+        let room = c.t();
+        c.line(&format!("{room} = sub i64 {len}, {start}"));
+        let over = c.t();
+        c.line(&format!("{over} = icmp sgt i64 {n}, {room}"));
+        let bad = c.t();
+        c.line(&format!("{bad} = or i1 {neg}, {over}"));
+        bad
+    }
+
+    /// The address of byte `i` of the BYTES object `o`.
+    fn byte_ptr(c: &mut FnCtx<'_>, o: &str, i: &str) -> String {
+        let data = Self::gep(c, o, 16);
+        if i == "0" {
+            return data;
+        }
+        let p = c.t();
+        c.line(&format!(
+            "{p} = getelementptr inbounds i8, ptr {data}, i64 {i}"
+        ));
+        p
     }
 
     /// `dst = o` when `o` is unique (rc == 1, inline), otherwise the copy
@@ -1051,6 +1223,9 @@ impl<'m> Gen<'m> {
             }
             Rhs::Extern { func, args } => {
                 let d = m.extern_decl(func).expect("ICE: undeclared extern");
+                if self.bytes_op(c, dst, d, args) {
+                    return;
+                }
                 match (&d.kind, &d.c_sig) {
                     (ExternKind::Addr, _) => {
                         c.line(&format!("{dst} = ptrtoint ptr @{} to i64", d.symbol()));
@@ -1968,19 +2143,7 @@ entry:
 }
 ";
         let m = cirka_mir::parse::parse(cirka_diagnostics::FileId(0), src).unwrap();
-        // The definition of the function `name` in `ir`.
-        let func = |ir: &str, name: &str| -> String {
-            let sig = format!("@\"_C{}{name}\"(", name.len());
-            let start = ir
-                .lines()
-                .position(|l| l.starts_with("define") && l.contains(&sig))
-                .unwrap();
-            ir.lines()
-                .skip(start)
-                .take_while(|l| *l != "}")
-                .collect::<Vec<_>>()
-                .join("\n")
-        };
+        let func = function_ir;
         let ir = emit(&m, Options::default());
         let get = func(&ir, "get");
         assert!(
@@ -2004,6 +2167,70 @@ entry:
             get.contains("switch i16") && get.contains("cirka_panic"),
             "{get}"
         );
+    }
+
+    /// The definition of the function `name` in the LLVM IR `ir`.
+    fn function_ir(ir: &str, name: &str) -> String {
+        let sig = format!("@\"_C{}{name}\"(", name.len());
+        let start = ir
+            .lines()
+            .position(|l| l.starts_with("define") && l.contains(&sig))
+            .unwrap();
+        ir.lines()
+            .skip(start)
+            .take_while(|l| *l != "}")
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The byte operations of the support library are emitted inline
+    /// (FEAT-0097): no call of the runtime functions, but `llvm.memmove`,
+    /// `memcmp` and `memchr`, each after its own bounds check.
+    #[test]
+    fn emits_byte_operations_inline() {
+        let src = "extern fn cirka_bytes_copy(ptr, i64, ptr, i64, i64) -> i64
+extern fn cirka_bytes_eq(ptr, i64, ptr, i64, i64) -> i64
+extern fn cirka_bytes_index(ptr, i64, i64, i64) -> i64
+
+fn main() -> i64 {
+entry:
+  let b = prim bytes_new(8)
+  let _ = extern cirka_bytes_copy(b, 2, \"tag7\", 0, 4)
+  let e = extern cirka_bytes_eq(b, 2, \"tag7\", 0, 4)
+  let k = extern cirka_bytes_index(b, 103, 0, 8)
+  drop b
+  let r = prim add(e, k)
+  ret r
+}
+";
+        let m = cirka_mir::parse::parse(cirka_diagnostics::FileId(0), src).unwrap();
+        let ir = emit(&m, Options::default());
+        let main = function_ir(&ir, "main");
+        for call in [
+            "@cirka_bytes_copy(",
+            "@cirka_bytes_eq(",
+            "@cirka_bytes_index(",
+        ] {
+            assert!(!main.contains(call), "{call}: {main}");
+        }
+        for op in [
+            "call void @llvm.memmove.p0.p0.i64(ptr",
+            "call i32 @memcmp(ptr",
+            "call ptr @memchr(ptr",
+        ] {
+            assert!(main.contains(op), "{op}: {main}");
+        }
+        for decl in [
+            "declare i32 @memcmp(ptr, ptr, i64)",
+            "declare ptr @memchr(ptr, i32, i64)",
+        ] {
+            assert!(ir.contains(decl), "{decl}: {ir}");
+        }
+        // One bounds check for each, which panics like the runtime
+        // functions (only `main`'s own checks: every module declares
+        // `cirka_panic`).
+        let checks = main.matches("call void @cirka_panic(ptr @panic.").count();
+        assert_eq!(checks, 3, "{main}");
     }
 
     /// Numeric loops (FEAT-0063): libm calls become intrinsics, the

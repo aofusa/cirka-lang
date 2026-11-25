@@ -808,3 +808,112 @@ fn cirkalang_packages() {
         }
     }
 }
+
+/// `cirka$bytes_write` of the support library (FEAT-0097) on the ranges
+/// the libraries never pass it (`MkStr`'s invariant keeps a view's range in
+/// its string; the run test `string_write_clamp` covers a `Builder`'s
+/// offsets): over offsets and indices around the ends of the destination
+/// and the source and at the extremes, where `j - i` and `len - off` wrap
+/// around, a range that fits is copied inline and any other is clamped,
+/// both as the model of the clamping says, at -O0 and -O2, in the
+/// interpreter and in native code.
+#[test]
+fn cirkalang_support_bytes_write_clamps() {
+    cirka_testkit::init();
+    cirka_driver::native::ensure_runtime_built().unwrap();
+    let cfg = cirka_driver::Config::from_env();
+    let vals = [i64::MIN, -1, 0, 1, 3, 4, 6, 7, i64::MAX];
+    // "abc"[i..j] clamped to the string, written over "......" at `off`
+    // clamped to it, as much as there is room for.
+    let model = |off: i64, i: i64, j: i64| {
+        let (mut u, s) = (*b"......", b"abc");
+        let a = i.clamp(0, 3);
+        let b = j.clamp(a, 3);
+        let o = off.clamp(0, 6);
+        let n = (b - a).min(6 - o) as usize;
+        let (a, o) = (a as usize, o as usize);
+        u[o..o + n].copy_from_slice(&s[a..a + n]);
+        String::from_utf8(u.to_vec()).unwrap() + "\n"
+    };
+    let mut expected = String::new();
+    for &off in &vals {
+        for &i in &vals {
+            for &j in &vals {
+                expected += &model(off, i, j);
+            }
+        }
+    }
+    let lit = |v: i64| match v {
+        i64::MIN => format!("(prim sub {} 1)", i64::MIN + 1),
+        v => v.to_string(),
+    };
+    let alts: Vec<String> = vals
+        .iter()
+        .enumerate()
+        .map(|(k, &v)| match k {
+            8 => format!("(_ {})", lit(v)),
+            k => format!("({k} {})", lit(v)),
+        })
+        .collect();
+    let src = format!(
+        "{}
+(def grid$val (-> Int# Int#)
+  (lam ((k Int#)) (case k (c Int#) Int# {})))
+(def grid$one (-> Int# Int# Int# Int#)
+  (lam ((off Int#) (i Int#) (j Int#))
+    (let! (u Bytes (cirka$bytes_copy_at (prim bytes_new 6) 0 \"......\" 0 6))
+    (let! (v Bytes (cirka$bytes_write u off \"abc\" i j))
+    (let! (w Unit# (extern cirka_write_bytes v))
+    (let! (x Unit# (extern cirka_write_char 10))
+      0))))))
+(def grid$go (-> Int# Int#)
+  (lam ((k Int#))
+    (case (prim lt k 729) (c Int#) Int#
+      (0 0)
+      (_ (let! (r Int# (grid$one (grid$val (prim quot k 81))
+                                 (grid$val (prim rem (prim quot k 9) 9))
+                                 (grid$val (prim rem k 9))))
+           (grid$go (prim add k 1)))))))
+(def main Int# (grid$go 0))
+",
+        include_str!("../crates/cirkalang-lower/src/support.core"),
+        alts.join(" ")
+    );
+    let core = cirka_core::parse_program(cirka_diagnostics::FileId(0), &src)
+        .unwrap_or_else(|e| panic!("{}", e.message));
+    for level in [0u8, 2] {
+        let name = format!("bytes_write_O{level}");
+        let mut opts = cirka_driver::pipeline::Options::new(&name);
+        opts.opt_level = level;
+        opts.build_dir = cirka_testkit::work_dir("cirkalang-support", &name);
+        let out = cirka_driver::pipeline::compile_core(core.clone(), &name, &opts, false)
+            .unwrap_or_else(|ds| panic!("-O{level}: {}", ds[0].message));
+        let r = cirka_mir::interp::run(&out.mir, &[], u64::MAX)
+            .unwrap_or_else(|e| panic!("-O{level}: {e}"));
+        assert_eq!(r.exit_code, 0, "-O{level}: {}", r.stderr);
+        assert_eq!(r.leaked, 0, "-O{level}");
+        if r.stdout != expected {
+            panic!(
+                "-O{level}: the interpreter differs from the model\n{}",
+                cirka_testkit::line_diff(&expected, &r.stdout)
+            );
+        }
+        let case = cirka_testkit::Case {
+            path: repo_root().join("crates/cirkalang-lower/src/support.core"),
+            name,
+            header: Default::default(),
+        };
+        match cirka_integration::check_native(
+            &cfg,
+            &case,
+            "cirkalang-support-native",
+            &out.mir,
+            &[],
+            &r,
+            true,
+        ) {
+            Outcome::Fail(e) => panic!("-O{level}: {e}"),
+            Outcome::Pass | Outcome::Skip(_) => {}
+        }
+    }
+}

@@ -160,6 +160,23 @@ fn opt_beta_and_constant_folding() {
 }
 
 #[test]
+fn opt_folds_length_and_bytes_of_string_literals() {
+    // FEAT-0097: the length of a literal reaching `bytes_len` through an
+    // inlined function, and its byte at a constant index ('7' is 55).
+    let src = format!(
+        "{PRELUDE}(def len (-> Bytes Int#) (lam ((s Bytes)) (prim bytes_len s)))
+         (def main Int# (prim add (len \"tag7\") (prim bytes_get \"tag7\" 3)))"
+    );
+    let (m, st) = opt_main(&src);
+    assert_eq!(m.trim(), "59");
+    assert!(st.folded >= 3, "{st:?}");
+    // An index outside the literal stays (it panics when run).
+    let src = format!("{PRELUDE}(def main Int# (prim bytes_get \"ab\" 2))");
+    let (m, _) = opt_main(&src);
+    assert!(m.contains("bytes_get"), "{m}");
+}
+
+#[test]
 fn opt_inlines_small_functions_and_removes_them() {
     let src = format!(
         "{PRELUDE}(def unI (-> Int Int#) (lam ((x Int)) (case x (s Int) Int# ((I# v) v))))

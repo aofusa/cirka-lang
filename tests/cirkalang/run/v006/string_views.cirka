@@ -3,11 +3,15 @@
 -- FEAT-0254): `S.index` reads a byte without a bounds check where the
 -- index is proved below `S.length`, which is not negative (the invariant
 -- of `Str`), and the proofs know the lengths of the views made by
--- `take`, `drop` and `slice`.
+-- `take`, `drop` and `slice`. The text is read from the standard input,
+-- so the loops stay loops over a string the compiler does not know (the
+-- length of a literal is a constant, FEAT-0097, and a loop over it would
+-- be unrolled, FEAT-0094).
 module Main
 
 import Data.String as S
 import Data.String (Str, toStr)
+import Std.IO as IO
 
 -- The sum of the bytes from `k`.
 sumBytes : (v : Str) -> (k : Int) -> Int -> Int
@@ -49,9 +53,8 @@ afterPrefix : (n : Int) -> (k : Int) -> (v : Str) -> Int
   requires 0 <= n && 0 <= k && k < S.length v - n
 afterPrefix n k v = S.index (S.drop n v) k
 
-main : IO ()
-main = do
-  let text = toStr "racecar level 2026-11-17 noon"
+views : Str -> IO ()
+views text = do
   printInt (sumBytes text 0 0)
   print (map isPalindrome (S.words text))
   let date = S.slice text 14 24
@@ -60,3 +63,10 @@ main = do
   let w = S.drop 8 text
   print (S.fromStr w, if 3 < S.length w - 2 then afterPrefix 2 3 w else 0)
   print (S.byteAt text 2, S.length (S.slice text 26 100), S.length (S.take (negate 1) text))
+
+main : IO ()
+main = do
+  line <- IO.getLine
+  case line of
+    Nothing => putStrLn "no input"
+    Just s => views (toStr s)

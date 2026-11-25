@@ -1,0 +1,66 @@
+extern fn cirka_write_i64(i64) -> void
+extern fn cirka_write_char(i64) -> void
+extern fn cirka_write_bytes(ptr) -> void
+extern fn cirka_read_byte() -> i64
+extern fn cirka_bytes_copy(ptr, i64, ptr, i64, i64) -> i64
+extern fn cirka_bytes_eq(ptr, i64, ptr, i64, i64) -> i64
+extern fn cirka_bytes_index(ptr, i64, i64, i64) -> i64
+
+// The byte operations of the support library (FEAT-0095), which the
+// backend emits inline (FEAT-0097): the same results as the runtime
+// functions and the interpreter with constant lengths and variable ones
+// (`k`, read from the standard input so that LLVM cannot fold it), empty
+// and negative lengths out of bounds, copies within one object, and
+// values that are no byte (-140 would find `t` if it were cut to a byte).
+fn show(x: i64) -> i64 {
+entry:
+  let _ = extern cirka_write_i64(x)
+  let _ = extern cirka_write_char(32)
+  ret 0
+}
+
+fn main() -> i64 {
+entry:
+  let c = extern cirka_read_byte()
+  let k = prim sub(c, 48)
+  let t = prim bytes_new(10)
+  let _ = extern cirka_bytes_copy(t, 0, "..........", 0, 10)
+  let off = prim sub(k, 2)
+  let _ = extern cirka_bytes_copy(t, off, "tag7", 0, k)
+  let _ = extern cirka_bytes_copy(t, 3, t, 2, off)
+  let _ = extern cirka_bytes_copy(t, 100, "x", 50, 0)
+  let neg = prim sub(0, off)
+  let _ = extern cirka_bytes_copy(t, -5, "x", 70, neg)
+  let _ = extern cirka_write_bytes(t)
+  let _ = extern cirka_write_char(10)
+  let e1 = extern cirka_bytes_eq(t, 2, "ttag", 0, 3)
+  let _ = call show(e1)
+  let e2 = extern cirka_bytes_eq(t, 2, "ttag", 0, 4)
+  let _ = call show(e2)
+  let e3 = extern cirka_bytes_eq(t, 50, "x", 50, 0)
+  let _ = call show(e3)
+  let e4 = extern cirka_bytes_eq(t, 0, "..", 0, off)
+  let _ = call show(e4)
+  let e5 = extern cirka_bytes_eq(t, 6, t, 7, neg)
+  let _ = call show(e5)
+  let _ = extern cirka_write_char(10)
+  let i1 = extern cirka_bytes_index(t, 116, 0, 10)
+  let _ = call show(i1)
+  let i2 = extern cirka_bytes_index(t, 116, 4, 10)
+  let _ = call show(i2)
+  let i3 = extern cirka_bytes_index(t, 55, off, 10)
+  let _ = call show(i3)
+  let i4 = extern cirka_bytes_index(t, 372, 0, 10)
+  let _ = call show(i4)
+  let i5 = extern cirka_bytes_index(t, -140, 0, 10)
+  let _ = call show(i5)
+  let i6 = extern cirka_bytes_index(t, 46, 5, 5)
+  let _ = call show(i6)
+  let i7 = extern cirka_bytes_index(t, 46, 7, 3)
+  let _ = call show(i7)
+  let i8 = extern cirka_bytes_index(t, 46, 7, k)
+  let _ = call show(i8)
+  let _ = extern cirka_write_char(10)
+  drop t
+  ret 0
+}

@@ -2513,6 +2513,18 @@ pub(crate) fn fold(op: PrimOp, a: &[Expr]) -> Option<Lit> {
         FLt => b(dbl(0)? < dbl(1)?),
         FLe => b(dbl(0)? <= dbl(1)?),
         IntToDouble => f(int(0)? as f64),
+        // Of a string literal (FEAT-0097): its length, and its byte at a
+        // constant index within it.
+        BytesLen => match a.first()? {
+            Expr::Lit(Lit::Str(s)) => Some(Lit::Int(s.len() as i64)),
+            _ => None,
+        },
+        BytesGet | BytesGetUnchecked => match (a.first()?, int(1)?) {
+            (Expr::Lit(Lit::Str(s)), k) if k >= 0 && (k as usize) < s.len() => {
+                Some(Lit::Int(i64::from(s[k as usize])))
+            }
+            _ => None,
+        },
         _ => None,
     }
 }

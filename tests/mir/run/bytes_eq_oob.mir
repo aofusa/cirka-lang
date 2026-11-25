@@ -1,0 +1,19 @@
+extern fn cirka_write_bytes(ptr) -> void
+extern fn cirka_write_i64(i64) -> void
+extern fn cirka_bytes_eq(ptr, i64, ptr, i64, i64) -> i64
+extern fn cirka_bytes_index(ptr, i64, i64, i64) -> i64
+
+// A comparison past the end of its first string panics, as the runtime
+// function does (FEAT-0097: the inline comparison keeps its bounds
+// checks); an empty range, compared or searched, does not, wherever it is.
+fn main() -> i64 {
+entry:
+  let e = extern cirka_bytes_eq("abc", 9, "abc", 9, 0)
+  let i = extern cirka_bytes_index("abc", 97, 9, 9)
+  let s = prim add(e, i)
+  let _ = extern cirka_write_i64(s)
+  let _ = extern cirka_write_bytes("\nbefore\n")
+  let f = extern cirka_bytes_eq("abc", 1, "abc", 0, 3)
+  let _ = extern cirka_write_i64(f)
+  ret 0
+}

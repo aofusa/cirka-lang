@@ -1,0 +1,13 @@
+extern fn cirka_write_bytes(ptr) -> void
+extern fn cirka_write_i64(i64) -> void
+extern fn cirka_bytes_eq(ptr, i64, ptr, i64, i64) -> i64
+
+// A comparison past the end of its second string panics, as the runtime
+// function does (FEAT-0097: the inline comparison checks both ranges).
+fn main() -> i64 {
+entry:
+  let _ = extern cirka_write_bytes("before\n")
+  let f = extern cirka_bytes_eq("abc", 0, "ab", 0, 3)
+  let _ = extern cirka_write_i64(f)
+  ret 0
+}

@@ -23,6 +23,7 @@
 | `alloc` | インライン: スレッドローカルなフリーリストから pop、空なら `call @cirka_alloc`。ヘッダを store |
 | `switch` | `switch i16 tag` (ヘッダの tag を load)。既定の腕がなければ既定の行き先は `panic`。ただし腕が型のすべての構成子を覆うとき (Core → MIR は網羅的でない照合に明示の `panic` の腕を付ける) は最後の腕を既定の行き先にし、腕が 1 つなら tag を読まず無条件に分岐する。検査付きのランタイム (`debug_rt`) では `panic` を残す (FEAT-0093) |
 | `force` | `kind == THUNK/IND` の判定をインライン、評価が必要な場合のみ `call @cirka_force` |
+| `extern cirka_bytes_copy` / `cirka_bytes_eq` / `cirka_bytes_index` (バイト列のコピー・範囲の比較・バイトの探索、FEAT-0095) | 呼び出さずにインラインで生成する (FEAT-0097): 長さ 0 以下の判定、範囲の検査 (失敗は `panic`)、`llvm.memmove` / `memcmp(..) == 0` / `memchr`。ランタイムの関数と同じ意味で、長さが定数なら LLVM がロード・ストアと比較に展開する |
 
 - 属性・メタデータ (FEAT-0058、16-performance.md §3): 生成するすべての関数に `nounwind` (panic=abort の間)。オブジェクトのヘッダ (RC・タグ) と
   フィールドの load/store に別々の `!tbaa` を付ける (生きているオブジェクトの中で重ならない)。`cirka_alloc` の結果は `noalias nonnull`、`cirka_panic` は `cold`。 MIR の `cold fn` (FEAT-0070、一意な配列のループの元の本体) は `cold noinline`。 プログラムは 1 つの LLVM モジュールで、外から呼ばれるのは `cirka_main` だけなので、それ以外の関数はすべて `internal` にする (FEAT-0072。LLVM が呼び出しの定数を伝え、1 か所からの関数を丸ごとインライン化できる)。

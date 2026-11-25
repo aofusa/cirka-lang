@@ -1,0 +1,12 @@
+extern fn cirka_write_bytes(ptr) -> void
+extern fn cirka_bytes_index(ptr, i64, i64, i64) -> i64
+
+// A search past the end of a string panics, as the runtime function does
+// (FEAT-0097: the inline search keeps its bounds check), before it looks
+// at the value searched: 372 is no byte, which alone gives -1.
+fn main() -> i64 {
+entry:
+  let _ = extern cirka_write_bytes("before\n")
+  let k = extern cirka_bytes_index("abc", 372, 1, 4)
+  ret k
+}
