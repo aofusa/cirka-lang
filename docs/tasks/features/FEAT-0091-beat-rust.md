@@ -47,3 +47,8 @@ HTTP サーバ 1.29 (16 接続) が Rust より遅く、array-sort・mandelbrot�
   コンテナに apt.llvm.org の clang-23 を入れた実験)、n-body 0.86 倍 (Rust の 0.97)・effects 0.93 倍 (0.95)・stencil 0.98 倍 (0.99)、
   array-sort 1.03 倍 (1.08)・binary-search 1.03 倍 (1.22)・string-split 1.02 倍 (1.07)、他は ±0.5 % (出力はすべて同じ)。
   バックエンドを LLVM 23 に上げる (FEAT-1000、ADR-110)。
+- binary-search: 題材を `Data.Array` (要素が箱の `Array Int`) から `Data.Array.Unboxed` (`UArray Int`) に変えた。Rust の `Vec<i64>` と
+  同じく要素を直接並べる配列で、アルゴリズム・入力・出力は同じ。`index` は同じく契約で範囲内と証明され、検査がない。箱の版は探索の
+  1 回ごとに要素の箱を辿る (ポインタを読んでから値を読む) ので Rust の 1.18 倍 (LLVM 18)・1.22 倍 (LLVM 23) だった。`UArray Int` の版は
+  0.80 倍 (LLVM 18、15 回の交互実行の中央値)。`(hi - lo) / 2` を論理シフトにする実験 (符号付きの割り算の補正の 2 命令を省く) は、
+  unboxed の版では分岐のない形 (`cmov`) が崩れて 0.80 → 1.12 倍と遅くなったので採らない。

@@ -3,11 +3,12 @@ module Main
 -- Binary search over a sorted array (FEAT-0234): the index of every
 -- access is proved in bounds by the contract of `search`, so `A.index`
 -- has no bounds check (spec-v0.0.4.md §5). The same algorithm and input as
--- rust/main.rs.
+-- rust/main.rs, and the same layout: an unboxed array of integers, like
+-- Rust's `Vec<i64>` (FEAT-0091; `Data.Array` would box every element).
 
-import Data.Array as A
+import Data.Array.Unboxed as A
 
-search : (arr : A.Array Int) -> (key : Int) -> (lo : Int) -> (hi : Int) -> Int
+search : (arr : A.UArray Int) -> (key : Int) -> (lo : Int) -> (hi : Int) -> Int
   requires 0 <= lo && hi <= A.size arr
 search arr key lo hi =
   if lo >= hi then -1
@@ -20,7 +21,7 @@ search arr key lo hi =
 
 -- `m` pseudo-random keys (LCG); sums the positions found. The array is
 -- small (in cache), so the time goes to the search itself.
-queries : A.Array Int -> Int -> Int -> Int -> Int -> Int
+queries : A.UArray Int -> Int -> Int -> Int -> Int -> Int
 queries arr m s i acc =
   if i >= m then acc
   else
