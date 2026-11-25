@@ -41,7 +41,7 @@ const EEXIST: i32 = 17;
 const EINVAL: i64 = 22;
 const EPIPE: i64 = 32;
 
-/// The epoll data of the inbox's eventfd (watches use fd | epoch << 32).
+/// The epoll data of the inbox's eventfd (watches use fd | ident << 32).
 const INBOX_DATA: u64 = u64::MAX;
 
 /// Events fetched by one `epoll_wait`.
@@ -122,20 +122,59 @@ impl<T: Copy> Buf<T> {
     }
 }
 
-/// What a file descriptor waits for.
+/// What a file descriptor waits for, and what the loop knows of it.
+///
+/// A descriptor stays in the epoll set, edge-triggered, from its first
+/// watch until it is closed or unwatched (FEAT-1001): a watch costs no
+/// system call when the loop knows the descriptor is not ready, which the
+/// operations of `net.rs` tell it (`drain`) when they find nothing to read
+/// or no room to write. The kernel reports each change after that.
 #[derive(Clone, Copy)]
 struct Slot {
     /// The callback (null if the descriptor is not watched).
     cb: Obj,
-    /// Incremented by every watch and unwatch: an event fetched for an
-    /// earlier registration is ignored.
-    epoch: u32,
+    /// The registration in the epoll set (the high half of its epoll
+    /// data): the serial of the descriptor object for a watch through
+    /// `cirka_async_watch`, a new number for every watch by descriptor
+    /// number. An event fetched for another registration is ignored.
+    ident: u32,
     /// Whether the descriptor is in the epoll set.
     registered: bool,
     /// The events watched for (`EV_READ` | `EV_WRITE`).
     want: u8,
+    /// The events the descriptor may be ready for (`EV_READ` |
+    /// `EV_WRITE`): set by the events reported, cleared when an operation
+    /// found it not ready (`drain`) or by a watch that asked the kernel.
+    ready: u8,
+    /// An end of stream, error, hang-up or urgent data was reported: a
+    /// short read no longer shows that nothing is left to read.
+    sticky: bool,
     /// The timer of the watch's timeout (`NO_TIMER` if it has none).
     timer: u32,
+}
+
+/// The events of the epoll registration of a watched descriptor: both
+/// directions, edge-triggered, with the end of the peer's stream and urgent
+/// data (`Slot::sticky`).
+const WATCH_MASK: u32 =
+    sys::EPOLLIN | sys::EPOLLOUT | sys::EPOLLRDHUP | sys::EPOLLPRI | sys::EPOLLET;
+
+/// Numbers of registrations, shared by the serials of descriptor objects
+/// (`net.rs`) and the watches by descriptor number; never 0.
+static IDENTS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(1);
+
+/// The `epoll_ctl` calls of watches (tests count them).
+#[cfg(test)]
+pub(crate) static WATCH_CTLS: AtomicUsize = AtomicUsize::new(0);
+
+/// A new registration number (or serial of a descriptor object).
+pub(crate) fn fresh_ident() -> u32 {
+    loop {
+        let n = IDENTS.fetch_add(1, Ordering::Relaxed);
+        if n != 0 {
+            return n;
+        }
+    }
 }
 
 /// A timer of the slab.
@@ -464,68 +503,94 @@ extern "C" fn loop_finalize(p: usize) {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn cirka_loop_watch(o: Obj, fd: i64, events: i64, cb: Obj) -> i64 {
     // SAFETY: the loop's own state, on its thread.
-    unsafe { watch(&mut *owned(o), fd, events, -1, cb) }
+    unsafe { watch(&mut *owned(o), fd, 0, events, -1, cb) }
 }
 
 /// `cirka_loop_watch` with a timeout: if `fd` is not ready within `ms`
 /// milliseconds (`ms` >= 0), the watch ends and `cb` runs with the event
-/// `EV_TIMEOUT`.
+/// `EV_TIMEOUT`. `ident` is the serial of the descriptor object that owns
+/// `fd`, or 0 for a descriptor known by its number only.
+///
+/// The descriptor is added to the epoll set when the slot has no
+/// registration for `ident` (the epoll data then carries a new number for
+/// a watch by number), and the kernel reports its state at the next
+/// `epoll_wait`. Registered already, it is asked again (`EPOLL_CTL_MOD`,
+/// which reports the current state too) only when the slot says it may be
+/// ready for `events`: the operation before the watch stopped for its
+/// budget, or is not one of those that tell the loop (`drain`). Otherwise
+/// the watch makes no system call: the kernel reports the next change.
 ///
 /// # Safety
 /// As for `cirka_loop_watch`.
-unsafe fn watch(l: &mut Loop, fd: i64, events: i64, ms: i64, cb: Obj) -> i64 {
+unsafe fn watch(l: &mut Loop, fd: i64, ident: u32, events: i64, ms: i64, cb: Obj) -> i64 {
     // SAFETY: the loop's own state, on its thread; `cb` is live.
     unsafe {
         if !(0..=i64::from(i32::MAX)).contains(&fd) {
             return -EBADF;
         }
-        let mut mask = 0u32;
-        if events & EV_READ != 0 {
-            mask |= sys::EPOLLIN;
-        }
-        if events & EV_WRITE != 0 {
-            mask |= sys::EPOLLOUT;
-        }
-        if mask == 0 {
+        let want = (events & (EV_READ | EV_WRITE)) as u8;
+        if want == 0 {
             return -EINVAL;
         }
         let fd = fd as usize;
         while l.slots.len <= fd {
             l.slots.push(Slot {
                 cb: core::ptr::null_mut(),
-                epoch: 0,
+                ident: 0,
                 registered: false,
                 want: 0,
+                ready: 0,
+                sticky: false,
                 timer: NO_TIMER,
             });
         }
+        let epfd = l.epfd;
         let slot = l.slots.at(fd);
-        slot.epoch = slot.epoch.wrapping_add(1);
-        let mut ev = sys::epoll_event {
-            events: mask | sys::EPOLLONESHOT,
-            data: (u64::from(slot.epoch) << 32) | fd as u64,
-        };
-        let op = if slot.registered {
-            sys::EPOLL_CTL_MOD
-        } else {
-            sys::EPOLL_CTL_ADD
-        };
-        let mut r = sys::epoll_ctl(l.epfd, op, fd as i32, &mut ev);
-        if r < 0 {
-            // The descriptor was closed and its number reused, or was
-            // added by an earlier watch that failed half-way.
-            let e = errno();
-            if op == sys::EPOLL_CTL_MOD && e == ENOENT {
-                r = sys::epoll_ctl(l.epfd, sys::EPOLL_CTL_ADD, fd as i32, &mut ev);
-            } else if op == sys::EPOLL_CTL_ADD && e == EEXIST {
-                r = sys::epoll_ctl(l.epfd, sys::EPOLL_CTL_MOD, fd as i32, &mut ev);
+        let fresh = ident == 0 || !slot.registered || slot.ident != ident;
+        if fresh || slot.ready & want != 0 {
+            let id = if fresh && ident == 0 {
+                fresh_ident()
+            } else if fresh {
+                ident
+            } else {
+                slot.ident
+            };
+            let mut ev = sys::epoll_event {
+                events: WATCH_MASK,
+                data: (u64::from(id) << 32) | fd as u64,
+            };
+            let op = if slot.registered {
+                sys::EPOLL_CTL_MOD
+            } else {
+                sys::EPOLL_CTL_ADD
+            };
+            #[cfg(test)]
+            WATCH_CTLS.fetch_add(1, Ordering::Relaxed);
+            let mut r = sys::epoll_ctl(epfd, op, fd as i32, &mut ev);
+            if r < 0 {
+                // The descriptor was closed and its number reused, or was
+                // added by an earlier watch that failed half-way.
+                let e = errno();
+                if op == sys::EPOLL_CTL_MOD && e == ENOENT {
+                    r = sys::epoll_ctl(epfd, sys::EPOLL_CTL_ADD, fd as i32, &mut ev);
+                } else if op == sys::EPOLL_CTL_ADD && e == EEXIST {
+                    r = sys::epoll_ctl(epfd, sys::EPOLL_CTL_MOD, fd as i32, &mut ev);
+                }
+            }
+            if r < 0 {
+                slot.registered = false;
+                return -i64::from(errno());
+            }
+            if fresh {
+                slot.registered = true;
+                slot.ident = id;
+                slot.ready = 0;
+                slot.sticky = false;
+            } else {
+                slot.ready &= !want;
             }
         }
-        if r < 0 {
-            return -i64::from(errno());
-        }
-        slot.registered = true;
-        slot.want = (events & (EV_READ | EV_WRITE)) as u8;
+        slot.want = want;
         let old = slot.cb;
         let old_timer = slot.timer;
         slot.timer = NO_TIMER;
@@ -547,6 +612,74 @@ unsafe fn watch(l: &mut Loop, fd: i64, events: i64, ms: i64, cb: Obj) -> i64 {
     }
 }
 
+/// The slot of `fd` in the loop running on this thread, if it holds the
+/// registration `ident` (a descriptor object's serial).
+///
+/// # Safety
+/// On the loop's thread (any thread: null without a running loop).
+unsafe fn slot_of(fd: i64, ident: u32) -> *mut Slot {
+    // SAFETY: this thread's block; the running loop's own state, the slot
+    // within its length.
+    unsafe {
+        let o = (*tls::tls()).cur_loop;
+        if o.is_null() || fd < 0 || ident == 0 {
+            return core::ptr::null_mut();
+        }
+        let l = *word(o, 0) as *mut Loop;
+        if fd as usize >= (*l).slots.len {
+            return core::ptr::null_mut();
+        }
+        let slot = (*l).slots.ptr.add(fd as usize);
+        if (*slot).registered && (*slot).ident == ident {
+            slot
+        } else {
+            core::ptr::null_mut()
+        }
+    }
+}
+
+/// Whether the loop running on this thread knows that the descriptor `fd`
+/// of the object with serial `ident` is not ready for `ev` (`EV_READ` or
+/// `EV_WRITE`): the operation would find nothing to read or no room
+/// (`EAGAIN`) and may report it without a system call (FEAT-1001).
+pub(crate) fn drained(fd: i64, ident: u32, ev: i64) -> bool {
+    // SAFETY: the running loop's state, on its thread.
+    unsafe {
+        let s = slot_of(fd, ident);
+        !s.is_null() && i64::from((*s).ready) & ev == 0
+    }
+}
+
+/// Tells the loop running on this thread that the descriptor `fd` of the
+/// object with serial `ident` is closed: the kernel drops the registration
+/// with the descriptor, and the slot is free again. (A later object with
+/// the same number registers afresh, also if serials wrapped around.)
+pub(crate) fn forget(fd: i64, ident: u32) {
+    // SAFETY: the running loop's state, on its thread.
+    unsafe {
+        let s = slot_of(fd, ident);
+        if !s.is_null() {
+            (*s).registered = false;
+        }
+    }
+}
+
+/// Tells the loop running on this thread that an operation found the
+/// descriptor `fd` (serial `ident`) not ready for `ev`: it returned
+/// `EAGAIN` (`short` false), or read less than it asked of a stream
+/// (`short` true), which shows the same unless an end of stream or urgent
+/// data was reported (`Slot::sticky`; a read stops short there). The next
+/// edge the kernel reports makes it ready again.
+pub(crate) fn drain(fd: i64, ident: u32, ev: i64, short: bool) {
+    // SAFETY: the running loop's state, on its thread.
+    unsafe {
+        let s = slot_of(fd, ident);
+        if !s.is_null() && !(short && (*s).sticky) {
+            (*s).ready &= !(ev as u8);
+        }
+    }
+}
+
 /// Cancels the watch of `fd` (its callback is dropped, not called) and
 /// takes `fd` out of the epoll set. 1 if `fd` was watched.
 ///
@@ -562,7 +695,6 @@ pub unsafe extern "C" fn cirka_loop_unwatch(o: Obj, fd: i64) -> i64 {
         }
         let epfd = l.epfd;
         let slot = l.slots.at(fd as usize);
-        slot.epoch = slot.epoch.wrapping_add(1);
         if slot.registered {
             sys::epoll_ctl(epfd, sys::EPOLL_CTL_DEL, fd as i32, core::ptr::null_mut());
             slot.registered = false;
@@ -773,14 +905,10 @@ unsafe fn run_timers(l: *mut Loop, now: u64) {
                 due.push((t.cb, i64::from(t.ev)));
                 continue;
             }
-            let epfd = (*l).epfd;
+            // The descriptor stays in the epoll set: its events are only
+            // noted until the next watch.
             let slot = (*l).slots.at(t.fd as usize);
             slot.timer = NO_TIMER;
-            slot.epoch = slot.epoch.wrapping_add(1);
-            if slot.registered {
-                sys::epoll_ctl(epfd, sys::EPOLL_CTL_DEL, t.fd, core::ptr::null_mut());
-                slot.registered = false;
-            }
             let cb = slot.cb;
             slot.cb = core::ptr::null_mut();
             (*l).watches -= 1;
@@ -860,37 +988,53 @@ unsafe fn dispatch(l: *mut Loop, ev: sys::epoll_event) {
             return;
         }
         let fd = (data & 0xffff_ffff) as usize;
-        let epoch = (data >> 32) as u32;
+        let ident = (data >> 32) as u32;
         if fd >= (*l).slots.len {
             return;
         }
         let slot = (*l).slots.at(fd);
-        if slot.cb.is_null() || slot.epoch != epoch {
+        if !slot.registered || slot.ident != ident {
+            // An event of an earlier registration (the descriptor was
+            // closed or watched again by number since it was fetched).
+            return;
+        }
+        let e = ev.events;
+        let mut got = 0u8;
+        if e & (sys::EPOLLIN | sys::EPOLLPRI) != 0 {
+            got |= EV_READ as u8;
+        }
+        if e & sys::EPOLLOUT != 0 {
+            got |= EV_WRITE as u8;
+        }
+        let failed = e & (sys::EPOLLERR | sys::EPOLLHUP) != 0;
+        if failed {
+            // The read or write the callback waits for now fails or sees
+            // the end: report it as ready too.
+            got |= (EV_READ | EV_WRITE) as u8;
+        }
+        if failed || e & (sys::EPOLLRDHUP | sys::EPOLLPRI) != 0 {
+            slot.sticky = true;
+        }
+        slot.ready |= got;
+        let want = slot.want;
+        if slot.cb.is_null() || got & want == 0 {
+            // Nothing waits for what is reported: the events are noted
+            // (`ready`) for the next operations and watches.
             return;
         }
         let cb = slot.cb;
         slot.cb = core::ptr::null_mut();
         let timer = slot.timer;
         slot.timer = NO_TIMER;
-        let want = i64::from(slot.want);
         if timer != NO_TIMER {
             free_timer(&mut *l, timer);
         }
         (*l).watches -= 1;
-        let e = ev.events;
-        let mut got = 0;
-        if e & sys::EPOLLIN != 0 {
-            got |= EV_READ;
+        let mut seen = i64::from(got & want);
+        if failed {
+            seen |= EV_ERROR;
         }
-        if e & sys::EPOLLOUT != 0 {
-            got |= EV_WRITE;
-        }
-        if e & (sys::EPOLLERR | sys::EPOLLHUP) != 0 {
-            // The read or write the callback waits for now fails or sees
-            // the end: report it as ready too.
-            got |= EV_ERROR | want;
-        }
-        (*l).events = got;
+        (*l).events = seen;
         call_action(cb);
         (*l).events = 0;
     }
@@ -1084,11 +1228,11 @@ pub unsafe extern "C" fn cirka_async_watch(h: Obj, events: i64, ms: i64, cb: Obj
     // SAFETY: the running loop's state, on its thread.
     unsafe {
         let l = &mut *current();
-        let fd = crate::net::cirka_handle_fd(h);
+        let (fd, ident) = crate::net::handle_ident(h);
         let r = if fd < 0 {
             -EBADF
         } else {
-            watch(l, fd, events, ms, cb)
+            watch(l, fd, ident, events, ms, cb)
         };
         if r < 0 {
             cirka_dup(cb);

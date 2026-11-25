@@ -16,7 +16,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | 共通基盤 | M1 バックエンド基盤 | 7 / 7 |
 | 共通基盤 | M2 Perceus | 3 / 3 |
 | 共通基盤 | M3 共通 Core と Core→MIR | 4 / 4 |
-| 共通基盤 | SX 共通基盤の拡張 (各トラックの必要に応じて) | 43 / 61 |
+| 共通基盤 | SX 共通基盤の拡張 (各トラックの必要に応じて) | 46 / 64 |
 | aCHC | H1 Haskell 最小フロントエンド | 6 / 6 |
 | aCHC | H2 Haskell 実用化 (スコープ縮小版) | 10 / 10 |
 | aCHC | H3 所有権拡張 (.chs) | 9 / 9 |
@@ -140,6 +140,9 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0098](features/FEAT-0098-hoist-checks-of-large-loops.md) | 大きなループの本体の境界検査も入口へ移す (解析の上限を命令数 × 解析の回数で決める) | done | P1 | 0069, 0094 |
 | [FEAT-0099](features/FEAT-0099-spin-before-sleep.md) | 同期オブジェクトを待つスレッドは眠る前に変化を見張る (起こす側は mutex を放してから起こす) | done | P1 | 0262 |
 | [FEAT-1000](features/FEAT-1000-llvm-23.md) | バックエンドの LLVM を Rust と同じ 23 に上げる (apt.llvm.org のパッケージを Docker イメージの最後の層で入れる) | done | P1 | 0091 |
+| [FEAT-1001](features/FEAT-1001-edge-triggered-event-loop.md) | イベントループの待ちをエッジトリガーで登録したままにし、記述子ごとに準備の状態を覚える (空にしたソケットの読み込みと待ちにシステムコールを使わない) | done | P1 | 0091, 0241 |
+| [FEAT-1002](features/FEAT-1002-io-fixed-costs.md) | ランタイムの I/O の固定費を減らす (スレッドごとの受信バッファ、空の結果は静的な空文字列) | done | P1 | 0091 |
+| [FEAT-1007](features/FEAT-1007-raw-io-syscalls.md) | I/O のシステムコールを libc を通さずに呼ぶ (マルチスレッドのプロセスで取り消しの点のアトミックな操作をなくす) | done | P1 | 1001, 0091 |
 
 
 ## aCHC

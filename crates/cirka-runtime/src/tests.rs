@@ -589,3 +589,104 @@ fn bytes_resize_in_place_and_by_copy() {
         cirka_drop(t);
     }
 }
+
+#[test]
+fn empty_strings_are_the_static_one() {
+    // FEAT-1002: an empty result is the runtime's static empty string, not
+    // a new object; counting and freeing leave it alone.
+    let _g = crate::test_lock();
+    let (a0, f0) = stats();
+    unsafe {
+        let e = crate::cirka_bytes_from(core::ptr::null(), 0);
+        assert_eq!(e, crate::cirka_bytes_from(b"x".as_ptr(), 0));
+        assert_eq!((*e).rc, 0, "immortal");
+        assert_eq!((*e).kind, BYTES);
+        assert_eq!(*word(e, 0), 0, "no bytes");
+        cirka_dup(e);
+        cirka_drop(e);
+        cirka_drop(e);
+        assert_eq!((*e).rc, 0);
+        // Made unique for writing, it is copied.
+        let u = crate::cirka_bytes_unique(e);
+        assert_ne!(u, e);
+        assert_eq!((*u).rc, 1);
+        cirka_drop(u);
+    }
+    let (a1, f1) = stats();
+    assert_eq!((a1 - a0, f1 - f0), (1, 1), "only the copy");
+}
+
+/// The I/O calls made with `syscall` (FEAT-1007) give libc's results: the
+/// count, or -1 with `errno` (EAGAIN on an empty non-blocking descriptor,
+/// EBADF on a closed one).
+#[test]
+fn raw_io_calls_give_the_libc_results() {
+    use crate::sys;
+    use core::ffi::c_void;
+    const EAGAIN: i32 = 11;
+    const EBADF: i32 = 9;
+    const AF_UNIX: i32 = 1;
+    const MSG_NOSIGNAL: i32 = 0x4000;
+    unsafe extern "C" {
+        fn socketpair(domain: i32, ty: i32, proto: i32, sv: *mut i32) -> i32;
+    }
+    // SAFETY: descriptors made here; buffers of the lengths given.
+    unsafe {
+        let errno = || *sys::__errno_location();
+        let mut buf = [0u8; 8];
+        let b = buf.as_mut_ptr() as *mut c_void;
+        let mut p = [0i32; 2];
+        assert_eq!(
+            sys::pipe2(p.as_mut_ptr(), sys::O_NONBLOCK | sys::O_CLOEXEC),
+            0
+        );
+        assert_eq!(sys::read(p[0], b, 8), -1);
+        assert_eq!(errno(), EAGAIN);
+        assert_eq!(sys::write(p[1], b"abc".as_ptr() as *const c_void, 3), 3);
+        assert_eq!(sys::read(p[0], b, 8), 3);
+        assert_eq!(&buf[..3], b"abc");
+        sys::close(p[0]);
+        sys::close(p[1]);
+        // -1, not a closed descriptor: other tests open descriptors meanwhile.
+        assert_eq!(sys::write(-1, b"x".as_ptr() as *const c_void, 1), -1);
+        assert_eq!(errno(), EBADF);
+
+        let mut s = [0i32; 2];
+        let ty = sys::SOCK_STREAM | sys::SOCK_NONBLOCK;
+        assert_eq!(socketpair(AF_UNIX, ty, 0, s.as_mut_ptr()), 0);
+        let none = core::ptr::null_mut();
+        assert_eq!(
+            sys::recvfrom(s[0], b, 8, 0, none, core::ptr::null_mut()),
+            -1
+        );
+        assert_eq!(errno(), EAGAIN);
+        assert_eq!(
+            sys::send(s[1], b"hi".as_ptr() as *const c_void, 2, MSG_NOSIGNAL),
+            2
+        );
+        assert_eq!(sys::recvfrom(s[0], b, 8, 0, none, core::ptr::null_mut()), 2);
+        assert_eq!(&buf[..2], b"hi");
+
+        let ep = sys::epoll_create1(sys::EPOLL_CLOEXEC);
+        assert!(ep >= 0);
+        let mut ev = sys::epoll_event {
+            events: sys::EPOLLIN,
+            data: 7,
+        };
+        assert_eq!(sys::epoll_ctl(ep, sys::EPOLL_CTL_ADD, s[0], &mut ev), 0);
+        let mut out = [sys::epoll_event { events: 0, data: 0 }; 4];
+        assert_eq!(sys::epoll_wait(ep, out.as_mut_ptr(), 4, 0), 0);
+        assert_eq!(
+            sys::send(s[1], b"!".as_ptr() as *const c_void, 1, MSG_NOSIGNAL),
+            1
+        );
+        assert_eq!(sys::epoll_wait(ep, out.as_mut_ptr(), 4, -1), 1);
+        let data = out[0].data;
+        assert_eq!(data, 7);
+        assert_eq!(sys::epoll_ctl(ep, sys::EPOLL_CTL_ADD, -1, &mut ev), -1);
+        assert_eq!(errno(), EBADF);
+        sys::close(ep);
+        sys::close(s[0]);
+        sys::close(s[1]);
+    }
+}

@@ -197,7 +197,8 @@ pub unsafe extern "C" fn cirka_bytes_resize(b: Obj, n: i64) -> Obj {
 /// header and length written, when it is large (it is then shrunk with
 /// `realloc` if less than half of it is used); otherwise (and on the
 /// checked runtime, whose objects it tracks) a copy, and the block is
-/// freed. Counts one allocation.
+/// freed. Counts one allocation (none for an empty string: it is the
+/// static one of `cirka_bytes_from`, FEAT-1002).
 ///
 /// # Safety
 /// `buf` must come from `malloc` with `bytes_size(cap)` bytes, `len <= cap`.

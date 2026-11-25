@@ -79,11 +79,13 @@ pub const EPOLL_CTL_ADD: c_int = 1;
 pub const EPOLL_CTL_DEL: c_int = 2;
 pub const EPOLL_CTL_MOD: c_int = 3;
 pub const EPOLLIN: u32 = 0x001;
+pub const EPOLLPRI: u32 = 0x002;
 pub const EPOLLOUT: u32 = 0x004;
 pub const EPOLLERR: u32 = 0x008;
 pub const EPOLLHUP: u32 = 0x010;
 pub const EPOLLRDHUP: u32 = 0x2000;
 pub const EPOLLONESHOT: u32 = 1 << 30;
+pub const EPOLLET: u32 = 1 << 31;
 
 /// `struct epoll_event`, packed on x86-64 (12 bytes).
 #[repr(C, packed)]
@@ -180,8 +182,6 @@ unsafe extern "C" {
         fd: c_int,
         off: c_long,
     ) -> *mut c_void;
-    pub fn write(fd: c_int, buf: *const c_void, n: size_t) -> ssize_t;
-    pub fn read(fd: c_int, buf: *mut c_void, n: size_t) -> ssize_t;
     pub fn open(path: *const c_char, flags: c_int, ...) -> c_int;
     pub fn close(fd: c_int) -> c_int;
     pub fn unlink(path: *const c_char) -> c_int;
@@ -220,8 +220,6 @@ unsafe extern "C" {
     pub fn sigaction(sig: c_int, act: *const sigaction_t, old: *mut sigaction_t) -> c_int;
     pub fn pthread_cond_signal(c: *mut pthread_cond_t) -> c_int;
     pub fn epoll_create1(flags: c_int) -> c_int;
-    pub fn epoll_ctl(epfd: c_int, op: c_int, fd: c_int, ev: *mut epoll_event) -> c_int;
-    pub fn epoll_wait(epfd: c_int, evs: *mut epoll_event, max: c_int, timeout: c_int) -> c_int;
     pub fn eventfd(init: u32, flags: c_int) -> c_int;
     pub fn socket(domain: c_int, ty: c_int, proto: c_int) -> c_int;
     pub fn setsockopt(fd: c_int, level: c_int, name: c_int, val: *const c_void, len: u32) -> c_int;
@@ -234,10 +232,34 @@ unsafe extern "C" {
     ) -> c_int;
     pub fn bind(fd: c_int, addr: *const sockaddr_storage, len: u32) -> c_int;
     pub fn listen(fd: c_int, backlog: c_int) -> c_int;
-    pub fn accept4(fd: c_int, addr: *mut sockaddr_storage, len: *mut u32, flags: c_int) -> c_int;
     pub fn connect(fd: c_int, addr: *const sockaddr_storage, len: u32) -> c_int;
     pub fn getsockname(fd: c_int, addr: *mut sockaddr_storage, len: *mut u32) -> c_int;
     pub fn shutdown(fd: c_int, how: c_int) -> c_int;
+    pub fn fcntl(fd: c_int, cmd: c_int, ...) -> c_int;
+    pub fn getrlimit(res: c_int, rl: *mut rlimit) -> c_int;
+    pub fn setrlimit(res: c_int, rl: *const rlimit) -> c_int;
+    pub fn inet_pton(af: c_int, src: *const c_char, dst: *mut c_void) -> c_int;
+    pub fn inet_ntop(af: c_int, src: *const c_void, dst: *mut c_char, size: u32) -> *const c_char;
+    pub fn getaddrinfo(
+        node: *const c_char,
+        service: *const c_char,
+        hints: *const addrinfo,
+        res: *mut *mut addrinfo,
+    ) -> c_int;
+    pub fn freeaddrinfo(res: *mut addrinfo);
+}
+
+// ---- the I/O system calls of descriptors (FEAT-1007, 05-runtime.md §10.3) ----
+
+// With ThreadSanitizer, the libc functions: their interceptors give the
+// happens-before edges between threads that pass data through descriptors.
+#[cfg(cirka_tsan)]
+unsafe extern "C" {
+    pub fn write(fd: c_int, buf: *const c_void, n: size_t) -> ssize_t;
+    pub fn read(fd: c_int, buf: *mut c_void, n: size_t) -> ssize_t;
+    pub fn epoll_ctl(epfd: c_int, op: c_int, fd: c_int, ev: *mut epoll_event) -> c_int;
+    pub fn epoll_wait(epfd: c_int, evs: *mut epoll_event, max: c_int, timeout: c_int) -> c_int;
+    pub fn accept4(fd: c_int, addr: *mut sockaddr_storage, len: *mut u32, flags: c_int) -> c_int;
     pub fn send(fd: c_int, buf: *const c_void, n: size_t, flags: c_int) -> ssize_t;
     pub fn sendto(
         fd: c_int,
@@ -255,18 +277,183 @@ unsafe extern "C" {
         addr: *mut sockaddr_storage,
         len: *mut u32,
     ) -> ssize_t;
-    pub fn fcntl(fd: c_int, cmd: c_int, ...) -> c_int;
-    pub fn getrlimit(res: c_int, rl: *mut rlimit) -> c_int;
-    pub fn setrlimit(res: c_int, rl: *const rlimit) -> c_int;
-    pub fn inet_pton(af: c_int, src: *const c_char, dst: *mut c_void) -> c_int;
-    pub fn inet_ntop(af: c_int, src: *const c_void, dst: *mut c_char, size: u32) -> *const c_char;
-    pub fn getaddrinfo(
-        node: *const c_char,
-        service: *const c_char,
-        hints: *const addrinfo,
-        res: *mut *mut addrinfo,
-    ) -> c_int;
-    pub fn freeaddrinfo(res: *mut addrinfo);
+}
+
+#[cfg(not(cirka_tsan))]
+pub use raw::*;
+
+/// The I/O calls of descriptors as `syscall` instructions, with the
+/// results of the libc functions (`-1` and `errno` on failure). glibc's
+/// functions are cancellation points: in a process with more than one
+/// thread (the program runs on a thread of its own, 05-runtime.md §7),
+/// each call turns asynchronous cancellation on and off around the system
+/// call with two atomic operations. The runtime never cancels threads.
+#[cfg(not(cirka_tsan))]
+mod raw {
+    use super::{epoll_event, size_t, sockaddr_storage, ssize_t};
+    use core::ffi::{c_int, c_void};
+
+    const SYS_READ: usize = 0;
+    const SYS_WRITE: usize = 1;
+    const SYS_SENDTO: usize = 44;
+    const SYS_RECVFROM: usize = 45;
+    const SYS_EPOLL_WAIT: usize = 232;
+    const SYS_EPOLL_CTL: usize = 233;
+    const SYS_ACCEPT4: usize = 288;
+
+    /// A system call with up to six arguments (the kernel's result: a
+    /// negative error number on failure).
+    ///
+    /// # Safety
+    /// The arguments must be valid for system call `nr`.
+    #[inline(always)]
+    unsafe fn syscall6(nr: usize, a: [usize; 6]) -> isize {
+        let r: isize;
+        // SAFETY: the x86-64 Linux system call convention: the kernel
+        // clobbers rcx and r11 and reads or writes only the memory the
+        // arguments give it.
+        unsafe {
+            core::arch::asm!(
+                "syscall",
+                inlateout("rax") nr as isize => r,
+                in("rdi") a[0],
+                in("rsi") a[1],
+                in("rdx") a[2],
+                in("r10") a[3],
+                in("r8") a[4],
+                in("r9") a[5],
+                lateout("rcx") _,
+                lateout("r11") _,
+                options(nostack),
+            );
+        }
+        r
+    }
+
+    /// The libc convention: `-1` with `errno` on failure.
+    #[inline(always)]
+    fn libc_result(r: isize) -> isize {
+        if r < 0 {
+            // SAFETY: this thread's errno.
+            unsafe { *super::__errno_location() = -r as c_int };
+            -1
+        } else {
+            r
+        }
+    }
+
+    /// An `int` argument as the kernel reads it (sign-extended).
+    #[inline(always)]
+    fn int(x: c_int) -> usize {
+        x as isize as usize
+    }
+
+    /// # Safety
+    /// As `read(2)`.
+    #[inline]
+    pub unsafe fn read(fd: c_int, buf: *mut c_void, n: size_t) -> ssize_t {
+        // SAFETY: forwarded.
+        libc_result(unsafe { syscall6(SYS_READ, [int(fd), buf as usize, n, 0, 0, 0]) })
+    }
+
+    /// # Safety
+    /// As `write(2)`.
+    #[inline]
+    pub unsafe fn write(fd: c_int, buf: *const c_void, n: size_t) -> ssize_t {
+        // SAFETY: forwarded.
+        libc_result(unsafe { syscall6(SYS_WRITE, [int(fd), buf as usize, n, 0, 0, 0]) })
+    }
+
+    /// # Safety
+    /// As `send(2)`.
+    #[inline]
+    pub unsafe fn send(fd: c_int, buf: *const c_void, n: size_t, flags: c_int) -> ssize_t {
+        // SAFETY: forwarded (`sendto` without an address).
+        libc_result(unsafe { syscall6(SYS_SENDTO, [int(fd), buf as usize, n, int(flags), 0, 0]) })
+    }
+
+    /// # Safety
+    /// As `sendto(2)`.
+    #[inline]
+    pub unsafe fn sendto(
+        fd: c_int,
+        buf: *const c_void,
+        n: size_t,
+        flags: c_int,
+        addr: *const sockaddr_storage,
+        len: u32,
+    ) -> ssize_t {
+        let a = [
+            int(fd),
+            buf as usize,
+            n,
+            int(flags),
+            addr as usize,
+            len as usize,
+        ];
+        // SAFETY: forwarded.
+        libc_result(unsafe { syscall6(SYS_SENDTO, a) })
+    }
+
+    /// # Safety
+    /// As `recvfrom(2)`.
+    #[inline]
+    pub unsafe fn recvfrom(
+        fd: c_int,
+        buf: *mut c_void,
+        n: size_t,
+        flags: c_int,
+        addr: *mut sockaddr_storage,
+        len: *mut u32,
+    ) -> ssize_t {
+        let a = [
+            int(fd),
+            buf as usize,
+            n,
+            int(flags),
+            addr as usize,
+            len as usize,
+        ];
+        // SAFETY: forwarded.
+        libc_result(unsafe { syscall6(SYS_RECVFROM, a) })
+    }
+
+    /// # Safety
+    /// As `accept4(2)`.
+    #[inline]
+    pub unsafe fn accept4(
+        fd: c_int,
+        addr: *mut sockaddr_storage,
+        len: *mut u32,
+        flags: c_int,
+    ) -> c_int {
+        let a = [int(fd), addr as usize, len as usize, int(flags), 0, 0];
+        // SAFETY: forwarded.
+        libc_result(unsafe { syscall6(SYS_ACCEPT4, a) }) as c_int
+    }
+
+    /// # Safety
+    /// As `epoll_wait(2)`.
+    #[inline]
+    pub unsafe fn epoll_wait(
+        epfd: c_int,
+        evs: *mut epoll_event,
+        max: c_int,
+        timeout: c_int,
+    ) -> c_int {
+        let a = [int(epfd), evs as usize, int(max), int(timeout), 0, 0];
+        // SAFETY: forwarded.
+        libc_result(unsafe { syscall6(SYS_EPOLL_WAIT, a) }) as c_int
+    }
+
+    /// # Safety
+    /// As `epoll_ctl(2)`.
+    #[inline]
+    pub unsafe fn epoll_ctl(epfd: c_int, op: c_int, fd: c_int, ev: *mut epoll_event) -> c_int {
+        let a = [int(epfd), int(op), int(fd), ev as usize, 0, 0];
+        // SAFETY: forwarded.
+        libc_result(unsafe { syscall6(SYS_EPOLL_CTL, a) }) as c_int
+    }
 }
 
 // ---- processes, signals, mappings, directories (05-runtime.md §11) ----

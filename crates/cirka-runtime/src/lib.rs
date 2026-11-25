@@ -65,12 +65,27 @@ impl<T> Global<T> {
     }
 }
 
-/// Allocates a BYTES object holding a copy of `len` bytes at `p`.
+/// The empty string: a static immortal BYTES object (`rc` 0, like the
+/// string literals of the generated code), returned for every empty result
+/// instead of a new object (FEAT-1002). Nothing writes to an immortal
+/// object: reference counting skips it and in-place updates copy it.
+static EMPTY_BYTES: Global<[u64; 2]> = Global::new([(object::BYTES as u64) << 56, 0]);
+
+/// The static empty string (see [`EMPTY_BYTES`]).
+pub fn empty_bytes() -> object::Obj {
+    EMPTY_BYTES.ptr() as object::Obj
+}
+
+/// A BYTES object holding a copy of the `len` bytes at `p`: the static
+/// empty string when `len` is 0, otherwise a new one.
 ///
 /// # Safety
 /// `p` must point to `len` readable bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn cirka_bytes_from(p: *const u8, len: usize) -> object::Obj {
+    if len == 0 {
+        return empty_bytes();
+    }
     // SAFETY: fresh allocation large enough for header, length and data.
     unsafe {
         let o = alloc::cirka_alloc(16 + len.div_ceil(8) * 8) as object::Obj;

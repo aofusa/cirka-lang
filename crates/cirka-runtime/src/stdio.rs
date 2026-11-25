@@ -164,7 +164,8 @@ pub extern "C" fn cirka_fd_read(fd: i64, max: i64) -> Obj {
 /// room), anything else into one of 4 KiB doubled with `realloc` as it
 /// fills. The buffer is laid out as a BYTES object (header and length
 /// first), so a large result becomes the string itself without a copy;
-/// it counts as one allocation, as the string of `cirka_bytes_from` did.
+/// it counts as one allocation, as the string of `cirka_bytes_from` did
+/// (an empty result is the static empty string, which counts none).
 /// After a failure the string is empty and `errno` is set.
 fn read_all(fd: i32) -> Obj {
     // SAFETY: `st` is written by `fstat`; `buf` holds 16 bytes of header

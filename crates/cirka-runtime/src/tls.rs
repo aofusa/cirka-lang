@@ -56,6 +56,10 @@ pub struct Tls {
     /// Results of the last call of `os.rs` beyond its return value (the
     /// pipes of a spawn, the status of a wait, the fields of a stat).
     pub os: [i64; 6],
+    /// The buffer `net.rs` reads into (null until the first read). A
+    /// thread the runtime started frees it when it exits; a foreign thread
+    /// keeps it, as it keeps its free lists (`alloc::thread_exit`).
+    pub recv_buf: *mut u8,
 }
 
 const TLS_SIZE: usize = core::mem::size_of::<Tls>();

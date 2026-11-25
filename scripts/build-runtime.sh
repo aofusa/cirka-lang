@@ -5,10 +5,11 @@
 #   target/rt-tsan/release/libcirka_rt.a   (ThreadSanitizer, --runtime=tsan)
 # The compiler drivers look for these unless CIRKA_RUNTIME_DIR is set.
 # Stable Rust has no sanitizers: the tsan flavour is built with
-# RUSTC_BOOTSTRAP=1; `core` is not instrumented (05-runtime.md §9.7).
+# RUSTC_BOOTSTRAP=1; `core` is not instrumented (05-runtime.md §9.7). It
+# calls libc's I/O functions (`--cfg cirka_tsan`, FEAT-1007).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 cargo build -q -p cirka-runtime --release --target-dir target/rt
 cargo build -q -p cirka-runtime --release --features debug-rt --target-dir target/rt-debug
-RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Zsanitizer=thread -Cunsafe-allow-abi-mismatch=sanitizer" \
+RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Zsanitizer=thread -Cunsafe-allow-abi-mismatch=sanitizer --cfg cirka_tsan" \
     cargo build -q -p cirka-runtime --release --target-dir target/rt-tsan

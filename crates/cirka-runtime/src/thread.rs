@@ -217,6 +217,7 @@ extern "C" fn thread_main(arg: *mut c_void) -> *mut c_void {
         sync::finish_thread(st.handle, r);
         cirka_drop(st.handle);
         crate::start::remove_alt_stack(alt);
+        crate::net::thread_exit();
         alloc::thread_exit();
     }
     RUNNING.fetch_sub(1, Ordering::AcqRel);

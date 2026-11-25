@@ -15,6 +15,8 @@ debug-rt = []
 
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
+# The ThreadSanitizer flavour (scripts/build-runtime.sh): libc's I/O calls.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(cirka_tsan)"] }
 
 [dependencies]
 cirka-bigint = { path = "../cirka-bigint" }

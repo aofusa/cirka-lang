@@ -7,11 +7,12 @@
 //! libraries hold those in linear values (spec-v0.0.5.md §2), and a
 //! continuation dropped with its loop still closes its socket.
 
-use crate::evloop::{budget_left, foreign, spend};
+use crate::evloop::{
+    EV_READ, EV_WRITE, budget_left, drain, drained, foreign, forget, fresh_ident, spend,
+};
 use crate::object::{FOREIGN, Obj, word};
 use crate::{io, sys};
 use core::ffi::{c_char, c_int, c_void};
-use core::mem::MaybeUninit;
 
 const EINTR: i32 = 4;
 const ENOENT: i32 = 2;
@@ -445,15 +446,19 @@ pub extern "C" fn cirka_fd_limit_raise() -> i64 {
 
 // ---- Descriptor objects and the operations of the libraries ----
 
-/// Word 0 of a descriptor object whose descriptor was closed.
+/// Word 0 of a descriptor object whose descriptor was closed. Before, it
+/// holds the descriptor in its low half and the object's serial in its high
+/// half: the event loop tells the registrations of two objects apart even
+/// when the second reuses the number of the first (FEAT-1001).
 const CLOSED: usize = usize::MAX;
 
 /// The finalizer of a descriptor object: closes the descriptor, unless
 /// `cirka_handle_close` did.
-extern "C" fn handle_finalize(fd: usize) {
-    if fd != CLOSED {
+extern "C" fn handle_finalize(w: usize) {
+    if w != CLOSED {
+        forget((w & 0xffff_ffff) as i64, (w >> 32) as u32);
         // SAFETY: the object owned the descriptor.
-        unsafe { sys::close(fd as c_int) };
+        unsafe { sys::close((w & 0xffff_ffff) as c_int) };
     }
 }
 
@@ -461,10 +466,11 @@ extern "C" fn handle_finalize(fd: usize) {
 /// is closed when the object is freed.
 #[unsafe(no_mangle)]
 pub extern "C" fn cirka_fd_handle(fd: i64) -> Obj {
-    if fd < 0 {
+    if !(0..=i64::from(i32::MAX)).contains(&fd) {
         io::fatal(b"cirka_fd_handle: not a descriptor", 2);
     }
-    foreign(fd as usize as *mut c_void, handle_finalize)
+    let w = fd as usize | (fresh_ident() as usize) << 32;
+    foreign(w as *mut c_void, handle_finalize)
 }
 
 /// The word holding the descriptor of the descriptor object `h`.
@@ -489,8 +495,22 @@ unsafe fn handle_word(h: Obj) -> *mut usize {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn cirka_handle_fd(h: Obj) -> i64 {
     // SAFETY: guaranteed by the caller.
-    let fd = unsafe { *handle_word(h) };
-    if fd == CLOSED { -1 } else { fd as i64 }
+    unsafe { handle_ident(h).0 }
+}
+
+/// The descriptor of the descriptor object `h` (-1 once it is closed) and
+/// the object's serial.
+///
+/// # Safety
+/// `h` must be a live object.
+pub(crate) unsafe fn handle_ident(h: Obj) -> (i64, u32) {
+    // SAFETY: guaranteed by the caller.
+    let w = unsafe { *handle_word(h) };
+    if w == CLOSED {
+        (-1, 0)
+    } else {
+        ((w & 0xffff_ffff) as i64, (w >> 32) as u32)
+    }
 }
 
 /// Closes the descriptor of `h` now (freeing `h` will not): 0, or
@@ -508,58 +528,110 @@ pub unsafe extern "C" fn cirka_handle_close(h: Obj) -> i64 {
             return -i64::from(EBADF);
         }
         *w = CLOSED;
-        if sys::close(fd as c_int) < 0 && errno() != EINTR {
+        forget((fd & 0xffff_ffff) as i64, (fd >> 32) as u32);
+        if sys::close((fd & 0xffff_ffff) as c_int) < 0 && errno() != EINTR {
             return neg_errno();
         }
         0
     }
 }
 
+/// This thread's receive buffer of `RECV_MAX` bytes, allocated on first
+/// use and freed when the thread exits (`thread_exit`). A buffer of 64 KiB
+/// on the stack would be touched page by page (stack probes) at every read
+/// (FEAT-1002).
+fn recv_buffer() -> *mut u8 {
+    // SAFETY: this thread's block.
+    unsafe {
+        let t = crate::tls::tls();
+        if (*t).recv_buf.is_null() {
+            let p = sys::malloc(RECV_MAX) as *mut u8;
+            if p.is_null() {
+                io::fatal(b"out of memory", 2);
+            }
+            (*t).recv_buf = p;
+        }
+        (*t).recv_buf
+    }
+}
+
+/// Frees this thread's receive buffer: the thread is about to exit.
+pub(crate) fn thread_exit() {
+    // SAFETY: this thread's block; the buffer is not used any more.
+    unsafe {
+        let t = crate::tls::tls();
+        sys::free((*t).recv_buf as *mut c_void);
+        (*t).recv_buf = core::ptr::null_mut();
+    }
+}
+
 /// Reads with `f` into a buffer of at most `max` bytes (1 to 64 KiB) and
 /// returns the bytes read, with `errno` 0; empty with `errno` 0 when `f`
 /// returns 0, and empty with the error (`EAGAIN` also when the budget of
-/// the running callback is spent).
-fn read_with(fd: i64, max: i64, mut f: impl FnMut(c_int, *mut c_void, usize) -> isize) -> Obj {
-    let mut buf = [const { MaybeUninit::<u8>::uninit() }; RECV_MAX];
+/// the running callback is spent). `fd` belongs to the descriptor object
+/// with serial `ident`: a read that finds nothing tells the event loop,
+/// and one the loop knows would find nothing (`drained`) reports `EAGAIN`
+/// without a system call (FEAT-1001). So does a short read of a `stream`.
+fn read_with(
+    fd: i64,
+    ident: u32,
+    max: i64,
+    stream: bool,
+    mut f: impl FnMut(c_int, *mut c_void, usize) -> isize,
+) -> Obj {
     let n = (max.max(1) as usize).min(RECV_MAX);
     let mut err = 0;
     let mut len = 0;
+    let mut buf = core::ptr::null_mut();
     if fd < 0 {
         err = EBADF;
-    } else if !budget_left() {
+    } else if !budget_left() || drained(fd, ident, EV_READ) {
         err = EAGAIN;
     } else {
+        buf = recv_buffer();
         loop {
-            let r = f(fd as c_int, buf.as_mut_ptr() as *mut c_void, n);
+            let r = f(fd as c_int, buf as *mut c_void, n);
             if r >= 0 {
                 len = r as usize;
                 spend();
+                if stream && len > 0 && len < n {
+                    drain(fd, ident, EV_READ, true);
+                }
                 break;
             }
             if errno() != EINTR {
                 err = errno();
+                if err == EAGAIN {
+                    drain(fd, ident, EV_READ, false);
+                }
                 break;
             }
         }
     }
     set_errno(err);
-    // SAFETY: the first `len` bytes were written by the read.
-    unsafe { crate::cirka_bytes_from(buf.as_ptr() as *const u8, len) }
+    // SAFETY: the first `len` bytes of the buffer were written by the read
+    // (none when it is null).
+    unsafe { crate::cirka_bytes_from(buf, len) }
 }
 
-/// Reads at most `max` bytes from the socket of `h`: the bytes (with
-/// `errno` 0); empty with `errno` 0 at the end of the stream; empty with
-/// `EAGAIN` when nothing is there yet or the budget of the running
-/// callback is spent; empty with the error otherwise.
+/// Reads at most `max` bytes from the stream socket of `h` (TCP; a read of
+/// fewer bytes than asked tells the running loop that the socket is empty,
+/// FEAT-1001; datagrams are read with `cirka_sock_recvfrom`): the bytes
+/// (with `errno` 0); empty with `errno` 0 at the end of the stream; empty
+/// with `EAGAIN` when nothing is there yet as far as the running loop
+/// knows (a watch then waits for the next readiness) or the budget of the
+/// running callback is spent; empty with the error otherwise.
 ///
 /// # Safety
 /// `h` must be a live descriptor object.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn cirka_sock_recv(h: Obj, max: i64) -> Obj {
     // SAFETY: guaranteed by the caller.
-    let fd = unsafe { cirka_handle_fd(h) };
+    let (fd, ident) = unsafe { handle_ident(h) };
     // SAFETY: `buf` has room for `n` bytes.
-    read_with(fd, max, |fd, buf, n| unsafe { sys::read(fd, buf, n) })
+    read_with(fd, ident, max, true, |fd, buf, n| unsafe {
+        sys::read(fd, buf, n)
+    })
 }
 
 /// `cirka_net_send` on the socket of `h`: `-EAGAIN` also when the budget
@@ -572,16 +644,18 @@ pub unsafe extern "C" fn cirka_sock_recv(h: Obj, max: i64) -> Obj {
 pub unsafe extern "C" fn cirka_sock_send(h: Obj, data: Obj, off: i64) -> i64 {
     // SAFETY: guaranteed by the caller.
     unsafe {
-        let fd = cirka_handle_fd(h);
+        let (fd, ident) = handle_ident(h);
         if fd < 0 {
             return -i64::from(EBADF);
         }
-        if !budget_left() {
+        if !budget_left() || drained(fd, ident, EV_WRITE) {
             return -i64::from(EAGAIN);
         }
         let r = cirka_net_send(fd, data, off);
         if r >= 0 {
             spend();
+        } else if r == -i64::from(EAGAIN) {
+            drain(fd, ident, EV_WRITE, false);
         }
         r
     }
@@ -595,16 +669,18 @@ pub unsafe extern "C" fn cirka_sock_send(h: Obj, data: Obj, off: i64) -> i64 {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn cirka_sock_accept(h: Obj) -> i64 {
     // SAFETY: guaranteed by the caller.
-    let fd = unsafe { cirka_handle_fd(h) };
+    let (fd, ident) = unsafe { handle_ident(h) };
     if fd < 0 {
         return -i64::from(EBADF);
     }
-    if !budget_left() {
+    if !budget_left() || drained(fd, ident, EV_READ) {
         return -i64::from(EAGAIN);
     }
     let r = cirka_net_accept(fd);
     if r >= 0 {
         spend();
+    } else if r == -i64::from(EAGAIN) {
+        drain(fd, ident, EV_READ, false);
     }
     r
 }
@@ -644,7 +720,7 @@ pub unsafe extern "C" fn cirka_net_udp_bind(host: Obj, port: i64) -> i64 {
 pub unsafe extern "C" fn cirka_sock_sendto(h: Obj, data: Obj, host: Obj, port: i64) -> i64 {
     // SAFETY: guaranteed by the caller; valid address and buffer.
     unsafe {
-        let fd = cirka_handle_fd(h);
+        let (fd, ident) = handle_ident(h);
         if fd < 0 {
             return -i64::from(EBADF);
         }
@@ -652,7 +728,7 @@ pub unsafe extern "C" fn cirka_sock_sendto(h: Obj, data: Obj, host: Obj, port: i
             Ok(a) => a,
             Err(e) => return e,
         };
-        if !budget_left() {
+        if !budget_left() || drained(fd, ident, EV_WRITE) {
             return -i64::from(EAGAIN);
         }
         let d = io::bytes_of(data);
@@ -670,6 +746,9 @@ pub unsafe extern "C" fn cirka_sock_sendto(h: Obj, data: Obj, host: Obj, port: i
                 return n as i64;
             }
             if errno() != EINTR {
+                if errno() == EAGAIN {
+                    drain(fd, ident, EV_WRITE, false);
+                }
                 return neg_errno();
             }
         }
@@ -687,10 +766,10 @@ pub unsafe extern "C" fn cirka_sock_recvfrom(h: Obj, max: i64) -> Obj {
     // SAFETY: guaranteed by the caller; the sender goes to this thread's
     // block.
     unsafe {
-        let fd = cirka_handle_fd(h);
+        let (fd, ident) = handle_ident(h);
         let t = crate::tls::tls();
         (*t).peer_len = 0;
-        read_with(fd, max, |fd, buf, n| {
+        read_with(fd, ident, max, false, |fd, buf, n| {
             let mut len = size_of::<sys::sockaddr_storage>() as u32;
             let r = sys::recvfrom(fd, buf, n, 0, &raw mut (*t).peer, &mut len);
             if r >= 0 {
@@ -993,6 +1072,131 @@ mod tests {
             crate::stdio::cirka_fd_close(again);
             assert_eq!(cirka_sock_accept(h_closed()), -9);
             cirka_drop(lo);
+        }
+    }
+
+    static STREAM: AtomicI64 = AtomicI64::new(0);
+
+    /// Receives on the descriptor object in `STREAM` until it would wait,
+    /// logging what it gets (`[eof]` at the end), then waits for more.
+    /// Once it has read `abc`, the peer sends `de` and ends the stream (so
+    /// that the two do not arrive together on a loaded machine).
+    extern "C" fn recv_all(t: Obj) -> Obj {
+        // SAFETY: the descriptor object outlives the loop; strings and
+        // closures are released.
+        unsafe {
+            let h = STREAM.load(Ordering::Relaxed) as Obj;
+            loop {
+                let d = cirka_sock_recv(h, 100);
+                let e = errno();
+                let v = io::bytes_of(d).to_vec();
+                cirka_drop(d);
+                if e == EAGAIN {
+                    if *LOG.lock().unwrap() == b"abc|" {
+                        let de = closure(send_de_and_end);
+                        cirka_async_timer(5, de);
+                        cirka_drop(de);
+                    }
+                    let cb = closure(recv_all);
+                    assert_eq!(cirka_async_watch(h, EV_READ, -1, cb), 0);
+                    cirka_drop(cb);
+                    break;
+                }
+                assert_eq!(e, 0);
+                if v.is_empty() {
+                    log(b"[eof]");
+                    break;
+                }
+                log(&v);
+                log(b"|");
+            }
+        }
+        t
+    }
+
+    extern "C" fn send_abc(t: Obj) -> Obj {
+        let m = text("abc");
+        // SAFETY: a fresh string, released after the send.
+        unsafe {
+            assert_eq!(cirka_net_send(CLIENT.load(Ordering::Relaxed), m, 0), 3);
+            cirka_drop(m);
+        }
+        t
+    }
+
+    extern "C" fn send_de_and_end(t: Obj) -> Obj {
+        let fd = CLIENT.load(Ordering::Relaxed);
+        let m = text("de");
+        // SAFETY: a fresh string, released after the send.
+        unsafe {
+            assert_eq!(cirka_net_send(fd, m, 0), 2);
+            cirka_drop(m);
+        }
+        // The end of the stream comes with the data: one event reports
+        // both.
+        assert_eq!(cirka_net_shutdown(fd, 1), 0);
+        t
+    }
+
+    /// A connected pair of TCP sockets on the loopback (client, server).
+    fn tcp_pair() -> (i64, i64) {
+        let lo = text("127.0.0.1");
+        // SAFETY: a live string, released.
+        unsafe {
+            let lfd = cirka_net_listen(lo, 0, 0);
+            assert!(lfd >= 0, "listen: {lfd}");
+            let c = cirka_net_connect(lo, cirka_net_local_port(lfd));
+            assert!(c >= 0, "connect: {c}");
+            let s = loop {
+                let s = cirka_net_accept(lfd);
+                if s >= 0 {
+                    break s;
+                }
+                assert_eq!(s, -11);
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            };
+            crate::stdio::cirka_fd_close(lfd);
+            cirka_drop(lo);
+            (c, s)
+        }
+    }
+
+    #[test]
+    fn a_stream_emptied_by_a_read_waits_without_system_calls() {
+        // FEAT-1001: a read that gets less than it asked for empties the
+        // socket; the next read then reports EAGAIN, and the watch that
+        // follows waits for the next edge, both without a system call.
+        // Only the first watch registers the socket. Data and the end of
+        // the stream reported by one event are both read.
+        let _g = crate::test_lock();
+        let (c, s) = tcp_pair();
+        CLIENT.store(c, Ordering::Relaxed);
+        // SAFETY: a descriptor object and closures, released below.
+        unsafe {
+            let h = cirka_fd_handle(s);
+            STREAM.store(h as i64, Ordering::Relaxed);
+            extern "C" fn plan(t: Obj) -> Obj {
+                // SAFETY: a closure of the test, released after the timer
+                // took its reference.
+                unsafe {
+                    let abc = closure(send_abc);
+                    cirka_async_timer(5, abc);
+                    cirka_drop(abc);
+                }
+                recv_all(t)
+            }
+            let p = closure(plan);
+            let before = WATCH_CTLS.load(Ordering::Relaxed);
+            assert_eq!(cirka_async_run(p), 0);
+            assert_eq!(
+                WATCH_CTLS.load(Ordering::Relaxed) - before,
+                1,
+                "one registration"
+            );
+            assert_eq!(core::mem::take(&mut *LOG.lock().unwrap()), b"abc|de|[eof]");
+            cirka_drop(p);
+            cirka_drop(h);
+            crate::stdio::cirka_fd_close(c);
         }
     }
 
