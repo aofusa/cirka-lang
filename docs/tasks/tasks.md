@@ -356,5 +356,6 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [BUG-0036](bugs/BUG-0036-borrowed-sibling-keeps-parent.md) | 読むだけのフィールドの借用が、マッチしたオブジェクトを生かし、別のフィールドの in-place 更新がコピーになる | done | major | BUG-0034 |
 | [BUG-0037](bugs/BUG-0037-cascading-instance-error.md) | 引数の型が合わないと、その引数で決まる型の制約が E1254 として重ねて報告される | done | minor | FEAT-0262 |
 | [BUG-0038](bugs/BUG-0038-memcheck-without-valgrind.md) | `scripts/memcheck.sh` が実行テストを valgrind の下で走らせていない | in-progress | major | FEAT-0096 |
+| [BUG-0039](bugs/BUG-0039-small-function-inlining-exponential.md) | 小さい関数の連鎖 (次の関数を 2 か所から呼ぶ) をインライン化すると 1 回の簡約で指数的に複製し、Core の最適化が終わらない | done | major | FEAT-0097 |
 
 新しいチケットは `features/_TEMPLATE.md` / `bugs/_TEMPLATE.md` をコピーして作成する。

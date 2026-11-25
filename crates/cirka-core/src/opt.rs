@@ -853,7 +853,13 @@ fn is_alias(e: &Expr) -> bool {
 /// wrapper, is inlined into every caller of the wrapper, and with it the
 /// workers that worker calls, which is code exponential in the depth of
 /// the calls (BUG-0021). A function called once is therefore inlined only
-/// while its copies stay within [`COPY_BUDGET`].
+/// while its copies stay within [`COPY_BUDGET`]. A small function is
+/// inlined at all its calls, but the inlined copies of its callers copy
+/// them too: in a chain of small functions each calling the next twice
+/// (the copies of an unrolled loop that continues from two branches,
+/// FEAT-0094) the last is copied 2^n times within one round, before their
+/// growing sizes stop it in the next (BUG-0039). The copies beyond its own
+/// calls are therefore limited too, by [`SMALL_COPY_BUDGET`].
 fn inline_candidates(p: &Program) -> HashMap<String, Expr> {
     let refs: HashMap<&str, Vec<String>> = p
         .binds
@@ -914,9 +920,12 @@ fn inline_candidates(p: &Program) -> HashMap<String, Expr> {
         }
         let size = size(&b.expr);
         let once = copies.callers.get(b.name.as_str()).map(Vec::len) == Some(1);
-        let kind = if wrapper || (size <= INLINE_SIZE && !breakers.contains(&b.name)) {
+        let breaker = breakers.contains(&b.name);
+        let kind = if wrapper || (alias && !breaker) {
             Inline::Always
-        } else if once && !breakers.contains(&b.name) {
+        } else if size <= INLINE_SIZE && !breaker {
+            Inline::Small(size)
+        } else if once && !breaker {
             Inline::Once(size)
         } else {
             continue;
@@ -937,11 +946,21 @@ fn inline_candidates(p: &Program) -> HashMap<String, Expr> {
 /// (BUG-0021).
 pub const COPY_BUDGET: usize = 500;
 
+/// The extra expression nodes that inlining a small function may make
+/// through the copies of its inlined callers: its size times its copies
+/// beyond its own calls (BUG-0039). Far above what ordinary code reaches
+/// (a small helper of a small function called in dozens of places), so
+/// only the chains whose copies double at each call stop.
+pub const SMALL_COPY_BUDGET: usize = 4_000;
+
 /// How a candidate for inlining is inlined.
 #[derive(Clone, Copy)]
 enum Inline {
-    /// At every call site (wrappers and small functions).
+    /// At every call site (wrappers and aliases).
     Always,
+    /// Small: at every call site, while the copies its inlined callers
+    /// make of its calls stay within [`SMALL_COPY_BUDGET`] (its size).
+    Small(usize),
     /// Called once: inlined while its copies stay within [`COPY_BUDGET`]
     /// (its size).
     Once(usize),
@@ -962,6 +981,14 @@ impl<'a> Copies<'a> {
         match self.kinds.get(g) {
             None => false,
             Some(Inline::Always) => true,
+            Some(&Inline::Small(size)) => {
+                let Some((&g, _)) = self.kinds.get_key_value(g) else {
+                    return false;
+                };
+                let own = self.callers.get(g).map_or(0, Vec::len);
+                let n = self.copies(g);
+                n.saturating_sub(own).saturating_mul(size) <= SMALL_COPY_BUDGET
+            }
             Some(&Inline::Once(size)) => {
                 let Some((&g, _)) = self.kinds.get_key_value(g) else {
                     return false;

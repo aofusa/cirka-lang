@@ -2083,6 +2083,53 @@ fn opt_bounds_the_copies_made_by_inlining() {
     assert!(kept >= 2, "{}", print_program(&p));
 }
 
+/// `k0 … k{n-1}`, small, each calling the next from both alternatives of
+/// a `case` (as the copies of an unrolled loop that goes on from two
+/// branches do); the last calls the extern `h`.
+fn chain_of_small_calls(n: usize) -> String {
+    let mut src = String::from("(extern arg () Int#)\n(extern h (Int#) Int#)\n");
+    for k in 0..n {
+        let call = |a: &str| {
+            if k + 1 < n {
+                format!("(k{} {a})", k + 1)
+            } else {
+                format!("(extern h {a})")
+            }
+        };
+        src += &format!(
+            "(def k{k} (-> Int# Int#) (lam ((n Int#)) (case (extern h n) (c Int#) Int# (0 {}) (_ {}))))\n",
+            call("(prim add n 1)"),
+            call("(prim sub n 1)")
+        );
+    }
+    src + "(def main Int# (k0 (extern arg)))"
+}
+
+#[test]
+fn opt_bounds_the_copies_of_small_functions() {
+    // Each `k{i}` is small and calls `k{i+1}` twice: inlining every small
+    // function at every copy of its calls would copy `k{n-1}` 2^(n-1)
+    // times within one round (BUG-0039). The copies beyond a function's
+    // own calls add at most `SMALL_COPY_BUDGET` nodes, after which the
+    // deeper ones stay calls.
+    let n = 40;
+    let src = chain_of_small_calls(n);
+    let before = parse_program(FileId(0), &src).unwrap();
+    assert!(opt::size(&before.bind("k1").unwrap().expr) <= opt::INLINE_SIZE);
+    let p = optimized(&src);
+    let total: usize = p.binds.iter().map(|b| opt::size(&b.expr)).sum();
+    let start: usize = before.binds.iter().map(|b| opt::size(&b.expr)).sum();
+    assert!(
+        total <= start + n * opt::SMALL_COPY_BUDGET,
+        "{total} nodes from {start}"
+    );
+    eprintln!("chain of {n} small functions: {total} nodes from {start}");
+    let kept = (1..n)
+        .filter(|k| p.bind(&format!("k{k}")).is_some())
+        .count();
+    assert!(kept >= 2, "{}", print_program(&p));
+}
+
 #[test]
 fn opt_does_not_inline_self_recursive_functions() {
     let src = "(extern arg () Int#)
