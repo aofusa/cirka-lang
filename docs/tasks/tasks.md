@@ -371,5 +371,6 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [BUG-0040](bugs/BUG-0040-z3-counterexample-depends-on-load.md) | 検証の反例が Z3 の実行時間で変わり、負荷が高いと `verify/fail/overflow` の期待出力と食い違う | todo | minor | BUG-0038 |
 | [BUG-0041](bugs/BUG-0041-test-case-without-limits.md) | テストハーネスにケースごとの時間とメモリの上限がなく、終わらない 1 ケースがホストのメモリを使い切る | done | major | FEAT-0097 |
 | [BUG-0042](bugs/BUG-0042-valgrind-bypasses-size-classes.md) | valgrind の下ではランタイムのアロケータが大きさのクラスを使わず、すべてを malloc で確保する (64 GiB の予約が断られる) | done | minor | FEAT-1001 |
+| [BUG-0043](bugs/BUG-0043-region-check-cost.md) | BUG-0042 の修正で解放ごとの領域の判定が重くなり、binary-trees が 4% 遅くなった | in-progress | minor | BUG-0042 |
 
 新しいチケットは `features/_TEMPLATE.md` / `bugs/_TEMPLATE.md` をコピーして作成する。

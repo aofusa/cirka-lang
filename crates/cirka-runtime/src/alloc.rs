@@ -36,7 +36,8 @@ const PAGES: usize = REGION / PAGE;
 
 struct Region {
     base: usize,
-    /// Bytes reserved (at most `REGION`).
+    /// Bytes reserved (at most `REGION`); 0 unless the region is in use
+    /// (mode 1), so that [`in_region`] needs no test of the mode.
     size: usize,
     next_page: usize,
     /// 0 = not initialized, 1 = cirka allocator, 2 = system allocator.
@@ -408,15 +409,26 @@ pub unsafe fn dealloc(o: Obj) {
     unsafe {
         let r = REGION_STATE.get();
         let a = o as usize;
-        if r.mode == 1 && a >= r.base && a < r.base + r.size {
-            let class = PAGE_CLASS.get()[(a - r.base) >> PAGE_SHIFT] as usize;
-            let lists = &mut (*tls::heap()).free_lists;
-            *(o as *mut *mut u8) = lists[class];
-            lists[class] = o as *mut u8;
+        if in_region(a, r.base, r.size) {
+            // a - base < size <= REGION: the page is in the table, and a
+            // page of the region has a class below CLASSES (`refill`).
+            let class = *PAGE_CLASS.get().get_unchecked((a - r.base) >> PAGE_SHIFT) as usize;
+            let head = (*tls::heap()).free_lists.get_unchecked_mut(class);
+            *(o as *mut *mut u8) = *head;
+            *head = o as *mut u8;
         } else {
             sys::free(o as *mut c_void);
         }
     }
+}
+
+/// Whether address `a` is in the region of `size` bytes at `base`: one
+/// unsigned comparison, an address below the base wrapping around to a
+/// large offset. `size` is 0 when the region is not in use, so the test
+/// needs no load of the mode (BUG-0043: the free of every object makes it).
+#[inline(always)]
+fn in_region(a: usize, base: usize, size: usize) -> bool {
+    a.wrapping_sub(base) < size
 }
 
 /// Resizes the memory of `o`, an object from `malloc`, to `size` bytes
@@ -440,8 +452,7 @@ pub unsafe fn resize_system(o: Obj, size: usize) -> Option<Obj> {
     // in mode 2); it is not in use elsewhere.
     unsafe {
         let r = REGION_STATE.get();
-        let a = o as usize;
-        if r.mode == 1 && a >= r.base && a < r.base + r.size {
+        if in_region(o as usize, r.base, r.size) {
             return None;
         }
         let p = sys::realloc(o as *mut c_void, size.max(8));
@@ -455,6 +466,23 @@ pub unsafe fn resize_system(o: Obj, size: usize) -> Option<Obj> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The membership test of the region (BUG-0043): the bounds, an
+    /// address below the base (which wraps around), and an empty region
+    /// (not in use) that holds nothing.
+    #[test]
+    fn region_membership_is_one_comparison() {
+        let base = 0x7f00_0000_0000usize;
+        let size = 8usize << 30;
+        assert!(in_region(base, base, size));
+        assert!(in_region(base + size - 8, base, size));
+        assert!(!in_region(base + size, base, size));
+        assert!(!in_region(base - 8, base, size));
+        assert!(!in_region(0, base, size));
+        assert!(!in_region(usize::MAX, base, size));
+        assert!(!in_region(base, base, 0));
+        assert!(!in_region(0x1000, 0, 0));
+    }
 
     #[test]
     fn zeroed_memory_is_zero_after_reuse() {
