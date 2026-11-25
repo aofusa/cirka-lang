@@ -1,0 +1,136 @@
+// Globals whose init only builds one constructor from constants, other
+// globals and constructors without fields are static objects instead of
+// CAFs (FEAT-1006): nothing is allocated or forced for them, and they may
+// point to themselves and to each other. A global whose init does
+// anything else (`noisy` prints) stays a CAF, evaluated once on first use.
+type Int { I = 0 { v: i64 } }
+type Bool { False = 0 {}, True = 1 {} }
+type Rec { R = 0 { name: ptr, x: f64, n: i64, flag: ptr, small: i32 } }
+type List { Nil = 0 {}, Cons = 1 { head: i64, tail: ptr } }
+type Pair { P = 0 { a: ptr, b: ptr } }
+extern fn cirka_write_i64(i64) -> void
+extern fn cirka_write_char(i64) -> void
+extern fn cirka_write_bytes(ptr) -> void
+extern fn cirka_write_f64(f64) -> void
+global answer = answer_init
+global rec = rec_init
+global ones = ones_init
+global pair = pair_init
+global noisy = noisy_init
+
+fn say(n: i64) -> i64 {
+entry:
+  let _ = extern cirka_write_i64(n)
+  let _ = extern cirka_write_char(10)
+  ret 0
+}
+
+fn answer_init() -> ptr {
+entry:
+  let r = alloc Int.I(42)
+  ret r
+}
+
+fn rec_init() -> ptr {
+entry:
+  let s = lit "cirka"
+  let t = alloc Bool.True()
+  let r = alloc Rec.R(s, 2.5, -7, t, -3)
+  ret r
+}
+
+// An endless list of ones: the static object is its own tail.
+fn ones_init() -> ptr {
+entry:
+  let me = global ones
+  let r = alloc List.Cons(1, me)
+  ret r
+}
+
+fn pair_init() -> ptr {
+entry:
+  let a = global answer
+  let b = global noisy
+  let r = alloc Pair.P(a, b)
+  ret r
+}
+
+fn noisy_init() -> ptr {
+entry:
+  let _ = call say(777)
+  let r = alloc Int.I(5)
+  ret r
+}
+
+// The sum of the first `n` elements of `xs`.
+fn take_sum(xs: ptr @borrowed, n: i64, acc: i64) -> i64 {
+entry:
+  switch n { 0 => done, default => more }
+done:
+  ret acc
+more:
+  let h = proj xs List.Cons.head
+  let t = proj xs List.Cons.tail
+  let acc1 = prim add(acc, h)
+  let n1 = prim sub(n, 1)
+  tailcall take_sum(t, n1, acc1)
+}
+
+fn main() -> i64 {
+entry:
+  let g = global answer
+  let a = force g
+  let v = proj a Int.I.v
+  let _ = call say(v)
+  drop a
+  let gr = global rec
+  let r = force gr
+  let name = proj r Rec.R.name
+  let _ = extern cirka_write_bytes(name)
+  let _ = extern cirka_write_char(10)
+  let x = proj r Rec.R.x
+  let _ = extern cirka_write_f64(x)
+  let _ = extern cirka_write_char(10)
+  let n = proj r Rec.R.n
+  let _ = call say(n)
+  let small = proj r Rec.R.small
+  let small64 = prim i32_to_i64(small)
+  let _ = call say(small64)
+  let flag = proj r Rec.R.flag
+  switch flag { Bool.False => no, Bool.True => yes }
+no:
+  drop r
+  let _ = call say(0)
+  jump rest()
+yes:
+  drop r
+  let _ = call say(1)
+  jump rest()
+rest:
+  let go = global ones
+  let o = force go
+  let s = call take_sum(o, 5, 0)
+  let _ = call say(s)
+  drop o
+  let gp = global pair
+  let p = force gp
+  let pa = proj p Pair.P.a
+  dup pa
+  let pav = force pa
+  let w = proj pav Int.I.v
+  let _ = call say(w)
+  drop pav
+  let pb = proj p Pair.P.b
+  dup pb
+  let pbv = force pb
+  let z = proj pbv Int.I.v
+  let _ = call say(z)
+  drop pbv
+  let gn = global noisy
+  let nv = force gn
+  let z2 = proj nv Int.I.v
+  let _ = call say(z2)
+  drop nv
+  drop p
+  ret 0
+}

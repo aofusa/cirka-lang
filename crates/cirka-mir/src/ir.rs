@@ -337,9 +337,10 @@ impl Function {
 
     /// Variables that hold static immortal objects, whose `dup` and `drop`
     /// do nothing (FEAT-0089): the results of `alloc` of a constructor
-    /// without fields (`fieldless`) and string constants, and the
-    /// parameters of blocks to which every jump passes such a variable or a
-    /// string constant.
+    /// without fields (`fieldless`), string constants and `global` (a
+    /// CAF's thunk or a static object, FEAT-1006), and the parameters of
+    /// blocks to which every jump passes such a variable or a string
+    /// constant.
     pub fn static_vars(&self, fieldless: impl Fn(CtorRef) -> bool) -> Vec<bool> {
         let mut st = vec![false; self.var_names.len()];
         for b in &self.blocks {
@@ -347,7 +348,7 @@ impl Function {
                 if let Instr::Let { var: Some(v), rhs } = i {
                     st[v.0 as usize] = match rhs {
                         Rhs::Alloc { ctor, .. } => fieldless(*ctor),
-                        Rhs::Lit(Const::Str(_)) => true,
+                        Rhs::Lit(Const::Str(_)) | Rhs::Global(_) => true,
                         _ => false,
                     };
                 }
@@ -480,12 +481,34 @@ impl ExternDecl {
     }
 }
 
-/// A static immortal thunk evaluated on first use (a CAF).
+/// A static immortal thunk evaluated on first use (a CAF), or a static
+/// constructor object when `init` only builds one from constants
+/// ([`Module::static_globals`], FEAT-1006).
 #[derive(Clone, Debug, PartialEq)]
 pub struct GlobalDecl {
     pub name: String,
     /// A function with no parameters that computes the value.
     pub init: String,
+}
+
+/// A field of a static constructor object (FEAT-1006): every one is a
+/// scalar or an immortal object.
+#[derive(Clone, Debug, PartialEq)]
+pub enum StaticField {
+    /// An integer, a float, or a string constant (a static object).
+    Const(Const),
+    /// Another global (a CAF's static thunk or a static object).
+    Global(String),
+    /// A constructor without fields (a static object).
+    Fieldless(CtorRef),
+}
+
+/// The value of a static global: one constructor and its fields in
+/// declaration order.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StaticCon {
+    pub ctor: CtorRef,
+    pub fields: Vec<StaticField>,
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -546,6 +569,89 @@ impl Module {
 
     pub fn extern_decl(&self, name: &str) -> Option<&ExternDecl> {
         self.externs.iter().find(|e| e.name == name)
+    }
+
+    /// The globals that are static constructor objects instead of CAFs
+    /// (FEAT-1006, 06-ir.md §2.2): their init function only builds one
+    /// constructor with fields and returns it, and each argument is a
+    /// constant, another global or a constructor without fields. Nothing
+    /// such an object reaches is ever freed, and evaluating the init
+    /// function would have no effect besides the allocation.
+    pub fn static_globals(&self) -> HashMap<String, StaticCon> {
+        let funcs = self.func_index();
+        self.globals
+            .iter()
+            .filter_map(|g| {
+                let f = &self.funcs[*funcs.get(g.init.as_str())?];
+                Some((g.name.clone(), self.static_value(f)?))
+            })
+            .collect()
+    }
+
+    fn static_value(&self, f: &Function) -> Option<StaticCon> {
+        if !f.params.is_empty() || !f.rets.is_empty() || f.blocks.len() != 1 {
+            return None;
+        }
+        let b = &f.blocks[0];
+        if !b.params.is_empty() {
+            return None;
+        }
+        let Terminator::Ret(Operand::Var(r)) = &b.term else {
+            return None;
+        };
+        let (last, defs) = b.instrs.split_last()?;
+        let Instr::Let {
+            var: Some(v),
+            rhs:
+                Rhs::Alloc {
+                    ctor,
+                    args,
+                    reuse: None,
+                },
+        } = last
+        else {
+            return None;
+        };
+        let def = self.ctor(*ctor);
+        if v != r || def.fields.is_empty() || args.len() != def.fields.len() {
+            return None;
+        }
+        let mut known: HashMap<Var, StaticField> = HashMap::new();
+        for i in defs {
+            let Instr::Let { var: Some(x), rhs } = i else {
+                return None;
+            };
+            let field = match rhs {
+                Rhs::Lit(c) => StaticField::Const(c.clone()),
+                Rhs::Global(g) => StaticField::Global(g.clone()),
+                Rhs::Alloc {
+                    ctor: k,
+                    args,
+                    reuse: None,
+                } if args.is_empty() && self.fieldless(*k) => StaticField::Fieldless(*k),
+                _ => return None,
+            };
+            known.insert(*x, field);
+        }
+        let fields = args
+            .iter()
+            .zip(&def.fields)
+            .map(|(a, fd)| {
+                let field = match a {
+                    Operand::Const(c) => StaticField::Const(c.clone()),
+                    Operand::Var(x) => known.get(x)?.clone(),
+                };
+                let ptr = match &field {
+                    StaticField::Const(c) => c.ty().is_ptr(),
+                    StaticField::Global(_) | StaticField::Fieldless(_) => true,
+                };
+                (ptr == fd.ty.is_ptr()).then_some(field)
+            })
+            .collect::<Option<Vec<_>>>()?;
+        Some(StaticCon {
+            ctor: *ctor,
+            fields,
+        })
     }
 }
 

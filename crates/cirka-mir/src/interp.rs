@@ -124,6 +124,8 @@ pub struct Interp<'m> {
     statics: HashMap<(u32, u32), u32>,
     strings: HashMap<Vec<u8>, u32>,
     globals: HashMap<String, u32>,
+    /// The globals that are static constructor objects (FEAT-1006).
+    static_globals: HashMap<String, StaticCon>,
     /// Total executed steps (to stop runaway programs in tests).
     pub fuel: u64,
     /// Count of dup/drop operations performed (for borrow inference stats).
@@ -164,6 +166,7 @@ impl<'m> Interp<'m> {
             statics: HashMap::new(),
             strings: HashMap::new(),
             globals: HashMap::new(),
+            static_globals: m.static_globals(),
             fuel: u64::MAX,
             rc_ops: 0,
             stdin: Vec::new(),
@@ -238,6 +241,56 @@ impl<'m> Interp<'m> {
             size: 8,
         });
         self.heap.len() as u32 - 1
+    }
+
+    /// The static object of a constructor without fields.
+    fn fieldless(&mut self, c: CtorRef) -> u32 {
+        let key = (c.ty, c.ctor);
+        if let Some(p) = self.statics.get(&key) {
+            return *p;
+        }
+        let p = self.static_obj(kind::CON, self.m.ctor(c).tag, Payload::Con);
+        self.statics.insert(key, p);
+        p
+    }
+
+    /// The object of a global, made on first use: a CAF's static thunk, or
+    /// a static constructor object (FEAT-1006), which is no allocation
+    /// (as in native code, where it is static data).
+    fn global(&mut self, g: &str) -> R<u32> {
+        if let Some(p) = self.globals.get(g) {
+            return Ok(*p);
+        }
+        let m = self.m;
+        let Some(decl) = m.globals.iter().find(|x| x.name == g) else {
+            return fault(format!("unknown global {g}"));
+        };
+        if let Some(sc) = self.static_globals.get(g).cloned() {
+            let def = m.ctor(sc.ctor);
+            let p = self.static_obj(kind::CON, def.tag, Payload::Con);
+            // Before the fields: a field may be the global itself.
+            self.globals.insert(g.to_string(), p);
+            let mut fields = Vec::with_capacity(sc.fields.len());
+            for f in &sc.fields {
+                fields.push(match f {
+                    StaticField::Const(Const::Int(i, _)) => Val::I(*i),
+                    StaticField::Const(Const::Float(x)) => Val::F(*x),
+                    StaticField::Const(Const::Str(b)) => Val::P(self.string(b)),
+                    StaticField::Global(h) => Val::P(self.global(h)?),
+                    StaticField::Fieldless(c) => Val::P(self.fieldless(*c)),
+                });
+            }
+            let o = self.obj_mut(p)?;
+            o.fields = fields;
+            o.size = def.size();
+            return Ok(p);
+        }
+        let Some(&gi) = self.funcs.get(decl.init.as_str()) else {
+            return fault(format!("unknown function {}", decl.init));
+        };
+        let p = self.static_obj(kind::THUNK, 0, Payload::Code(gi));
+        self.globals.insert(g.to_string(), p);
+        Ok(p)
     }
 
     fn string(&mut self, s: &[u8]) -> u32 {
@@ -728,16 +781,7 @@ impl<'m> Interp<'m> {
                 let def = m.ctor(*ctor);
                 let vals = self.operands(frame, args);
                 if def.fields.is_empty() {
-                    let key = (ctor.ty, ctor.ctor);
-                    let p = match self.statics.get(&key) {
-                        Some(p) => *p,
-                        None => {
-                            let p = self.static_obj(kind::CON, def.tag, Payload::Con);
-                            self.statics.insert(key, p);
-                            p
-                        }
-                    };
-                    return Ok(Val::P(p));
+                    return Ok(Val::P(self.fieldless(*ctor)));
                 }
                 if let Some(tok) = reuse
                     && let Val::P(t) = frame[tok.0 as usize]
@@ -868,20 +912,7 @@ impl<'m> Interp<'m> {
                     }
                 }
             }
-            Rhs::Global(g) => {
-                if let Some(p) = self.globals.get(g) {
-                    return Ok(Val::P(*p));
-                }
-                let Some(decl) = m.globals.iter().find(|x| &x.name == g) else {
-                    return fault(format!("unknown global {g}"));
-                };
-                let Some(&gi) = self.funcs.get(decl.init.as_str()) else {
-                    return fault(format!("unknown function {}", decl.init));
-                };
-                let p = self.static_obj(kind::THUNK, 0, Payload::Code(gi));
-                self.globals.insert(g.clone(), p);
-                Val::P(p)
-            }
+            Rhs::Global(g) => Val::P(self.global(g)?),
         })
     }
 
@@ -1068,6 +1099,15 @@ impl<'m> Interp<'m> {
     fn new_bytes(&mut self, b: Vec<u8>) -> Val {
         let size = 16 + b.len().div_ceil(8) * 8;
         Val::P(self.alloc(kind::BYTES, 0, vec![], Payload::Bytes(b), size))
+    }
+
+    /// A byte string as the runtime's `cirka_bytes_from` makes it: no bytes
+    /// give a static empty string, which is not an allocation (FEAT-1002).
+    fn bytes_from(&mut self, b: Vec<u8>) -> Val {
+        if b.is_empty() {
+            return Val::P(self.string(b""));
+        }
+        self.new_bytes(b)
     }
 
     fn bytes(&self, v: Val) -> R<&Vec<u8>> {
@@ -1430,12 +1470,12 @@ impl<'m> Interp<'m> {
             "tanh" => Ok(Val::F(a[0].float().tanh())),
             "atan2" => Ok(Val::F(a[0].float().atan2(a[1].float()))),
             "pow" => Ok(Val::F(a[0].float().powf(a[1].float()))),
-            "cirka_f32_show_hs" => Ok(self.new_bytes(show_hs(a[0].float(), true).into_bytes())),
+            "cirka_f32_show_hs" => Ok(self.bytes_from(show_hs(a[0].float(), true).into_bytes())),
             "cirka_f32_round" => Ok(Val::F(a[0].float() as f32 as f64)),
             "cirka_f64_bits" => Ok(Val::I(a[0].float().to_bits() as i64)),
             "cirka_f64_from_bits" => Ok(Val::F(f64::from_bits(a[0].int() as u64))),
-            "cirka_big_from_int" => Ok(self.new_bytes(crate::big::from_int(a[0].int()))),
-            "cirka_big_from_double" => Ok(self.new_bytes(crate::big::from_double(a[0].float()))),
+            "cirka_big_from_int" => Ok(self.bytes_from(crate::big::from_int(a[0].int()))),
+            "cirka_big_from_double" => Ok(self.bytes_from(crate::big::from_double(a[0].float()))),
             "cirka_big_fits_int" => Ok(Val::I(crate::big::fits_int(self.bytes(a[0])?))),
             "cirka_big_to_int" => Ok(Val::I(crate::big::to_int(self.bytes(a[0])?))),
             "cirka_big_to_double" => Ok(Val::F(crate::big::to_double(self.bytes(a[0])?))),
@@ -1446,15 +1486,15 @@ impl<'m> Interp<'m> {
             "cirka_big_op" => {
                 let x = self.bytes(a[1])?.clone();
                 let r = crate::big::op(a[0].int(), &x, self.bytes(a[2])?);
-                Ok(self.new_bytes(r))
+                Ok(self.bytes_from(r))
             }
             "cirka_big_show" => {
                 let r = crate::big::show(self.bytes(a[0])?);
-                Ok(self.new_bytes(r))
+                Ok(self.bytes_from(r))
             }
             "cirka_big_read" => {
                 let r = crate::big::read(self.bytes(a[0])?, a[1].int() != 0);
-                Ok(self.new_bytes(r))
+                Ok(self.bytes_from(r))
             }
             "cirka_f64_show_hs" => {
                 let b = show_hs(a[0].float(), false).into_bytes();
@@ -1501,14 +1541,7 @@ impl<'m> Interp<'m> {
                 else {
                     return Err(Exit::Panic("argument index out of range".into()));
                 };
-                let size = 16 + b.len().div_ceil(8) * 8;
-                Ok(Val::P(self.alloc(
-                    kind::BYTES,
-                    0,
-                    vec![],
-                    Payload::Bytes(b),
-                    size,
-                )))
+                Ok(self.bytes_from(b))
             }
             "cirka_prog_name" => {
                 // GHC's test binaries are named `prog` too.
@@ -1669,16 +1702,7 @@ impl<'m> Interp<'m> {
             "cirka_file_read" => {
                 let path = String::from_utf8_lossy(&self.bytes(a[0])?.clone()).into_owned();
                 match std::fs::read(&path) {
-                    Ok(b) => {
-                        let size = 16 + b.len().div_ceil(8) * 8;
-                        Ok(Val::P(self.alloc(
-                            kind::BYTES,
-                            0,
-                            vec![],
-                            Payload::Bytes(b),
-                            size,
-                        )))
-                    }
+                    Ok(b) => Ok(self.bytes_from(b)),
                     Err(e) => Err(Exit::Panic(file_error(&path, "openFile", &e))),
                 }
             }
@@ -1823,7 +1847,7 @@ impl Interp<'_> {
             "cirka_errno" => Ok(Val::I(self.errno)),
             "cirka_strerror" => {
                 let t = strerror(a[0].int()).as_bytes().to_vec();
-                Ok(self.new_bytes(t))
+                Ok(self.bytes_from(t))
             }
             "cirka_fs_open" => (|| {
                 let path = String::from_utf8_lossy(self.bytes(a[0])?).into_owned();
@@ -1888,7 +1912,7 @@ impl Interp<'_> {
                         e
                     }
                 };
-                Ok(self.new_bytes(buf))
+                Ok(self.bytes_from(buf))
             }
             "cirka_fd_write" => (|| {
                 let fd = a[0].int();
@@ -1921,7 +1945,7 @@ impl Interp<'_> {
                 if line.last() == Some(&13) {
                     line.pop();
                 }
-                Ok(self.new_bytes(line))
+                Ok(self.bytes_from(line))
             }
             "cirka_getenv" | "cirka_env_has" => (|| {
                 let n = String::from_utf8_lossy(self.bytes(a[0])?).into_owned();
@@ -1931,7 +1955,7 @@ impl Interp<'_> {
                 } else {
                     use std::os::unix::ffi::OsStrExt;
                     let b = v.map(|v| v.as_bytes().to_vec()).unwrap_or_default();
-                    self.new_bytes(b)
+                    self.bytes_from(b)
                 })
             })(),
             "cirka_clock_ns" => {
@@ -1980,7 +2004,7 @@ impl Interp<'_> {
                 for i in 0..n {
                     b.push(crate::ffi::mem_read(p + i, 1).or_else(fault)? as u8);
                 }
-                Ok(self.new_bytes(b))
+                Ok(self.bytes_from(b))
             })(),
             _ => return None,
         })

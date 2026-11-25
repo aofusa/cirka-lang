@@ -3389,3 +3389,102 @@ fn strict_arrays_store_values_and_read_without_forcing() {
     assert!(!strict.contains("force"), "{strict}");
     assert!(strict.contains("call sq(4)"), "{strict}");
 }
+
+/// Which globals are static constructor objects (FEAT-1006): an init that
+/// only builds one constructor with fields from constants, globals and
+/// constructors without fields, and returns it.
+#[test]
+fn static_globals_by_the_shape_of_their_init() {
+    let src = "type Int { I = 0 { v: i64 } }
+type Bool { False = 0 {}, True = 1 {} }
+type Pair { P = 0 { a: ptr, b: ptr } }
+extern fn cirka_write_i64(i64) -> void
+global k = k_init
+global p = p_init
+global loud = loud_init
+global alias = alias_init
+global two = two_init
+global bare = bare_init
+global clo = clo_init
+
+fn k_init() -> ptr {
+entry:
+  let r = alloc Int.I(7)
+  ret r
+}
+
+fn p_init() -> ptr {
+entry:
+  let a = global k
+  let t = alloc Bool.True()
+  let r = alloc Pair.P(a, t)
+  ret r
+}
+
+fn loud_init() -> ptr {
+entry:
+  let _ = extern cirka_write_i64(1)
+  let r = alloc Int.I(5)
+  ret r
+}
+
+fn alias_init() -> ptr {
+entry:
+  let g = global k
+  ret g
+}
+
+fn two_init() -> ptr {
+entry:
+  jump done()
+done:
+  let r = alloc Int.I(2)
+  ret r
+}
+
+fn bare_init() -> ptr {
+entry:
+  let r = alloc Bool.True()
+  ret r
+}
+
+fn id(x: ptr @owned) -> ptr {
+entry:
+  ret x
+}
+
+fn clo_init() -> ptr {
+entry:
+  let f = mkclosure id()
+  let r = alloc Pair.P(f, f)
+  ret r
+}
+
+fn main() -> i64 {
+entry:
+  ret 0
+}
+";
+    let m = parse(FileId(0), src).unwrap();
+    let st = m.static_globals();
+    let mut names: Vec<&str> = st.keys().map(|s| s.as_str()).collect();
+    names.sort();
+    assert_eq!(names, ["k", "p"]);
+    let int = m.find_ctor("Int", "I").unwrap();
+    assert_eq!(
+        st["k"],
+        StaticCon {
+            ctor: int,
+            fields: vec![StaticField::Const(Const::Int(7, Ty::I64))],
+        }
+    );
+    let tru = m.find_ctor("Bool", "True").unwrap();
+    assert_eq!(
+        st["p"].fields,
+        vec![StaticField::Global("k".into()), StaticField::Fieldless(tru)]
+    );
+    // The results of `global` are static variables: no `dup` / `drop`.
+    let p = m.func("p_init").unwrap();
+    let statics = p.static_vars(|c| m.fieldless(c));
+    assert!(statics[0] && statics[1] && !statics[2], "{statics:?}");
+}

@@ -135,6 +135,8 @@ struct Gen<'m> {
     strings: HashMap<Vec<u8>, String>,
     panics: HashMap<String, (String, usize)>,
     statics: HashMap<(u32, u32), String>,
+    /// The globals that are static constructor objects (FEAT-1006).
+    static_globals: HashMap<String, StaticCon>,
     /// Closure entry stubs: (function, number of captured values).
     clo_stubs: BTreeSet<(String, usize)>,
     thunk_stubs: BTreeMap<String, ()>,
@@ -159,6 +161,7 @@ pub fn emit(m: &Module, opts: Options) -> String {
         strings: HashMap::new(),
         panics: HashMap::new(),
         statics: HashMap::new(),
+        static_globals: m.static_globals(),
         clo_stubs: BTreeSet::new(),
         thunk_stubs: BTreeMap::new(),
         funcs: m.funcs.iter().map(|f| (f.name.as_str(), f)).collect(),
@@ -208,7 +211,9 @@ pub fn emit(m: &Module, opts: Options) -> String {
         }
     }
     for gl in &m.globals {
-        g.thunk_stubs.insert(gl.init.clone(), ());
+        if !g.static_globals.contains_key(&gl.name) {
+            g.thunk_stubs.insert(gl.init.clone(), ());
+        }
     }
     let clo: Vec<(String, usize)> = g.clo_stubs.iter().cloned().collect();
     for (f, ncap) in clo {
@@ -249,6 +254,9 @@ struct FnCtx<'a> {
     /// phi incoming values per MIR block: (value list, predecessor label).
     phis: HashMap<usize, Vec<(Vec<String>, String)>>,
     tokens: HashSet<Var>,
+    /// Variables bound to a static global (FEAT-1006): already values, so
+    /// their `force` is a copy.
+    static_objs: HashSet<Var>,
     /// Self tail calls turned into jumps to the loop header: (arguments,
     /// predecessor label).
     self_tail: Vec<(Vec<String>, String)>,
@@ -745,6 +753,7 @@ impl<'m> Gen<'m> {
             cur: String::new(),
             phis: HashMap::new(),
             tokens: HashSet::new(),
+            static_objs: HashSet::new(),
             self_tail: Vec::new(),
         };
         for b in &f.blocks {
@@ -1099,6 +1108,11 @@ impl<'m> Gen<'m> {
                     Some(v) => var(*v),
                     None => c.t(),
                 };
+                if let (Some(v), Rhs::Global(g)) = (x, rhs)
+                    && self.static_globals.contains_key(g)
+                {
+                    c.static_objs.insert(*v);
+                }
                 self.rhs(c, &dst, x.is_some(), rhs);
             }
         }
@@ -1223,6 +1237,9 @@ impl<'m> Gen<'m> {
                     Self::store_field(c, &obj, 1 + slot, tys[i], &v);
                 }
                 c.line(&format!("{dst} = getelementptr i8, ptr {obj}, i64 0"));
+            }
+            Rhs::Force(v) if c.static_objs.contains(v) => {
+                c.line(&format!("{dst} = getelementptr i8, ptr {}, i64 0", var(*v)));
             }
             Rhs::Force(v) => {
                 let o = var(*v);
@@ -1710,6 +1727,7 @@ impl<'m> Gen<'m> {
             cur: "entry".into(),
             phis: HashMap::new(),
             tokens: HashSet::new(),
+            static_objs: HashSet::new(),
             self_tail: Vec::new(),
         };
         let mut caps = Vec::new();
@@ -1786,6 +1804,7 @@ impl<'m> Gen<'m> {
             cur: "entry".into(),
             phis: HashMap::new(),
             tokens: HashSet::new(),
+            static_objs: HashSet::new(),
             self_tail: Vec::new(),
         };
         let mut call_args = Vec::new();
@@ -1954,9 +1973,50 @@ impl<'m> Gen<'m> {
         self.out.push_str(&s);
     }
 
+    /// A static global (FEAT-1006): the constructor object itself, with
+    /// reference count 0 (immortal) and its fields in slot order. A field
+    /// narrower than a word holds its value in the low bytes, as a `store`
+    /// of that width writes it.
+    fn static_global(&mut self, name: &str, sc: &StaticCon) {
+        let def = self.m.ctor(sc.ctor);
+        let mut slots = vec![(String::new(), String::new()); def.fields.len()];
+        for (i, f) in sc.fields.iter().enumerate() {
+            let ty = def.fields[i].ty;
+            slots[def.slot(i)] = match f {
+                StaticField::Const(Const::Int(n, _)) => {
+                    let w = match ty {
+                        Ty::I32 => *n as u32 as u64,
+                        Ty::I8 => *n as u8 as u64,
+                        _ => *n as u64,
+                    };
+                    ("i64".to_string(), (w as i64).to_string())
+                }
+                StaticField::Const(Const::Float(x)) => {
+                    ("double".to_string(), format!("0x{:016X}", x.to_bits()))
+                }
+                StaticField::Const(Const::Str(b)) => ("ptr".to_string(), self.string_obj(b)),
+                StaticField::Global(h) => ("ptr".to_string(), format!("@\"g.{h}\"")),
+                StaticField::Fieldless(c) => ("ptr".to_string(), self.static_con(*c)),
+            };
+        }
+        let tys: Vec<&str> = slots.iter().map(|(t, _)| t.as_str()).collect();
+        let vals: Vec<String> = slots.iter().map(|(t, v)| format!("{t} {v}")).collect();
+        let _ = writeln!(
+            self.globals,
+            "@\"g.{name}\" = internal global {{ i64, {} }} {{ i64 {}, {} }}, align 8",
+            tys.join(", "),
+            header_word(0, def.tag, def.nptr(), kind::CON),
+            vals.join(", ")
+        );
+    }
+
     fn entry_and_cafs(&mut self) {
         let m = self.m;
         for gl in &m.globals {
+            if let Some(sc) = self.static_globals.get(&gl.name).cloned() {
+                self.static_global(&gl.name, &sc);
+                continue;
+            }
             let mn = mangle(&gl.init);
             let stub = format!("@\"{}$thk\"", &mn[2..mn.len() - 1]);
             let _ = writeln!(
@@ -1969,6 +2029,7 @@ impl<'m> Gen<'m> {
         let roots: Vec<String> = m
             .globals
             .iter()
+            .filter(|g| !self.static_globals.contains_key(&g.name))
             .map(|g| format!("ptr @\"g.{}\"", g.name))
             .collect();
         let _ = writeln!(
@@ -2605,6 +2666,91 @@ entry:
             "{ir}"
         );
         assert!(ir.contains("  br label %tailrec\n}"), "{ir}");
+    }
+
+    /// A global whose init only builds a constructor from constants, other
+    /// globals and constructors without fields is that static object
+    /// (FEAT-1006): no thunk, no stub, no CAF root, and its `force` is a
+    /// copy. A global whose init does more stays a CAF.
+    #[test]
+    fn constant_constructor_globals_are_static_objects() {
+        let src = "type Int { I = 0 { v: i64 } }
+type Bool { False = 0 {}, True = 1 {} }
+type Rec { R = 0 { name: ptr, small: i32, x: f64, flag: ptr, next: ptr } }
+extern fn cirka_write_i64(i64) -> void
+global k = k_init
+global rec = rec_init
+global noisy = noisy_init
+
+fn k_init() -> ptr {
+entry:
+  let r = alloc Int.I(-1)
+  ret r
+}
+
+fn rec_init() -> ptr {
+entry:
+  let t = alloc Bool.True()
+  let me = global rec
+  let r = alloc Rec.R(\"ab\", -3, 0.5, t, me)
+  ret r
+}
+
+fn noisy_init() -> ptr {
+entry:
+  let _ = extern cirka_write_i64(1)
+  let r = alloc Int.I(5)
+  ret r
+}
+
+fn main() -> i64 {
+entry:
+  let g = global k
+  let a = force g
+  let v = proj a Int.I.v
+  drop a
+  let h = global noisy
+  let b = force h
+  let w = proj b Int.I.v
+  drop b
+  let s = prim add(v, w)
+  ret s
+}
+";
+        let m = cirka_mir::parse::parse(cirka_diagnostics::FileId(0), src).unwrap();
+        let ir = emit(&m, Options::default());
+        let k = format!(
+            "@\"g.k\" = internal global {{ i64, i64 }} {{ i64 {}, i64 -1 }}, align 8",
+            header_word(0, 0, 0, kind::CON)
+        );
+        assert!(ir.contains(&k), "{ir}");
+        // Pointer fields first (the string, `True`, itself), then `small`
+        // (an i32 in the low bytes of its word) and `x`.
+        let rec = format!(
+            "@\"g.rec\" = internal global {{ i64, ptr, ptr, ptr, i64, double }} {{ i64 {}, ptr @",
+            header_word(0, 0, 3, kind::CON)
+        );
+        assert!(ir.contains(&rec), "{ir}");
+        assert!(
+            ir.contains("ptr @\"g.rec\", i64 4294967293, double 0x3FE0000000000000 }, align 8"),
+            "{ir}"
+        );
+        assert!(
+            ir.contains("@cirka_caf_roots = global [1 x ptr] [ptr @\"g.noisy\"]"),
+            "{ir}"
+        );
+        assert!(
+            !ir.contains("k_init$thk") && !ir.contains("rec_init$thk"),
+            "{ir}"
+        );
+        assert!(ir.contains("noisy_init$thk"), "{ir}");
+        // `force` of the static object is a copy; the CAF's is not.
+        assert!(
+            ir.contains("%v1 = getelementptr i8, ptr %v0, i64 0"),
+            "{ir}"
+        );
+        assert!(!ir.contains("@cirka_force(ptr %v0)"), "{ir}");
+        assert!(ir.contains("@cirka_force(ptr %v3)"), "{ir}");
     }
 
     /// Unchecked accesses (FEAT-0069) have no bounds check, except with the
