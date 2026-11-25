@@ -121,7 +121,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0079](features/FEAT-0079-boxes-in-string-loops.md) | 文字列処理のループの箱の除去 (多相の静的引数・積型の worker/wrapper・腕をまたぐ再利用) | done | P1 | 0022, 0056, 0061, 0066 |
 | [FEAT-0080](features/FEAT-0080-join-points.md) | Core の結合点 (join point) | todo | P2 | 0079 |
 | [FEAT-0081](features/FEAT-0081-cpr-single-boxed-result.md) | 箱入りの値 1 つだけを返す積の結果の分解 | todo | P2 | 0065, 0220 |
-| [FEAT-0082](features/FEAT-0082-cl-cli-grep-line-allocs.md) | 行ごとの畳み込みの確保の除去 (cli-grep) | todo | P2 | 0223 |
+| [FEAT-0082](features/FEAT-0082-cl-cli-grep-line-allocs.md) | 行ごとの畳み込みの確保の除去 (cli-grep) | in-progress | P2 | 0223 |
 | [FEAT-0083](features/FEAT-0083-cheap-speculation-of-lazy-bindings.md) | 安価で失敗しない遅延束縛の先行評価 (サンクの除去) | done | P1 | 0056, 0061 |
 | [FEAT-0084](features/FEAT-0084-tsan-in-docker-ci.md) | Docker の CI で ThreadSanitizer を動かす | done | P2 | 0045 |
 | [FEAT-0085](features/FEAT-0085-code-alignment-noise.md) | コード配置による性能の揺らぎの抑制 (関数・ループの整列) | todo | P2 | 0043 |

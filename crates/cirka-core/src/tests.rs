@@ -1957,6 +1957,53 @@ fn opt_sum_results_need_cheap_leaves() {
     );
 }
 
+/// FEAT-0082: the accumulator built in both branches of an `if` is taken
+/// apart by the next iteration's `case`, with the increment of the index
+/// in between (the shape of `foldLines` after the step is inlined).
+const ACC_LOOP: &str = "(data Acc () (A (! Int#) (! Int#)))
+ (extern arg () Int#)
+ (def go (-> Int# Int# Int# Int# Acc)
+   (lam ((i Int#) (n Int#) (x Int#) (y Int#))
+     (case (prim ge i n) (c Int#) Acc
+       (0 (let! (t Acc (case (prim lt i 5) (d Int#) Acc
+                         (0 (let! (x2 Int# (prim add x 1)) (con A () x2 y)))
+                         (_ (let! (y2 Int# (prim add y i)) (con A () x y2)))))
+            (let! (j Int# (prim add i 1))
+              (case t (s Acc) Acc
+                ((A p q) (go j n p q))))))
+       (_ (con A () x y)))))
+ (def main Int#
+   (case (go 0 (extern arg) 0 0) (r Acc) Int#
+     ((A p q) (prim add p q))))";
+
+#[test]
+fn opt_takes_accumulators_apart_across_cheap_bindings() {
+    let mut p = parse_program(FileId(0), ACC_LOOP).unwrap();
+    assert!(lint::lint_program(&p).is_empty(), "{}", print_program(&p));
+    opt::optimize(&mut p).unwrap();
+    let all = print_program(&p);
+    assert!(lint::lint_program(&p).is_empty(), "{all}");
+    // No strict binding of an `A` is left: each branch calls the loop with
+    // its fields, and no `A` is built per iteration.
+    assert!(!all.contains(" Acc (case"), "{all}");
+}
+
+#[test]
+fn opt_keeps_effects_between_accumulator_and_case() {
+    // A binding that may fail (`quot`) is not computed before the `case`
+    // that builds the accumulator: the strict binding of the record stays.
+    let src = ACC_LOOP.replace(
+        "(let! (j Int# (prim add i 1))",
+        "(let! (j Int# (prim quot n i))",
+    );
+    let mut p = parse_program(FileId(0), &src).unwrap();
+    assert!(lint::lint_program(&p).is_empty(), "{}", print_program(&p));
+    opt::optimize(&mut p).unwrap();
+    let all = print_program(&p);
+    assert!(lint::lint_program(&p).is_empty(), "{all}");
+    assert!(all.contains(" Acc (case"), "{all}");
+}
+
 #[test]
 fn lint_rejects_misplaced_unboxed_tuples() {
     // A worker's unboxed tuple bound to a variable instead of taken apart.

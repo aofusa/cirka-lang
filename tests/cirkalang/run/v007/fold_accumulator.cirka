@@ -1,0 +1,34 @@
+-- max-allocs: 2100
+-- A fold over the lines whose step builds its accumulator in both
+-- branches of an `if` (FEAT-0082): the loop takes the record apart for
+-- the next line without allocating it, though the position of the next
+-- line is computed in between. Building the 1000 lines allocates two
+-- builders per line (each `append` that may grow the buffer); a record
+-- per line would be 1000 more.
+import Data.String as S
+import Data.String (Str, Builder, toStr)
+
+data Count = MkCount Int Int Int
+
+-- "w<i> x\n"
+lines : (1 b : Builder) -> Int -> Int -> Builder
+lines b i n =
+  if i >= n then b
+  else lines (S.append (S.appendInt (S.append b "w") i) " x\n") (i + 1) n
+
+-- lines, words, lines with a 7
+step : Count -> Str -> Count
+step (MkCount l w m) line =
+  let k = S.foldWords (\c, x => c + 1) 0 line in
+  if S.contains line "7"
+  then MkCount (l + 1) (w + k) (m + 1)
+  else MkCount (l + 1) (w + k) m
+
+main : IO ()
+main = do
+  let s = S.build (lines (S.builder 0) 0 1000)
+  case S.foldLines step (MkCount 0 0 0) (toStr s) of
+    MkCount l w m => do
+      printInt l
+      printInt w
+      printInt m

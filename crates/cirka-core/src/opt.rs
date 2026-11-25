@@ -2003,7 +2003,60 @@ impl Simp<'_> {
             };
             return Expr::Case(Box::new(r), cb, res, alts);
         }
+        // let! b = (case ..) in let! y = p in .. case b of alts  ⇒
+        // let! y = p in .. let! b = (case ..) in case b of alts  when each
+        // `p` is a total primitive operation on atoms without `b`, so that
+        // the rule above applies (FEAT-0082: the index of a loop's next
+        // iteration is computed between the step that builds the
+        // accumulator and the wrapper that takes it apart). Computing `p`
+        // first is not observable: it cannot fail and has no effect.
+        if let Expr::Case(_, _, _, inner) = &r
+            && let Some(n) = self.cheap_lets_before_case(&body, x, inner)
+        {
+            self.hit();
+            self.st.floated += 1;
+            let mut lets = Vec::with_capacity(n);
+            let mut rest = body;
+            for _ in 0..n {
+                let Expr::LetStrict(y, p, k) = rest else {
+                    unreachable!()
+                };
+                lets.push((y, p));
+                rest = *k;
+            }
+            let mut out = Expr::LetStrict(b, Box::new(r), Box::new(rest));
+            for (y, p) in lets.into_iter().rev() {
+                out = Expr::LetStrict(y, p, Box::new(out));
+            }
+            return out;
+        }
         Expr::LetStrict(b, Box::new(r), Box::new(body))
+    }
+
+    /// The number of strict bindings `let! y = p` that `body` starts with
+    /// before a `case x` whose alternatives case-of-case can push into
+    /// `inner` (see `let_strict`), each `p` a total primitive operation on
+    /// atoms that does not use `x`; `None` when there is none or they do
+    /// not end in such a `case`.
+    fn cheap_lets_before_case(&self, body: &Expr, x: u32, inner: &[Alt]) -> Option<usize> {
+        let mut n = 0;
+        let mut e = body;
+        while let Expr::LetStrict(y, p, k) = e {
+            let prim = matches!(&**p, Expr::Prim(_, _, a) if a.iter().all(Expr::is_atom));
+            if !prim || y.mult != Mult::Many || !self.total(p) || occurs(p, x) {
+                return None;
+            }
+            n += 1;
+            e = k;
+        }
+        let Expr::Case(sc, cb, _, alts) = e else {
+            return None;
+        };
+        (n > 0
+            && matches!(&**sc, Expr::Var(v) if v.id == x)
+            && !alts.iter().any(|a| occurs(&a.rhs, x))
+            && self.case_of_case_ok(cb, alts, inner))
+        .then_some(n)
     }
 
     /// `e` with each return `K a` of box constructor `kc` replaced by `a`
