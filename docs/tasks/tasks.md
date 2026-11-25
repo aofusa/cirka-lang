@@ -137,6 +137,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0095](features/FEAT-0095-libc-byte-ops.md) | 文字列のバイト操作 (コピー・バイトの探索・範囲の比較) を C ライブラリで行う | done | P1 | 0091 |
 | [FEAT-0096](features/FEAT-0096-resize-in-place.md) | 大きな文字列をその場で伸縮する (Builder の伸長と build、ファイルの読み込み) | done | P1 | 0091 |
 | [FEAT-0097](features/FEAT-0097-inline-byte-ops.md) | バイト列のコピー・検索・比較をインラインで生成する (文字列リテラルの長さの畳み込みと切り詰めのない書き込み) | done | P1 | 0091, 0095 |
+| [FEAT-0098](features/FEAT-0098-hoist-checks-of-large-loops.md) | 大きなループの本体の境界検査も入口へ移す (解析の上限を命令数 × 解析の回数で決める) | in-progress | P1 | 0069, 0094 |
 
 
 ## aCHC

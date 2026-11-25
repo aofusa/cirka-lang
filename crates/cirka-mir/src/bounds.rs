@@ -65,8 +65,10 @@ use std::collections::{HashMap, HashSet};
 /// Suffix of the function without the hoisted checks.
 pub const SUFFIX: &str = "$b";
 
-/// Larger functions are not analysed (compile time).
-const MAX_INSTRS: usize = 500;
+/// Larger functions are not analysed (compile time). A loop that the
+/// unrolling of literal loops (FEAT-0094) made straight is large: one step
+/// of bench/n-body is 530 instructions (FEAT-0098).
+const MAX_INSTRS: usize = 4000;
 /// At most this many entry values (0, integer parameters, lengths).
 const MAX_NODES: usize = 16;
 /// No object is larger than the address space, so no length (in bytes,
@@ -77,8 +79,11 @@ const I64_MAX: i128 = i64::MAX as i128;
 /// Largest factor of a known integer (`k * x + c`).
 const K_MAX: i128 = 1 << 32;
 /// The search for the precondition stops adding candidates after this
-/// many analyses of the body (compile time).
+/// many analyses of the body, or once the analyses have visited
+/// `MAX_WORK` instructions in all (compile time: a large body gets fewer
+/// analyses).
 const MAX_RUNS: usize = 1000;
+const MAX_WORK: usize = 500_000;
 
 /// Adds the functions without hoisted checks to `m`; returns how many
 /// functions lost checks (with a copy, or in place when the checks need no
@@ -450,6 +455,8 @@ struct Analysis<'f> {
     tails: Vec<usize>,
     /// Analyses of the body so far.
     runs: Cell<usize>,
+    /// Instructions of the body.
+    size: usize,
     /// Array parameters that may be thunks on entry (used through `force`).
     lazy: HashSet<usize>,
 }
@@ -603,13 +610,15 @@ impl<'f> Analysis<'f> {
             check_at,
             tails,
             runs: Cell::new(0),
+            size,
             lazy,
         })
     }
 
     /// Whether the search has used up its analyses.
     fn spent(&self) -> bool {
-        self.runs.get() >= MAX_RUNS
+        let runs = self.runs.get();
+        runs >= MAX_RUNS || runs * self.size >= MAX_WORK
     }
 
     /// Analyses the body assuming `atoms` on entry; `None` when they

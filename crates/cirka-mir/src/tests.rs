@@ -1204,6 +1204,70 @@ entry:
 }
 "#;
 
+/// A step of a loop whose body the unrolling of literal loops (FEAT-0094)
+/// made straight: `reads` reads and writes of the 35 words of `a` at
+/// constant indices, then the next of `n` steps.
+fn straight_loop(reads: usize, bytes: usize) -> String {
+    let mut body = String::new();
+    for k in 0..reads {
+        let i = k * 13 % 35;
+        body += &format!("  let x{k} = prim bytes_get_i64(a, {i})\n");
+        body += &format!("  let y{k} = prim add(x{k}, {k})\n");
+        body += &format!("  let s{k} = prim bytes_set_i64(a, {i}, y{k})\n");
+    }
+    format!(
+        r#"
+extern fn cirka_write_i64(i64) -> void
+
+fn steps(n: i64, a: ptr @owned) -> ptr {{
+entry:
+  let d = prim le(n, 0)
+  switch d {{ 0 => body, default => done }}
+done:
+  ret a
+body:
+{body}  let m = prim sub(n, 1)
+  tailcall steps(m, a)
+}}
+
+fn main() -> i64 {{
+entry:
+  let a = prim bytes_new({bytes})
+  let b = call steps(3, a)
+  let x = prim bytes_get_i64(b, 34)
+  drop b
+  let _ = extern cirka_write_i64(x)
+  ret 0
+}}
+"#
+    )
+}
+
+/// The checks of a loop body larger than the 500 instructions the analysis
+/// used to take move to the entry too (FEAT-0098: one step of bench/n-body
+/// unrolled is 530 instructions; the checks left in it kept LLVM from
+/// pairing the square roots of the bodies).
+#[test]
+fn bounds_checks_of_a_large_straight_loop_move_to_the_entry() {
+    let src = straight_loop(200, 280);
+    assert!(src.matches("prim ").count() > 600);
+    assert_eq!(precondition(&src, "steps"), vec!["words(a) >= 35"]);
+    let m = hoisted(&src, 1);
+    assert_eq!(accesses(&func_text(&m, "steps$b")), (400, 0));
+    // Word 34 is read and written by k = 8 + 35 j (13 k = 34 mod 35),
+    // j = 0..5, each adding k, in each of the 3 steps.
+    let expect: usize = (0..200).filter(|k| k * 13 % 35 == 34).sum::<usize>() * 3;
+    assert_eq!(
+        crate::interp::run(&m, b"", 10_000_000).unwrap().stdout,
+        expect.to_string()
+    );
+    // 34 words: the checked loop runs and panics at the first access to
+    // word 34, as before.
+    let m = hoisted(&straight_loop(200, 272), 1);
+    let r = crate::interp::run(&m, b"", 10_000_000).unwrap();
+    assert_eq!(r.stderr, "panic: index out of bounds\n");
+}
+
 #[test]
 fn bounds_checks_of_loops_from_both_ends() {
     let src = BOUNDS_REVERSE.replace("LO", "0").replace("HI", "3");
