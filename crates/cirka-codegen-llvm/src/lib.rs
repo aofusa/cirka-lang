@@ -852,14 +852,29 @@ impl<'m> Gen<'m> {
             mangle(&f.name),
             params.join(", ")
         );
+        // Several self tail calls meet in one latch block (FEAT-1005), as
+        // the end of the body of a C or Rust loop does: with a backedge per
+        // call, LLVM's loop simplification takes the calls that pass a
+        // parameter unchanged for an inner loop, and the loop is laid out
+        // with two taken branches per iteration instead of one.
+        let latch = c.self_tail.len() >= 2;
+        if latch {
+            for b in &mut block_bodies {
+                *b = b.replace("  br label %tailrec\n", "  br label %tailrec.latch\n");
+            }
+        }
         if looped {
             // entry → tailrec (the parameters as phis) → bb0.
             self.out.push_str("entry:\n  br label %tailrec\ntailrec:\n");
             for (k, p) in f.params.iter().enumerate() {
                 let x = var(p.var);
                 let mut parts = vec![format!("[ {x}.in, %entry ]")];
-                for (vals, pred) in &c.self_tail {
-                    parts.push(format!("[ {}, %{pred} ]", vals[k]));
+                if latch {
+                    parts.push(format!("[ {x}.latch, %tailrec.latch ]"));
+                } else {
+                    for (vals, pred) in &c.self_tail {
+                        parts.push(format!("[ {}, %{pred} ]", vals[k]));
+                    }
                 }
                 let _ = writeln!(
                     self.out,
@@ -895,6 +910,24 @@ impl<'m> Gen<'m> {
                 }
             }
             self.out.push_str(body);
+        }
+        if latch {
+            self.out.push_str("tailrec.latch:\n");
+            for (k, p) in f.params.iter().enumerate() {
+                let parts: Vec<String> = c
+                    .self_tail
+                    .iter()
+                    .map(|(vals, pred)| format!("[ {}, %{pred} ]", vals[k]))
+                    .collect();
+                let _ = writeln!(
+                    self.out,
+                    "  {}.latch = phi {} {}",
+                    var(p.var),
+                    llty(f.ty(p.var)),
+                    parts.join(", ")
+                );
+            }
+            self.out.push_str("  br label %tailrec\n");
         }
         self.out.push_str("}\n\n");
     }
@@ -2520,11 +2553,58 @@ entry:
             "{ir}"
         );
         assert!(ir.contains("br label %tailrec"), "{ir}");
+        assert!(
+            !ir.contains("tailrec.latch"),
+            "one call needs no latch: {ir}"
+        );
         assert_eq!(
             ir.matches("musttail call tailcc i64 @\"_C3sum\"").count(),
             1,
             "{ir}"
         );
+    }
+
+    /// Several self tail calls jump to one latch block whose phis merge
+    /// their arguments, like the end of a loop body in C (FEAT-1005).
+    #[test]
+    fn self_tail_calls_meet_in_one_latch() {
+        let src = "fn part(i: i64, j: i64, n: i64) -> i64 {
+entry:
+  let e = prim ge(j, n)
+  switch e { 0 => body, default => done }
+done:
+  ret i
+body:
+  let o = prim and(j, 1)
+  let j2 = prim add(j, 1)
+  switch o { 0 => skip, default => take }
+skip:
+  tailcall part(i, j2, n)
+take:
+  let i2 = prim add(i, 1)
+  tailcall part(i2, j2, n)
+}
+
+fn main() -> i64 {
+entry:
+  let r = call part(0, 0, 10)
+  ret r
+}
+";
+        let m = cirka_mir::parse::parse(cirka_diagnostics::FileId(0), src).unwrap();
+        let ir = emit(&m, Options::default());
+        assert!(
+            ir.contains(
+                "tailrec:\n  %v0 = phi i64 [ %v0.in, %entry ], [ %v0.latch, %tailrec.latch ]\n"
+            ),
+            "{ir}"
+        );
+        assert_eq!(ir.matches("br label %tailrec.latch").count(), 2, "{ir}");
+        assert!(
+            ir.contains("tailrec.latch:\n  %v0.latch = phi i64 [ %v0, %"),
+            "{ir}"
+        );
+        assert!(ir.contains("  br label %tailrec\n}"), "{ir}");
     }
 
     /// Unchecked accesses (FEAT-0069) have no bounds check, except with the
