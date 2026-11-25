@@ -16,7 +16,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | 共通基盤 | M1 バックエンド基盤 | 7 / 7 |
 | 共通基盤 | M2 Perceus | 3 / 3 |
 | 共通基盤 | M3 共通 Core と Core→MIR | 4 / 4 |
-| 共通基盤 | SX 共通基盤の拡張 (各トラックの必要に応じて) | 50 / 70 |
+| 共通基盤 | SX 共通基盤の拡張 (各トラックの必要に応じて) | 53 / 70 |
 | aCHC | H1 Haskell 最小フロントエンド | 6 / 6 |
 | aCHC | H2 Haskell 実用化 (スコープ縮小版) | 10 / 10 |
 | aCHC | H3 所有権拡張 (.chs) | 9 / 9 |
@@ -121,7 +121,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0079](features/FEAT-0079-boxes-in-string-loops.md) | 文字列処理のループの箱の除去 (多相の静的引数・積型の worker/wrapper・腕をまたぐ再利用) | done | P1 | 0022, 0056, 0061, 0066 |
 | [FEAT-0080](features/FEAT-0080-join-points.md) | Core の結合点 (join point) | todo | P2 | 0079 |
 | [FEAT-0081](features/FEAT-0081-cpr-single-boxed-result.md) | 箱入りの値 1 つだけを返す積の結果の分解 | todo | P2 | 0065, 0220 |
-| [FEAT-0082](features/FEAT-0082-cl-cli-grep-line-allocs.md) | 行ごとの畳み込みの確保の除去 (cli-grep) | in-progress | P2 | 0223 |
+| [FEAT-0082](features/FEAT-0082-cl-cli-grep-line-allocs.md) | 行ごとの畳み込みの確保の除去 (cli-grep) | done | P2 | 0223 |
 | [FEAT-0083](features/FEAT-0083-cheap-speculation-of-lazy-bindings.md) | 安価で失敗しない遅延束縛の先行評価 (サンクの除去) | done | P1 | 0056, 0061 |
 | [FEAT-0084](features/FEAT-0084-tsan-in-docker-ci.md) | Docker の CI で ThreadSanitizer を動かす | done | P2 | 0045 |
 | [FEAT-0085](features/FEAT-0085-code-alignment-noise.md) | コード配置による性能の揺らぎの抑制 (関数・ループの整列) | todo | P2 | 0043 |
@@ -147,8 +147,8 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-1005](features/FEAT-1005-one-latch-per-loop.md) | 自己末尾呼び出しのループの後ろ向きの辺を 1 つのラッチにまとめる (LLVM がループを入れ子に分けない) | done | P1 | 0066, 0091 |
 | [FEAT-1006](features/FEAT-1006-static-constant-constructors.md) | 定数だけを受け取る構築子のトップレベルの定義を静的なオブジェクトにする (CAF にせず、force も確保もしない) | done | P1 | 0089, 1004 |
 | [FEAT-1007](features/FEAT-1007-raw-io-syscalls.md) | I/O のシステムコールを libc を通さずに呼ぶ (マルチスレッドのプロセスで取り消しの点のアトミックな操作をなくす) | done | P1 | 1001, 0091 |
-| [FEAT-1008](features/FEAT-1008-sum-results.md) | 和型の構築子を返す関数は構築子の番号とフィールドを箱なしで返す (和の CPR) | in-progress | P1 | 0065, 0091 |
-| [FEAT-1009](features/FEAT-1009-product-joins.md) | 分岐が作ってすぐ分解する積の値は、フィールドを合流点へ渡す (積の合流点) | in-progress | P1 | 0065, 0074, 0091 |
+| [FEAT-1008](features/FEAT-1008-sum-results.md) | 和型の構築子を返す関数は構築子の番号とフィールドを箱なしで返す (和の CPR) | done | P1 | 0065, 0091 |
+| [FEAT-1009](features/FEAT-1009-product-joins.md) | 分岐が作ってすぐ分解する積の値は、フィールドを合流点へ渡す (積の合流点) | done | P1 | 0065, 0074, 0091 |
 
 
 ## aCHC
@@ -373,6 +373,6 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [BUG-0040](bugs/BUG-0040-z3-counterexample-depends-on-load.md) | 検証の反例が Z3 の実行時間で変わり、負荷が高いと `verify/fail/overflow` の期待出力と食い違う | todo | minor | BUG-0038 |
 | [BUG-0041](bugs/BUG-0041-test-case-without-limits.md) | テストハーネスにケースごとの時間とメモリの上限がなく、終わらない 1 ケースがホストのメモリを使い切る | done | major | FEAT-0097 |
 | [BUG-0042](bugs/BUG-0042-valgrind-bypasses-size-classes.md) | valgrind の下ではランタイムのアロケータが大きさのクラスを使わず、すべてを malloc で確保する (64 GiB の予約が断られる) | done | minor | FEAT-1001 |
-| [BUG-0043](bugs/BUG-0043-region-check-cost.md) | BUG-0042 の修正で解放ごとの領域の判定が重くなり、binary-trees が 4% 遅くなった | in-progress | minor | BUG-0042 |
+| [BUG-0043](bugs/BUG-0043-region-check-cost.md) | BUG-0042 の修正で解放ごとの領域の判定が重くなり、binary-trees が 4% 遅くなった | done | minor | BUG-0042 |
 
 新しいチケットは `features/_TEMPLATE.md` / `bugs/_TEMPLATE.md` をコピーして作成する。
