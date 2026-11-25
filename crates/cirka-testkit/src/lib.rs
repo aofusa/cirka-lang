@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 /// Root of the repository (the workspace directory).
 pub fn repo_root() -> PathBuf {
@@ -279,8 +280,115 @@ impl Report {
 /// Stack size of the threads that run compilers (tests and CLIs).
 pub const COMPILER_STACK: usize = 256 << 20;
 
+/// The limits of a run of cases (BUG-0041). The compilers and the MIR
+/// interpreter run in the test process: a case where one of them does not
+/// terminate would hold its thread, and the memory it takes, forever.
+#[derive(Clone, Copy, Debug)]
+struct Limits {
+    /// The longest a case may run (`CIRKA_TEST_CASE_TIMEOUT`, seconds).
+    case_timeout: Duration,
+    /// The most memory the test process may hold (`CIRKA_TEST_MAX_RSS_MB`).
+    max_rss_mb: u64,
+}
+
+impl Limits {
+    /// From the environment: `CIRKA_TEST_CASE_TIMEOUT` (1800 seconds when
+    /// unset) and `CIRKA_TEST_MAX_RSS_MB` (three quarters of the memory
+    /// the process may use, [`memory_mb`], when unset).
+    fn from_env() -> Limits {
+        let num = |key: &str| {
+            std::env::var(key)
+                .ok()
+                .and_then(|v| v.trim().parse::<u64>().ok())
+                .filter(|&n| n > 0)
+        };
+        Limits {
+            case_timeout: Duration::from_secs(num("CIRKA_TEST_CASE_TIMEOUT").unwrap_or(1800)),
+            max_rss_mb: num("CIRKA_TEST_MAX_RSS_MB")
+                .unwrap_or_else(|| memory_mb().map_or(6144, |mb| mb / 4 * 3)),
+        }
+    }
+}
+
+/// The memory this process may use in megabytes: the machine's
+/// (`MemTotal`), or its cgroup's limit (`memory.max`, a container's) when
+/// smaller.
+fn memory_mb() -> Option<u64> {
+    let total = proc_kb("/proc/meminfo", "MemTotal:").map(|kb| kb / 1024);
+    let cgroup = std::fs::read_to_string("/sys/fs/cgroup/memory.max")
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .map(|bytes| bytes >> 20);
+    total.into_iter().chain(cgroup).min()
+}
+
+/// The number of kilobytes on the line `key` of a file such as
+/// `/proc/self/status`.
+fn proc_kb(path: &str, key: &str) -> Option<u64> {
+    std::fs::read_to_string(path)
+        .ok()?
+        .lines()
+        .find_map(|l| l.strip_prefix(key))?
+        .trim()
+        .trim_end_matches("kB")
+        .trim()
+        .parse()
+        .ok()
+}
+
+/// The resident memory of this process in megabytes (`VmRSS`).
+fn rss_mb() -> Option<u64> {
+    proc_kb("/proc/self/status", "VmRSS:").map(|kb| kb / 1024)
+}
+
+/// The case each thread of [`run_cases`] runs, with its start.
+type Running = Mutex<Vec<Option<(String, Instant)>>>;
+
+/// Watches the cases running until every thread of [`run_cases`] has
+/// dropped its sender of `alive`: a case over [`Limits::case_timeout`], or
+/// the process over [`Limits::max_rss_mb`], ends the process with the
+/// names of the cases running (BUG-0041).
+fn watch(limits: Limits, running: &Running, alive: std::sync::mpsc::Receiver<()>) {
+    use std::sync::mpsc::RecvTimeoutError;
+    while let Err(RecvTimeoutError::Timeout) = alive.recv_timeout(Duration::from_millis(250)) {
+        let r = running.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let late = r
+            .iter()
+            .flatten()
+            .find(|(_, t)| t.elapsed() > limits.case_timeout);
+        let why = if let Some((n, _)) = late {
+            format!(
+                "the case `{n}` has run for more than {} s (CIRKA_TEST_CASE_TIMEOUT)",
+                limits.case_timeout.as_secs()
+            )
+        } else if let Some(mb) = rss_mb().filter(|&mb| mb > limits.max_rss_mb) {
+            format!(
+                "the test process holds {mb} MB, more than {} MB (CIRKA_TEST_MAX_RSS_MB)",
+                limits.max_rss_mb
+            )
+        } else {
+            continue;
+        };
+        let names: Vec<String> = r
+            .iter()
+            .flatten()
+            .map(|(n, t)| format!("`{n}` ({} s)", t.elapsed().as_secs()))
+            .collect();
+        // Straight to the standard error: the test harness keeps what
+        // `eprintln!` prints until the test ends, which this one does not.
+        use std::io::Write as _;
+        let _ = writeln!(
+            std::io::stderr(),
+            "cirka-testkit: {why}; running: {}. Stopping the tests (BUG-0041).",
+            names.join(", ")
+        );
+        std::process::exit(1);
+    }
+}
+
 /// Runs `f` for every case on `jobs()` threads. An optional filter can be
-/// given with `CIRKA_TEST_FILTER=<substring>`.
+/// given with `CIRKA_TEST_FILTER=<substring>`. A case over the [`Limits`]
+/// stops the process.
 pub fn run_cases<F>(cases: &[Case], f: F) -> Report
 where
     F: Fn(&Case) -> Outcome + Sync,
@@ -293,19 +401,32 @@ where
     let next = AtomicUsize::new(0);
     let results: Mutex<Vec<(usize, Outcome)>> = Mutex::new(Vec::new());
     let n = jobs().min(cases.len().max(1));
+    let running: Running = Mutex::new(vec![None; n]);
+    let limits = Limits::from_env();
+    // Each thread holds a sender until it ends (also by unwinding); the
+    // watch ends when none is left.
+    let (alive, threads_alive) = std::sync::mpsc::channel::<()>();
     std::thread::scope(|s| {
-        for _ in 0..n {
+        s.spawn(|| watch(limits, &running, threads_alive));
+        for w in 0..n {
+            let alive = alive.clone();
+            let (next, cases, results, f, running) = (&next, &cases, &results, &f, &running);
             // Compilers recurse over deeply nested terms; use large stacks
             // (reserved lazily) like the CLIs do.
             std::thread::Builder::new()
                 .stack_size(COMPILER_STACK)
-                .spawn_scoped(s, || {
+                .spawn_scoped(s, move || {
+                    let _alive = alive;
+                    let set = |v: Option<(String, Instant)>| {
+                        running.lock().unwrap_or_else(|e| e.into_inner())[w] = v;
+                    };
                     loop {
                         let i = next.fetch_add(1, Ordering::SeqCst);
                         if i >= cases.len() {
                             break;
                         }
                         let c = cases[i];
+                        set(Some((c.name.clone(), Instant::now())));
                         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(c)))
                             .unwrap_or_else(|e| {
                                 let msg = e
@@ -315,11 +436,13 @@ where
                                     .unwrap_or_default();
                                 Outcome::Fail(format!("panicked: {msg}"))
                             });
+                        set(None);
                         results.lock().unwrap().push((i, r));
                     }
                 })
                 .expect("cannot spawn a test thread");
         }
+        drop(alive);
     });
     let mut results = results.into_inner().unwrap();
     results.sort_by_key(|r| r.0);

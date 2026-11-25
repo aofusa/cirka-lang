@@ -22,6 +22,60 @@ fn selftest_suite() {
     });
 }
 
+/// The limits of a run (BUG-0041), in a child process (this test binary
+/// running only `limits_child`): a case that never ends, and one that
+/// takes memory without end, stop the process with their names.
+#[test]
+fn run_limits_stop_runaway_cases() {
+    let exe = std::env::current_exe().unwrap();
+    for (mode, key, value) in [
+        ("sleep", "CIRKA_TEST_CASE_TIMEOUT", "1"),
+        ("grow", "CIRKA_TEST_MAX_RSS_MB", "64"),
+    ] {
+        let start = std::time::Instant::now();
+        let out = std::process::Command::new(&exe)
+            .args(["--exact", "limits_child", "--nocapture"])
+            .env("CIRKA_SELFTEST_LIMITS", mode)
+            .env_remove("CIRKA_TEST_FILTER")
+            .env_remove("CIRKA_TEST_CASE_TIMEOUT")
+            .env_remove("CIRKA_TEST_MAX_RSS_MB")
+            .env(key, value)
+            .output()
+            .unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "{mode}: {err}");
+        assert!(
+            err.contains("`runaway`") && err.contains(key),
+            "{mode}: {err}"
+        );
+        assert!(start.elapsed().as_secs() < 60, "{mode}: {err}");
+    }
+}
+
+/// Run by `run_limits_stop_runaway_cases` in a child process: one case
+/// that sleeps forever or allocates (and touches) memory forever.
+#[test]
+fn limits_child() {
+    let Ok(mode) = std::env::var("CIRKA_SELFTEST_LIMITS") else {
+        return;
+    };
+    let case = cirka_testkit::Case {
+        path: "runaway.txt".into(),
+        name: "runaway".into(),
+        header: Default::default(),
+    };
+    let _ = cirka_testkit::run_cases(&[case], |_| {
+        let mut held: Vec<Vec<u8>> = Vec::new();
+        loop {
+            if mode == "grow" {
+                held.push(vec![1u8; 8 << 20]);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    });
+    unreachable!("the run should have been stopped");
+}
+
 /// The memcheck wrapper (BUG-0038): a program reading freed memory fails
 /// under it, and the same program without that read passes. Skipped where
 /// valgrind or the C compiler cannot run.

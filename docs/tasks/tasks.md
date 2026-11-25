@@ -358,5 +358,6 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [BUG-0038](bugs/BUG-0038-memcheck-without-valgrind.md) | `scripts/memcheck.sh` が実行テストを valgrind の下で走らせていない | in-progress | major | FEAT-0096 |
 | [BUG-0039](bugs/BUG-0039-small-function-inlining-exponential.md) | 小さい関数の連鎖 (次の関数を 2 か所から呼ぶ) をインライン化すると 1 回の簡約で指数的に複製し、Core の最適化が終わらない | done | major | FEAT-0097 |
 | [BUG-0040](bugs/BUG-0040-z3-counterexample-depends-on-load.md) | 検証の反例が Z3 の実行時間で変わり、負荷が高いと `verify/fail/overflow` の期待出力と食い違う | todo | minor | BUG-0038 |
+| [BUG-0041](bugs/BUG-0041-test-case-without-limits.md) | テストハーネスにケースごとの時間とメモリの上限がなく、終わらない 1 ケースがホストのメモリを使い切る | done | major | FEAT-0097 |
 
 新しいチケットは `features/_TEMPLATE.md` / `bugs/_TEMPLATE.md` をコピーして作成する。

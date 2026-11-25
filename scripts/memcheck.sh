@@ -12,4 +12,6 @@ command -v "${CIRKA_VALGRIND_BIN:-valgrind}" >/dev/null || { echo "memcheck: val
 scripts/build-runtime.sh
 export CIRKA_ALLOC=system
 export CIRKA_VALGRIND=1
+# Under valgrind the programs run tens of times slower (BUG-0041).
+export CIRKA_TEST_CASE_TIMEOUT=$(( ${CIRKA_TEST_CASE_TIMEOUT:-1800} * 10 ))
 cargo test --workspace --test '*' -- --nocapture "$@"
