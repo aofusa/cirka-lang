@@ -16,7 +16,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | 共通基盤 | M1 バックエンド基盤 | 7 / 7 |
 | 共通基盤 | M2 Perceus | 3 / 3 |
 | 共通基盤 | M3 共通 Core と Core→MIR | 4 / 4 |
-| 共通基盤 | SX 共通基盤の拡張 (各トラックの必要に応じて) | 47 / 65 |
+| 共通基盤 | SX 共通基盤の拡張 (各トラックの必要に応じて) | 48 / 66 |
 | aCHC | H1 Haskell 最小フロントエンド | 6 / 6 |
 | aCHC | H2 Haskell 実用化 (スコープ縮小版) | 10 / 10 |
 | aCHC | H3 所有権拡張 (.chs) | 9 / 9 |
@@ -143,6 +143,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-1001](features/FEAT-1001-edge-triggered-event-loop.md) | イベントループの待ちをエッジトリガーで登録したままにし、記述子ごとに準備の状態を覚える (空にしたソケットの読み込みと待ちにシステムコールを使わない) | done | P1 | 0091, 0241 |
 | [FEAT-1002](features/FEAT-1002-io-fixed-costs.md) | ランタイムの I/O の固定費を減らす (スレッドごとの受信バッファ、空の結果は静的な空文字列) | done | P1 | 0091 |
 | [FEAT-1003](features/FEAT-1003-concat-with-empty.md) | 文字列の連結の片方が空なら他方を返し、空の切り出しは静的な空文字列にする | done | P1 | 0091, 0097 |
+| [FEAT-1004](features/FEAT-1004-constants-are-not-cafs.md) | トップレベルの定数を使う箇所で値に置き換え、CAF の force をなくす (リテラルはどこでも、リテラルの構築子は分解する箇所で) | done | P1 | 0091 |
 | [FEAT-1007](features/FEAT-1007-raw-io-syscalls.md) | I/O のシステムコールを libc を通さずに呼ぶ (マルチスレッドのプロセスで取り消しの点のアトミックな操作をなくす) | done | P1 | 1001, 0091 |
 
 

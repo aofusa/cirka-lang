@@ -844,6 +844,26 @@ fn is_alias(e: &Expr) -> bool {
     !alias_target(e).is_empty()
 }
 
+/// A constant: a literal (a string too: a static object), or a constructor
+/// applied to literals that are not strings (`I# 1`), possibly under
+/// casts. Bound at the top level it would be a CAF, a static thunk that
+/// every use forces (FEAT-1004). A literal is replaced by its value
+/// wherever it occurs; a constructor where it is taken apart (the
+/// scrutinee of a `case`, a strict `let`), so that its box goes away.
+/// Elsewhere the shared CAF stays: a copy would allocate a box at every
+/// use, and in the field of a dictionary it would not be an atom (the
+/// floating of dictionary fields would define the field again).
+fn is_constant(e: &Expr) -> bool {
+    match e {
+        Expr::Lit(_) => true,
+        Expr::Con(_, _, args) => args
+            .iter()
+            .all(|a| matches!(a, Expr::Lit(l) if !matches!(l, Lit::Str(_)))),
+        Expr::Cast(x, _) => is_constant(x),
+        _ => false,
+    }
+}
+
 /// Top-level functions that may be inlined at call sites: non-recursive
 /// lambdas (possibly under `Λ`s) that are small or called exactly once.
 ///
@@ -906,7 +926,8 @@ fn inline_candidates(p: &Program) -> HashMap<String, Expr> {
         // Aliases (`(+) = primIntAdd`, or a cast of one such as
         // `primBindIO = cast prim$io_bind`) are inlined like small functions.
         let alias = is_alias(&b.expr) && alias_target(&b.expr) != b.name;
-        if b.name == "main" || !(matches!(body, Expr::Lam(..)) || alias) {
+        let constant = is_constant(&b.expr);
+        if b.name == "main" || !(matches!(body, Expr::Lam(..)) || alias || constant) {
             continue;
         }
         // A wrapper of the worker/wrapper split only calls its worker: it
@@ -921,7 +942,7 @@ fn inline_candidates(p: &Program) -> HashMap<String, Expr> {
         let size = size(&b.expr);
         let once = copies.callers.get(b.name.as_str()).map(Vec::len) == Some(1);
         let breaker = breakers.contains(&b.name);
-        let kind = if wrapper || (alias && !breaker) {
+        let kind = if wrapper || (alias && !breaker) || constant {
             Inline::Always
         } else if size <= INLINE_SIZE && !breaker {
             Inline::Small(size)
@@ -1314,9 +1335,13 @@ impl Simp<'_> {
             // higher-order function, the function it names is known
             // (FEAT-0061, `sat.rs`). A polymorphic alias only under its
             // type applications (`alias_at_types`): alone it would leave a
-            // `Λ` where an atom was (the field of a dictionary).
+            // `Λ` where an atom was (the field of a dictionary). A literal
+            // constant is replaced by its value likewise (`is_constant`).
             Expr::Global(g) => match self.inl.get(&g) {
-                Some(body) if is_alias(body) && !matches!(body, Expr::TyLam(..)) => {
+                Some(body)
+                    if (is_alias(body) && !matches!(body, Expr::TyLam(..)))
+                        || (is_constant(body) && body.is_atom()) =>
+                {
                     self.hit();
                     self.st.inlined += 1;
                     let copy = freshen(body, &mut self.next);
@@ -1397,14 +1422,30 @@ impl Simp<'_> {
                 Expr::Let(Bind::Rec(bs), Box::new(body))
             }
             Expr::LetStrict(b, r, body) => {
-                let r = self.expr(*r);
+                let r = self.constant_value(*r);
+                let r = self.expr(r);
                 self.let_strict(b, r, K::Expr(*body))
             }
             Expr::Case(s, b, res, alts) => {
-                let s = self.expr(*s);
+                let s = self.constant_value(*s);
+                let s = self.expr(s);
                 self.case(s, b, res, alts)
             }
         }
+    }
+
+    /// The value of a constant global taken apart here (`is_constant`):
+    /// the scrutinee or the bound value of a strict `let` (FEAT-1004).
+    fn constant_value(&mut self, e: Expr) -> Expr {
+        if let Expr::Global(g) = &e
+            && let Some(body) = self.inl.get(g)
+            && is_constant(body)
+        {
+            self.hit();
+            self.st.inlined += 1;
+            return freshen(body, &mut self.next);
+        }
+        e
     }
 
     /// `g @t₁ .. @tₙ` for a polymorphic alias `g = Λa₁..aₖ. h ..` with

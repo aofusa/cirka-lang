@@ -1263,6 +1263,69 @@ fn opt_specializes_aliases_and_partial_applications() {
 }
 
 #[test]
+fn opt_replaces_constants_by_their_values() {
+    // FEAT-1004: `hello` (a string) and `minus1` (a constructor of a
+    // literal) would be CAFs, static thunks forced at every use. The
+    // string is replaced by its value wherever it occurs; `minus1` where
+    // it is taken apart (also in `pick` once it is inlined and the `case`
+    // on its result moves into its branches), and its box goes away.
+    let src = format!(
+        "{STRICT_INT}(extern put (Bytes) Unit#)
+         (extern arg () Int#)
+         (def hello Bytes \"hi\")
+         (def minus1 Int (con I# () -1))
+         (def pick (-> Int# Int)
+           (lam ((x Int#)) (case x (k Int#) Int (0 minus1) (_ (con I# () x)))))
+         (def main Int#
+           (let! (u Unit# (extern put hello))
+             (let! (u2 Unit# (extern put hello))
+               (case minus1 (s Int) Int#
+                 ((I# v) (case (pick (extern arg)) (t Int) Int# ((I# w) (prim add v w))))))))"
+    );
+    let p = optimized(&src);
+    let all = print_program(&p);
+    assert!(
+        p.bind("hello").is_none() && p.bind("minus1").is_none(),
+        "{all}"
+    );
+    let m = print::print_expr(&p.bind("main").unwrap().expr);
+    assert_eq!(m.matches("\"hi\"").count(), 2, "{m}");
+    assert!(!m.contains("minus1") && !m.contains("hello"), "{m}");
+}
+
+#[test]
+fn opt_keeps_constant_fields_of_dictionaries() {
+    // FEAT-1004: a field of a dictionary that is a constructor of a literal
+    // is floated to a global (`dI$f1`). The global is a constant, but it
+    // stays in the dictionary: its value there would not be an atom, and
+    // the floating of dictionary fields (run again after the
+    // specialization of `loop`) would define `dI$f1` a second time. Taken
+    // apart in `loop`, the field is replaced by its value.
+    let src = format!(
+        "{STRICT_INT}(data D (a) (D$Dict (-> a a) Int))
+         (def inc (-> Int Int)
+           (lam ((x Int)) (case x (s Int) Int ((I# v) (con I# () (prim add v 1))))))
+         (def dI (D Int) (con D$Dict (Int) inc (con I# () 7)))
+         (def loop (forall (a) (-> (D a) Int# a a))
+           (tlam (a) (lam ((d (D a)) (n Int#) (x a))
+             (case n (k Int#) a
+               (0 x)
+               (_ (case d (s (D a)) a
+                 ((D$Dict f c) (case c (t Int) a
+                   ((I# m) ((@ loop a) d (prim sub n m) (f x)))))))))))
+         (extern arg () Int#)
+         (def main Int#
+           (let! (c Int# (extern arg))
+             (case ((@ loop Int) dI c (con I# () 0)) (r Int) Int# ((I# v) v))))"
+    );
+    let mut p = parse_program(FileId(0), &src).unwrap();
+    assert!(lint::lint_program(&p).is_empty(), "{}", print_program(&p));
+    opt::optimize_with_stats(&mut p).unwrap();
+    let all = print_program(&p);
+    assert!(lint::lint_program(&p).is_empty(), "{all}");
+}
+
+#[test]
 fn opt_keeps_polymorphic_aliases_in_dictionaries() {
     // The field `dF$f0` of the dictionary is a polymorphic alias. Replaced
     // without its type applications it would leave a `Λ` in the dictionary,
