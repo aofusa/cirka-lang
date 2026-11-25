@@ -1,0 +1,38 @@
+; FEAT-1009: a case takes apart the unboxed tuple that branches return (a
+; join): built in a branch, returned by a call, or by more branches, one of
+; which panics. MIR passes the fields to a join block.
+(data Int () (I# Int#))
+(data UTup2 (a b) (UTup2 a b))
+(extern cirka_write_i64 (Int#) Unit#)
+(extern cirka_write_char (Int#) Unit#)
+
+(def pair (-> Int# (UTup2 Int Int#))
+  (lam ((n Int#))
+    (let! (b Int (con I# () (prim mul n 10)))
+      (con UTup2 (Int Int#) b n))))
+
+(def pick (-> Int# Int#)
+  (lam ((i Int#))
+    (case (case (prim rem i 4) (k Int#) (UTup2 Int Int#)
+            (0 (let! (b Int (con I# () i)) (con UTup2 (Int Int#) b 1)))
+            (1 (pair i))
+            (2 (case (prim lt i 100) (m Int#) (UTup2 Int Int#)
+                 (0 (panic "big" (UTup2 Int Int#)))
+                 (_ (let! (b Int (con I# () 7)) (con UTup2 (Int Int#) b i)))))
+            (_ (let! (b Int (con I# () (prim add i 1000))) (con UTup2 (Int Int#) b 2))))
+          (j (UTup2 Int Int#)) Int#
+      ((UTup2 x n) (case x (s Int) Int# ((I# v) (prim add (prim mul v 100) n)))))))
+
+(def go (-> Int# Int# Int#)
+  (lam ((i Int#) (acc Int#))
+    (case (prim lt i 8) (k Int#) Int#
+      (0 acc)
+      (_ (let! (v Int# (pick i))
+           (let! (u Unit# (extern cirka_write_i64 v))
+             (let! (w Unit# (extern cirka_write_char 10))
+               (go (prim add i 1) (prim add acc v)))))))))
+
+(def main Int#
+  (let! (a Unit# (extern cirka_write_i64 (go 0 0)))
+    (let! (b Unit# (extern cirka_write_char 10))
+      0)))

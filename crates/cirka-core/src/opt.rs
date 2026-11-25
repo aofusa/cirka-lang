@@ -64,6 +64,9 @@ pub struct Stats {
     pub fun_args: usize,
     /// Functions split to return the fields of a constructed product.
     pub product_results: usize,
+    /// Products built by branches and taken apart right away that pass
+    /// their fields to a join point (FEAT-1009).
+    pub product_joins: usize,
     /// Thunks replaced by eager evaluation (`let!`).
     pub strictified: usize,
     /// Uniqueness checks of values known to be unique (`uniq`).
@@ -223,6 +226,13 @@ pub fn optimize_with_stats(p: &mut Program) -> Result<Stats, Diagnostic> {
     if split > 0 {
         st.worker_wrapper += split;
         lint_all(p, "worker-wrapper")?;
+        simplify_rounds(p, &mut st, &mut next)?;
+    }
+    // Products that branches build and a case takes apart right away pass
+    // their fields to a join point instead of being allocated (FEAT-1009).
+    st.product_joins = crate::join::product_joins(p, &mut next);
+    if st.product_joins > 0 {
+        lint_all(p, "join")?;
         simplify_rounds(p, &mut st, &mut next)?;
     }
     // Loops whose `Int#` parameters start from literals and end on literal
@@ -496,7 +506,7 @@ fn occ_of(e: &Expr, x: u32) -> Occ {
     m.get(&x).copied().unwrap_or_default()
 }
 
-fn occurs(e: &Expr, x: u32) -> bool {
+pub(crate) fn occurs(e: &Expr, x: u32) -> bool {
     let mut found = false;
     walk(e, &mut |s| {
         if let Expr::Var(v) = s
@@ -2136,7 +2146,11 @@ impl Simp<'_> {
             return false;
         }
         let small = alts.iter().map(|a| size(&a.rhs)).sum::<usize>() <= INLINE_SIZE;
-        known || small
+        // An unboxed tuple taken apart: the inner returns jump to a join
+        // point with its fields (FEAT-1009), so a copy of `alts` in each of
+        // them saves no allocation.
+        let tuple = matches!(alts, [Alt { con: AltCon::Con(c, _), .. }] if crate::cpr::is_utup(c));
+        (known && !tuple) || small
     }
 
     /// `cast(e, t)`, without the cast of a constructor or a variable to
@@ -2494,7 +2508,10 @@ impl Simp<'_> {
         let Some(i) = pick else {
             return self.case_default(Expr::Con(k, ts, args), b, res, alts);
         };
-        let b_used = self.occ(b.id.id).count > 0;
+        // The binder of an unboxed tuple is never used (Core Lint), also
+        // in a copy made by case-of-case, which has no occurrence
+        // information yet (FEAT-1009).
+        let b_used = !crate::cpr::is_utup(&k) && self.occ(b.id.id).count > 0;
         let ok = match &alts[i].con {
             // case K as b of _ -> rhs  ≡  let! b = K in rhs
             AltCon::Default => b.mult != Mult::One,

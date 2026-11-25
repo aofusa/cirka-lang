@@ -92,6 +92,9 @@ struct Lowerer<'p> {
     /// Functions returning several values (an unboxed tuple in Core,
     /// 06-ir.md §1.7) and their result types.
     multi: HashMap<String, Vec<Ty>>,
+    /// The join blocks being lowered (FEAT-1009): per parameter, whether
+    /// every jump so far passes a value in WHNF.
+    joins: HashMap<u32, Vec<bool>>,
     counter: u32,
     errors: Vec<Diagnostic>,
     /// Functions still to be lowered: (name, env, binders, body, closure convention).
@@ -225,6 +228,7 @@ impl<'p> Lowerer<'p> {
             box_f: CtorRef { ty: 0, ctor: 0 },
             wrappers: HashMap::new(),
             multi: HashMap::new(),
+            joins: HashMap::new(),
             counter: 0,
             errors: Vec::new(),
             pending: Vec::new(),
@@ -1756,12 +1760,15 @@ impl<'p> Lowerer<'p> {
             scrut = self.let_(fb, env, scrut)?;
         }
         let (head, args) = spine(scrut);
-        let known = self.known(env, head);
-        let Some((func, fvs, _)) =
-            known.filter(|(f, _, a)| *a == args.len() && self.multi.contains_key(f))
-        else {
-            self.error("ICE: an unboxed tuple taken apart from something else than a known call");
-            return None;
+        let known = self
+            .known(env, head)
+            .filter(|(f, _, a)| *a == args.len() && self.multi.contains_key(f));
+        let Some((func, fvs, _)) = known else {
+            // Branches returning the tuple (FEAT-1009).
+            if !self.join_case(fb, env, scrut, bs) {
+                return None;
+            }
+            return self.after_multi(fb, env, rhs, mode);
         };
         let ops = self.call_args(fb, env, &func, &fvs, &args)?;
         let rs = self.multi[&func].clone();
@@ -1785,12 +1792,142 @@ impl<'p> Lowerer<'p> {
                 },
             );
         }
+        self.after_multi(fb, env, rhs, mode)
+    }
+
+    /// The alternative of a case that took an unboxed tuple apart.
+    fn after_multi(
+        &mut self,
+        fb: &mut Fb,
+        env: &mut Env,
+        rhs: &Expr,
+        mode: Mode,
+    ) -> Option<Operand> {
         match mode {
             Mode::Tail(boxed) => {
                 self.tail(fb, env, rhs, boxed);
                 None
             }
             Mode::Value => self.whnf(fb, env, rhs),
+            Mode::Join(j) => {
+                self.join_into(fb, env, rhs, j);
+                None
+            }
+        }
+    }
+
+    /// Lowers `scrut`, branches that return an unboxed tuple (FEAT-1009),
+    /// as jumps to a new join block whose parameters are the fields, bound
+    /// to `bs` there; false when no branch reaches it.
+    fn join_case(&mut self, fb: &mut Fb, env: &mut Env, scrut: &Expr, bs: &[core::Binder]) -> bool {
+        let j = fb.block("join");
+        let params: Vec<Var> = bs
+            .iter()
+            .map(|b| {
+                let r = self.rep(&b.ty);
+                fb.f.fresh_var(&b.id.name, r)
+            })
+            .collect();
+        fb.f.blocks[j.0 as usize]
+            .params
+            .extend(params.iter().copied());
+        self.joins.insert(j.0, vec![true; bs.len()]);
+        let mut inner = env.clone();
+        self.join_into(fb, &mut inner, scrut, j);
+        let evaluated = self.joins.remove(&j.0).unwrap_or_default();
+        if fb.f.predecessors()[j.0 as usize].is_empty() {
+            return false;
+        }
+        fb.switch_to(j);
+        for (i, (b, v)) in bs.iter().zip(params).enumerate() {
+            let whnf = fb.f.ty(v) != Ty::Ptr || evaluated.get(i).copied().unwrap_or(false);
+            env.insert(
+                b.id.id,
+                Bound::Val {
+                    op: Operand::Var(v),
+                    ty: b.ty.clone(),
+                    whnf,
+                },
+            );
+        }
+        true
+    }
+
+    /// Lowers `e`, whose value is an unboxed tuple, as jumps to join block
+    /// `j` with its fields (FEAT-1009).
+    fn join_into(&mut self, fb: &mut Fb, env: &mut Env, e: &Expr, j: BlockId) {
+        match e {
+            Expr::Let(..) | Expr::LetStrict(..) => {
+                if let Some(body) = self.let_(fb, env, e) {
+                    self.join_into(fb, env, body, j);
+                }
+            }
+            Expr::Case(s, b, res, alts) => {
+                self.case(fb, env, s, b, res, alts, Mode::Join(j));
+            }
+            Expr::Cast(x, _) | Expr::TyLam(_, _, x) => self.join_into(fb, env, x, j),
+            Expr::Panic(m, _) if m == core::expr::UNREACHABLE => fb.term(Terminator::Unreachable),
+            Expr::Panic(m, _) => fb.term(Terminator::Panic(m.clone())),
+            // The fields, lazy like constructor fields.
+            Expr::Con(c, _, args) if core::cpr::is_utup(c) => {
+                let params = fb.f.blocks[j.0 as usize].params.clone();
+                let mut ops = Vec::with_capacity(args.len());
+                for (i, (a, p)) in args.iter().zip(params).enumerate() {
+                    let o = if fb.f.ty(p) == Ty::Ptr {
+                        let evaluated = self.evaluated(env, a);
+                        if let Some(w) = self.joins.get_mut(&j.0) {
+                            w[i] &= evaluated;
+                        }
+                        self.lazy(fb, env, a)
+                    } else {
+                        self.whnf(fb, env, a)
+                    };
+                    let Some(o) = o else { return };
+                    ops.push(o);
+                }
+                fb.term(Terminator::Jump(j, ops));
+            }
+            // A call of a function returning an unboxed tuple: its results.
+            _ => {
+                let (head, args) = spine(e);
+                let known = self
+                    .known(env, head)
+                    .filter(|(f, _, a)| *a == args.len() && self.multi.contains_key(f));
+                let Some((func, fvs, _)) = known else {
+                    self.error(
+                        "ICE: an unboxed tuple from something else than a known call or branches",
+                    );
+                    return;
+                };
+                let Some(ops) = self.call_args(fb, env, &func, &fvs, &args) else {
+                    return;
+                };
+                let rs = self.multi[&func].clone();
+                let vars: Vec<Var> = rs.iter().map(|r| fb.f.fresh_var("r", *r)).collect();
+                fb.emit(Instr::LetMulti {
+                    vars: vars.clone(),
+                    func,
+                    args: ops,
+                });
+                if let Some(w) = self.joins.get_mut(&j.0) {
+                    for (w, r) in w.iter_mut().zip(&rs) {
+                        *w &= *r != Ty::Ptr;
+                    }
+                }
+                fb.term(Terminator::Jump(
+                    j,
+                    vars.into_iter().map(Operand::Var).collect(),
+                ));
+            }
+        }
+    }
+
+    /// Whether atom `a` is known to be a value (not a thunk).
+    fn evaluated(&self, env: &Env, a: &Expr) -> bool {
+        match a {
+            Expr::Var(v) => matches!(env.get(&v.id), Some(Bound::Val { whnf: true, .. })),
+            Expr::Lit(_) => true,
+            _ => false,
         }
     }
 
@@ -1832,7 +1969,7 @@ impl<'p> Lowerer<'p> {
                 fb.f.blocks[j.0 as usize].params.push(p);
                 Some((j, p))
             }
-            Mode::Tail(_) => None,
+            Mode::Tail(_) | Mode::Join(_) => None,
         };
         let newtype = match &b.ty {
             Type::Con(c, _) => self.datas.get(c).is_some_and(|d| d.newtype),
@@ -1924,6 +2061,7 @@ impl<'p> Lowerer<'p> {
                         fb.term(Terminator::Jump(j, vec![r]));
                     }
                 }
+                Mode::Join(j) => this.join_into(fb, env, &a.rhs, j),
             }
         };
         if (!has_ctor_alts || newtype) && !has_int_alts {
@@ -1991,4 +2129,7 @@ enum Mode {
     Value,
     /// Tail position; `true` = box an unboxed result (closure convention).
     Tail(bool),
+    /// The value is an unboxed tuple whose fields go to this join block
+    /// (FEAT-1009).
+    Join(BlockId),
 }

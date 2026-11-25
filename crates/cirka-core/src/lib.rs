@@ -7,6 +7,7 @@ pub mod cpr;
 pub mod ctype;
 pub mod expr;
 pub mod io;
+pub mod join;
 pub mod lint;
 pub mod opt;
 pub mod parse;

@@ -1,10 +1,11 @@
--- max-allocs: 2100
+-- max-allocs: 40
 -- A fold over the lines whose step builds its accumulator in both
 -- branches of an `if` (FEAT-0082): the loop takes the record apart for
 -- the next line without allocating it, though the position of the next
--- line is computed in between. Building the 1000 lines allocates two
--- builders per line (each `append` that may grow the buffer); a record
--- per line would be 1000 more.
+-- line is computed in between. Building the 1000 lines allocates only the
+-- buffer as it grows: each `append` that may grow it passes the fields of
+-- the builder to a join point (FEAT-1009) instead of allocating one; a
+-- record or two builders per line would be thousands more.
 import Data.String as S
 import Data.String (Str, Builder, toStr)
 

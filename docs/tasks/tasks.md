@@ -16,7 +16,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | 共通基盤 | M1 バックエンド基盤 | 7 / 7 |
 | 共通基盤 | M2 Perceus | 3 / 3 |
 | 共通基盤 | M3 共通 Core と Core→MIR | 4 / 4 |
-| 共通基盤 | SX 共通基盤の拡張 (各トラックの必要に応じて) | 50 / 69 |
+| 共通基盤 | SX 共通基盤の拡張 (各トラックの必要に応じて) | 50 / 70 |
 | aCHC | H1 Haskell 最小フロントエンド | 6 / 6 |
 | aCHC | H2 Haskell 実用化 (スコープ縮小版) | 10 / 10 |
 | aCHC | H3 所有権拡張 (.chs) | 9 / 9 |
@@ -148,6 +148,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-1006](features/FEAT-1006-static-constant-constructors.md) | 定数だけを受け取る構築子のトップレベルの定義を静的なオブジェクトにする (CAF にせず、force も確保もしない) | done | P1 | 0089, 1004 |
 | [FEAT-1007](features/FEAT-1007-raw-io-syscalls.md) | I/O のシステムコールを libc を通さずに呼ぶ (マルチスレッドのプロセスで取り消しの点のアトミックな操作をなくす) | done | P1 | 1001, 0091 |
 | [FEAT-1008](features/FEAT-1008-sum-results.md) | 和型の構築子を返す関数は構築子の番号とフィールドを箱なしで返す (和の CPR) | in-progress | P1 | 0065, 0091 |
+| [FEAT-1009](features/FEAT-1009-product-joins.md) | 分岐が作ってすぐ分解する積の値は、フィールドを合流点へ渡す (積の合流点) | in-progress | P1 | 0065, 0074, 0091 |
 
 
 ## aCHC

@@ -2004,6 +2004,174 @@ fn opt_keeps_effects_between_accumulator_and_case() {
     assert!(all.contains(" Acc (case"), "{all}");
 }
 
+// ---- FEAT-1009: product joins ----
+
+/// `go` builds a `P` in both branches of a case, one of them through the
+/// worker of the recursive `grow` (CPR), and takes it apart right away; the
+/// continuation is too large for case-of-case to copy into each branch.
+/// `tail` ends the continuation.
+fn join_loop(tail: &str) -> String {
+    let mut big = tail.to_string();
+    for k in (1..=16).rev() {
+        let prev = if k == 1 {
+            "x".to_string()
+        } else {
+            format!("v{}", k - 1)
+        };
+        let op = if k % 2 == 0 { "mul" } else { "add" };
+        big = format!("(let! (v{k} Int# (prim {op} {prev} y)) {big})");
+    }
+    format!(
+        "(data P () (MkP (! Int#) (! Int#)))
+         (extern arg () Int#)
+         (def grow (-> Int# Int# P)
+           (lam ((a Int#) (b Int#))
+             (case (prim lt a b) (c Int#) P
+               (0 (con MkP () a b))
+               (_ (grow (prim mul a 2) b)))))
+         (def go (-> Int# Int# Int# Int#)
+           (lam ((i Int#) (a Int#) (b Int#))
+             (case (prim le i 0) (c Int#) Int#
+               (0 (let! (s P (case (prim lt a b) (d Int#) P
+                               (0 (con MkP () a b))
+                               (_ (grow a b))))
+                    (case s (t P) Int# ((MkP x y) {big}))))
+               (_ (prim add a b)))))
+         (def main Int# (go (extern arg) (extern arg) (extern arg)))"
+    )
+}
+
+#[test]
+fn opt_joins_products_built_in_branches() {
+    // The branches pass the fields of `P` to a join point: the loop builds
+    // no `MkP`, and its continuation is there once.
+    let src = join_loop("(go (prim sub i 1) v16 y)");
+    let mut p = parse_program(FileId(0), &src).unwrap();
+    assert!(lint::lint_program(&p).is_empty(), "{}", print_program(&p));
+    let st = opt::optimize_with_stats(&mut p).unwrap();
+    let all = print_program(&p);
+    assert!(lint::lint_program(&p).is_empty(), "{all}");
+    assert!(st.product_joins >= 1, "{st:?}\n{all}");
+    let go: String = p
+        .binds
+        .iter()
+        .filter(|b| b.name.starts_with("go"))
+        .map(|b| print::print_expr(&b.expr))
+        .collect();
+    assert!(!go.contains("con MkP"), "{all}");
+    assert!(go.contains("UTup2"), "{all}");
+    assert_eq!(all.matches("(prim mul v15").count(), 1, "{all}");
+}
+
+#[test]
+fn join_passes_fields_and_keeps_panics() {
+    // The pass alone: each constructor's return becomes the tuple (a strict
+    // boxed field that may be a thunk evaluated first, a literal as is),
+    // and the panic gets the tuple's type.
+    let src = format!(
+        "{PRELUDE}(data Q () (MkQ (! Int) Int#))
+         (def f (-> Int# Int Int Int#)
+           (lam ((c Int#) (v Int) (w Int))
+             (let! (s Q (case c (d Int#) Q
+                          (0 (con MkQ () v 3))
+                          (1 (panic \"no\" Q))
+                          (_ (con MkQ () w 4))))
+               (case s (t Q) Int#
+                 ((MkQ a n) (case a (u Int) Int# ((I# m) (prim add m n))))))))
+         (def main Int# (f 0 (con I# () 4) (con I# () 5)))"
+    );
+    let mut p = parse_program(FileId(0), &src).unwrap();
+    assert!(lint::lint_program(&p).is_empty(), "{}", print_program(&p));
+    let mut next = p.max_id() + 1;
+    assert_eq!(join::product_joins(&mut p, &mut next), 1);
+    let all = print_program(&p);
+    assert!(lint::lint_program(&p).is_empty(), "{all}");
+    let f = print::print_expr(&p.bind("f").unwrap().expr);
+    assert!(!f.contains("con MkQ"), "{f}");
+    assert_eq!(f.matches("(con UTup2 (Int Int#)").count(), 2, "{f}");
+    assert_eq!(f.matches("(let! (f").count(), 2, "{f}");
+    assert!(f.contains("(panic \"no\" (UTup2 Int Int#))"), "{f}");
+}
+
+#[test]
+fn join_keeps_products_used_as_values() {
+    // `s` is passed on, so it must be allocated (`f`). A branch that returns
+    // an existing value would have to take it apart, and its cell, which the
+    // continuation may reuse, would be freed (`h`, `k`).
+    let src = format!(
+        "{PRELUDE}(data Q () (MkQ (! Int) Int#))
+         (def g (-> Q Int#) (lam ((q Q)) (case q (t Q) Int# ((MkQ a n) n))))
+         (def f (-> Int# Int Q Int#)
+           (lam ((c Int#) (v Int) (q Q))
+             (let! (s Q (case c (d Int#) Q (0 (con MkQ () v 3)) (_ q)))
+               (case s (t Q) Int# ((MkQ a n) (prim add n (g s)))))))
+         (def h (-> Int# Q Q Int#)
+           (lam ((c Int#) (q Q) (r Q))
+             (let! (s Q (case c (d Int#) Q (0 r) (_ q)))
+               (case s (t Q) Int# ((MkQ a n) n)))))
+         (def k (-> Int# Int Q Q)
+           (lam ((c Int#) (v Int) (q Q))
+             (let! (s Q (case c (d Int#) Q (0 (con MkQ () v 3)) (_ q)))
+               (case s (t Q) Q ((MkQ a n) (con MkQ () a (prim add n 1)))))))
+         (def main Int#
+           (let! (q Q (con MkQ () (con I# () 5) 6))
+             (prim add (prim add (f 0 (con I# () 4) q) (h 1 q q))
+               (case (k 1 (con I# () 4) q) (r Q) Int# ((MkQ a n) n)))))"
+    );
+    let mut p = parse_program(FileId(0), &src).unwrap();
+    assert!(lint::lint_program(&p).is_empty(), "{}", print_program(&p));
+    let mut next = p.max_id() + 1;
+    let n = join::product_joins(&mut p, &mut next);
+    assert_eq!(n, 0, "{}", print_program(&p));
+}
+
+#[test]
+fn lint_accepts_tuples_returned_by_branches() {
+    // A case takes apart the tuple that branches return: built there, by a
+    // call, or by more branches, after bindings (a join, FEAT-1009).
+    let src = format!(
+        "{PRELUDE}(data UTup2 (a b) (UTup2 a b))
+         (extern arg () Int#)
+         (def w (-> Int# (UTup2 Int# Int#)) (lam ((i Int#)) (con UTup2 (Int# Int#) i i)))
+         (def main Int#
+           (let! (c Int# (extern arg))
+             (case (case c (k Int#) (UTup2 Int# Int#)
+                     (0 (con UTup2 (Int# Int#) 1 2))
+                     (1 (w 3))
+                     (_ (case (prim lt c 5) (m Int#) (UTup2 Int# Int#)
+                          (0 (panic \"no\" (UTup2 Int# Int#)))
+                          (_ (let! (d Int# (prim add c 1)) (con UTup2 (Int# Int#) d c))))))
+                   (j (UTup2 Int# Int#)) Int#
+               ((UTup2 a b) (prim add a b)))))"
+    );
+    let p = parse_program(FileId(0), &src).unwrap();
+    let errs = lint::render_errors(&lint::lint_program(&p));
+    assert!(errs.is_empty(), "{errs}");
+}
+
+#[test]
+fn opt_case_of_case_on_tuples_binds_no_tuple() {
+    // Case-of-case copies the small alternative that takes the tuple apart
+    // into both branches, which build the tuple: each copy meets a known
+    // constructor without binding the tuple to its case binder, which has
+    // no occurrence information yet (FEAT-1009).
+    let src = "(data UTup2 (a b) (UTup2 a b))
+         (extern arg () Int#)
+         (def main Int#
+           (let! (c Int# (extern arg))
+             (case (case c (k Int#) (UTup2 Int# Int#)
+                     (0 (con UTup2 (Int# Int#) 1 2))
+                     (_ (con UTup2 (Int# Int#) c 3)))
+                   (j (UTup2 Int# Int#)) Int#
+               ((UTup2 a b) (prim add a b)))))";
+    let mut p = parse_program(FileId(0), src).unwrap();
+    assert!(lint::lint_program(&p).is_empty(), "{}", print_program(&p));
+    opt::optimize(&mut p).unwrap();
+    let all = print_program(&p);
+    assert!(lint::lint_program(&p).is_empty(), "{all}");
+    assert!(!all.contains("(con UTup2"), "{all}");
+}
+
 #[test]
 fn lint_rejects_misplaced_unboxed_tuples() {
     // A worker's unboxed tuple bound to a variable instead of taken apart.

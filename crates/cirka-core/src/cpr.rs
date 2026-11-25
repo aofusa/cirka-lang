@@ -40,7 +40,9 @@
 //! `UTup<n>` has no runtime representation. Core Lint ([`check_placement`])
 //! only allows it to be built in the return position of a top-level
 //! function body and taken apart by a `case` on a saturated call; MIR
-//! returns its fields as the function's multiple results.
+//! returns its fields as the function's multiple results. A `case` may
+//! also take apart the tuples that branches return (a join,
+//! [`crate::join`], FEAT-1009): MIR passes them to a join block.
 
 use crate::expr::*;
 use crate::opt::walk;
@@ -65,7 +67,7 @@ pub fn is_utup(c: &str) -> bool {
 }
 
 /// Declares `UTup<n>` in `p` (once).
-fn ensure_utup(p: &mut Program, n: usize) -> String {
+pub(crate) fn ensure_utup(p: &mut Program, n: usize) -> String {
     let name = utup_name(n);
     if p.data(&name).is_none() {
         let params: Vec<(TyVar, Kind)> = (0..n)
@@ -134,14 +136,71 @@ fn call_head(e: &Expr) -> Option<&str> {
     }
 }
 
-fn place(e: &Expr, tail: bool, fs: &HashSet<String>) -> Result<(), String> {
-    let no = |b: &Binder| {
-        if utup_type(&b.ty) {
-            Err(format!("`{}` binds an unboxed tuple", b.id.name))
-        } else {
-            Ok(())
+/// A binder of an unboxed tuple: never allowed (a tuple is not a value).
+fn no_tuple(b: &Binder) -> Result<(), String> {
+    if utup_type(&b.ty) {
+        Err(format!("`{}` binds an unboxed tuple", b.id.name))
+    } else {
+        Ok(())
+    }
+}
+
+/// The scrutinee `s` of a case with binder `cb` and alternatives `alts`.
+/// When the case takes an unboxed tuple apart, `s` builds one (see
+/// [`tuple`]) and the binder is not used.
+fn scrutinee(s: &Expr, cb: &Binder, alts: &[Alt], fs: &HashSet<String>) -> Result<(), String> {
+    let takes_apart = alts
+        .iter()
+        .any(|a| matches!(&a.con, AltCon::Con(c, _) if is_utup(c)));
+    if !(takes_apart || utup_type(&cb.ty)) {
+        return place(s, false, fs);
+    }
+    tuple(s, fs)?;
+    let mut used = false;
+    for a in alts {
+        walk(&a.rhs, &mut |x| {
+            used |= matches!(x, Expr::Var(v) if v.id == cb.id.id);
+        });
+    }
+    if used {
+        return Err("the binder of an unboxed tuple is used".into());
+    }
+    Ok(())
+}
+
+/// An unboxed tuple that a case takes apart, after bindings (strictify
+/// evaluates arguments first): a saturated call of a function returning
+/// one, or branches whose returns are such tuples (a join, FEAT-1009):
+/// the tuple itself, such a call, a panic, or more branches.
+fn tuple(e: &Expr, fs: &HashSet<String>) -> Result<(), String> {
+    let mut e = e;
+    while let Expr::Let(Bind::NonRec(b, r), body) | Expr::LetStrict(b, r, body) = e {
+        no_tuple(b)?;
+        place(r, false, fs)?;
+        e = body;
+    }
+    match e {
+        Expr::Con(c, _, args) if is_utup(c) => args.iter().try_for_each(|a| place(a, false, fs)),
+        Expr::Panic(..) => Ok(()),
+        Expr::Case(s, cb, _, alts) => {
+            scrutinee(s, cb, alts, fs)?;
+            alts.iter().try_for_each(|a| {
+                if let AltCon::Con(_, bs) = &a.con {
+                    bs.iter().try_for_each(no_tuple)?;
+                }
+                tuple(&a.rhs, fs)
+            })
         }
-    };
+        _ if call_head(e).is_some_and(|g| fs.contains(g)) => {
+            let (_, args) = e.collect_args();
+            args.iter().try_for_each(|a| place(a, false, fs))
+        }
+        _ => Err("an unboxed tuple taken apart from something else than a call or branches".into()),
+    }
+}
+
+fn place(e: &Expr, tail: bool, fs: &HashSet<String>) -> Result<(), String> {
+    let no = no_tuple;
     match e {
         Expr::Con(c, _, args) => {
             if is_utup(c) && !tail {
@@ -150,37 +209,7 @@ fn place(e: &Expr, tail: bool, fs: &HashSet<String>) -> Result<(), String> {
             args.iter().try_for_each(|a| place(a, false, fs))
         }
         Expr::Case(s, cb, _, alts) => {
-            let takes_apart = alts
-                .iter()
-                .any(|a| matches!(&a.con, AltCon::Con(c, _) if is_utup(c)));
-            if takes_apart || utup_type(&cb.ty) {
-                // The call, possibly after bindings (strictify evaluates
-                // arguments first).
-                let mut s = &**s;
-                while let Expr::Let(Bind::NonRec(b, r), body) | Expr::LetStrict(b, r, body) = s {
-                    no(b)?;
-                    place(r, false, fs)?;
-                    s = body;
-                }
-                if !call_head(s).is_some_and(|g| fs.contains(g)) {
-                    return Err(
-                        "an unboxed tuple taken apart from something else than a call".into(),
-                    );
-                }
-                let (_, args) = s.collect_args();
-                args.iter().try_for_each(|a| place(a, false, fs))?;
-                let mut used = false;
-                for a in alts {
-                    walk(&a.rhs, &mut |x| {
-                        used |= matches!(x, Expr::Var(v) if v.id == cb.id.id);
-                    });
-                }
-                if used {
-                    return Err("the binder of an unboxed tuple is used".into());
-                }
-            } else {
-                place(s, false, fs)?;
-            }
+            scrutinee(s, cb, alts, fs)?;
             alts.iter().try_for_each(|a| {
                 if let AltCon::Con(_, bs) = &a.con {
                     bs.iter().try_for_each(no)?;

@@ -1,0 +1,32 @@
+-- max-allocs: 10
+-- A value of a product type that the branches of an `if` build, one of
+-- them through a call, and a `case` takes apart right away passes its
+-- fields to a join point (FEAT-1009): the loop allocates no span, though
+-- its continuation is too long to copy into each branch.
+
+data Span = MkSpan Int Int
+
+-- [lo, hi) widened by doubling `hi` until it holds `x` (a recursive call
+-- whose result is returned unboxed).
+widen : Int -> Int -> Int -> Span
+widen lo hi x = if x < hi then MkSpan lo hi else widen lo (hi * 2) x
+
+go : Int -> Int -> Int -> Int -> Int
+go i n lo acc =
+  if i >= n then acc
+  else
+    let x = i * 7 % 1000 in
+    case (if x < 64 then MkSpan lo 64 else widen lo 64 x) of
+      MkSpan a b =>
+        let c = (a + b) * 3 + x in
+        let d = c * c % 1009 + b in
+        let e = d * 31 % 997 + a in
+        let f = e * 17 % 991 + c in
+        let g = f * 13 % 983 + d in
+        let h = g * 11 % 977 + e in
+        let k = h * 7 % 971 + f in
+        let m = k * 5 % 967 + g in
+        go (i + 1) n lo (acc + m % 1000 + b)
+
+main : IO ()
+main = printInt (go 0 100000 0 0)
