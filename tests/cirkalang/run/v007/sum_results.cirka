@@ -1,0 +1,56 @@
+-- max-allocs: 20
+-- Functions returning a constructor of a sum type whose fields are
+-- unboxed values return the index of the constructor and the values
+-- (FEAT-1008): where the caller takes the result apart, nothing is
+-- allocated. Each loop below calls such a function 1000 times; with a
+-- box per call (`Just` and `I#`) it would allocate thousands of objects.
+import Data.String as S
+import Data.String (toStr)
+
+-- The first i in [lo, hi) with i * i % 1000 == k (a loop ending in
+-- `Just i` or `Nothing`).
+firstSquare : Int -> Int -> Int -> Maybe Int
+firstSquare lo hi k =
+  if lo >= hi then Nothing
+  else if lo * lo % 1000 == k then Just lo
+  else firstSquare (lo + 1) hi k
+
+-- For k in [k, 1000): how many have such an i (times 1000000) plus the
+-- sum of the i.
+squares : Int -> Int -> Int -> Int
+squares k n acc =
+  if k >= 1000 then n * 1000000 + acc
+  else case firstSquare 0 2000 k of
+    Nothing => squares (k + 1) n acc
+    Just i => squares (k + 1) (n + 1) (acc + i)
+
+-- Parses `s` `n` times (`S.toInt` ends in a loop over the digits).
+parseAll : String -> Int -> Int -> Int
+parseAll s n acc =
+  if n <= 0 then acc
+  else parseAll s (n - 1) (acc + fromMaybe 0 (S.toInt (toStr s)))
+
+-- A sum of its own, with fields of two types.
+data Hit = Miss | At Int Float
+
+-- The first i in [i, n) whose square root is above `t`.
+above : Int -> Int -> Float -> Hit
+above i n t =
+  if i >= n then Miss
+  else if sqrt (toFloat i) > t then At i (sqrt (toFloat i))
+  else above (i + 1) n t
+
+hits : Int -> Int -> Float -> Float
+hits k n acc =
+  if k >= n then acc
+  else case above 0 n (toFloat k / 10.0) of
+    Miss => hits (k + 1) n acc
+    At i r => hits (k + 1) n (acc + toFloat i + r)
+
+main : IO ()
+main = do
+  printInt (squares 0 0 0)
+  printInt (parseAll (show 4321) 1000 0)
+  printInt (parseAll (show (0 - 17)) 1000 0)
+  printInt (parseAll "12x" 1000 5)
+  print (hits 0 400 0.0)

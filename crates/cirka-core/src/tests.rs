@@ -1824,6 +1824,139 @@ fn opt_returns_products_as_unboxed_tuples() {
     assert!(!m.contains("con P") && !m.contains("con I#"), "{m}");
 }
 
+// ---- FEAT-1008: constructed sum results ----
+
+/// `go` searches [i, n) for an `i` with `i * i == k`: `Nothing` or
+/// `Just (I# i)` from a loop. `RET` is what it returns when found.
+const SUM_LOOP: &str = "(data Maybe (a) (Nothing) (Just a))
+ (extern arg () Int#)
+ (def go (-> Int# Int# Int# (Maybe Int))
+   (lam ((i Int#) (n Int#) (k Int#))
+     (case (prim ge i n) (c Int#) (Maybe Int)
+       (0 (case (prim eq (prim mul i i) k) (d Int#) (Maybe Int)
+            (0 (go (prim add i 1) n k))
+            (_ RET)))
+       (_ (con Nothing (Int))))))
+ (def main Int#
+   (case (go 0 (extern arg) (extern arg)) (r (Maybe Int)) Int#
+     ((Nothing) 7)
+     ((Just x) (case x (s Int) Int# ((I# u) u)))))";
+
+#[test]
+fn opt_returns_sums_as_unboxed_tuples() {
+    // The worker returns the index of the constructor and the `Int#`, and
+    // `main` takes them apart without a `Just` or an `I#`.
+    let src = format!(
+        "{PRELUDE}{}",
+        SUM_LOOP.replace("RET", "(con Just (Int) (con I# () i))")
+    );
+    let mut p = parse_program(FileId(0), &src).unwrap();
+    assert!(lint::lint_program(&p).is_empty());
+    let st = opt::optimize_with_stats(&mut p).unwrap();
+    let all = print_program(&p);
+    assert!(lint::lint_program(&p).is_empty(), "{all}");
+    assert!(st.product_results >= 1, "{st:?}\n{all}");
+    let w = p
+        .binds
+        .iter()
+        .find(|b| b.name.starts_with("go") && b.name.ends_with("$c"));
+    let w = w.unwrap_or_else(|| panic!("{all}"));
+    assert_eq!(
+        w.ty.to_string().matches("UTup2 Int# Int#").count(),
+        1,
+        "{all}"
+    );
+    let m = print::print_expr(&p.bind("main").unwrap().expr);
+    assert!(!m.contains("con Just") && !m.contains("con I#"), "{m}");
+}
+
+#[test]
+fn opt_flattens_products_inside_sum_results() {
+    // `Just` of a pair of `Int`s: the worker returns the index and both
+    // `Int#`s.
+    let src = format!(
+        "{PRELUDE}{}",
+        SUM_LOOP
+            .replace("(Maybe Int)", "(Maybe (Pair Int Int))")
+            .replace("(con Nothing (Int))", "(con Nothing ((Pair Int Int)))")
+            .replace(
+                "RET",
+                "(con Just ((Pair Int Int)) (con P (Int Int) (con I# () i) (con I# () n)))"
+            )
+            .replace(
+                "((Just x) (case x (s Int) Int# ((I# u) u)))",
+                "((Just x) 8)"
+            )
+    );
+    let mut p = parse_program(FileId(0), &src).unwrap();
+    assert!(lint::lint_program(&p).is_empty(), "{}", print_program(&p));
+    opt::optimize(&mut p).unwrap();
+    let all = print_program(&p);
+    assert!(lint::lint_program(&p).is_empty(), "{all}");
+    let w = p
+        .binds
+        .iter()
+        .find(|b| b.name.starts_with("go") && b.name.ends_with("$c"));
+    let w = w.unwrap_or_else(|| panic!("{all}"));
+    assert!(w.ty.to_string().contains("UTup3 Int# Int# Int#"), "{all}");
+}
+
+#[test]
+fn opt_keeps_sums_with_boxed_fields() {
+    // `Just` of a `Maybe` (a sum is not flattened inside a field): a boxed
+    // leaf, no worker.
+    let src = format!(
+        "{PRELUDE}{}",
+        SUM_LOOP
+            .replace("(Maybe Int)", "(Maybe (Maybe Int))")
+            .replace("(con Nothing (Int))", "(con Nothing ((Maybe Int)))")
+            .replace(
+                "RET",
+                "(con Just ((Maybe Int)) (con Just (Int) (con I# () i)))"
+            )
+            .replace(
+                "((Just x) (case x (s Int) Int# ((I# u) u)))",
+                "((Just x) 8)"
+            )
+    );
+    let mut p = parse_program(FileId(0), &src).unwrap();
+    assert!(lint::lint_program(&p).is_empty(), "{}", print_program(&p));
+    opt::optimize(&mut p).unwrap();
+    let all = print_program(&p);
+    assert!(lint::lint_program(&p).is_empty(), "{all}");
+    assert!(
+        !p.binds
+            .iter()
+            .any(|b| b.name.starts_with("go") && b.name.ends_with("$c")),
+        "{all}"
+    );
+}
+
+#[test]
+fn opt_sum_results_need_cheap_leaves() {
+    // The `Int#` of the `Just` comes from a lazily bound call: returning it
+    // flattened would make the call when the function returns, which the
+    // lazy field does not. No worker.
+    let src = format!(
+        "{PRELUDE}(extern slow (Int#) Int#){}",
+        SUM_LOOP.replace(
+            "RET",
+            "(let ((v Int (con I# () (extern slow i)))) (con Just (Int) v))"
+        )
+    );
+    let mut p = parse_program(FileId(0), &src).unwrap();
+    assert!(lint::lint_program(&p).is_empty(), "{}", print_program(&p));
+    opt::optimize(&mut p).unwrap();
+    let all = print_program(&p);
+    assert!(lint::lint_program(&p).is_empty(), "{all}");
+    assert!(
+        !p.binds
+            .iter()
+            .any(|b| b.name.starts_with("go") && b.name.ends_with("$c")),
+        "{all}"
+    );
+}
+
 #[test]
 fn lint_rejects_misplaced_unboxed_tuples() {
     // A worker's unboxed tuple bound to a variable instead of taken apart.

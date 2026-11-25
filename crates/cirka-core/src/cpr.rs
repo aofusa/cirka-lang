@@ -18,6 +18,25 @@
 //! `I#` above). The shapes of mutually recursive functions are a greatest
 //! fixed point: a tail call of another such function contributes its shape.
 //!
+//! A function whose every return builds a constructor of one *sum* type
+//! (FEAT-1008), with fields that flatten to unboxed values only, returns
+//! the index of the constructor and the leaves of every constructor it
+//! builds, zeros for those of the others:
+//!
+//! ```text
+//! f    = λx̄. … Nothing … (Just (I# n)) … f ȳ …
+//! ==>
+//! f$c  = λx̄. … (UTup2 0 0) … (UTup2 1 n) … f$c ȳ …
+//! f    = λx̄. case f$c x̄ of UTup2 t a -> case t of 0 -> Nothing; _ -> Just (I# a)
+//! ```
+//!
+//! At a call site that takes the result apart, case-of-case meets the
+//! constructors of the inlined wrapper: `toInt` (a loop ending in `Just`
+//! or `Nothing`) allocates neither the `Just` nor the `I#`. The leaves of
+//! a sum must be cheap in every return (atoms or primitive operations on
+//! them): returning them evaluates nothing a lazy field would have left
+//! unevaluated.
+//!
 //! `UTup<n>` has no runtime representation. Core Lint ([`check_placement`])
 //! only allows it to be built in the return position of a top-level
 //! function body and taken apart by a `case` on a saturated call; MIR
@@ -228,12 +247,22 @@ enum Shape {
         ty: Type,
         fields: Vec<Shape>,
     },
+    /// One of the constructors of the sum type `ty` (type arguments `ts`),
+    /// in declaration order, with the shapes of its fields, or `None` for
+    /// one that no return builds (FEAT-1008). Only at the top. Its results
+    /// are the index of the constructor (`Int#`), then the leaves of each
+    /// constructor built, in order.
+    Sum {
+        ts: Vec<Type>,
+        ty: Type,
+        alts: Vec<(String, Option<Vec<Shape>>)>,
+    },
 }
 
 impl Shape {
     fn ty(&self) -> &Type {
         match self {
-            Shape::Leaf(t) | Shape::Con { ty: t, .. } => t,
+            Shape::Leaf(t) | Shape::Con { ty: t, .. } | Shape::Sum { ty: t, .. } => t,
         }
     }
 
@@ -241,6 +270,12 @@ impl Shape {
         match self {
             Shape::Leaf(t) => out.push(t.clone()),
             Shape::Con { fields, .. } => fields.iter().for_each(|f| f.leaves(out)),
+            Shape::Sum { alts, .. } => {
+                out.push(Type::int());
+                for f in alts.iter().filter_map(|(_, fs)| fs.as_ref()).flatten() {
+                    f.leaves(out);
+                }
+            }
         }
     }
 
@@ -254,7 +289,18 @@ impl Shape {
                 Shape::Con {
                     k: k2, fields: f2, ..
                 },
-            ) => k1 == k2 && f1.len() == f2.len() && f1.iter().zip(f2).all(|(a, b)| a.same(b)),
+            ) => k1 == k2 && same_fields(f1, f2),
+            (Shape::Sum { alts: a1, .. }, Shape::Sum { alts: a2, .. }) => {
+                a1.len() == a2.len()
+                    && a1.iter().zip(a2).all(|((k1, f1), (k2, f2))| {
+                        k1 == k2
+                            && match (f1, f2) {
+                                (None, None) => true,
+                                (Some(x), Some(y)) => same_fields(x, y),
+                                _ => false,
+                            }
+                    })
+            }
             _ => false,
         }
     }
@@ -273,8 +319,60 @@ impl Shape {
                 ty,
                 fields: fields.into_iter().zip(f2).map(|(a, b)| a.meet(b)).collect(),
             },
+            // The constructors either builds, with the fields met where
+            // both build one.
+            (Shape::Sum { ts, ty, alts }, Shape::Sum { alts: a2, .. })
+                if alts.len() == a2.len()
+                    && alts.iter().zip(a2).all(|((k1, f1), (k2, f2))| {
+                        k1 == k2
+                            && match (f1, f2) {
+                                (Some(x), Some(y)) => x.len() == y.len(),
+                                _ => true,
+                            }
+                    }) =>
+            {
+                Shape::Sum {
+                    ts,
+                    ty,
+                    alts: alts
+                        .into_iter()
+                        .zip(a2)
+                        .map(|((k, f1), (_, f2))| {
+                            let f = match (f1, f2) {
+                                (None, f2) => f2.clone(),
+                                (f1, None) => f1,
+                                (Some(x), Some(y)) => {
+                                    Some(x.into_iter().zip(y).map(|(a, b)| a.meet(b)).collect())
+                                }
+                            };
+                            (k, f)
+                        })
+                        .collect(),
+                }
+            }
             (s, _) => Shape::Leaf(s.ty().clone()),
         }
+    }
+}
+
+fn same_fields(f1: &[Shape], f2: &[Shape]) -> bool {
+    f1.len() == f2.len() && f1.iter().zip(f2).all(|(a, b)| a.same(b))
+}
+
+/// The number of leaves of the fields `fs`.
+fn field_leaves(fs: &[Shape]) -> Vec<Type> {
+    let mut out = Vec::new();
+    fs.iter().for_each(|f| f.leaves(&mut out));
+    out
+}
+
+/// A value of the unboxed type `t`: the leaves of the constructors a
+/// return of a sum does not build.
+fn zero(t: &Type) -> Expr {
+    match t {
+        Type::Con(c, _) if c == UNIT => Expr::Lit(Lit::Unit),
+        Type::Con(c, _) if c == DOUBLE => Expr::Lit(Lit::Double(0.0)),
+        _ => Expr::Lit(Lit::Int(0)),
     }
 }
 
@@ -303,6 +401,39 @@ fn product(p: &Program, t: &Type) -> Option<(String, Vec<Type>, Vec<Type>)> {
     ))
 }
 
+/// The constructors (two or more) of the sum type `t`, its type arguments
+/// and the field types of each constructor.
+type SumType = (Vec<Type>, Vec<(String, Vec<Type>)>);
+
+fn sum_type(p: &Program, t: &Type) -> Option<SumType> {
+    let Type::Con(d, args) = t else { return None };
+    if is_utup(d) {
+        return None;
+    }
+    let d = p.data(d)?;
+    if d.newtype || d.linear || d.ctors.len() < 2 || d.params.len() != args.len() {
+        return None;
+    }
+    let s: Vec<(TyVar, Type)> = d
+        .params
+        .iter()
+        .map(|x| x.0.clone())
+        .zip(args.iter().cloned())
+        .collect();
+    Some((
+        args.clone(),
+        d.ctors
+            .iter()
+            .map(|k| {
+                (
+                    k.name.clone(),
+                    k.fields.iter().map(|f| f.subst_all(&s)).collect(),
+                )
+            })
+            .collect(),
+    ))
+}
+
 /// Variables bound (with multiplicity ω) to a constructor application.
 type Env = HashMap<u32, Expr>;
 
@@ -313,8 +444,65 @@ fn resolve<'a>(e: &'a Expr, env: &'a Env) -> &'a Expr {
     }
 }
 
+/// Evaluating `e` terminates without effects and costs little: an atom,
+/// or a primitive operation on such.
+fn cheap(e: &Expr) -> bool {
+    match e {
+        Expr::Var(_) | Expr::Lit(_) => true,
+        Expr::Prim(op, _, a) => !op.effectful() && a.iter().all(cheap),
+        _ => false,
+    }
+}
+
+/// Whether the leaves of `e` (of shape `s`) are [`cheap`]: returning them
+/// evaluates nothing that a lazy field would have left unevaluated.
+fn cheap_leaves(s: &Shape, e: &Expr, env: &Env) -> bool {
+    match s {
+        Shape::Leaf(_) => cheap(e),
+        Shape::Con { fields, .. } => match resolve(e, env) {
+            Expr::Con(_, _, args) => fields
+                .iter()
+                .zip(args)
+                .all(|(f, a)| cheap_leaves(f, a, env)),
+            _ => false,
+        },
+        Shape::Sum { .. } => false,
+    }
+}
+
 /// The shape of the value `e` of type `t`.
 fn shape_of(p: &Program, e: &Expr, env: &Env, t: &Type, depth: usize) -> Shape {
+    // A constructor of a sum type (FEAT-1008), at the top only, with
+    // cheap leaves.
+    if depth == 0
+        && let Some((ts, ctors)) = sum_type(p, t)
+        && let Expr::Con(c, _, args) = resolve(e, env)
+        && let Some(i) = ctors.iter().position(|(k, _)| k == c)
+        && args.len() == ctors[i].1.len()
+    {
+        let fields: Vec<Shape> = args
+            .iter()
+            .zip(&ctors[i].1)
+            .map(|(a, ft)| shape_of(p, a, env, ft, depth + 1))
+            .collect();
+        if !fields
+            .iter()
+            .zip(args)
+            .all(|(f, a)| cheap_leaves(f, a, env))
+        {
+            return Shape::Leaf(t.clone());
+        }
+        let mut fields = Some(fields);
+        return Shape::Sum {
+            ts,
+            ty: t.clone(),
+            alts: ctors
+                .into_iter()
+                .enumerate()
+                .map(|(j, (k, _))| (k, if j == i { fields.take() } else { None }))
+                .collect(),
+        };
+    }
     if depth < MAX_DEPTH
         && let Some((k, ts, fts)) = product(p, t)
         && let Expr::Con(c, _, args) = resolve(e, env)
@@ -423,16 +611,22 @@ fn returns(
 /// Whether a shape is worth a worker: a constructor with a few results,
 /// and a single result only when it is unboxed (a lazy field may be a
 /// thunk, which a function must not return).
+///
+/// A sum (FEAT-1008): unboxed leaves only (those of the constructors a
+/// return does not build are zeros), at least one besides the index.
 fn acceptable(s: &Shape) -> bool {
-    if !matches!(s, Shape::Con { .. }) {
-        return false;
-    }
     let mut ls = Vec::new();
     s.leaves(&mut ls);
-    match ls.len() {
-        0 => false,
-        1 => ls[0].is_unboxed(),
-        n => n <= MAX_LEAVES,
+    match s {
+        Shape::Leaf(_) => false,
+        Shape::Con { .. } => match ls.len() {
+            0 => false,
+            1 => ls[0].is_unboxed(),
+            n => n <= MAX_LEAVES,
+        },
+        Shape::Sum { .. } => {
+            ls.len() > 1 && ls.len() <= MAX_LEAVES && ls.iter().all(Type::is_unboxed)
+        }
     }
 }
 
@@ -473,7 +667,7 @@ pub fn product_results(p: &mut Program, next: &mut u32) -> usize {
                 }
             }
         }
-        if !ok || product(p, &res).is_none() {
+        if !ok || (product(p, &res).is_none() && sum_type(p, &res).is_none()) {
             continue;
         }
         cands.insert(
@@ -608,8 +802,13 @@ pub fn product_results(p: &mut Program, next: &mut u32) -> usize {
                 b
             })
             .collect();
-        let mut it = lbs.iter().map(|b| Expr::var(&b.id));
-        let rebuilt = build_bound(p, &c.tvs, shape, &mut it, next);
+        let rebuilt = match shape {
+            Shape::Sum { .. } => rebuild_sum(p, &c.tvs, shape, &lbs, &c.res, next),
+            _ => {
+                let mut it = lbs.iter().map(|b| Expr::var(&b.id));
+                build_bound(p, &c.tvs, shape, &mut it, next)
+            }
+        };
         let wrap = if lbs.len() == 1 {
             Expr::LetStrict(lbs[0].clone(), Box::new(call), Box::new(rebuilt))
         } else {
@@ -716,7 +915,54 @@ fn atoms(
             binds.push((b.clone(), e));
             Expr::var(&b.id)
         }
+        Shape::Sum { .. } => unreachable!("a sum is rebuilt by `rebuild_sum`"),
     }
+}
+
+/// The value of the sum shape `s` (of type `res`) rebuilt from the binders
+/// of its leaves: a case on the index of the constructor (the first leaf)
+/// that builds the constructor from its own leaves.
+fn rebuild_sum(
+    p: &Program,
+    tvs: &[(TyVar, Kind)],
+    s: &Shape,
+    lbs: &[Binder],
+    res: &Type,
+    next: &mut u32,
+) -> Expr {
+    let Shape::Sum { ts, alts, .. } = s else {
+        unreachable!("a sum shape")
+    };
+    let mut rest = lbs[1..].iter();
+    let mut built = Vec::new();
+    for (i, (k, fs)) in alts.iter().enumerate() {
+        let Some(fs) = fs else { continue };
+        let n = field_leaves(fs).len();
+        let mut mine = rest.by_ref().take(n).map(|b| Expr::var(&b.id));
+        let con = Shape::Con {
+            k: k.clone(),
+            ts: ts.clone(),
+            ty: res.clone(),
+            fields: fs.clone(),
+        };
+        built.push((i, build_bound(p, tvs, &con, &mut mine, next)));
+    }
+    let last = built.len() - 1;
+    let alts = built
+        .into_iter()
+        .enumerate()
+        .map(|(n, (i, rhs))| Alt {
+            con: if n == last {
+                AltCon::Default
+            } else {
+                AltCon::Int(i as i64)
+            },
+            rhs,
+        })
+        .collect();
+    let tb = Binder::new(Id::new("t", *next), Mult::Many, Type::int());
+    *next += 1;
+    Expr::Case(Box::new(Expr::var(&lbs[0].id)), tb, res.clone(), alts)
 }
 
 /// The value of shape `s` rebuilt from its leaves.
@@ -728,6 +974,7 @@ fn build(s: &Shape, leaves: &mut impl Iterator<Item = Expr>) -> Expr {
             ts.clone(),
             fields.iter().map(|f| build(f, leaves)).collect(),
         ),
+        Shape::Sum { .. } => unreachable!("a sum is only at the top"),
     }
 }
 
@@ -735,6 +982,31 @@ fn build(s: &Shape, leaves: &mut impl Iterator<Item = Expr>) -> Expr {
 fn leaves_of(s: &Shape, e: Expr, env: &Env, out: &mut Vec<Expr>) {
     match s {
         Shape::Leaf(_) => out.push(e),
+        Shape::Sum { alts, .. } => {
+            let e = match e {
+                Expr::Var(v) if env.contains_key(&v.id) => env[&v.id].clone(),
+                e => e,
+            };
+            let Expr::Con(c, _, args) = e else {
+                unreachable!("shape analysis found a constructor here")
+            };
+            let i = alts
+                .iter()
+                .position(|(k, _)| *k == c)
+                .expect("a constructor of the shape");
+            out.push(Expr::Lit(Lit::Int(i as i64)));
+            let mut args = Some(args);
+            for (j, (_, fs)) in alts.iter().enumerate() {
+                let Some(fs) = fs else { continue };
+                if j == i {
+                    for (f, a) in fs.iter().zip(args.take().unwrap_or_default()) {
+                        leaves_of(f, a, env, out);
+                    }
+                } else {
+                    out.extend(field_leaves(fs).iter().map(zero));
+                }
+            }
+        }
         Shape::Con { fields, .. } => {
             let e = match e {
                 Expr::Var(v) if env.contains_key(&v.id) => env[&v.id].clone(),
@@ -762,6 +1034,58 @@ struct Tr<'a> {
 }
 
 impl Tr<'_> {
+    /// The results of the call of another sum worker (shape `gs`, the
+    /// constructors `ga`) as ours (`ma`): the same index, its leaves for
+    /// the constructors it builds (theirs are the same shapes, `acceptable`
+    /// leaves no boxed leaf a meet could have made), zeros for the others.
+    fn resum(
+        &self,
+        call: Expr,
+        gs: &Shape,
+        ga: &[(String, Option<Vec<Shape>>)],
+        ma: &[(String, Option<Vec<Shape>>)],
+        next: &mut u32,
+    ) -> Expr {
+        let mut gl = Vec::new();
+        gs.leaves(&mut gl);
+        let gbs: Vec<Binder> = gl
+            .iter()
+            .map(|t| {
+                let b = Binder::new(Id::new("r", *next), Mult::Many, t.clone());
+                *next += 1;
+                b
+            })
+            .collect();
+        let mut out = vec![Expr::var(&gbs[0].id)];
+        let mut gi = 1;
+        for ((_, mf), (_, gf)) in ma.iter().zip(ga) {
+            let gn = gf.as_deref().map_or(0, |fs| field_leaves(fs).len());
+            if let Some(mf) = mf {
+                let mts = field_leaves(mf);
+                if gf.is_some() {
+                    debug_assert_eq!(gn, mts.len(), "the same shape where both build");
+                    out.extend(gbs[gi..gi + gn].iter().map(|b| Expr::var(&b.id)));
+                } else {
+                    out.extend(mts.iter().map(zero));
+                }
+            }
+            gi += gn;
+        }
+        let rhs = self.ret(out);
+        let gt = Type::Con(utup_name(gl.len()), gl);
+        let cb = Binder::new(Id::new("u", *next), Mult::Many, gt);
+        *next += 1;
+        Expr::Case(
+            Box::new(call),
+            cb,
+            self.wres.clone(),
+            vec![Alt {
+                con: AltCon::Con(utup_name(gbs.len()), gbs),
+                rhs,
+            }],
+        )
+    }
+
     fn ret(&self, leaves: Vec<Expr>) -> Expr {
         if leaves.len() == 1 {
             return leaves.into_iter().next().unwrap();
@@ -813,6 +1137,10 @@ impl Tr<'_> {
                 let call = retarget(e, &self.workers[&g]);
                 if gs.same(self.shape) {
                     return call;
+                }
+                if let (Shape::Sum { alts: ga, .. }, Shape::Sum { alts: ma, .. }) = (gs, self.shape)
+                {
+                    return self.resum(call, gs, ga, ma, next);
                 }
                 // Another shape: take its results apart, rebuild the value
                 // and return the leaves of ours.
