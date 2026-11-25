@@ -1,4 +1,8 @@
 -- skip-backend: interp
+-- memcheck: skip
+-- (Not under valgrind: it runs glibc's `posix_spawn` with a plain fork,
+-- so a program that is missing exits with 127 instead of failing to
+-- start.)
 -- A command line tool on the OS layer (the sample of spec-v0.0.5.md §3.6).
 --
 --   os_tool tree DIR...      the files under each DIR, with kinds and sizes

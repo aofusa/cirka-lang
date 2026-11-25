@@ -275,6 +275,20 @@ fn shaders(c: &Case, dir: &std::path::Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Whether a native run goes through valgrind: under scripts/memcheck.sh
+/// (BUG-0038), except with ThreadSanitizer, which instruments the program
+/// itself, and for a test that says `memcheck: skip` (with its reason on
+/// the following comment lines).
+fn memcheck_run(
+    valgrind: bool,
+    rt: cirka_driver::native::RuntimeKind,
+    header: &cirka_testkit::Header,
+) -> bool {
+    valgrind
+        && rt != cirka_driver::native::RuntimeKind::Tsan
+        && header.get("memcheck") != Some("skip")
+}
+
 /// [`check_native_with`], linking native programs with `link_args` (the
 /// libraries of [`c_helper`]).
 #[allow(clippy::too_many_arguments)]
@@ -320,9 +334,7 @@ pub fn check_native_linked(
             cirka_testkit::save_failure(suite, &c.name, &[("out.ll", &ir)]);
             return Outcome::Fail(format!("opt -passes=verify failed:\n{e}"));
         }
-        // Under scripts/memcheck.sh, through valgrind (BUG-0038); not with
-        // ThreadSanitizer, which instruments the program itself.
-        let memcheck = cirka_testkit::under_valgrind() && rt != RuntimeKind::Tsan;
+        let memcheck = memcheck_run(cirka_testkit::under_valgrind(), rt, &c.header);
         let mut cmd = if memcheck {
             cirka_testkit::valgrind_command(&exe)
         } else {
@@ -485,5 +497,25 @@ pub fn check_same_cost(
             "costs more than {file} ({}):\n  this: {mine:?}\n  hand: {other:?}",
             worse.join(", ")
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::memcheck_run;
+    use cirka_driver::native::RuntimeKind;
+    use cirka_testkit::Header;
+
+    /// The runs that go through valgrind (BUG-0038).
+    #[test]
+    fn memcheck_skips_tsan_and_opted_out_tests() {
+        let plain = Header::parse("-- tsan: 1\n");
+        let skip = Header::parse("-- memcheck: skip\n-- (Not under valgrind: why.)\n");
+        assert!(memcheck_run(true, RuntimeKind::Debug, &plain));
+        assert!(memcheck_run(true, RuntimeKind::Release, &plain));
+        assert!(!memcheck_run(true, RuntimeKind::Tsan, &plain));
+        assert!(!memcheck_run(true, RuntimeKind::Debug, &skip));
+        assert!(!memcheck_run(true, RuntimeKind::Release, &skip));
+        assert!(!memcheck_run(false, RuntimeKind::Debug, &plain));
     }
 }

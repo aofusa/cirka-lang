@@ -49,6 +49,8 @@
   -- max-forced: 1001000     (ネイティブ実行で評価されたサンクの数の上限。CIRKA_STATS の forced)
   -- max-array-copies: 0     (in-place 更新で共有配列をコピーした回数の上限。CIRKA_STATS の array_copies)
   -- tsan: 1                 (ネイティブ実行を ThreadSanitizer 版でも行う。既定のアロケータと CIRKA_ALLOC=system の 2 通り)
+  -- memcheck: skip          (scripts/memcheck.sh でも valgrind を通さない。理由を続く注釈に書く: 時間に依存する順序、
+                             valgrind が posix_spawn を通常の fork で動かすことなど。BUG-0038)
   -- same-cost-as: x_hand.hs (ゼロコストの組。下記)
   ```
 - **ゼロコストの組** (`-- same-cost-as: FILE [+N]`、FEAT-0061。aCHC と CirkaLang の run テスト): 抽象 (newtype・型クラス・高階関数・借用) を使うプログラムと、

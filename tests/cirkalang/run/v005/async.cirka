@@ -1,5 +1,9 @@
 -- skip-backend: interp
 -- tsan: 1
+-- memcheck: skip
+-- (Not under valgrind: a timer's deadline counts from its call, and there
+-- the calls take longer than the 10 ms between the deadlines, which
+-- changes their order.)
 -- The event loop (spec-v0.0.5.md §2.2): continuations after timers run in
 -- the order of their deadlines, `defer` lets ready callbacks run first, a
 -- cancelled timer does not run, blocking work runs on the pool and comes
