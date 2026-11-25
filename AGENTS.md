@@ -147,7 +147,7 @@ Docker 内には GPU も表示装置もないため、**GPU は Vulkan のコン
 ### チケット
 
 - 機能: `docs/tasks/features/FEAT-XXXX-<kebab-title>.md`、バグ: `docs/tasks/bugs/BUG-XXXX-<kebab-title>.md`
-- 番号はトラックごとの番号帯を使う: 共通基盤 0001–0099、aCHC 0100–0199、CirkaLang 0200–0299 (版ごとに 10 番ずつ)、第二段階 0300–。詳細は `11-roadmap.md`。
+- 番号はトラックごとの番号帯を使う: 共通基盤 0001–0099 (使い切ったので続きは 1000–1999)、aCHC 0100–0199、CirkaLang 0200–0299 (版ごとに 10 番ずつ)、第二段階 0300–0999。詳細は `11-roadmap.md`。
 - 作業が競合したときの優先順位は `11-roadmap.md` §6 に従う (共通基盤 > GC なし・所有権 (CirkaLang v0.0.1–v0.0.3、aCHC H1–H4) > CirkaLang での依存型・検証・効果の検証 (v0.0.4–v0.0.7) > aCHC への取り込み (H5–H7) > 任意の遠隔 GUI 検証)。
 - aCHC の後期 (H5–H7) は、対応する CirkaLang の版 (H5/H6 は v0.0.4、H7 は v0.0.7) がリリースされるまで着手しない。
 - 雛形は `docs/tasks/features/_TEMPLATE.md` / `docs/tasks/bugs/_TEMPLATE.md`。
