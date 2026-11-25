@@ -6,7 +6,6 @@
 # or simply: docker compose run --rm dev
 FROM ubuntu:24.04
 
-ARG LLVM_VERSION=18
 ARG RUST_TOOLCHAIN=1.99.1
 ARG USERNAME=dev
 ARG USER_UID=1000
@@ -16,19 +15,14 @@ ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
     RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
-    PATH=/usr/local/cargo/bin:/usr/lib/llvm-${LLVM_VERSION}/bin:$PATH
+    PATH=/usr/local/cargo/bin:$PATH
 
-# - build-essential / clang / lld : link generated objects with libcirka_rt
-# - llvm-*-dev / libclang-*-dev   : LLVM tools, and libclang for `achc bindgen`
-# - libclang-rt-*-dev             : sanitizer runtimes (ThreadSanitizer for the
-#                                   concurrency tests, FEAT-0045)
+# - build-essential               : C toolchain (LLVM comes last, see below)
 # - ghc / libgmp-dev              : reference implementation for differential tests
 # - z3                            : SMT solver for `achc verify` (refinement types)
 # - valgrind / hyperfine / time   : memory-safety checks, benchmarks, peak RSS
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential ca-certificates curl git pkg-config python3 sudo \
-        clang-${LLVM_VERSION} llvm-${LLVM_VERSION} llvm-${LLVM_VERSION}-dev \
-        lld-${LLVM_VERSION} libclang-${LLVM_VERSION}-dev libclang-rt-${LLVM_VERSION}-dev \
         ghc libgmp-dev \
         z3 \
         valgrind hyperfine time \
@@ -76,6 +70,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libopenblas-dev liblapacke-dev \
     && rm -rf /var/lib/apt/lists/*
+
+# LLVM, from apt.llvm.org: the same major version as the LLVM of the pinned
+# Rust toolchain (ADR-110, FEAT-1000; Ubuntu 24.04's own packages stop at an
+# older one). The last layer, so that changing LLVM_VERSION rebuilds only it.
+# - clang / lld             : compile the generated LLVM IR and link it with
+#                             libcirka_rt
+# - llvm-*-dev / libclang-* : LLVM tools, and libclang for `bindgen`
+# - libclang-rt-*-dev       : sanitizer runtimes (ThreadSanitizer for the
+#                             concurrency tests, FEAT-0045)
+ARG LLVM_VERSION=23
+RUN install -d -m 0755 /etc/apt/keyrings \
+    && curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key -o /etc/apt/keyrings/apt.llvm.org.asc \
+    && echo "deb [signed-by=/etc/apt/keyrings/apt.llvm.org.asc] https://apt.llvm.org/noble/ llvm-toolchain-noble-${LLVM_VERSION} main" \
+        > /etc/apt/sources.list.d/apt.llvm.org.list \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        clang-${LLVM_VERSION} llvm-${LLVM_VERSION} llvm-${LLVM_VERSION}-dev \
+        lld-${LLVM_VERSION} libclang-${LLVM_VERSION}-dev libclang-rt-${LLVM_VERSION}-dev \
+    && rm -rf /var/lib/apt/lists/*
+ENV PATH=/usr/lib/llvm-${LLVM_VERSION}/bin:$PATH
 
 USER ${USERNAME}
 WORKDIR /work

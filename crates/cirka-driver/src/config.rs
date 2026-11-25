@@ -77,7 +77,7 @@ mod tests {
     #[test]
     fn reads_values_and_defaults() {
         let env: HashMap<&str, &str> = [
-            ("CIRKA_CLANG", "clang-18"),
+            ("CIRKA_CLANG", "clang-23"),
             ("CIRKA_Z3", ""),
             ("CIRKA_VERIFY_TIMEOUT", "500"),
             ("CIRKA_RUNTIME_DIR", "/rt"),
@@ -85,7 +85,7 @@ mod tests {
         .into_iter()
         .collect();
         let c = Config::from_lookup(|k| env.get(k).map(|v| v.to_string()));
-        assert_eq!(c.clang, "clang-18");
+        assert_eq!(c.clang, "clang-23");
         assert_eq!(c.opt, "opt");
         assert_eq!(c.z3, None);
         assert_eq!(c.verify_timeout_ms, 500);

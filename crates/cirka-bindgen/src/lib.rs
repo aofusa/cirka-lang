@@ -56,7 +56,7 @@ impl Env {
                 .filter(|v| !v.is_empty())
                 .unwrap_or_else(|| d.to_string())
         };
-        let llvm_version = var("CIRKA_LLVM_VERSION", "18");
+        let llvm_version = var("CIRKA_LLVM_VERSION", "23");
         Env {
             libclang: var("CIRKA_LIBCLANG", ""),
             clang: var("CIRKA_CLANG", &format!("clang-{llvm_version}")),

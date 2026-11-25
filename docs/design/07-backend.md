@@ -3,8 +3,9 @@
 ## 1. 方針
 
 - MIR から **LLVM IR をテキスト (`.ll`) で生成** し、`clang` (`$CIRKA_CLANG`) で最適化・コンパイル・リンクする (ADR-009)。
-- 対象 LLVM は 18(Ubuntu 24.04 の apt パッケージ)。生成する IR は LLVM 15 以降の **opaque pointer** 形式のみを使い、
-  バージョン依存の構文を避ける。
+- 対象 LLVM は 23 (apt.llvm.org の Ubuntu 24.04 向けパッケージ)。比較の相手の Rust (rust-toolchain.toml の rustc) が使う LLVM と同じメジャー版にし、
+  Rust の版を上げたら合わせて上げる (ADR-110、FEAT-1000)。版は `CIRKA_LLVM_VERSION` で選び、Docker イメージは LLVM を最後の層で入れる。
+  生成する IR は LLVM 15 以降の **opaque pointer** 形式のみを使い、バージョン依存の構文を避ける (同じ IR を LLVM 18 と 23 がそのまま読む)。
 - ターゲット: `x86_64-unknown-linux-gnu`。
 
 ## 2. 変換規則
@@ -27,7 +28,7 @@
 
 - 属性・メタデータ (FEAT-0058、16-performance.md §3): 生成するすべての関数に `nounwind` (panic=abort の間)。オブジェクトのヘッダ (RC・タグ) と
   フィールドの load/store に別々の `!tbaa` を付ける (生きているオブジェクトの中で重ならない)。`cirka_alloc` の結果は `noalias nonnull`、`cirka_panic` は `cold`。 MIR の `cold fn` (FEAT-0070、一意な配列のループの元の本体) は `cold noinline`。 プログラムは 1 つの LLVM モジュールで、外から呼ばれるのは `cirka_main` だけなので、それ以外の関数はすべて `internal` にする (FEAT-0072。LLVM が呼び出しの定数を伝え、1 か所からの関数を丸ごとインライン化できる)。
-- LLVM 18 の末尾再帰の除去 (TailCallElim) は、自分自身の呼び出しの結果に足す関数を累積引数のループにするとき、別の関数への `musttail` の後の `ret` も書き換えて
+- LLVM の末尾再帰の除去 (TailCallElim。LLVM 18 で確認) は、自分自身の呼び出しの結果に足す関数を累積引数のループにするとき、別の関数への `musttail` の後の `ret` も書き換えて
   モジュールを壊す。そのような関数 (自分自身の非末尾呼び出しと、他の関数への `musttail` を両方含むもの) には `"disable-tail-calls"="true"` を付けて除外する
   (`musttail` は保証されたまま。FEAT-0065: unboxed の結果でこの形が増えた)。
 - 名前マングリング: `_C<モジュール長><モジュール名><名前長><名前>`(Rust v0 風。`achc` / `cirka` の両方で `--demangle` を用意)。

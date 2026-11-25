@@ -111,7 +111,7 @@ Rust のように GC なしでメモリ安全かつ高速で、CUI・サーバ�
 
 ```sh
 cp .env.sample .env            # 初回のみ。必要に応じて CIRKA_UID などを編集
-docker compose build           # イメージ作成 (LLVM 18, GHC, Rust, Z3, valgrind, hyperfine)
+docker compose build           # イメージ作成 (LLVM 23, GHC, Rust, Z3, valgrind, hyperfine)
 docker compose run --rm dev    # コンテナ内シェル
 # コンテナ内で
 cargo build

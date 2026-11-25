@@ -8,7 +8,7 @@
 ## 計測環境
 
 - CPU: Intel Core i5-3320M (2 コア 4 スレッド, 2.6 GHz)、x86_64 Linux、Docker (Ubuntu 24.04)
-- LLVM 18 (clang `-O2`)、rustc (rust-toolchain.toml の版, `-C opt-level=3`)
+- LLVM 23 (clang `-O3`。FEAT-1000 より前の記録は LLVM 18)、rustc (rust-toolchain.toml の版 (1.99.1、LLVM 23), `-C opt-level=3`)
 
 ## M1 ベースライン (FEAT-0016)
 

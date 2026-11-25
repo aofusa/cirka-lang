@@ -16,7 +16,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | 共通基盤 | M1 バックエンド基盤 | 7 / 7 |
 | 共通基盤 | M2 Perceus | 3 / 3 |
 | 共通基盤 | M3 共通 Core と Core→MIR | 4 / 4 |
-| 共通基盤 | SX 共通基盤の拡張 (各トラックの必要に応じて) | 31 / 49 |
+| 共通基盤 | SX 共通基盤の拡張 (各トラックの必要に応じて) | 31 / 50 |
 | aCHC | H1 Haskell 最小フロントエンド | 6 / 6 |
 | aCHC | H2 Haskell 実用化 (スコープ縮小版) | 10 / 10 |
 | aCHC | H3 所有権拡張 (.chs) | 9 / 9 |
@@ -139,6 +139,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0097](features/FEAT-0097-inline-byte-ops.md) | バイト列のコピー・検索・比較をインラインで生成する (文字列リテラルの長さの畳み込みと切り詰めのない書き込み) | done | P1 | 0091, 0095 |
 | [FEAT-0098](features/FEAT-0098-hoist-checks-of-large-loops.md) | 大きなループの本体の境界検査も入口へ移す (解析の上限を命令数 × 解析の回数で決める) | in-progress | P1 | 0069, 0094 |
 | [FEAT-0099](features/FEAT-0099-spin-before-sleep.md) | 同期オブジェクトを待つスレッドは眠る前に変化を見張る (起こす側は mutex を放してから起こす) | in-progress | P1 | 0262 |
+| [FEAT-1000](features/FEAT-1000-llvm-23.md) | バックエンドの LLVM を Rust と同じ 23 に上げる (apt.llvm.org のパッケージを Docker イメージの最後の層で入れる) | in-progress | P1 | 0091 |
 
 
 ## aCHC

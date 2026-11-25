@@ -40,3 +40,10 @@ HTTP サーバ 1.29 (16 接続) が Rust より遅く、array-sort・mandelbrot�
 - cli-grep (1.49)・string-split (1.39): バイトの検索は共通 Core の 1 バイトずつのループ (`cirka$bytes_find_byte_loop`)。
   LLVM 18 は途中で抜けるループをベクトル化しない。確保は 100 万行で 100 万回 (cli-grep)、200 万回 (string-split)。調査中。
 - session (1.15)・HTTP サーバ (1.29): 調査中。
+- 2026-11-25 の状況 (FEAT-0097〜0099 の後、i5-3320M、11 回の交互実行の中央値、Rust に対する比): array-sort 1.06・binary-search 1.18・
+  cli-grep 1.02・mandelbrot 0.98・n-body 1.16・spectral-norm 1.01・stencil 1.01・string-split 1.06・effects 1.00・session 0.23・
+  binary-trees 0.42 (別のプロジェクトのビルドと重なり Rust 側が遅れた。測り直す)。
+- n-body・LLVM の版: Rust 1.99.1 は LLVM 23.1、こちらは clang 18 だった。生成した IR を clang-23 でコンパイルし直すと (使い捨ての
+  コンテナに apt.llvm.org の clang-23 を入れた実験)、n-body 0.86 倍 (Rust の 0.97)・effects 0.93 倍 (0.95)・stencil 0.98 倍 (0.99)、
+  array-sort 1.03 倍 (1.08)・binary-search 1.03 倍 (1.22)・string-split 1.02 倍 (1.07)、他は ±0.5 % (出力はすべて同じ)。
+  バックエンドを LLVM 23 に上げる (FEAT-1000、ADR-110)。

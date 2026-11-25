@@ -16,7 +16,7 @@ Rust のように **トレーシング GC なしでメモリ安全かつ高速**
 
 ## 開発環境 (Docker)
 
-ビルドとテストは Ubuntu 24.04 の Docker コンテナで行います (LLVM 18・GHC・Rust・Z3・valgrind・hyperfine 入り)。
+ビルドとテストは Ubuntu 24.04 の Docker コンテナで行います (LLVM 23・GHC・Rust・Z3・valgrind・hyperfine 入り)。
 
 ```sh
 cp .env.sample .env            # 初回のみ。CIRKA_UID / CIRKA_GID を `id -u` / `id -g` に合わせる
