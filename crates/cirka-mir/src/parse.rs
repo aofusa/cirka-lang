@@ -213,6 +213,8 @@ enum RInstr {
     Let(Option<(String, Span)>, Option<Ty>, RRhs, Span),
     /// `let (x1, .., xn) = call f(args)`.
     LetMulti(Vec<(String, Span)>, (String, Span), Vec<ROp>),
+    /// `let (st, v) = catch apply c(args)`.
+    Catch(Vec<(String, Span)>, (String, Span), Vec<ROp>),
     Dup((String, Span)),
     Drop((String, Span)),
     Set((String, Span), String, ROp),
@@ -229,6 +231,7 @@ enum RTerm {
     ),
     TailCall(String, Vec<ROp>),
     Panic(String),
+    Raise((String, Span)),
     Unreachable,
 }
 
@@ -632,6 +635,17 @@ impl Parser {
                     self.bump();
                     let names = self.comma_list("(", ")", |p| p.ident())?;
                     self.expect_sym("=")?;
+                    if self.is_kw("catch") {
+                        self.bump();
+                        self.expect_kw("apply")?;
+                        let clo = self.ident()?;
+                        let args = self.args()?;
+                        if names.len() != 2 {
+                            return self.err("`catch apply` binds two variables: `let (st, v)`");
+                        }
+                        instrs.push(RInstr::Catch(names, clo, args));
+                        continue;
+                    }
                     self.expect_kw("call")?;
                     let func = self.ident()?;
                     let args = self.args()?;
@@ -779,6 +793,7 @@ impl Parser {
                     return self.err("expected panic message string");
                 }
             },
+            "raise" => RTerm::Raise(self.ident()?),
             "unreachable" => RTerm::Unreachable,
             _ => {
                 self.pos -= 1;
@@ -976,6 +991,15 @@ fn resolve_fn(rf: &RFunc, sigs: &Sigs<'_>) -> PResult<Function> {
                 let v = r.f.new_var(n.clone(), ty);
                 r.names.insert(n.clone(), v);
             }
+            if let RInstr::Catch(names, _, _) = ins {
+                for ((n, sp), ty) in names.iter().zip([Ty::I64, Ty::Ptr]) {
+                    if r.names.contains_key(n) {
+                        return Err(dup_err(n, *sp));
+                    }
+                    let v = r.f.new_var(n.clone(), ty);
+                    r.names.insert(n.clone(), v);
+                }
+            }
             if let RInstr::LetMulti(names, (func, fsp), _) = ins {
                 let Some((_, rets)) = sigs.funcs.get(func) else {
                     return Err(Diagnostic::error(format!("unknown function `{func}`"))
@@ -1012,6 +1036,14 @@ fn resolve_fn(rf: &RFunc, sigs: &Sigs<'_>) -> PResult<Function> {
                         vars: names.iter().map(|n| r.names[&n.0]).collect(),
                         func: func.clone(),
                         args: r.ops(args, &ptys)?,
+                    }
+                }
+                RInstr::Catch(names, c, args) => {
+                    let tys = vec![Ty::Ptr; args.len()];
+                    Instr::Catch {
+                        vars: [r.names[&names[0].0], r.names[&names[1].0]],
+                        clo: r.var(c)?,
+                        args: r.ops(args, &tys)?,
                     }
                 }
                 RInstr::Dup(v) => Instr::Dup(r.var(v)?),
@@ -1066,6 +1098,7 @@ fn resolve_fn(rf: &RFunc, sigs: &Sigs<'_>) -> PResult<Function> {
                 }
             }
             RTerm::Panic(s) => Terminator::Panic(s.clone()),
+            RTerm::Raise(v) => Terminator::Raise(r.var(v)?),
             RTerm::Unreachable => Terminator::Unreachable,
         };
         blocks.push(Block {

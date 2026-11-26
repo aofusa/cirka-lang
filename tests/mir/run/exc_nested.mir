@@ -1,0 +1,49 @@
+// Nested `catch` (FEAT-0040): an exception stops at the innermost `catch`
+// around it, and a handler that raises again reaches the next one out.
+type Int { I = 0 { v: i64 } }
+type Unit { U = 0 {} }
+extern fn cirka_write_i64(i64) -> void
+extern fn cirka_write_char(i64) -> void
+
+fn say(n: i64) -> i64 {
+entry:
+  let _ = extern cirka_write_i64(n)
+  let _ = extern cirka_write_char(10)
+  ret 0
+}
+
+fn thrower(n: i64, w: ptr @owned) -> ptr {
+entry:
+  drop w
+  let e = alloc Int.I(n)
+  raise e
+}
+
+// Catches `thrower 1`, prints the status, and raises I (value + 100).
+fn inner(w: ptr @owned) -> ptr {
+entry:
+  let f = mkclosure thrower(1)
+  let (st, v) = catch apply f(w)
+  let _ = call say(st)
+  let x = proj v Int.I.v
+  drop v
+  let y = prim add(x, 100)
+  let e = alloc Int.I(y)
+  raise e
+}
+
+fn main() -> i64 {
+entry:
+  let u = alloc Unit.U()
+  let f = mkclosure inner()
+  let held = alloc Int.I(5)
+  let (st, v) = catch apply f(u)
+  let _ = call say(st)
+  let x = proj v Int.I.v
+  drop v
+  let _ = call say(x)
+  let h = proj held Int.I.v
+  drop held
+  let _ = call say(h)
+  ret 0
+}

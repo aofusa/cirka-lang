@@ -1,0 +1,13 @@
+// Without a `catch` (FEAT-0040, ADR-125) an exception ends the program
+// where it is raised: `raise` prints its message (a byte string) and
+// exits with code 1, after dropping the value.
+extern fn cirka_write_bytes(ptr) -> void
+
+fn main() -> i64 {
+entry:
+  let _ = extern cirka_write_bytes("before\n")
+  let m = prim bytes_new(2)
+  let _ = prim bytes_set(m, 0, 110)
+  let _ = prim bytes_set(m, 1, 111)
+  raise m
+}

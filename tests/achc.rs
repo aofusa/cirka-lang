@@ -483,6 +483,7 @@ fn run_programs(suite: &str, sub: &str, default_levels: &[u8]) {
                     exit_code: want_code,
                     stats: Default::default(),
                     leaked: 0,
+                    orderly: want_code == 0,
                 };
                 match cirka_integration::check_native_linked(
                     &cfg,
@@ -524,7 +525,9 @@ fn run_programs(suite: &str, sub: &str, default_levels: &[u8]) {
             if expect_leak && r.leaked == 0 {
                 return Outcome::Fail(format!("-O{level}: no leak, but `expect-leak` is set"));
             }
-            if r.leaked != 0 && want_code == 0 && !expect_leak {
+            // Objects alive when `error` or `exit` ended the program are
+            // not leaks, unless an uncaught exception unwound (FEAT-0040).
+            if r.leaked != 0 && (want_code == 0 || r.orderly) && !expect_leak {
                 return Outcome::Fail(format!("-O{level}: {} objects leaked", r.leaked));
             }
             reference = Some((out.mir, r));
@@ -564,7 +567,7 @@ fn run_programs(suite: &str, sub: &str, default_levels: &[u8]) {
             &stdin,
             &r,
             true,
-            want_code == 0 && !expect_leak,
+            (want_code == 0 || r.orderly) && !expect_leak,
             &link,
         )
     });

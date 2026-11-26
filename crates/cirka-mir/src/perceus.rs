@@ -148,6 +148,11 @@ pub fn instr_uses(sigs: &Sigs, ins: &Instr) -> Vec<(Var, Mode)> {
             push_ops(&mut u, args, |i| sigs.func_own(func, i));
             u
         }
+        Instr::Catch { clo, args, .. } => {
+            let mut u = vec![(*clo, Mode::Consume)];
+            push_ops(&mut u, args, |_| Mode::Consume);
+            u
+        }
         Instr::Dup(v) => vec![(*v, Mode::Borrow)],
         Instr::Drop(v) => vec![(*v, Mode::Consume)],
         Instr::Set { obj, val, .. } => {
@@ -164,7 +169,7 @@ pub fn instr_uses(sigs: &Sigs, ins: &Instr) -> Vec<(Var, Mode)> {
 pub fn term_uses(sigs: &Sigs, t: &Terminator) -> Vec<(Var, Mode)> {
     let mut u = Vec::new();
     match t {
-        Terminator::Ret(Operand::Var(v)) => u.push((*v, Mode::Consume)),
+        Terminator::Ret(Operand::Var(v)) | Terminator::Raise(v) => u.push((*v, Mode::Consume)),
         Terminator::Ret(_) | Terminator::Panic(_) | Terminator::Unreachable => {}
         Terminator::RetMulti(os) => push_ops(&mut u, os, |_| Mode::Consume),
         Terminator::Jump(_, args) => push_ops(&mut u, args, |_| Mode::Consume),
@@ -269,11 +274,14 @@ impl VarInfo {
                     };
                     parent[v.0 as usize] = src;
                 }
-                if let Instr::LetMulti { vars, .. } = ins {
-                    for v in vars {
-                        if f.ty(*v).is_ptr() {
-                            kind[v.0 as usize] = Kind::Owned;
-                        }
+                let multi: &[Var] = match ins {
+                    Instr::LetMulti { vars, .. } => vars,
+                    Instr::Catch { vars, .. } => vars,
+                    _ => &[],
+                };
+                for v in multi {
+                    if f.ty(*v).is_ptr() {
+                        kind[v.0 as usize] = Kind::Owned;
                     }
                 }
             }

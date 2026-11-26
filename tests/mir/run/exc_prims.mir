@@ -1,0 +1,106 @@
+// Exceptions from checked operations (FEAT-0040): a division by zero, an
+// index out of bounds of an array (the element `array_set` was given is
+// dropped, not stored), a byte range out of bounds in a runtime operation,
+// and `cirka_panic_bytes` (a copy of its message is the exception). The
+// frames drop what they hold at the failed check.
+type Int { I = 0 { v: i64 } }
+type Unit { U = 0 {} }
+extern fn cirka_write_i64(i64) -> void
+extern fn cirka_write_char(i64) -> void
+extern fn cirka_write_bytes(ptr) -> void
+extern fn cirka_bytes_index(ptr, i64, i64, i64) -> i64
+extern fn cirka_panic_bytes(ptr) -> void
+
+fn say(n: i64) -> i64 {
+entry:
+  let _ = extern cirka_write_i64(n)
+  let _ = extern cirka_write_char(10)
+  ret 0
+}
+
+// I (n + n / d), holding a box across the division.
+fn divide(n: i64, d: i64, w: ptr @owned) -> ptr {
+entry:
+  drop w
+  let held = alloc Int.I(n)
+  let q = prim div(n, d)
+  let x = proj held Int.I.v
+  drop held
+  let s = prim add(x, q)
+  let r = alloc Int.I(s)
+  ret r
+}
+
+// Stores I 10 at index i of an array of two boxes, then returns index 0.
+fn store(i: i64, w: ptr @owned) -> ptr {
+entry:
+  drop w
+  let e = alloc Int.I(9)
+  let arr = prim array_new(2, e)
+  let elem = alloc Int.I(10)
+  let _ = prim array_set(arr, i, elem)
+  let x = prim array_get(arr, 0)
+  dup x
+  drop arr
+  ret x
+}
+
+// I (the index of `l` in "hello"[0..j]), holding a box across the search.
+fn find(j: i64, w: ptr @owned) -> ptr {
+entry:
+  drop w
+  let held = alloc Int.I(1)
+  let k = extern cirka_bytes_index("hello", 108, 0, j)
+  drop held
+  let r = alloc Int.I(k)
+  ret r
+}
+
+// Raises a fresh message "no", which it holds.
+fn fail(w: ptr @owned) -> ptr {
+entry:
+  drop w
+  let m = prim bytes_new(2)
+  let _ = prim bytes_set(m, 0, 110)
+  let _ = prim bytes_set(m, 1, 111)
+  let _ = extern cirka_panic_bytes(m)
+  unreachable
+}
+
+// Catches `f u`: prints 0 and the number, or 1 and the message.
+fn show(f: ptr @owned, u: ptr @owned) -> i64 {
+entry:
+  let (st, v) = catch apply f(u)
+  let _ = call say(st)
+  switch st { 1 => text, default => num }
+num:
+  let x = proj v Int.I.v
+  drop v
+  let _ = call say(x)
+  ret 0
+text:
+  let _ = extern cirka_write_bytes(v)
+  drop v
+  let _ = extern cirka_write_char(10)
+  ret 0
+}
+
+fn main() -> i64 {
+entry:
+  let u = alloc Unit.U()
+  let f1 = mkclosure divide(7, 2)
+  let _ = call show(f1, u)
+  let f2 = mkclosure divide(7, 0)
+  let _ = call show(f2, u)
+  let f3 = mkclosure store(1)
+  let _ = call show(f3, u)
+  let f4 = mkclosure store(5)
+  let _ = call show(f4, u)
+  let f5 = mkclosure find(5)
+  let _ = call show(f5, u)
+  let f6 = mkclosure find(9)
+  let _ = call show(f6, u)
+  let f7 = mkclosure fail()
+  let _ = call show(f7, u)
+  ret 0
+}

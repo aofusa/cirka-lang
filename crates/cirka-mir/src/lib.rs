@@ -14,6 +14,7 @@ pub mod perceus;
 pub mod print;
 pub mod reuse;
 pub mod uniq;
+pub mod unwind;
 pub mod verify;
 
 pub use cirka_core::{CAgg, CSig, CTy, CType, CTypes, ExternKind, Pass, Piece};

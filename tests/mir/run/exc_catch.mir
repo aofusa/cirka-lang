@@ -1,0 +1,104 @@
+// Exceptions (FEAT-0040): `catch apply` returns the action's value with
+// status 0, or the value of an exception raised inside it (by `raise` or
+// `panic`) with status 1. The frames the exception leaves drop what they
+// hold there (`extra` and `a` in `sum3`, the box in `act`): nothing leaks.
+type Int { I = 0 { v: i64 } }
+type Unit { U = 0 {} }
+extern fn cirka_write_i64(i64) -> void
+extern fn cirka_write_char(i64) -> void
+extern fn cirka_write_bytes(ptr) -> void
+
+fn say(n: i64) -> i64 {
+entry:
+  let _ = extern cirka_write_i64(n)
+  let _ = extern cirka_write_char(10)
+  ret 0
+}
+
+// check n = I n, or raises I n when n is negative.
+fn check(n: i64) -> ptr {
+entry:
+  let neg = prim lt(n, 0)
+  switch neg { 1 => bad, default => good }
+good:
+  let r = alloc Int.I(n)
+  ret r
+bad:
+  let e = alloc Int.I(n)
+  raise e
+}
+
+// sum3 a n = a + check n + 1000, holding `a` and a box across the call.
+fn sum3(a: ptr @owned, n: i64) -> ptr {
+entry:
+  let extra = alloc Int.I(1000)
+  let c = call check(n)
+  let x = proj a Int.I.v
+  let y = proj c Int.I.v
+  let z = proj extra Int.I.v
+  drop a
+  drop c
+  drop extra
+  let s = prim add(x, y)
+  let s2 = prim add(s, z)
+  let r = alloc Int.I(s2)
+  ret r
+}
+
+// The action: sum3 (I k) n, then 1 added (not a tail call: the result of
+// sum3 is held by nothing across the raise, the box `one` is).
+fn act(k: i64, n: i64, w: ptr @owned) -> ptr {
+entry:
+  drop w
+  let one = alloc Int.I(1)
+  let a = alloc Int.I(k)
+  let r = call sum3(a, n)
+  let x = proj r Int.I.v
+  let y = proj one Int.I.v
+  drop r
+  drop one
+  let s = prim add(x, y)
+  let t = alloc Int.I(s)
+  ret t
+}
+
+fn boom(w: ptr @owned) -> ptr {
+entry:
+  drop w
+  panic "boom"
+}
+
+// Runs `f` on the token and prints the status and the value: an `Int`'s
+// number, or a byte string.
+fn show(f: ptr @owned, u: ptr @owned, bytes: i64) -> i64 {
+entry:
+  let (st, v) = catch apply f(u)
+  let _ = call say(st)
+  switch bytes { 1 => text, default => num }
+num:
+  let x = proj v Int.I.v
+  drop v
+  let _ = call say(x)
+  ret 0
+text:
+  let _ = extern cirka_write_bytes(v)
+  drop v
+  let _ = extern cirka_write_char(10)
+  ret 0
+}
+
+fn main() -> i64 {
+entry:
+  let u = alloc Unit.U()
+  let f1 = mkclosure act(5, 7)
+  let _ = call show(f1, u, 0)
+  let m = prim sub(0, 3)
+  let f2 = mkclosure act(5, m)
+  let _ = call show(f2, u, 0)
+  let f3 = mkclosure boom()
+  let _ = call show(f3, u, 1)
+  // The program goes on after the exceptions.
+  let f4 = mkclosure act(20, 22)
+  let _ = call show(f4, u, 0)
+  ret 0
+}

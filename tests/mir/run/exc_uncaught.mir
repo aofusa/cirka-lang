@@ -1,0 +1,46 @@
+// An exception nothing catches (FEAT-0040) ends the program with exit code
+// 1 once every frame it left dropped what it held there: nothing leaks
+// (the program has a `catch`, so it unwinds).
+type Int { I = 0 { v: i64 } }
+type Unit { U = 0 {} }
+extern fn cirka_write_bytes(ptr) -> void
+
+fn ok(w: ptr @owned) -> ptr {
+entry:
+  drop w
+  let r = alloc Int.I(1)
+  ret r
+}
+
+// Holds a box at every level of the recursion, and fails at the bottom.
+fn deep(n: i64) -> ptr {
+entry:
+  let h = alloc Int.I(n)
+  switch n { 0 => base, default => rec }
+base:
+  drop h
+  panic "deep failure"
+rec:
+  let m = prim sub(n, 1)
+  let r = call deep(m)
+  let x = proj h Int.I.v
+  drop h
+  drop r
+  let b = alloc Int.I(x)
+  ret b
+}
+
+fn main() -> i64 {
+entry:
+  let u = alloc Unit.U()
+  let f = mkclosure ok()
+  let (st, v) = catch apply f(u)
+  drop v
+  let _ = extern cirka_write_bytes("before\n")
+  let keep = alloc Int.I(5)
+  let r = call deep(10)
+  drop r
+  drop keep
+  let _ = extern cirka_write_bytes("after\n")
+  ret 0
+}

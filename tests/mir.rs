@@ -111,6 +111,7 @@ fn mir_run_native() {
                 exit_code: expected_exit(c),
                 stats: Default::default(),
                 leaked: 0,
+                orderly: expected_exit(c) == 0,
             }
         };
         cirka_integration::check_native(&cfg, c, "mir-native", &m, &stdin, &reference, interp_ok)

@@ -121,6 +121,7 @@ fn core_run() {
                 exit_code: expected_exit(c),
                 stats: Default::default(),
                 leaked: 0,
+                orderly: expected_exit(c) == 0,
             };
             return cirka_integration::check_native_linked(
                 &cfg,
@@ -257,6 +258,7 @@ fn core_opt_reduces_allocations() {
                 exit_code: expected_exit(c),
                 stats: Default::default(),
                 leaked: 0,
+                orderly: expected_exit(c) == 0,
             };
             return cirka_integration::check_native_linked(
                 &cfg,

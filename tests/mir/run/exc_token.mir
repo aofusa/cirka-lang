@@ -1,0 +1,80 @@
+// A reuse token held where an exception passes (FEAT-0040) is freed
+// without touching its fields; a null token (the object was shared) is
+// skipped.
+type Int { I = 0 { v: i64 } }
+type Unit { U = 0 {} }
+extern fn cirka_write_i64(i64) -> void
+extern fn cirka_write_char(i64) -> void
+
+fn say(n: i64) -> i64 {
+entry:
+  let _ = extern cirka_write_i64(n)
+  let _ = extern cirka_write_char(10)
+  ret 0
+}
+
+fn check(n: i64) -> ptr {
+entry:
+  let neg = prim lt(n, 0)
+  switch neg { 1 => bad, default => good }
+good:
+  let r = alloc Int.I(n)
+  ret r
+bad:
+  let e = alloc Int.I(n)
+  raise e
+}
+
+// I (x + check n), in the cell of `x` when it is unique.
+fn bump(x: ptr @owned, n: i64) -> ptr {
+entry:
+  let v = proj x Int.I.v
+  let tok = drop_reuse x
+  let c = call check(n)
+  let y = proj c Int.I.v
+  drop c
+  let s = prim add(v, y)
+  let r = alloc Int.I(s) reuse tok
+  ret r
+}
+
+fn act(k: i64, n: i64, shared: i64, w: ptr @owned) -> ptr {
+entry:
+  drop w
+  let x = alloc Int.I(k)
+  switch shared { 1 => two, default => one }
+one:
+  let r = call bump(x, n)
+  ret r
+two:
+  dup x
+  let r2 = call bump(x, n)
+  drop x
+  ret r2
+}
+
+fn show(f: ptr @owned, u: ptr @owned) -> i64 {
+entry:
+  let (st, v) = catch apply f(u)
+  let _ = call say(st)
+  let x = proj v Int.I.v
+  drop v
+  let _ = call say(x)
+  ret 0
+}
+
+fn main() -> i64 {
+entry:
+  let u = alloc Unit.U()
+  let f1 = mkclosure act(1, 2, 0)
+  let _ = call show(f1, u)
+  let m2 = prim sub(0, 2)
+  let f2 = mkclosure act(1, m2, 0)
+  let _ = call show(f2, u)
+  let m5 = prim sub(0, 5)
+  let f3 = mkclosure act(1, m5, 1)
+  let _ = call show(f3, u)
+  let f4 = mkclosure act(1, 6, 1)
+  let _ = call show(f4, u)
+  ret 0
+}

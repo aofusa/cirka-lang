@@ -61,12 +61,34 @@ pub fn verify_module(m: &Module) -> Vec<Diagnostic> {
     for (what, msg) in cirka_core::ctype::check_links(&uses) {
         errs.push(Diagnostic::error(format!("{what}: {msg}")).with_code("M0102"));
     }
+    let unwinding = m.catches();
     for f in &m.funcs {
         let mut v = FnVerifier::new(m, f, &sigs);
+        v.unwinding = unwinding;
         v.run();
         errs.extend(v.errs);
     }
     errs
+}
+
+/// The owned references `f` (a verified function of `m`) holds at each
+/// instruction marked in `points` (by block and instruction): before the
+/// instruction for [`Point::Before`], after it took its operands and before
+/// it defines its results for [`Point::After`] (`unwind::cleanups`).
+///
+/// [`Point::Before`]: crate::unwind::Point::Before
+/// [`Point::After`]: crate::unwind::Point::After
+pub fn owned_at(
+    m: &Module,
+    f: &Function,
+    points: &[Vec<crate::unwind::Point>],
+) -> crate::unwind::Cleanups {
+    let sigs: HashMap<&str, &Function> = m.funcs.iter().map(|g| (g.name.as_str(), g)).collect();
+    let mut v = FnVerifier::new(m, f, &sigs);
+    v.points = points;
+    v.unwinding = true;
+    v.run();
+    v.held
 }
 
 /// The MIR types of an extern agree with its C signature and kind
@@ -191,6 +213,15 @@ struct FnVerifier<'a> {
     token_size: HashMap<Var, usize>,
     errs: Vec<Diagnostic>,
     cur_block: usize,
+    /// The raising positions whose ownership state to record (FEAT-0040,
+    /// `unwind::cleanups`), by block and instruction; empty when only
+    /// verifying.
+    points: &'a [Vec<crate::unwind::Point>],
+    cur_instr: usize,
+    held: crate::unwind::Cleanups,
+    /// Whether the program unwinds exceptions (`Module::catches`): `panic`
+    /// then raises, and must not hold anything either (06-ir.md §2.5).
+    unwinding: bool,
 }
 
 impl<'a> FnVerifier<'a> {
@@ -224,11 +255,14 @@ impl<'a> FnVerifier<'a> {
                         _ => Origin::Owned,
                     };
                 }
-                if let Instr::LetMulti { vars, .. } = ins {
-                    for v in vars {
-                        if f.ty(*v).is_ptr() {
-                            origin[v.0 as usize] = Origin::Owned;
-                        }
+                let multi: &[Var] = match ins {
+                    Instr::LetMulti { vars, .. } => vars,
+                    Instr::Catch { vars, .. } => vars,
+                    _ => &[],
+                };
+                for v in multi {
+                    if f.ty(*v).is_ptr() {
+                        origin[v.0 as usize] = Origin::Owned;
                     }
                 }
             }
@@ -246,6 +280,35 @@ impl<'a> FnVerifier<'a> {
             token_size: HashMap::new(),
             errs: Vec::new(),
             cur_block: 0,
+            points: &[],
+            cur_instr: 0,
+            held: HashMap::new(),
+            unwinding: false,
+        }
+    }
+
+    /// Records the owned references of `st` at the current instruction if
+    /// it is a raising position of kind `when`.
+    fn record(&mut self, st: &State, when: crate::unwind::Point) {
+        let at = self
+            .points
+            .get(self.cur_block)
+            .and_then(|b| b.get(self.cur_instr));
+        if at != Some(&when) {
+            return;
+        }
+        let held: Vec<crate::unwind::Held> = st
+            .vars
+            .iter()
+            .filter(|(_, c)| **c > 0)
+            .map(|(v, c)| crate::unwind::Held {
+                var: *v,
+                count: *c,
+                token: self.origin[v.0 as usize] == Origin::Token,
+            })
+            .collect();
+        if !held.is_empty() {
+            self.held.insert((self.cur_block, self.cur_instr), held);
         }
     }
 
@@ -325,7 +388,8 @@ impl<'a> FnVerifier<'a> {
             done[bi] = true;
             self.cur_block = bi;
             let mut st = states[bi].clone().unwrap();
-            for ins in &f.blocks[bi].instrs {
+            for (ii, ins) in f.blocks[bi].instrs.iter().enumerate() {
+                self.cur_instr = ii;
                 self.instr(&mut st, ins);
             }
             let outs = self.term(&mut st, &f.blocks[bi].term);
@@ -497,6 +561,7 @@ impl<'a> FnVerifier<'a> {
 
     fn instr(&mut self, st: &mut State, ins: &Instr) {
         let f = self.f;
+        self.record(st, crate::unwind::Point::Before);
         match ins {
             Instr::Dup(v) => {
                 self.borrow(st, *v);
@@ -510,6 +575,29 @@ impl<'a> FnVerifier<'a> {
                 }
             }
             Instr::Drop(v) => self.consume(st, *v),
+            Instr::Catch { vars, clo, args } => {
+                if args.is_empty() || args.len() > MAX_CLOSURE_ARITY {
+                    self.error(format!(
+                        "`catch apply` takes 1 to {MAX_CLOSURE_ARITY} arguments"
+                    ));
+                }
+                self.operand(st, &Operand::Var(*clo), Some(Ty::Ptr), true);
+                let tys = vec![Ty::Ptr; args.len()];
+                let owns = vec![Own::Owned; args.len()];
+                self.args(st, args, &tys, &owns);
+                for (v, t) in vars.iter().zip([Ty::I64, Ty::Ptr]) {
+                    if f.ty(*v) != t {
+                        self.error(format!(
+                            "`{}` is declared {} but `catch apply` binds {t} there",
+                            self.name(*v),
+                            f.ty(*v)
+                        ));
+                    }
+                }
+                for v in vars {
+                    self.define(st, *v);
+                }
+            }
             Instr::LetMulti { vars, func, args } => {
                 if let Some((tys, owns, rets)) = self.call_sig(func) {
                     if args.len() != tys.len() {
@@ -520,6 +608,7 @@ impl<'a> FnVerifier<'a> {
                         ));
                     }
                     self.args(st, args, &tys, &owns);
+                    self.record(st, crate::unwind::Point::After);
                     if rets.len() < 2 {
                         self.error(format!(
                             "`{func}` returns a single value; bind it with `let x = call`"
@@ -565,6 +654,7 @@ impl<'a> FnVerifier<'a> {
             }
             Instr::Let { var, rhs } => {
                 let result_ty = self.rhs(st, rhs, *var);
+                self.record(st, crate::unwind::Point::After);
                 match (var, result_ty) {
                     (Some(v), Some(t)) => {
                         if f.ty(*v) != t {
@@ -941,7 +1031,18 @@ impl<'a> FnVerifier<'a> {
                 }
                 outs
             }
-            Terminator::Panic(_) | Terminator::Unreachable => vec![],
+            Terminator::Raise(x) => {
+                self.operand(st, &Operand::Var(*x), Some(Ty::Ptr), true);
+                self.check_all_consumed(st, "`raise`");
+                vec![]
+            }
+            Terminator::Panic(_) => {
+                if self.unwinding {
+                    self.check_all_consumed(st, "`panic`");
+                }
+                vec![]
+            }
+            Terminator::Unreachable => vec![],
         }
     }
 }

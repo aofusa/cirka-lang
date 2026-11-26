@@ -1006,6 +1006,10 @@ fn rename(f: &mut Function, s: &HashMap<Var, Var>) {
                     Rhs::Force(v) | Rhs::DropReuse(v) => r(v),
                 },
                 Instr::LetMulti { args, .. } => ops(args),
+                Instr::Catch { clo, args, .. } => {
+                    r(clo);
+                    ops(args);
+                }
                 Instr::Dup(v) | Instr::Drop(v) => r(v),
                 Instr::Set { obj, val, .. } => {
                     r(obj);
@@ -1018,7 +1022,7 @@ fn rename(f: &mut Function, s: &HashMap<Var, Var>) {
             }
         }
         match &mut b.term {
-            Terminator::Ret(Operand::Var(v)) => r(v),
+            Terminator::Ret(Operand::Var(v)) | Terminator::Raise(v) => r(v),
             Terminator::Ret(_) | Terminator::Panic(_) | Terminator::Unreachable => {}
             Terminator::RetMulti(a)
             | Terminator::Jump(_, a)

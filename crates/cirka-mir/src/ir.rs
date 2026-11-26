@@ -163,6 +163,16 @@ pub enum Instr {
         func: String,
         args: Vec<Operand>,
     },
+    /// `let (st, v) = catch apply c(args)` (FEAT-0040): applies the closure
+    /// `c` to `args` like `apply` (consuming both) and catches an exception
+    /// raised inside the application. `vars` is `[st, v]`: `st` (`i64`) is
+    /// 0 when the application returned, with `v` its result, and 1 when it
+    /// raised, with `v` the exception value. `v` is owned.
+    Catch {
+        vars: [Var; 2],
+        clo: Var,
+        args: Vec<Operand>,
+    },
     Dup(Var),
     Drop(Var),
     /// Destructive update `set obj T.C.field = val` (owned unique objects only).
@@ -180,6 +190,7 @@ impl Instr {
         match self {
             Instr::Let { var, .. } => var.as_slice(),
             Instr::LetMulti { vars, .. } => vars,
+            Instr::Catch { vars, .. } => vars,
             _ => &[],
         }
     }
@@ -207,7 +218,12 @@ pub enum Terminator {
         func: String,
         args: Vec<Operand>,
     },
+    /// Raises a message (a static string) as an exception (FEAT-0040;
+    /// ended the program before).
     Panic(String),
+    /// `raise x`: raises the owned value `x` as an exception (FEAT-0040).
+    /// Like `ret`, every other owned reference is consumed before.
+    Raise(Var),
     Unreachable,
 }
 
@@ -479,6 +495,15 @@ impl ExternDecl {
     pub fn symbol(&self) -> &str {
         self.link.as_deref().unwrap_or(&self.name)
     }
+
+    /// Whether a call reports errors through the thread's pending slot
+    /// when the program unwinds exceptions (a runtime function named by
+    /// `raising_extern`, called without a C signature).
+    pub fn raises(&self) -> bool {
+        self.kind == cirka_core::ExternKind::Call
+            && self.c_sig.is_none()
+            && raising_extern(self.symbol())
+    }
 }
 
 /// A static immortal thunk evaluated on first use (a CAF), or a static
@@ -569,6 +594,18 @@ impl Module {
 
     pub fn extern_decl(&self, name: &str) -> Option<&ExternDecl> {
         self.externs.iter().find(|e| e.name == name)
+    }
+
+    /// Whether the program catches exceptions (a `catch apply` anywhere):
+    /// it then unwinds them (05-runtime.md §6.1, ADR-125). Otherwise an
+    /// exception ends the program where it is raised, and nothing is
+    /// cleaned up: no handler could observe the cleanup.
+    pub fn catches(&self) -> bool {
+        self.funcs.iter().any(|f| {
+            f.blocks
+                .iter()
+                .any(|b| b.instrs.iter().any(|i| matches!(i, Instr::Catch { .. })))
+        })
     }
 
     /// The globals that are static constructor objects instead of CAFs
@@ -1071,3 +1108,18 @@ pub mod kind {
 
 /// Maximum arity of a function called through a closure (`apply`).
 pub const MAX_CLOSURE_ARITY: usize = 8;
+
+/// Runtime functions that report an exception through the thread's
+/// pending slot instead of ending the program when it unwinds exceptions
+/// (05-runtime.md §6.2): the generated code raises it after the call.
+pub fn raising_extern(name: &str) -> bool {
+    matches!(
+        name,
+        "cirka_panic_bytes"
+            | "cirka_file_read"
+            | "cirka_file_write"
+            | "cirka_bytes_copy"
+            | "cirka_bytes_eq"
+            | "cirka_bytes_index"
+    )
+}

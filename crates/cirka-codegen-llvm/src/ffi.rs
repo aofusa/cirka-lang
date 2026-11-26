@@ -275,7 +275,9 @@ pub(crate) fn call(
 /// handler `handler` (a `tailcc` MIR function taking the environment,
 /// the result's address for an aggregate result, and the Core values of
 /// the C arguments). `dup_env`: the handler owns its environment, and the
-/// stub keeps its own reference.
+/// stub keeps its own reference. `catches`: the handler may raise, and an
+/// exception it raises cannot unwind into C: the trampoline catches it and
+/// ends the process (`cirka_uncaught_exit`, 05-runtime.md §6.3).
 pub(crate) fn trampoline(
     ct: CTypes<'_>,
     name: &str,
@@ -283,6 +285,7 @@ pub(crate) fn trampoline(
     handler: &str,
     handler_ret: &str,
     dup_env: bool,
+    catches: bool,
 ) -> String {
     let low = lower(ct, sig);
     let (rt, rattr) = ret_ty(&low);
@@ -371,10 +374,18 @@ pub(crate) fn trampoline(
         e.line("call void @cirka_dup(ptr %env)".into());
     }
     let r = e.t();
-    e.line(format!(
-        "{r} = call tailcc {handler_ret} {handler}({})",
-        args.join(", ")
-    ));
+    if catches {
+        e.line(format!(
+            "{r} = invoke tailcc {handler_ret} {handler}({}) to label %ok unwind label %uncaught",
+            args.join(", ")
+        ));
+        e.line("ok:".into());
+    } else {
+        e.line(format!(
+            "{r} = call tailcc {handler_ret} {handler}({})",
+            args.join(", ")
+        ));
+    }
     match &low.ret {
         Pass::Scalar(CTy::Void) | Pass::Memory => e.line("ret void".into()),
         Pass::Scalar(s) => {
@@ -423,11 +434,19 @@ pub(crate) fn trampoline(
     let mut s = String::new();
     let _ = writeln!(
         s,
-        "define internal {rattr}{rt} @\"cb.{name}\"({}) #0 {{\nentry:",
-        params.join(", ")
+        "define internal {rattr}{rt} @\"cb.{name}\"({}) #0{} {{\nentry:",
+        params.join(", "),
+        if catches {
+            " personality ptr @cirka_personality"
+        } else {
+            ""
+        }
     );
     for l in body {
         let _ = writeln!(s, "  {l}");
+    }
+    if catches {
+        s.push_str("uncaught:\n  %lp = landingpad { ptr, i32 } catch ptr null\n  %ue = extractvalue { ptr, i32 } %lp, 0\n  call void @cirka_uncaught_exit(ptr %ue)\n  unreachable\n");
     }
     s.push_str("}\n");
     s

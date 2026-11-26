@@ -200,6 +200,7 @@ fn cirkalang_run() {
                     exit_code: want_code,
                     stats: Default::default(),
                     leaked: 0,
+                    orderly: want_code == 0,
                 };
                 reference = Some((out.mir, r));
                 continue;
@@ -218,8 +219,9 @@ fn cirkalang_run() {
                 ));
             }
             // `panic` and `exit` end the process without unwinding: objects
-            // alive at that point are not leaks (05-runtime.md).
-            if r.leaked != 0 && want_code == 0 {
+            // alive at that point are not leaks (05-runtime.md §6.1), unless
+            // an uncaught exception unwound (FEAT-0040).
+            if r.leaked != 0 && (want_code == 0 || r.orderly) {
                 return Outcome::Fail(format!("-O{level}: {} objects leaked", r.leaked));
             }
             reference = Some((out.mir, r));
@@ -247,7 +249,7 @@ fn cirkalang_run() {
             &stdin,
             &r,
             interp_ok,
-            want_code == 0,
+            want_code == 0 || r.orderly,
             &link_args,
         )
     });

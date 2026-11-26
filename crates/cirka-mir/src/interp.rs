@@ -43,6 +43,9 @@ enum Payload {
     /// Closure / thunk code.
     Code(usize),
     Array,
+    /// A thunk whose evaluation raised: its one field is the exception,
+    /// raised again when it is forced (05-runtime.md §6.4).
+    Raised,
 }
 
 #[derive(Clone, Debug)]
@@ -84,6 +87,11 @@ pub struct RunResult {
     pub stats: Stats,
     /// Objects still alive at exit (excluding statics and CAF results).
     pub leaked: u64,
+    /// Whether the program ended with everything cleaned up: `main`
+    /// returned, or an uncaught exception unwound to it (FEAT-0040). Not
+    /// after `exit`, nor after an error that ends the program where it
+    /// happens (05-runtime.md §6.1): then live objects are not leaks.
+    pub orderly: bool,
 }
 
 /// A runtime error detected by the interpreter (memory safety violation).
@@ -101,7 +109,11 @@ fn same_ptr(a: Val, b: Val) -> bool {
 
 enum Exit {
     Fault(Fault),
+    /// An error that ends the program where it happens: any error when
+    /// the program does not catch exceptions, and internal errors.
     Panic(String),
+    /// An exception being raised (FEAT-0040): its value, owned.
+    Raise(Val),
     Code(i32),
 }
 
@@ -145,6 +157,13 @@ pub struct Interp<'m> {
     /// buffer length that triggers a collection (04-memory-model.md §5).
     cycle_roots: Vec<u32>,
     cycle_limit: usize,
+    /// Whether exceptions unwind (`Module::catches`); otherwise errors end
+    /// the program at once (05-runtime.md §6.1).
+    unwinding: bool,
+    /// Per function: whether it may raise (`unwind::may_raise`).
+    raises: Vec<bool>,
+    /// Per function: its cleanup sets, computed on first need.
+    cleanups: Vec<Option<std::rc::Rc<crate::unwind::Cleanups>>>,
 }
 
 const STATIC: i64 = 0;
@@ -178,7 +197,81 @@ impl<'m> Interp<'m> {
             tokens: m.funcs.iter().map(token_vars).collect(),
             cycle_roots: Vec::new(),
             cycle_limit: CYCLE_BUFFER,
+            unwinding: m.catches(),
+            raises: crate::unwind::may_raise(m),
+            cleanups: vec![None; m.funcs.len()],
         }
+    }
+
+    /// A catchable error with message `msg`: an exception when the program
+    /// unwinds (a static string, or one allocated as the runtime does for
+    /// the messages it formats), else the end of the program.
+    fn error(&mut self, msg: &str, allocated: bool) -> Exit {
+        if !self.unwinding {
+            return Exit::Panic(msg.to_string());
+        }
+        Exit::Raise(if allocated {
+            self.new_bytes(msg.as_bytes().to_vec())
+        } else {
+            Val::P(self.string(msg.as_bytes()))
+        })
+    }
+
+    /// The message an uncaught exception `v` prints: its bytes, or
+    /// `uncaught exception` for a value that is not a byte string.
+    fn exception_message(&self, v: Val) -> R<String> {
+        Ok(match v {
+            Val::P(p) => match &self.obj(p)?.payload {
+                Payload::Bytes(b) => String::from_utf8_lossy(b).into_owned(),
+                _ => "uncaught exception".to_string(),
+            },
+            _ => "uncaught exception".to_string(),
+        })
+    }
+
+    /// Drops what function `fi` holds at instruction `ii` of block `bi`
+    /// when an exception leaves it there (`unwind::cleanups`).
+    fn clean_up(&mut self, fi: usize, frame: &[Val], bi: usize, ii: usize) -> R<()> {
+        let cs = match &self.cleanups[fi] {
+            Some(c) => c.clone(),
+            None => {
+                let c = std::rc::Rc::new(crate::unwind::cleanups(
+                    self.m,
+                    &self.m.funcs[fi],
+                    &self.raises,
+                ));
+                self.cleanups[fi] = Some(c.clone());
+                c
+            }
+        };
+        let Some(held) = cs.get(&(bi, ii)) else {
+            return Ok(());
+        };
+        for h in held {
+            let v = frame[h.var.0 as usize];
+            if h.token {
+                if let Val::P(p) = v {
+                    self.obj(p)?;
+                    self.free_raw(p);
+                }
+                continue;
+            }
+            for _ in 0..h.count {
+                self.drop_val(v)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Drops `vals` when `r` is an exception passing through (the
+    /// arguments the eval/apply machinery holds across a call).
+    fn drop_on_raise<T>(&mut self, r: R<T>, vals: &[Val]) -> R<T> {
+        if let Err(Exit::Raise(_)) = &r {
+            for v in vals {
+                self.drop_val(*v)?;
+            }
+        }
+        r
     }
 
     /// Program arguments returned by `cirka_argc` / `cirka_arg`.
@@ -365,12 +458,30 @@ impl<'m> Interp<'m> {
             None => return Err("no `main` function".into()),
             Some(&i) => self.call(i, vec![]),
         };
+        let mut orderly = true;
         let code = match r {
             Ok(v) => v.int() as i32,
-            Err(Exit::Code(c)) => c,
+            Err(Exit::Code(c)) => {
+                orderly = false;
+                c
+            }
             Err(Exit::Panic(msg)) => {
+                orderly = false;
                 self.err
                     .extend_from_slice(format!("panic: {msg}\n").as_bytes());
+                1
+            }
+            Err(Exit::Raise(e)) => {
+                // Uncaught: everything was cleaned up on the way here
+                // (`cirka_uncaught`).
+                let Ok(msg) = self.exception_message(e) else {
+                    return Err("memory fault: use of a freed exception".into());
+                };
+                self.err
+                    .extend_from_slice(format!("panic: {msg}\n").as_bytes());
+                if self.drop_val(e).is_err() {
+                    return Err("memory fault: double free of an exception".into());
+                }
                 1
             }
             Err(Exit::Fault(Fault(f))) => {
@@ -395,6 +506,7 @@ impl<'m> Interp<'m> {
                 ..self.stats
             },
             leaked,
+            orderly,
         })
     }
 
@@ -607,7 +719,8 @@ impl<'m> Interp<'m> {
                                 Step::Value(v) => return Ok(Rets::One(v)),
                                 Step::Call(gi, all, None) => tail = Some((gi, all)),
                                 Step::Call(gi, all, Some(p)) => {
-                                    let r = self.call(gi, all)?;
+                                    let r = self.call(gi, all);
+                                    let r = self.drop_on_raise(r, &[Val::P(p)])?;
                                     self.drop_val(Val::P(p))?;
                                     return Ok(Rets::One(r));
                                 }
@@ -617,7 +730,12 @@ impl<'m> Interp<'m> {
                         _ => {}
                     }
                 }
-                self.instr(cur, f, &mut frame, ins)?;
+                if let Err(e) = self.instr(cur, f, &mut frame, ins) {
+                    if let Exit::Raise(_) = e {
+                        self.clean_up(cur, &frame, bb, ii)?;
+                    }
+                    return Err(e);
+                }
             }
             if let Some((gi, vals)) = tail {
                 cur = gi;
@@ -699,7 +817,18 @@ impl<'m> Interp<'m> {
                     }
                     bb = 0;
                 }
-                Terminator::Panic(msg) => return Err(Exit::Panic(msg.clone())),
+                Terminator::Panic(msg) => return Err(self.error(msg, false)),
+                Terminator::Raise(x) => {
+                    let v = frame[x.0 as usize];
+                    if !self.unwinding {
+                        // Nothing catches it: the program ends here, after
+                        // the value is consumed (`cirka_raise_abort`).
+                        let msg = self.exception_message(v)?;
+                        self.drop_val(v)?;
+                        return Err(Exit::Panic(msg));
+                    }
+                    return Err(Exit::Raise(v));
+                }
                 Terminator::Unreachable => return fault("reached `unreachable`"),
             }
         }
@@ -742,6 +871,18 @@ impl<'m> Interp<'m> {
                     return fault(format!("set on a shared object (rc={})", o.rc));
                 }
                 o.fields[*field as usize] = v;
+                Ok(())
+            }
+            Instr::Catch { vars, clo, args } => {
+                let c = frame[clo.0 as usize];
+                let vals = self.operands(frame, args);
+                let (st, v) = match self.apply(c, vals) {
+                    Ok(v) => (0, v),
+                    Err(Exit::Raise(e)) => (1, e),
+                    Err(e) => return Err(e),
+                };
+                frame[vars[0].0 as usize] = Val::I(st);
+                frame[vars[1].0 as usize] = v;
                 Ok(())
             }
             Instr::LetMulti { vars, func, args } => {
@@ -839,7 +980,10 @@ impl<'m> Interp<'m> {
                 let Some(&gi) = self.funcs.get(func.as_str()) else {
                     return fault(format!("unknown function {func}"));
                 };
-                let size = (16 + 8 * vals.len()).max(16);
+                // A thunk that raised keeps the exception in word 1: with
+                // exceptions, a thunk without captures has room for it.
+                let min = if self.unwinding { 24 } else { 16 };
+                let size = (16 + 8 * vals.len()).max(min);
                 Val::P(self.alloc(kind::THUNK, 0, vals, Payload::Code(gi), size))
             }
             Rhs::Force(v) => {
@@ -870,7 +1014,14 @@ impl<'m> Interp<'m> {
                     return fault(format!("undeclared extern {func}"));
                 };
                 match (&d.kind, &d.c_sig) {
-                    (ExternKind::Call, None) => self.external(func, &vals)?,
+                    (ExternKind::Call, None) => match self.external(func, &vals) {
+                        // The runtime's byte operations report a range
+                        // out of bounds as a catchable error.
+                        Err(Exit::Panic(msg)) if d.raises() => {
+                            return Err(self.error(&msg, false));
+                        }
+                        r => r?,
+                    },
                     (ExternKind::Addr, _) => match crate::ffi::symbol(d.symbol()) {
                         Ok(a) => Val::I(a),
                         Err(e) => return fault(e),
@@ -930,7 +1081,22 @@ impl<'m> Interp<'m> {
                 self.drop_val(Val::P(p))?;
                 Ok(r)
             }
-            kind::BLACKHOLE => Err(Exit::Panic("<<loop>>".into())),
+            kind::BLACKHOLE => {
+                if !self.unwinding {
+                    return Err(Exit::Panic("<<loop>>".into()));
+                }
+                // The forcing reference was consumed (the thunk is still
+                // held by the evaluation in progress).
+                self.drop_val(Val::P(p))?;
+                Err(self.error("<<loop>>", false))
+            }
+            kind::THUNK if matches!(self.heap[p as usize].payload, Payload::Raised) => {
+                // A thunk whose evaluation raised raises again.
+                let e = self.heap[p as usize].fields[0];
+                self.dup(e)?;
+                self.drop_val(Val::P(p))?;
+                Err(Exit::Raise(e))
+            }
             kind::THUNK => {
                 let Payload::Code(gi) = self.heap[p as usize].payload else {
                     return fault("thunk without code");
@@ -946,7 +1112,27 @@ impl<'m> Interp<'m> {
                         self.heap[p as usize].fields[i] = Val::Null;
                     }
                 }
-                let r = self.call(gi, captured)?;
+                let r = match self.call(gi, captured) {
+                    Ok(r) => r,
+                    Err(Exit::Raise(e)) => {
+                        // The thunk remembers the exception (05-runtime.md
+                        // §6.4): the captured values it still holds go, and
+                        // the forcing reference is consumed.
+                        self.dup(e)?;
+                        let o = &mut self.heap[p as usize];
+                        let old = std::mem::replace(&mut o.fields, vec![e]);
+                        o.kind = kind::THUNK;
+                        o.payload = Payload::Raised;
+                        for c in old {
+                            self.drop_val(c)?;
+                        }
+                        if rc != STATIC {
+                            self.drop_val(Val::P(p))?;
+                        }
+                        return Err(Exit::Raise(e));
+                    }
+                    Err(e) => return Err(e),
+                };
                 // Update: drop captured values, become an indirection.
                 let o = &mut self.heap[p as usize];
                 let old = std::mem::replace(&mut o.fields, vec![r]);
@@ -971,9 +1157,11 @@ impl<'m> Interp<'m> {
         match self.apply_step(f, args)? {
             Step::Value(v) => Ok(v),
             Step::Call(gi, all, post) => {
-                let r = self.call(gi, all)?;
-                if let Some(p) = post {
-                    self.drop_val(Val::P(p))?;
+                let r = self.call(gi, all);
+                let post: Vec<Val> = post.map(Val::P).into_iter().collect();
+                let r = self.drop_on_raise(r, &post)?;
+                for p in post {
+                    self.drop_val(p)?;
                 }
                 Ok(r)
             }
@@ -1009,12 +1197,17 @@ impl<'m> Interp<'m> {
                         size,
                     ))))
                 } else {
+                    // Over-application: the remaining arguments are held
+                    // across the call (and cleaned up if it raises).
                     let rest = args[arity..].to_vec();
                     let first = args[..arity].to_vec();
                     let r = match self.enter_closure(p, first)? {
                         Step::Value(v) => v,
                         Step::Call(gi, all, post) => {
-                            let r = self.call(gi, all)?;
+                            let r = self.call(gi, all);
+                            let mut held = rest.clone();
+                            held.extend(post.map(Val::P));
+                            let r = self.drop_on_raise(r, &held)?;
                             if let Some(p) = post {
                                 self.drop_val(Val::P(p))?;
                             }
@@ -1038,7 +1231,8 @@ impl<'m> Interp<'m> {
                     // the result to the remaining arguments.
                     let first = args[..rem].to_vec();
                     let rest = args[rem..].to_vec();
-                    let r = self.apply(f, first)?;
+                    let r = self.apply(f, first);
+                    let r = self.drop_on_raise(r, &rest)?;
                     return self.apply_step(r, rest);
                 }
                 if self.heap[p as usize].rc == 1 {
@@ -1054,7 +1248,8 @@ impl<'m> Interp<'m> {
                 self.apply_step(g, all)
             }
             kind::THUNK | kind::IND => {
-                let v = self.force(f)?;
+                let v = self.force(f);
+                let v = self.drop_on_raise(v, &args)?;
                 self.apply_step(v, args)
             }
             _ => fault(format!("apply of a non-function object (kind {k})")),
@@ -1121,12 +1316,20 @@ impl<'m> Interp<'m> {
     }
 
     fn prim(&mut self, p: Prim, a: &[Val]) -> R<Val> {
+        if !p.is_unchecked() {
+            // A failed check (an index out of bounds) is catchable.
+            return match self.checked_prim(p, a) {
+                Err(Exit::Panic(m)) => Err(self.error(&m, false)),
+                r => r,
+            };
+        }
         // An unchecked access (FEAT-0069) out of bounds is a compiler bug:
-        // the index was proved to be in bounds.
-        match self.checked_prim(p.checked(), a) {
-            Err(Exit::Panic(m)) if p.is_unchecked() => {
-                fault(format!("{}: unchecked access failed: {m}", p.name()))
-            }
+        // the index was proved to be in bounds (never an exception).
+        let unwinding = std::mem::replace(&mut self.unwinding, false);
+        let r = self.checked_prim(p.checked(), a);
+        self.unwinding = unwinding;
+        match r {
+            Err(Exit::Panic(m)) => fault(format!("{}: unchecked access failed: {m}", p.name())),
             r => r,
         }
     }
@@ -1142,13 +1345,13 @@ impl<'m> Interp<'m> {
             Mul => Val::I(i(0).wrapping_mul(i(1))),
             Div => {
                 if i(1) == 0 {
-                    return Err(Exit::Panic("divide by zero".into()));
+                    return Err(self.error("divide by zero", false));
                 }
                 Val::I(i(0).wrapping_div(i(1)))
             }
             Rem => {
                 if i(1) == 0 {
-                    return Err(Exit::Panic("divide by zero".into()));
+                    return Err(self.error("divide by zero", false));
                 }
                 Val::I(i(0).wrapping_rem(i(1)))
             }
@@ -1703,7 +1906,7 @@ impl<'m> Interp<'m> {
                 let path = String::from_utf8_lossy(&self.bytes(a[0])?.clone()).into_owned();
                 match std::fs::read(&path) {
                     Ok(b) => Ok(self.bytes_from(b)),
-                    Err(e) => Err(Exit::Panic(file_error(&path, "openFile", &e))),
+                    Err(e) => Err(self.error(&file_error(&path, "openFile", &e), true)),
                 }
             }
             "cirka_file_write" => {
@@ -1721,7 +1924,7 @@ impl<'m> Interp<'m> {
                 };
                 match r {
                     Ok(()) => Ok(unit),
-                    Err(e) => Err(Exit::Panic(file_error(&path, "withFile", &e))),
+                    Err(e) => Err(self.error(&file_error(&path, "withFile", &e), true)),
                 }
             }
             // Byte string operations of the support library (FEAT-0095).
@@ -1826,6 +2029,11 @@ impl<'m> Interp<'m> {
                 .map(|_| unit)
                 .or_else(fault),
             "cirka_panic_bytes" => {
+                if self.unwinding {
+                    // The message (borrowed) is the exception.
+                    self.dup(a[0])?;
+                    return Err(Exit::Raise(a[0]));
+                }
                 let b = self.bytes(a[0])?.clone();
                 Err(Exit::Panic(String::from_utf8_lossy(&b).into_owned()))
             }

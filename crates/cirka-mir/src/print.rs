@@ -224,6 +224,13 @@ pub fn print_instr(m: &Module, f: &Function, ins: &Instr) -> String {
             let names: Vec<&str> = vars.iter().map(|v| f.var_name(*v)).collect();
             format!("let ({}) = call {func}{}", names.join(", "), ops(f, args))
         }
+        Instr::Catch { vars, clo, args } => format!(
+            "let ({}, {}) = catch apply {}{}",
+            f.var_name(vars[0]),
+            f.var_name(vars[1]),
+            f.var_name(*clo),
+            ops(f, args)
+        ),
         Instr::Dup(v) => format!("dup {}", f.var_name(*v)),
         Instr::Drop(v) => format!("drop {}", f.var_name(*v)),
         Instr::Set {
@@ -274,6 +281,7 @@ pub fn print_term(m: &Module, f: &Function, t: &Terminator) -> String {
         }
         Terminator::TailCall { func, args } => format!("tailcall {func}{}", ops(f, args)),
         Terminator::Panic(s) => format!("panic {}", esc(s.as_bytes())),
+        Terminator::Raise(v) => format!("raise {}", f.var_name(*v)),
         Terminator::Unreachable => "unreachable".into(),
     }
 }

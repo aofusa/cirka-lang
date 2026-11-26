@@ -1,0 +1,122 @@
+// Exceptions in eval/apply (FEAT-0040): when the first application of an
+// over-application raises, the remaining arguments are dropped (a closure
+// and a partial application); so are the arguments of an application of
+// a thunk that raises when it is forced, and the environment of a closure
+// with a borrowed capture, which its entry keeps during the call.
+type Int { I = 0 { v: i64 } }
+type Unit { U = 0 {} }
+extern fn cirka_write_i64(i64) -> void
+extern fn cirka_write_char(i64) -> void
+
+fn say(n: i64) -> i64 {
+entry:
+  let _ = extern cirka_write_i64(n)
+  let _ = extern cirka_write_char(10)
+  ret 0
+}
+
+fn two(a: ptr @owned, b: ptr @owned) -> ptr {
+entry:
+  drop b
+  raise a
+}
+
+fn three(a: ptr @owned, b: ptr @owned, c: ptr @owned) -> ptr {
+entry:
+  drop a
+  drop c
+  raise b
+}
+
+fn bad_fun() -> ptr {
+entry:
+  let e = alloc Int.I(4)
+  raise e
+}
+
+// k is borrowed from the closure's environment.
+fn borrowing(k: ptr @borrowed, a: ptr @owned) -> ptr {
+entry:
+  let x = proj k Int.I.v
+  let y = proj a Int.I.v
+  drop a
+  let s = prim add(x, y)
+  let e = alloc Int.I(s)
+  raise e
+}
+
+// `two` applied to three boxes.
+fn over(w: ptr @owned) -> ptr {
+entry:
+  drop w
+  let g = mkclosure two()
+  let a = alloc Int.I(1)
+  let b = alloc Int.I(2)
+  let c = alloc Int.I(3)
+  let r = apply g(a, b, c)
+  ret r
+}
+
+// `three` with one argument, then applied to three more.
+fn over_pap(w: ptr @owned) -> ptr {
+entry:
+  drop w
+  let g = mkclosure three()
+  let a = alloc Int.I(1)
+  let p = apply g(a)
+  let b = alloc Int.I(2)
+  let c = alloc Int.I(3)
+  let d = alloc Int.I(4)
+  let r = apply p(b, c, d)
+  let x = proj r Int.I.v
+  drop r
+  let s = alloc Int.I(x)
+  ret s
+}
+
+// A thunk whose value would be the function, applied to a box.
+fn thunk_fun(w: ptr @owned) -> ptr {
+entry:
+  drop w
+  let t = mkthunk bad_fun()
+  let a = alloc Int.I(9)
+  let r = apply t(a)
+  let x = proj r Int.I.v
+  drop r
+  let s = alloc Int.I(x)
+  ret s
+}
+
+fn borrowed_env(w: ptr @owned) -> ptr {
+entry:
+  drop w
+  let k = alloc Int.I(30)
+  let g = mkclosure borrowing(k)
+  let a = alloc Int.I(12)
+  let r = apply g(a)
+  ret r
+}
+
+fn show(f: ptr @owned, u: ptr @owned) -> i64 {
+entry:
+  let (st, v) = catch apply f(u)
+  let _ = call say(st)
+  let x = proj v Int.I.v
+  drop v
+  let _ = call say(x)
+  ret 0
+}
+
+fn main() -> i64 {
+entry:
+  let u = alloc Unit.U()
+  let f1 = mkclosure over()
+  let _ = call show(f1, u)
+  let f2 = mkclosure over_pap()
+  let _ = call show(f2, u)
+  let f3 = mkclosure thunk_fun()
+  let _ = call show(f3, u)
+  let f4 = mkclosure borrowed_env()
+  let _ = call show(f4, u)
+  ret 0
+}

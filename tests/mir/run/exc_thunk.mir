@@ -1,0 +1,97 @@
+// A thunk whose evaluation raises (FEAT-0040) remembers the exception and
+// raises it again when it is forced again (05-runtime.md §6.4), as a CAF
+// does; the captured values it still held (a borrowed capture) are dropped.
+type Int { I = 0 { v: i64 } }
+type Unit { U = 0 {} }
+extern fn cirka_write_i64(i64) -> void
+extern fn cirka_write_char(i64) -> void
+global bad = bad_caf
+
+fn say(n: i64) -> i64 {
+entry:
+  let _ = extern cirka_write_i64(n)
+  let _ = extern cirka_write_char(10)
+  ret 0
+}
+
+// Raises I (x + 1).
+fn bad_thunk(x: ptr @owned) -> ptr {
+entry:
+  let v = proj x Int.I.v
+  drop x
+  let w = prim add(v, 1)
+  let e = alloc Int.I(w)
+  raise e
+}
+
+// Raises I (x + 100); the thunk keeps `x` until it is updated.
+fn bad_borrow(x: ptr @borrowed) -> ptr {
+entry:
+  let v = proj x Int.I.v
+  let w = prim add(v, 100)
+  let e = alloc Int.I(w)
+  raise e
+}
+
+fn bad_caf() -> ptr {
+entry:
+  let e = alloc Int.I(7)
+  raise e
+}
+
+fn force_it(t: ptr @owned, w: ptr @owned) -> ptr {
+entry:
+  drop w
+  let v = force t
+  ret v
+}
+
+fn force_caf(w: ptr @owned) -> ptr {
+entry:
+  drop w
+  let g = global bad
+  let v = force g
+  ret v
+}
+
+// Catches `f u`, prints the status and the number, and returns the value.
+fn show(f: ptr @owned, u: ptr @owned) -> ptr {
+entry:
+  let (st, v) = catch apply f(u)
+  let _ = call say(st)
+  let x = proj v Int.I.v
+  let _ = call say(x)
+  ret v
+}
+
+fn main() -> i64 {
+entry:
+  let u = alloc Unit.U()
+  let x = alloc Int.I(41)
+  let t = mkthunk bad_thunk(x)
+  dup t
+  let f1 = mkclosure force_it(t)
+  let e1 = call show(f1, u)
+  // Forced again: the same exception.
+  let f2 = mkclosure force_it(t)
+  let e2 = call show(f2, u)
+  let same = prim ptr_eq(e1, e2)
+  let _ = call say(same)
+  drop e1
+  drop e2
+  let y = alloc Int.I(5)
+  let t2 = mkthunk bad_borrow(y)
+  let f3 = mkclosure force_it(t2)
+  let e3 = call show(f3, u)
+  drop e3
+  // A CAF, twice: the exception stays with it.
+  let f4 = mkclosure force_caf()
+  let e4 = call show(f4, u)
+  let f5 = mkclosure force_caf()
+  let e5 = call show(f5, u)
+  let same2 = prim ptr_eq(e4, e5)
+  let _ = call say(same2)
+  drop e4
+  drop e5
+  ret 0
+}
