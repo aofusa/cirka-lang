@@ -173,6 +173,9 @@ struct Gen<'m> {
     funcs: HashMap<&'m str, &'m Function>,
     externs: BTreeMap<String, String>,
     label_counter: usize,
+    /// Whether a function reads the runtime's thread block: the block is
+    /// declared only then (BUG-0044).
+    uses_tls: bool,
 }
 
 /// TBAA access tags (metadata emitted by `entry_and_cafs`).
@@ -197,6 +200,7 @@ pub fn emit(m: &Module, opts: Options) -> String {
         funcs: m.funcs.iter().map(|f| (f.name.as_str(), f)).collect(),
         externs: BTreeMap::new(),
         label_counter: 0,
+        uses_tls: false,
     };
     // One declaration per C symbol (08-ffi.md §7.2): the first call's,
     // else an address's (a function with its signature, or data).
@@ -268,9 +272,14 @@ pub fn emit(m: &Module, opts: Options) -> String {
         let _ = writeln!(s, "{d}");
     }
     // Defined by the runtime in the executable's TLS segment (local-exec).
-    s.push_str(
-        "@cirka_tls_block = external hidden thread_local(localexec) global [0 x i8], align 64\n",
-    );
+    // Declared only when used: an unused hidden declaration becomes an
+    // undefined symbol without the TLS type, which GNU ld rejects against
+    // the runtime's definition (BUG-0044).
+    if g.uses_tls {
+        s.push_str(
+            "@cirka_tls_block = external hidden thread_local(localexec) global [0 x i8], align 64\n",
+        );
+    }
     s.push('\n');
     s.push_str(&g.globals);
     s.push('\n');
@@ -472,7 +481,7 @@ impl<'m> Gen<'m> {
             return p;
         }
         let class = size.max(8).div_ceil(8) - 1;
-        let tls = Self::tls(c);
+        let tls = self.tls(c);
         let (hp, h, empty, next, ap, a, a1, q, p) = (
             c.t(),
             c.t(),
@@ -531,7 +540,7 @@ impl<'m> Gen<'m> {
             return;
         }
         let class = size.max(8).div_ceil(8) - 1;
-        let tls = Self::tls(c);
+        let tls = self.tls(c);
         let (fp, f, on, hp, h, ap, a, np, n, mp, m, live, gt, m1, n1) = (
             c.t(),
             c.t(),
@@ -596,7 +605,8 @@ impl<'m> Gen<'m> {
     }
 
     /// The address of this thread's runtime block (FEAT-1027).
-    fn tls(c: &mut FnCtx<'_>) -> String {
+    fn tls(&mut self, c: &mut FnCtx<'_>) -> String {
+        self.uses_tls = true;
         let t = c.t();
         c.line(&format!(
             "{t} = call ptr @llvm.threadlocal.address.p0(ptr @cirka_tls_block)"
@@ -683,7 +693,7 @@ impl<'m> Gen<'m> {
         {
             return false;
         }
-        let tls = Self::tls(c);
+        let tls = self.tls(c);
         let (ap, at, known, e, e64, called) = (c.t(), c.t(), c.t(), c.t(), c.t(), c.t());
         let (read, call, done) = (
             self.fresh_label("errno.read"),
@@ -2845,6 +2855,25 @@ entry:
         let main = function_ir(&debug, "main");
         assert!(!main.contains("@cirka_tls_block"), "{main}");
         assert!(main.contains("call ptr @cirka_alloc(i64 24)"), "{main}");
+        // Nothing reads the thread block, which is not declared either: an
+        // unused declaration does not link with GNU ld (BUG-0044).
+        assert!(!debug.contains("@cirka_tls_block"), "{debug}");
+    }
+
+    /// A program whose code never reads the runtime's thread block does not
+    /// declare it: GNU ld rejects the undefined symbol LLVM writes for an
+    /// unused hidden declaration (no TLS type) against the runtime's TLS
+    /// definition (BUG-0044).
+    #[test]
+    fn thread_block_declared_only_when_read() {
+        let src = "fn main() -> i64 {
+entry:
+  ret 7
+}
+";
+        let m = cirka_mir::parse::parse(cirka_diagnostics::FileId(0), src).unwrap();
+        let ir = emit(&m, Options::default());
+        assert!(!ir.contains("@cirka_tls_block"), "{ir}");
     }
 
     /// A dead cell of a known constructor (drop specialization) and the
