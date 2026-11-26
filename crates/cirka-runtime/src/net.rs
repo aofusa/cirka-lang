@@ -616,7 +616,9 @@ fn read_with(
 
 /// Reads at most `max` bytes from the stream socket of `h` (TCP; a read of
 /// fewer bytes than asked tells the running loop that the socket is empty,
-/// FEAT-1001; datagrams are read with `cirka_sock_recvfrom`): the bytes
+/// FEAT-1001; datagrams are read with `cirka_sock_recvfrom`) with `recv`
+/// (FEAT-1013: `read` also goes through the checks of a file read, the
+/// file permission hook of the security module among them): the bytes
 /// (with `errno` 0); empty with `errno` 0 at the end of the stream; empty
 /// with `EAGAIN` when nothing is there yet as far as the running loop
 /// knows (a watch then waits for the next readiness) or the budget of the
@@ -628,9 +630,9 @@ fn read_with(
 pub unsafe extern "C" fn cirka_sock_recv(h: Obj, max: i64) -> Obj {
     // SAFETY: guaranteed by the caller.
     let (fd, ident) = unsafe { handle_ident(h) };
-    // SAFETY: `buf` has room for `n` bytes.
+    // SAFETY: `buf` has room for `n` bytes; no address is asked for.
     read_with(fd, ident, max, true, |fd, buf, n| unsafe {
-        sys::read(fd, buf, n)
+        sys::recvfrom(fd, buf, n, 0, core::ptr::null_mut(), core::ptr::null_mut())
     })
 }
 

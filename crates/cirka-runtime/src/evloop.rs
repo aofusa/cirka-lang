@@ -1458,6 +1458,7 @@ mod tests {
 
     unsafe extern "C" {
         fn pipe(fds: *mut i32) -> i32;
+        fn socketpair(domain: i32, ty: i32, protocol: i32, fds: *mut i32) -> i32;
     }
 
     static LOG: StdMutex<Vec<u8>> = StdMutex::new(Vec::new());
@@ -1506,6 +1507,15 @@ mod tests {
         let mut fds = [0i32; 2];
         // SAFETY: valid out array.
         assert_eq!(unsafe { pipe(fds.as_mut_ptr()) }, 0);
+        (i64::from(fds[0]), i64::from(fds[1]))
+    }
+
+    /// A connected pair of stream sockets (`AF_UNIX`, `SOCK_STREAM`): what
+    /// `cirka_sock_recv` reads (with `recv`, FEAT-1013).
+    fn stream_pair() -> (i64, i64) {
+        let mut fds = [0i32; 2];
+        // SAFETY: valid out array.
+        assert_eq!(unsafe { socketpair(1, 1, 0, fds.as_mut_ptr()) }, 0);
         (i64::from(fds[0]), i64::from(fds[1]))
     }
 
@@ -1957,8 +1967,8 @@ mod tests {
         assert_eq!(balance(), b0);
     }
 
-    /// Reads the pipe in `FD` one byte at a time as long as reads complete
-    /// at once, logging the bytes, then waits for the pipe.
+    /// Reads the stream socket in `HANDLE` one byte at a time as long as
+    /// reads complete at once, logging the bytes, then waits for it.
     extern "C" fn drain_pipe(t: Obj) -> Obj {
         // SAFETY: the descriptor object in `HANDLE`, strings released.
         unsafe {
@@ -1971,7 +1981,7 @@ mod tests {
                 cirka_drop(d);
                 if empty {
                     if e == 11 {
-                        // EAGAIN: the budget is spent (or the pipe empty).
+                        // EAGAIN: the budget is spent (or the socket empty).
                         log(b'|');
                         let cb = closure(drain_pipe);
                         assert_eq!(cirka_async_watch(h, EV_READ, -1, cb), 0);
@@ -1990,7 +2000,7 @@ mod tests {
     fn the_budget_lets_other_callbacks_run() {
         let _g = crate::test_lock();
         let b0 = balance();
-        let (r, w) = pipe_fds();
+        let (r, w) = stream_pair();
         // SAFETY: a descriptor object, closures and a string, released.
         unsafe {
             let d = crate::cirka_bytes_from([b'x'; 100].as_ptr(), 100);
@@ -2003,7 +2013,7 @@ mod tests {
             let c = closure(drain_pipe);
             assert_eq!(cirka_async_run(c), 0);
             // 64 bytes in the first callback, then the rest when the loop
-            // calls back; the end of the pipe stops the reads.
+            // calls back; the end of the stream stops the reads.
             assert_eq!(take_events(), vec![64, 36]);
             assert_eq!(take_log(), b"|");
             cirka_drop(c);
