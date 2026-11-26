@@ -435,11 +435,12 @@ impl<'m> Gen<'m> {
         ));
         // A static object (`rc` 0) needs nothing. It is tested before the
         // fast path, so that it jumps forward within the hot code instead
-        // of to a cold block and back (FEAT-1017).
+        // of to a cold block and back (FEAT-1017), and without a weight
+        // (FEAT-1031): static objects (empty strings, literals, IO tokens,
+        // fieldless constructors) are common in many programs, and a cold
+        // edge makes LLVM lay out the code after the test for them apart.
         c.line(&format!("{zero} = icmp eq i32 {rc}, 0"));
-        c.line(&format!(
-            "br i1 {zero}, label %{done}, label %{live}, !prof !1"
-        ));
+        c.line(&format!("br i1 {zero}, label %{done}, label %{live}"));
         c.label(&live);
         c.line(&format!("{pos} = icmp sgt i32 {rc}, 0"));
         c.line(&format!(
@@ -620,12 +621,10 @@ impl<'m> Gen<'m> {
         c.line(&format!(
             "{rc} = load atomic i32, ptr {o} unordered, align 8{TBAA_HEADER}"
         ));
-        // A static object (`rc` 0) needs nothing: tested first, as in
-        // `emit_dup` (FEAT-1017).
+        // A static object (`rc` 0) needs nothing: tested first and without
+        // a weight, as in `emit_dup` (FEAT-1017, FEAT-1031).
         c.line(&format!("{zero} = icmp eq i32 {rc}, 0"));
-        c.line(&format!(
-            "br i1 {zero}, label %{done}, label %{live}, !prof !1"
-        ));
+        c.line(&format!("br i1 {zero}, label %{done}, label %{live}"));
         c.label(&live);
         c.line(&format!("{gt1} = icmp sgt i32 {rc}, 1"));
         c.line(&format!(
@@ -3314,7 +3313,8 @@ entry:
     /// `dup` and `drop` test for a static object (`rc` 0) right after
     /// loading the count, before their fast paths: it jumps forward past
     /// the update instead of to a cold block and back, and the cold blocks
-    /// only free or reach a shared object (FEAT-1017).
+    /// only free or reach a shared object (FEAT-1017). The test has no
+    /// weight: a static object is not rare (FEAT-1031).
     #[test]
     fn dup_and_drop_leave_static_objects_first() {
         let src = r"
@@ -3361,7 +3361,7 @@ entry:
                 br.starts_with("br i1 ")
                     && br.contains(&format!("label %{op}.done"))
                     && br.contains(&format!("label %{op}.live"))
-                    && br.ends_with("!prof !1"),
+                    && !br.contains("!prof"),
                 "{body}"
             );
         }

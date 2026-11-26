@@ -170,6 +170,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-1028](features/FEAT-1028-runtime-rare-paths-out-of-line.md) | 演算ごとに動くランタイムの関数の稀な経路を関数の外に出し、受信を 1 つの関数にする | done | P1 | 1023, 1026, 0091 |
 | [FEAT-1029](features/FEAT-1029-case-of-case-nested-returns.md) | case-of-case を、内側の返り値が入れ子の case の中まで既知の構築子で、複製される外側の選択肢が小さいときにも行う | done | P1 | 0074, 0091 |
 | [FEAT-1030](features/FEAT-1030-static-object-alignment.md) | 静的なオブジェクトを、大きさを収める 2 の冪 (8〜64 バイト) に揃える | done | P1 | 1020, 0091 |
+| [FEAT-1031](features/FEAT-1031-unweighted-static-object-test.md) | `dup` / `drop` の静的なオブジェクトの検査 (RC 0) に分岐の重みを付けない | done | P1 | 1017, 0091 |
 
 
 ## aCHC
