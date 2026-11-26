@@ -134,6 +134,12 @@ pub enum PrimOp {
     BytesSet64Unchecked,
     BytesGetFUnchecked,
     BytesSetFUnchecked,
+    /// Exceptions (FEAT-0040, 06-ir.md §1.8): `raise (T) e` throws `e :
+    /// Any` without evaluating it (type `T`: it diverges); `catch (T) act
+    /// h w` applies `act : Unit# → T` to the state token `w` and, when it
+    /// raises `x`, applies `h : Any → Unit# → T` to `x` and `w`.
+    Raise,
+    Catch,
 }
 
 /// The message of a `panic` that cannot happen (a branch proved
@@ -197,6 +203,8 @@ impl PrimOp {
         PrimOp::BytesSet64Unchecked,
         PrimOp::BytesGetFUnchecked,
         PrimOp::BytesSetFUnchecked,
+        PrimOp::Raise,
+        PrimOp::Catch,
     ];
 
     pub fn name(self) -> &'static str {
@@ -257,6 +265,8 @@ impl PrimOp {
             BytesSet64Unchecked => "bytes_set64_unchecked",
             BytesGetFUnchecked => "bytes_getf_unchecked",
             BytesSetFUnchecked => "bytes_setf_unchecked",
+            Raise => "raise",
+            Catch => "catch",
         }
     }
 
@@ -269,7 +279,7 @@ impl PrimOp {
         use PrimOp::*;
         match self {
             ArrayNew | ArrayLen | ArrayGet | ArraySet | ArrayUnique | ArraySetShared | PtrEq
-            | ArrayGetUnchecked | ArraySetUnchecked => 1,
+            | ArrayGetUnchecked | ArraySetUnchecked | Raise | Catch => 1,
             _ => 0,
         }
     }
@@ -310,7 +320,21 @@ impl PrimOp {
             BytesUnique => (vec![Type::bytes()], Type::bytes()),
             BytesResize => (vec![Type::bytes(), i()], Type::bytes()),
             PtrEq => (vec![elem.clone(), elem], i()),
+            Raise => (vec![Type::Any], elem),
+            Catch => {
+                let act = Type::fun(Mult::Many, Type::unit(), elem.clone());
+                let h = Type::fun(Mult::Many, Type::Any, act.clone());
+                (vec![act, h, Type::unit()], elem)
+            }
         }
+    }
+
+    /// Whether the operation evaluates its arguments before it runs: all
+    /// but those of exceptions. `raise` throws its argument unevaluated,
+    /// and `catch` applies its closures inside, where what they raise
+    /// (also while being evaluated) is caught (06-ir.md §1.8).
+    pub fn evaluates_args(self) -> bool {
+        !matches!(self, PrimOp::Raise | PrimOp::Catch)
     }
 
     /// Operations with side effects or that may fail; never removed or
@@ -345,6 +369,8 @@ impl PrimOp {
                 | BytesSet64Unchecked
                 | BytesGetFUnchecked
                 | BytesSetFUnchecked
+                | Raise
+                | Catch
         )
     }
 }

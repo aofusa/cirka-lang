@@ -1,0 +1,9 @@
+; The action and the handler of `catch` may run any number of times (the
+; handler maybe never): they cannot capture a linear value (06-ir.md §1.8).
+(data Handle () :linear (MkHandle Int#))
+(data Int () (I# Int#))
+(def close (-> 1 Handle Int#) (lam ((h 1 Handle)) (case h (s 1 Handle) Int# ((MkHandle fd) fd))))
+(def bad (-> 1 Handle Int) (lam ((h 1 Handle))
+  (prim catch (Int) (lam ((u Unit#)) (con I# () (close h)))
+    (lam ((e Any) (u2 Unit#)) (con I# () 0)) unit)))
+(def main Int# 0)

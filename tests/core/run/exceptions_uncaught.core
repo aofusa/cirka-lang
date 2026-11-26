@@ -1,0 +1,36 @@
+; An exception nothing catches (FEAT-0040): the frames release what they
+; hold and the `finally` of the program runs its release (99) on the way
+; out; the runtime reports the exception and the exit code is 1. Nothing
+; leaks (the exception unwinds: the program has a `catch`).
+(data Int () (I# Int#))
+(data List (a) (Nil) (Cons a (List a)))
+(extern cirka_write_i64 (Int#) Unit#)
+(extern cirka_write_char (Int#) Unit#)
+
+(def say (-> Int# Unit#)
+  (lam ((n Int#))
+    (let! (u Unit# (extern cirka_write_i64 n))
+      (extern cirka_write_char 10))))
+
+(def finally (-> (-> Unit# Int) (-> Unit# Unit#) Unit# Int)
+  (lam ((act (-> Unit# Int)) (fin (-> Unit# Unit#)) (w Unit#))
+    (let! (r Int
+            (prim catch (Int) act
+              (lam ((e Any) (w2 Unit#))
+                (let! (u Unit# (fin w2))
+                  (prim raise (Int) e)))
+              w))
+      (let! (u Unit# (fin w)) r))))
+
+; The length of the list, raising at its end.
+(def len (-> (List Int) Int# Int)
+  (lam ((xs (List Int)) (n Int#))
+    (case xs (s (List Int)) Int
+      ((Nil) (panic "the end" Int))
+      ((Cons y ys) (case (len ys (prim add n 1)) (r Int) Int ((I# k) (con I# () (prim add k 1))))))))
+
+(def main Int#
+  (let! (u Unit# (say 1))
+  (let! (xs (List Int) (con Cons (Int) (con I# () 1) (con Cons (Int) (con I# () 2) (con Nil (Int)))))
+  (let! (r Int (finally (lam ((w Unit#)) (len xs 0)) (lam ((w Unit#)) (say 99)) unit))
+    (case r (s Int) Int# ((I# k) k))))))

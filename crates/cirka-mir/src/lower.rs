@@ -1117,6 +1117,8 @@ impl<'p> Lowerer<'p> {
                 self.whnf(fb, env, body)
             }
             Expr::Case(s, b, res, alts) => self.case(fb, env, s, b, res, alts, Mode::Value),
+            Expr::Prim(PrimOp::Raise, _, args) => self.raise(fb, env, args),
+            Expr::Prim(PrimOp::Catch, ts, args) => self.catch(fb, env, ts, args),
             Expr::Prim(op, _, args) => self.prim(fb, env, *op, args),
             Expr::Extern(f, args) => {
                 let decl = self.m.extern_decl(f).cloned()?;
@@ -1156,9 +1158,89 @@ impl<'p> Lowerer<'p> {
         }
     }
 
+    /// `raise (T) e` (06-ir.md §1.8): throws `e` unevaluated (MIR `raise`).
+    fn raise(&mut self, fb: &mut Fb, env: &mut Env, args: &[Expr]) -> Option<Operand> {
+        let [e] = args else {
+            self.error("ICE: `raise` takes one argument");
+            return None;
+        };
+        let x = self.lazy(fb, env, e)?;
+        let x = self.as_var(fb, x);
+        fb.term(Terminator::Raise(x));
+        None
+    }
+
+    /// `catch (T) act h w` (06-ir.md §1.8): `let (st, v) = catch apply
+    /// act(w)`, then `v` (status 0) or `apply h(v, w)` (status 1). The
+    /// action is applied unevaluated: the application evaluates it inside
+    /// the `catch`. The handler is built only when an exception came.
+    fn catch(&mut self, fb: &mut Fb, env: &mut Env, ts: &[Type], args: &[Expr]) -> Option<Operand> {
+        let ([t], [act, h, w]) = (ts, args) else {
+            self.error("ICE: `catch` takes one type and three arguments");
+            return None;
+        };
+        let act = self.lazy(fb, env, act)?;
+        let act = self.as_var(fb, act);
+        let w0 = self.whnf(fb, env, w)?;
+        let wr = self.op_ty(fb, &w0);
+        let tok = self.box_val(fb, w0.clone(), wr);
+        let st = fb.f.fresh_var("st", Ty::I64);
+        let v = fb.f.fresh_var("caught", Ty::Ptr);
+        fb.emit(Instr::Catch {
+            vars: [st, v],
+            clo: act,
+            args: vec![tok],
+        });
+        let r = self.rep(t);
+        let join = fb.block("join");
+        let res = fb.f.fresh_var("res", r);
+        fb.f.blocks[join.0 as usize].params.push(res);
+        let ok = fb.block("returned");
+        let raised = fb.block("raised");
+        fb.term(Terminator::Switch {
+            scrut: st,
+            arms: vec![(ir::Case::Int(0), ok)],
+            default: Some(raised),
+        });
+        let unboxed = |this: &mut Self, fb: &mut Fb, x: Var| {
+            if r == Ty::Ptr {
+                Operand::Var(x)
+            } else {
+                this.unbox(fb, Operand::Var(x), r)
+            }
+        };
+        fb.switch_to(ok);
+        let x = unboxed(self, fb, v);
+        fb.term(Terminator::Jump(join, vec![x]));
+        fb.switch_to(raised);
+        let mut env2 = env.clone();
+        // (A handler that diverges while being built has ended its block.)
+        if let Some(hv) = self.lazy(fb, &mut env2, h) {
+            let hv = self.as_var(fb, hv);
+            let tok1 = self.box_val(fb, w0, wr);
+            let y = fb.let_(
+                "handled",
+                Ty::Ptr,
+                Rhs::Apply {
+                    clo: hv,
+                    args: vec![Operand::Var(v), tok1],
+                },
+            );
+            let y = unboxed(self, fb, y);
+            fb.term(Terminator::Jump(join, vec![y]));
+        }
+        fb.switch_to(join);
+        Some(Operand::Var(res))
+    }
+
     fn prim(&mut self, fb: &mut Fb, env: &mut Env, op: PrimOp, args: &[Expr]) -> Option<Operand> {
         use ir::Prim as P;
         let mp = match op {
+            PrimOp::Raise => return self.raise(fb, env, args),
+            PrimOp::Catch => {
+                self.error("ICE: `catch` without its type argument");
+                return None;
+            }
             PrimOp::Add => P::Add,
             PrimOp::Sub => P::Sub,
             PrimOp::Mul => P::Mul,

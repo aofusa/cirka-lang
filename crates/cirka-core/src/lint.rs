@@ -883,7 +883,19 @@ impl<'p> Linter<'p> {
                 for (i, (a, p)) in args.iter().zip(&ps).enumerate() {
                     let (t, ua) = self.expr(a)?;
                     self.expect(&format!("argument {i} of `{}`", op.name()), &t, p)?;
+                    // The action and the handler of `catch` may run any
+                    // number of times (the handler maybe never): they
+                    // cannot capture linear values (06-ir.md §1.8).
+                    let ua = if *op == PrimOp::Catch && i < 2 {
+                        ua.scale(Mult::Many)
+                    } else {
+                        ua
+                    };
                     u = u.add(ua);
+                }
+                // `raise` diverges, as `panic` does.
+                if *op == PrimOp::Raise {
+                    u = u.add(Usage::bottom());
                 }
                 Ok((r, u))
             }

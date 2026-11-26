@@ -1050,6 +1050,7 @@ fn forces(e: &Expr, x: u32) -> bool {
         }
         Expr::LetStrict(_, r, k) => is_x(r) || forces(r, x) || forces(k, x),
         Expr::Let(_, k) | Expr::Cast(k, _) | Expr::TyApp(k, _) => forces(k, x),
+        Expr::Prim(op, ..) if !op.evaluates_args() => false,
         Expr::Prim(_, _, a) | Expr::Extern(_, a) => a.iter().any(|a| is_x(a) || forces(a, x)),
         _ => false,
     }

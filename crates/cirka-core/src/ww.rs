@@ -147,6 +147,10 @@ impl Analysis<'_> {
                 }
                 s
             }
+            // `raise` diverges; `catch` evaluates its closures inside,
+            // where their exceptions are caught (06-ir.md §1.8).
+            Expr::Prim(PrimOp::Raise, ..) => None,
+            Expr::Prim(op, ..) if !op.evaluates_args() => Some(HashSet::new()),
             Expr::Prim(op, _, args) => {
                 let mut s = Some(HashSet::new());
                 for (i, a) in args.iter().enumerate() {
