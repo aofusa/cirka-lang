@@ -1,12 +1,12 @@
 //! Byte string operations of the support library (FEAT-0095): copying,
 //! searching for a byte and comparing ranges of BYTES objects with the C
 //! library's `memmove`, `memchr` and `memcmp` (vectorized), instead of
-//! loops over one byte at a time. Ranges out of bounds panic, as the
-//! checked byte accesses they replace do. Also resizing a BYTES object in
-//! place (FEAT-0096).
+//! loops over one byte at a time. Ranges out of bounds are an error, as
+//! for the checked byte accesses they replace (an exception when the
+//! program unwinds them: the function returns, FEAT-0040). Also resizing
+//! a BYTES object in place (FEAT-0096).
 
 use crate::object::{Obj, word};
-use crate::start::panic_msg;
 
 use core::ffi::c_void;
 
@@ -42,9 +42,14 @@ fn fits(i: i64, n: i64, len: i64) -> bool {
     i >= 0 && n <= len - i
 }
 
+static OUT_OF_BOUNDS: crate::exception::StaticBytes<19> =
+    crate::exception::StaticBytes::new(b"index out of bounds");
+
+/// A range out of bounds: ends the program, or makes the error pending
+/// (the caller then returns at once).
 #[cold]
-fn out_of_bounds() -> ! {
-    panic_msg(b"index out of bounds")
+fn out_of_bounds() {
+    crate::exception::fail_static(&OUT_OF_BOUNDS)
 }
 
 /// Copies `src[i..i + n]` to `dst[off..off + n]` (`cirka$bytes_copy_at`;
@@ -63,6 +68,7 @@ pub unsafe extern "C" fn cirka_bytes_copy(dst: Obj, off: i64, src: Obj, i: i64, 
     unsafe {
         if !fits(off, n, len(dst)) || !fits(i, n, len(src)) {
             out_of_bounds();
+            return 0;
         }
         core::ptr::copy(at(src, i), at(dst, off), n as usize);
     }
@@ -84,6 +90,7 @@ pub unsafe extern "C" fn cirka_bytes_index(s: Obj, b: i64, i: i64, j: i64) -> i6
     unsafe {
         if !fits(i, j - i, len(s)) {
             out_of_bounds();
+            return -1;
         }
         // No byte equals a value outside 0..=255.
         if !(0..=255).contains(&b) {
@@ -118,6 +125,7 @@ pub unsafe extern "C" fn cirka_bytes_eq(s: Obj, i: i64, t: Obj, j: i64, n: i64) 
     unsafe {
         if !fits(i, n, len(s)) || !fits(j, n, len(t)) {
             out_of_bounds();
+            return 0;
         }
         (memcmp(at(s, i).cast(), at(t, j).cast(), n as usize) == 0) as i64
     }

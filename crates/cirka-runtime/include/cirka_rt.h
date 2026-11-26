@@ -43,8 +43,24 @@ void *cirka_mk_pap(void *fun, size_t n, void *const *args);
 
 /* runtime errors and exit */
 _Noreturn void cirka_panic(const char *msg, size_t len);
-_Noreturn void cirka_panic_bytes(void *bytes);
+/* Returns, with the message pending, in a program that unwinds exceptions. */
+void cirka_panic_bytes(void *bytes);
 _Noreturn void cirka_exit(int64_t code);
+
+/* exceptions (05-runtime.md §6; called by the generated code) */
+void    cirka_exception_enable(void);
+void   *cirka_exception_begin(void *value);
+void   *cirka_exception_take(void *ue);
+void    cirka_exception_pend(void *ue);
+void   *cirka_exception_pending(void);
+void   *cirka_exception_take_pending(void);
+int64_t cirka_uncaught(void *ue);
+_Noreturn void cirka_uncaught_exit(void *ue);
+_Noreturn void cirka_raise_abort(void *value);
+_Noreturn void cirka_exception_fatal(int32_t code);
+void   *cirka_thunk_reraise(void *thunk);
+int32_t cirka_personality(int32_t version, int32_t actions, uint64_t cls,
+                          void *ue, void *ctx);
 
 /* I/O */
 void    cirka_write_i64(int64_t n);

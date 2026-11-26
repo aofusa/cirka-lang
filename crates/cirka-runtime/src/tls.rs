@@ -73,6 +73,8 @@ pub struct Tls {
     /// Results of the last call of `os.rs` beyond its return value (the
     /// pipes of a spawn, the status of a wait, the fields of a stat).
     pub os: [i64; 6],
+    /// The exception being raised and the pending one (FEAT-0040).
+    pub exc: crate::exception::ExcState,
 }
 
 const TLS_SIZE: usize = core::mem::size_of::<Tls>();

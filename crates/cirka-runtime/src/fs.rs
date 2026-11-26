@@ -32,11 +32,13 @@ unsafe fn c_path(path: Obj) -> *mut c_char {
 }
 
 /// Ends the program like GHC's uncaught `IOError`:
-/// `prog: PATH: OP: DESCRIPTION (STRERROR)`.
+/// `prog: PATH: OP: DESCRIPTION (STRERROR)`; when the program unwinds
+/// exceptions, the message is the pending exception and the caller
+/// returns at once (FEAT-0040).
 ///
 /// # Safety
 /// `path` must be a live BYTES object.
-unsafe fn io_error(path: Obj, op: &[u8], errno: i32) -> ! {
+unsafe fn io_error(path: Obj, op: &[u8], errno: i32) {
     let (kind, text): (&[u8], &[u8]) = match errno {
         2 => (b"does not exist", b"No such file or directory"),
         13 => (b"permission denied", b"Permission denied"),
@@ -54,7 +56,7 @@ unsafe fn io_error(path: Obj, op: &[u8], errno: i32) -> ! {
         msg[n..n + k].copy_from_slice(&part[..k]);
         n += k;
     }
-    crate::start::panic_msg(&msg[..n])
+    crate::exception::fail_msg(&msg[..n])
 }
 
 fn errno() -> i32 {
@@ -74,6 +76,7 @@ pub unsafe extern "C" fn cirka_file_read(path: Obj) -> Obj {
         sys::free(cp as *mut c_void);
         if fd < 0 {
             io_error(path, b"openFile", errno());
+            return crate::empty_bytes();
         }
         let mut cap = 4096usize;
         let mut len = 0usize;
@@ -96,6 +99,7 @@ pub unsafe extern "C" fn cirka_file_read(path: Obj) -> Obj {
                     continue;
                 }
                 sys::close(fd);
+                sys::free(buf as *mut c_void);
                 // A directory opens but cannot be read; GHC fails in openFile.
                 io_error(
                     path,
@@ -106,6 +110,7 @@ pub unsafe extern "C" fn cirka_file_read(path: Obj) -> Obj {
                     },
                     e,
                 );
+                return crate::empty_bytes();
             }
             if n == 0 {
                 break;
@@ -134,6 +139,7 @@ pub unsafe extern "C" fn cirka_file_write(path: Obj, data: Obj, append: i64) -> 
         sys::free(cp as *mut c_void);
         if fd < 0 {
             io_error(path, b"withFile", errno());
+            return 0;
         }
         let mut d = io::bytes_of(data);
         while !d.is_empty() {
@@ -145,6 +151,7 @@ pub unsafe extern "C" fn cirka_file_write(path: Obj, data: Obj, append: i64) -> 
                 }
                 sys::close(fd);
                 io_error(path, b"withFile", e);
+                return 0;
             }
             d = &d[n as usize..];
         }

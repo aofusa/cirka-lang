@@ -131,7 +131,7 @@ unsafe fn force_slow(o: Obj) -> Obj {
                     // The evaluating thread writes its mark just after the
                     // claim: until then (no mark yet) it is another thread.
                     if !sync::is_mt() || w0.load(Ordering::Relaxed) == owner_mark() {
-                        panic_msg(b"<<loop>>");
+                        return blackhole_loop(o);
                     }
                     backoff(&mut spins);
                 }
@@ -159,8 +159,29 @@ unsafe fn force_slow(o: Obj) -> Obj {
     }
 }
 
+/// The message of a thunk that needs its own value (`<<loop>>`).
+static LOOP: crate::exception::StaticBytes<8> = crate::exception::StaticBytes::new(b"<<loop>>");
+
+/// `cirka_force` of a thunk this thread is evaluating: the error
+/// `<<loop>>`, reported as an exception (`cirka_force` returns null) when
+/// the program unwinds them (05-runtime.md §6.2). The forcing reference is
+/// consumed (the evaluation in progress holds another).
+///
+/// # Safety
+/// As for `cirka_force`.
+#[cold]
+#[inline(never)]
+unsafe fn blackhole_loop(o: Obj) -> Obj {
+    crate::exception::fail_static(&LOOP);
+    // SAFETY: the caller's reference.
+    unsafe { cirka_drop(o) };
+    core::ptr::null_mut()
+}
+
 /// Evaluates the thunk `o` claimed by this thread (now a `BLACKHOLE`) and
-/// turns it into an indirection to the value.
+/// turns it into an indirection to the value. When the evaluation raised
+/// an exception (the entry stub returned null with it pending), the thunk
+/// remembers it instead (`raised`) and the result is null.
 ///
 /// # Safety
 /// `o` must be a live thunk owned by the caller and claimed by this thread.
@@ -174,6 +195,9 @@ unsafe fn evaluate(o: Obj) -> Obj {
         let code: extern "C" fn(Obj) -> Obj = core::mem::transmute(w0.load(Ordering::Relaxed));
         w0.store(owner_mark(), Ordering::Relaxed);
         let r = code(o);
+        if r.is_null() {
+            return raised(o);
+        }
         // Drop the captured values and become an indirection.
         let n = (*o).nptr as usize;
         for i in 1..1 + n {
@@ -197,6 +221,49 @@ unsafe fn evaluate(o: Obj) -> Obj {
             (*o).rc = rc - 1;
         }
         r
+    }
+}
+
+/// The end of `evaluate` for a thunk whose evaluation raised the pending
+/// exception (05-runtime.md §6.4): the captured values the entry stub left
+/// (the borrowed ones) are dropped, and the thunk keeps the exception in
+/// word 1 with `cirka_thunk_reraise` as its code, which raises it again
+/// when the thunk is forced again. Back to `THUNK`, so that the threads
+/// waiting for its value evaluate it too and get the same exception. The
+/// forcing reference is consumed; the exception stays pending, and the
+/// result is null.
+///
+/// # Safety
+/// As for `evaluate`; an exception is pending. The thunk has room for word
+/// 1 (the generated code allocates every thunk of a program that unwinds
+/// exceptions with at least 24 bytes).
+#[cold]
+#[inline(never)]
+unsafe fn raised(o: Obj) -> Obj {
+    // SAFETY: as for evaluate; the pending exception is a live object.
+    unsafe {
+        let e = crate::exception::cirka_exception_pending();
+        let n = (*o).nptr as usize;
+        for i in 1..1 + n {
+            let c = *word(o, i) as Obj;
+            if !c.is_null() {
+                cirka_drop(c);
+            }
+        }
+        let rc = rc(o);
+        if contended(rc) {
+            cirka_mark_shared(e);
+        }
+        cirka_dup(e);
+        *word(o, 1) = e as usize;
+        (*o).nptr = 1;
+        let reraise: unsafe extern "C" fn(Obj) -> Obj = crate::exception::cirka_thunk_reraise;
+        AtomicUsize::from_ptr(word(o, 0)).store(reraise as usize, Ordering::Relaxed);
+        AtomicU8::from_ptr(&raw mut (*o).kind).store(THUNK, Ordering::Release);
+        if rc != 0 {
+            cirka_drop(o);
+        }
+        core::ptr::null_mut()
     }
 }
 
@@ -253,15 +320,26 @@ fn basename(s: &'static [u8]) -> &'static [u8] {
     }
 }
 
-/// Runtime error (Haskell `error`, pattern match failure, ...): prints
-/// `<prog>: <msg>` to stderr and exits with code 1.
-pub fn panic_msg(msg: &[u8]) -> ! {
+/// Prints `<prog>: <msg>` to stderr.
+pub fn report_error(msg: &[u8]) {
     // SAFETY: read-only access to start-up data.
     let prog = unsafe { STARTUP.get().prog };
     io::ewrite(prog);
     io::ewrite(b": ");
     io::ewrite(msg);
     io::ewrite(b"\n");
+}
+
+/// Runtime error that ends the program (Haskell `error` and pattern match
+/// failures in a program without `catch`, internal errors): prints
+/// `<prog>: <msg>` to stderr and exits with code 1.
+pub fn panic_msg(msg: &[u8]) -> ! {
+    report_error(msg);
+    exit_after_error()
+}
+
+/// Ends the program after its error was reported: exit code 1.
+pub fn exit_after_error() -> ! {
     exit_sequence(1)
 }
 
@@ -273,12 +351,22 @@ pub unsafe extern "C" fn cirka_panic(msg: *const u8, len: usize) -> ! {
     panic_msg(unsafe { core::slice::from_raw_parts(msg, len) })
 }
 
+/// The error `o` (a message, borrowed): it ends the program, or, when the
+/// program unwinds exceptions, a copy of the reference is the pending
+/// exception and this returns (05-runtime.md §6.2).
+///
 /// # Safety
 /// `o` must be a live BYTES object.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn cirka_panic_bytes(o: Obj) -> ! {
+pub unsafe extern "C" fn cirka_panic_bytes(o: Obj) {
     // SAFETY: guaranteed by the caller.
-    panic_msg(unsafe { io::bytes_of(o) })
+    unsafe {
+        if !crate::exception::unwinding() {
+            panic_msg(io::bytes_of(o));
+        }
+        cirka_dup(o);
+        crate::exception::pend(o);
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -340,6 +428,19 @@ pub(crate) fn caf_roots() -> &'static [Obj] {
 }
 
 fn exit_sequence(code: i32) -> ! {
+    finish(code, true)
+}
+
+/// Ends the process like `exit`, without the leak check: an exception
+/// nothing caught ended a thread or a callback, and other threads may hold
+/// any object (05-runtime.md §6.3).
+pub fn exit_unchecked(code: i32) -> ! {
+    finish(code, false)
+}
+
+/// The exit of the process: flushes the output, reports the statistics
+/// and (with `leak_check`) the leaks, as asked.
+fn finish(code: i32, leak_check: bool) -> ! {
     // Threads whose result is out (joined, perhaps) finish their exit first:
     // their statistics count, and `running` is exact for the checks below.
     crate::thread::wait_finishing();
@@ -362,7 +463,10 @@ fn exit_sequence(code: i32) -> ! {
             io::ewrite_u64(s.array_copies);
             io::ewrite(b"\n");
         }
-        if cfg!(feature = "debug-rt") && matches!(sys::env(c"CIRKA_LEAK_CHECK"), Some(b"1")) {
+        if leak_check
+            && cfg!(feature = "debug-rt")
+            && matches!(sys::env(c"CIRKA_LEAK_CHECK"), Some(b"1"))
+        {
             // Threads that still run may use any object: no check then.
             let running = crate::thread::running();
             if running == 0 {

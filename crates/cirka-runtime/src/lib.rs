@@ -23,6 +23,7 @@ pub mod callback;
 pub mod cycles;
 pub mod debug;
 pub mod evloop;
+pub mod exception;
 pub mod fs;
 pub mod io;
 pub mod mem;
