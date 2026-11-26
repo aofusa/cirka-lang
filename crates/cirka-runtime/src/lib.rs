@@ -115,6 +115,18 @@ pub fn io_token() -> object::Obj {
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.hot.cirka_bytes_from")]
 pub unsafe extern "C" fn cirka_bytes_from(p: *const u8, len: usize) -> object::Obj {
+    // SAFETY: guaranteed by the caller.
+    unsafe { bytes_from(p, len) }
+}
+
+/// `cirka_bytes_from`, inlined into the runtime's own callers that run
+/// for each operation (a receive, FEAT-1028): the allocation and the copy
+/// then follow the system call in one function.
+///
+/// # Safety
+/// As for `cirka_bytes_from`.
+#[inline(always)]
+pub(crate) unsafe fn bytes_from(p: *const u8, len: usize) -> object::Obj {
     if len == 0 {
         return empty_bytes();
     }
@@ -152,39 +164,40 @@ pub(crate) unsafe fn copy_bytes(src: *const u8, dst: *mut u8, len: usize) {
         use core::arch::x86_64::{__m128i, _mm_loadu_si128, _mm_storeu_si128};
         let ld = |o: usize| _mm_loadu_si128(src.add(o) as *const __m128i);
         let st = |o: usize, v| _mm_storeu_si128(dst.add(o) as *mut __m128i, v);
-        if len <= 16 {
-            if len >= 8 {
-                let (a, b) = (
-                    (src as *const u64).read_unaligned(),
-                    (src.add(len - 8) as *const u64).read_unaligned(),
-                );
-                (dst as *mut u64).write_unaligned(a);
-                (dst.add(len - 8) as *mut u64).write_unaligned(b);
-            } else if len >= 4 {
-                let (a, b) = (
-                    (src as *const u32).read_unaligned(),
-                    (src.add(len - 4) as *const u32).read_unaligned(),
-                );
-                (dst as *mut u32).write_unaligned(a);
-                (dst.add(len - 4) as *mut u32).write_unaligned(b);
-            } else if len > 0 {
-                let (a, m, z) = (*src, *src.add(len / 2), *src.add(len - 1));
-                *dst = a;
-                *dst.add(len / 2) = m;
-                *dst.add(len - 1) = z;
+        if len >= 16 {
+            if len <= 64 {
+                // The first and the last 16 bytes, and beyond 32 the second
+                // and the last but one: one path for 16 to 64 bytes.
+                let (a, z) = (ld(0), ld(len - 16));
+                if len > 32 {
+                    let (b, y) = (ld(16), ld(len - 32));
+                    st(16, b);
+                    st(len - 32, y);
+                }
+                st(0, a);
+                st(len - 16, z);
+            } else {
+                core::ptr::copy_nonoverlapping(src, dst, len);
             }
-        } else if len <= 32 {
-            let (a, b) = (ld(0), ld(len - 16));
-            st(0, a);
-            st(len - 16, b);
-        } else if len <= 64 {
-            let (a, b, c, d) = (ld(0), ld(16), ld(len - 32), ld(len - 16));
-            st(0, a);
-            st(16, b);
-            st(len - 32, c);
-            st(len - 16, d);
-        } else {
-            core::ptr::copy_nonoverlapping(src, dst, len);
+        } else if len >= 8 {
+            let (a, b) = (
+                (src as *const u64).read_unaligned(),
+                (src.add(len - 8) as *const u64).read_unaligned(),
+            );
+            (dst as *mut u64).write_unaligned(a);
+            (dst.add(len - 8) as *mut u64).write_unaligned(b);
+        } else if len >= 4 {
+            let (a, b) = (
+                (src as *const u32).read_unaligned(),
+                (src.add(len - 4) as *const u32).read_unaligned(),
+            );
+            (dst as *mut u32).write_unaligned(a);
+            (dst.add(len - 4) as *mut u32).write_unaligned(b);
+        } else if len > 0 {
+            let (a, m, z) = (*src, *src.add(len / 2), *src.add(len - 1));
+            *dst = a;
+            *dst.add(len / 2) = m;
+            *dst.add(len - 1) = z;
         }
     }
     #[cfg(not(target_arch = "x86_64"))]

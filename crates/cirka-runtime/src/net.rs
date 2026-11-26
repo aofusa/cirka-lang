@@ -367,6 +367,7 @@ pub unsafe extern "C" fn cirka_net_send(fd: i64, data: Obj, off: i64) -> i64 {
     // SAFETY: `data` is live; the range is checked.
     unsafe {
         let Some(d) = from(data, off) else {
+            core::hint::cold_path();
             return -EINVAL;
         };
         loop {
@@ -379,6 +380,7 @@ pub unsafe extern "C" fn cirka_net_send(fd: i64, data: Obj, off: i64) -> i64 {
             if n >= 0 {
                 return n as i64;
             }
+            core::hint::cold_path();
             if errno() != EINTR {
                 return neg_errno();
             }
@@ -540,18 +542,26 @@ pub unsafe extern "C" fn cirka_handle_close(h: Obj) -> i64 {
 /// use and freed when the thread exits (`thread_exit`). A buffer of 64 KiB
 /// on the stack would be touched page by page (stack probes) at every read
 /// (FEAT-1002).
+#[inline(always)]
 fn recv_buffer() -> *mut u8 {
     // SAFETY: this thread's block.
+    let p = unsafe { (*crate::tls::tls()).recv_buf };
+    if p.is_null() { recv_buffer_init() } else { p }
+}
+
+/// Allocates this thread's receive buffer: out of line (once per thread),
+/// so that a read's code is the system call and what follows it.
+#[cold]
+#[inline(never)]
+fn recv_buffer_init() -> *mut u8 {
+    // SAFETY: this thread's block.
     unsafe {
-        let t = crate::tls::tls();
-        if (*t).recv_buf.is_null() {
-            let p = sys::malloc(RECV_MAX) as *mut u8;
-            if p.is_null() {
-                io::fatal(b"out of memory", 2);
-            }
-            (*t).recv_buf = p;
+        let p = sys::malloc(RECV_MAX) as *mut u8;
+        if p.is_null() {
+            io::fatal(b"out of memory", 2);
         }
-        (*t).recv_buf
+        (*crate::tls::tls()).recv_buf = p;
+        p
     }
 }
 
@@ -605,9 +615,10 @@ fn empty_with(e: i32) -> Obj {
 }
 
 /// The read of [`read_with`]; `s` is the slot of `fd` in the running loop
-/// (null if there is none).
-#[inline(never)]
-#[unsafe(link_section = ".text.hot.cirka_read_now")]
+/// (null if there is none). Inlined, with the new BYTES object: a receive
+/// is one function from the test of the handle to the copy of the bytes
+/// (FEAT-1028), its rare outcomes out of line in [`read_failed`].
+#[inline(always)]
 fn read_now(
     fd: i64,
     s: *mut Slot,
@@ -628,21 +639,39 @@ fn read_now(
                 unsafe { drain_at(s, EV_READ, true) };
             }
             // SAFETY: the read wrote the first `len` bytes of the buffer.
-            return unsafe { crate::cirka_bytes_from(buf, len) };
+            return unsafe { crate::bytes_from(buf, len) };
         }
-        if r == 0 {
-            spend();
-            return empty_with(0);
-        }
-        let err = errno();
-        if err != EINTR {
-            if err == EAGAIN {
-                // SAFETY: as above.
-                unsafe { drain_at(s, EV_READ, false) };
-            }
-            return empty_with(err);
+        // SAFETY: as above.
+        if let Some(o) = unsafe { read_failed(s, r) } {
+            return o;
         }
     }
+}
+
+/// A read of [`read_now`] that got no bytes: the end of the stream (once
+/// per connection) or an error (a read that finds nothing is usually known
+/// to the loop beforehand); `None` to read again after an interruption.
+/// Out of line, in the cold text (FEAT-1028): the code of a read that got
+/// bytes follows the system call.
+///
+/// # Safety
+/// `s` is null or a slot of the running loop.
+#[cold]
+#[inline(never)]
+unsafe fn read_failed(s: *mut Slot, r: isize) -> Option<Obj> {
+    if r == 0 {
+        spend();
+        return Some(empty_with(0));
+    }
+    let err = errno();
+    if err == EINTR {
+        return None;
+    }
+    if err == EAGAIN {
+        // SAFETY: guaranteed by the caller.
+        unsafe { drain_at(s, EV_READ, false) };
+    }
+    Some(empty_with(err))
 }
 
 /// Reads at most `max` bytes from the stream socket of `h` (TCP; a read of
@@ -681,20 +710,65 @@ pub unsafe extern "C" fn cirka_sock_send(h: Obj, data: Obj, off: i64) -> i64 {
     // SAFETY: guaranteed by the caller.
     unsafe {
         let (fd, ident) = handle_ident(h);
-        if fd < 0 {
-            return -i64::from(EBADF);
+        // A socket is rarely full: the send is the code that follows, and
+        // everything else is out of line (FEAT-1028).
+        if fd < 0 || !budget_left() || drained(fd, ident, EV_WRITE) {
+            return send_not_now(fd);
         }
-        if !budget_left() || drained(fd, ident, EV_WRITE) {
-            return -i64::from(EAGAIN);
-        }
-        let r = cirka_net_send(fd, data, off);
-        if r >= 0 {
+        let Some(d) = from(data, off) else {
+            return send_failed(fd, ident, data, off, false);
+        };
+        let n = sys::send(
+            fd as c_int,
+            d.as_ptr() as *const c_void,
+            d.len(),
+            MSG_NOSIGNAL,
+        );
+        if n >= 0 {
             spend();
-        } else if r == -i64::from(EAGAIN) {
-            drain(fd, ident, EV_WRITE, false);
+            return n as i64;
         }
-        r
+        send_failed(fd, ident, data, off, true)
     }
+}
+
+/// `cirka_sock_send` on a closed handle (`-EBADF`), or one that is not to
+/// be written now (`-EAGAIN`: the budget of the callback is spent, or the
+/// socket is full as far as the loop knows).
+#[cold]
+#[inline(never)]
+fn send_not_now(fd: i64) -> i64 {
+    if fd < 0 {
+        -i64::from(EBADF)
+    } else {
+        -i64::from(EAGAIN)
+    }
+}
+
+/// `cirka_sock_send` after a send that failed (`sent`: `errno` tells why;
+/// an interrupted one is made again, as `cirka_net_send` does) or an
+/// offset out of the bytes (`-EINVAL`). A full socket is drained in the
+/// loop's view.
+///
+/// # Safety
+/// `data` must be a live BYTES object.
+#[cold]
+#[inline(never)]
+unsafe fn send_failed(fd: i64, ident: u32, data: Obj, off: i64, sent: bool) -> i64 {
+    if !sent {
+        return -EINVAL;
+    }
+    let r = match errno() {
+        // SAFETY: guaranteed by the caller.
+        EINTR => unsafe { cirka_net_send(fd, data, off) },
+        e => -i64::from(e),
+    };
+    if r >= 0 {
+        spend();
+    } else if r == -i64::from(EAGAIN) {
+        drain(fd, ident, EV_WRITE, false);
+    }
+    r
 }
 
 /// `cirka_net_accept` on the listening socket of `h`: `-EAGAIN` also when

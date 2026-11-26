@@ -551,6 +551,22 @@ pub unsafe extern "C" fn cirka_loop_watch(o: Obj, fd: i64, events: i64, cb: Obj)
 /// As for `cirka_loop_watch`.
 #[inline(always)]
 unsafe fn watch(l: &mut Loop, fd: i64, ident: u32, events: i64, ms: i64, cb: Obj) -> i64 {
+    // SAFETY: as for `watch_fast` and `watch_slow`.
+    unsafe {
+        if watch_fast(l, fd, ident, events, ms, cb) {
+            0
+        } else {
+            watch_slow(l, fd, ident, events, ms, cb)
+        }
+    }
+}
+
+/// The short path of `watch`: true when the watch is set up.
+///
+/// # Safety
+/// As for `cirka_loop_watch`.
+#[inline(always)]
+unsafe fn watch_fast(l: &mut Loop, fd: i64, ident: u32, events: i64, ms: i64, cb: Obj) -> bool {
     // SAFETY: the loop's own state, on its thread; `cb` is live; the slot
     // is within the slots' length (an `fd` below 0 is a large unsigned).
     unsafe {
@@ -567,10 +583,10 @@ unsafe fn watch(l: &mut Loop, fd: i64, ident: u32, events: i64, ms: i64, cb: Obj
                 cirka_dup(cb);
                 slot.cb = cb;
                 l.watches += 1;
-                return 0;
+                return true;
             }
         }
-        watch_slow(l, fd, ident, events, ms, cb)
+        false
     }
 }
 
@@ -1011,7 +1027,19 @@ unsafe fn run_timers(l: *mut Loop, now: u64) {
 
 /// Milliseconds until the next live timer (stale entries are dropped
 /// first); -1 if there is none.
+#[inline(always)]
 fn timeout_ms(l: &mut Loop) -> i32 {
+    if l.heap.len == 0 {
+        -1
+    } else {
+        timer_timeout_ms(l)
+    }
+}
+
+/// `timeout_ms` of a loop with timers (out of line, in the cold text).
+#[cold]
+#[inline(never)]
+fn timer_timeout_ms(l: &mut Loop) -> i32 {
     while l.heap.len > 0 && !live(l, &l.heap.get(0)) {
         heap_pop(&mut l.heap);
     }
@@ -1026,13 +1054,28 @@ fn timeout_ms(l: &mut Loop) -> i32 {
 ///
 /// # Safety
 /// On the loop's thread.
+#[inline(always)]
 unsafe fn run_inbox(l: *mut Loop) {
+    // SAFETY: the loop's own inbox.
+    unsafe {
+        if (*(*l).inbox).pending.load(Ordering::Acquire) != 0 {
+            run_inbox_items(l);
+        }
+    }
+}
+
+/// `run_inbox` of a non-empty inbox: out of line, in the cold text, so
+/// that a turn of a loop without remotes is the test of `pending`
+/// (FEAT-1028).
+///
+/// # Safety
+/// On the loop's thread.
+#[cold]
+#[inline(never)]
+unsafe fn run_inbox_items(l: *mut Loop) {
     // SAFETY: the queue is taken under the lock; its values are shared.
     unsafe {
         let b = (*l).inbox;
-        if (*b).pending.load(Ordering::Acquire) == 0 {
-            return;
-        }
         let mut items = {
             let _g = (*b).lock.lock();
             let items = (*b).items.take();
@@ -1056,15 +1099,58 @@ unsafe fn run_inbox(l: *mut Loop) {
 ///
 /// # Safety
 /// `b` must be a live inbox.
+#[inline(always)]
 unsafe fn inbox_state(b: *mut Inbox) -> (bool, bool) {
-    // SAFETY: under the lock; an empty inbox without it (`pending`).
+    // SAFETY: an empty inbox without the lock (`pending`).
     unsafe {
         if (*b).pending.load(Ordering::Acquire) == 0 {
             return (false, false);
         }
+        inbox_state_locked(b)
+    }
+}
+
+/// `inbox_state` of an inbox with something pending, under its lock (out
+/// of line, in the cold text).
+///
+/// # Safety
+/// `b` must be a live inbox.
+#[cold]
+#[inline(never)]
+unsafe fn inbox_state_locked(b: *mut Inbox) -> (bool, bool) {
+    // SAFETY: under the lock.
+    unsafe {
         let _g = (*b).lock.lock();
         ((*b).items.len > 0, (*b).jobs > 0)
     }
+}
+
+/// The event of the inbox's eventfd: another thread queued something (run
+/// by `run_inbox` in the next turn). Out of line, in the cold text.
+///
+/// # Safety
+/// On the loop's thread.
+#[cold]
+#[inline(never)]
+unsafe fn inbox_woken(l: *mut Loop) {
+    // SAFETY: the loop's own inbox.
+    unsafe {
+        let mut n: u64 = 0;
+        sys::read((*(*l).inbox).efd, &mut n as *mut u64 as *mut c_void, 8);
+    }
+}
+
+/// Frees the timeout `timer` of the watch of `slot`, which is ready
+/// first. Out of line, in the cold text: most watches have no timeout.
+///
+/// # Safety
+/// On the loop's thread; `slot` is a slot of `l`.
+#[cold]
+#[inline(never)]
+unsafe fn drop_timer(l: *mut Loop, slot: &mut Slot, timer: u32) {
+    slot.timer = NO_TIMER;
+    // SAFETY: the loop's own state.
+    unsafe { free_timer(&mut *l, timer) };
 }
 
 /// Calls the callback of one epoll event.
@@ -1076,8 +1162,7 @@ unsafe fn dispatch(l: *mut Loop, ev: sys::epoll_event) {
     unsafe {
         let data = ev.data;
         if data == INBOX_DATA {
-            let mut n: u64 = 0;
-            sys::read((*(*l).inbox).efd, &mut n as *mut u64 as *mut c_void, 8);
+            inbox_woken(l);
             return;
         }
         let fd = (data & 0xffff_ffff) as usize;
@@ -1118,9 +1203,8 @@ unsafe fn dispatch(l: *mut Loop, ev: sys::epoll_event) {
         let cb = slot.cb;
         slot.cb = core::ptr::null_mut();
         let timer = slot.timer;
-        slot.timer = NO_TIMER;
         if timer != NO_TIMER {
-            free_timer(&mut *l, timer);
+            drop_timer(l, slot, timer);
         }
         (*l).watches -= 1;
         let mut seen = i64::from(got & want);
@@ -1174,10 +1258,8 @@ pub unsafe extern "C" fn cirka_loop_run(o: Obj) -> i64 {
             let timeout = if queued { 0 } else { timeout_ms(&mut *l) };
             let n = sys::epoll_wait((*l).epfd, evs.as_mut_ptr(), BATCH as i32, timeout);
             if n < 0 {
-                if errno() == EINTR {
-                    continue;
-                }
-                io::fatal(b"epoll_wait failed", 2);
+                wait_failed();
+                continue;
             }
             for ev in &evs[..n as usize] {
                 dispatch(l, *ev);
@@ -1189,6 +1271,16 @@ pub unsafe extern "C" fn cirka_loop_run(o: Obj) -> i64 {
         (*l).running = false;
         (*t).cur_loop = outer;
         result
+    }
+}
+
+/// An `epoll_wait` of `cirka_loop_run` that failed: interrupted (the turn
+/// is made again), or a fatal error.
+#[cold]
+#[inline(never)]
+fn wait_failed() {
+    if errno() != EINTR {
+        io::fatal(b"epoll_wait failed", 2);
     }
 }
 
@@ -1323,14 +1415,40 @@ pub unsafe extern "C" fn cirka_async_run(cb: Obj) -> i64 {
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.hot.cirka_async_watch")]
 pub unsafe extern "C" fn cirka_async_watch(h: Obj, events: i64, ms: i64, cb: Obj) -> i64 {
-    // SAFETY: the running loop's state, on its thread.
+    // SAFETY: the running loop's state, on its thread (`watch_fast` takes
+    // no closed handle: its slot test fails for a negative `fd`).
     unsafe {
         let l = &mut *current();
         let (fd, ident) = crate::net::handle_ident(h);
+        if watch_fast(l, fd, ident, events, ms, cb) {
+            return 0;
+        }
+        async_watch_slow(l, fd, ident, events, ms, cb)
+    }
+}
+
+/// Every other watch of `cirka_async_watch`, and one that cannot be set
+/// up (its callback then runs in the next turn with the error): out of
+/// line, in the cold text (FEAT-1028).
+///
+/// # Safety
+/// As for `cirka_async_watch`.
+#[cold]
+#[inline(never)]
+unsafe fn async_watch_slow(
+    l: &mut Loop,
+    fd: i64,
+    ident: u32,
+    events: i64,
+    ms: i64,
+    cb: Obj,
+) -> i64 {
+    // SAFETY: as for `cirka_async_watch`.
+    unsafe {
         let r = if fd < 0 {
             -EBADF
         } else {
-            watch(l, fd, ident, events, ms, cb)
+            watch_slow(l, fd, ident, events, ms, cb)
         };
         if r < 0 {
             cirka_dup(cb);

@@ -74,6 +74,30 @@ fn leaves_and_their_parents_are_freed() {
     assert_eq!(f1 - f0, 6);
 }
 
+/// The test of `cirka_free_object` for an object without pointer fields
+/// (bits of a constant, FEAT-1028) agrees with `ptr_fields`; an array, even
+/// an empty one, is walked.
+#[test]
+fn objects_without_pointer_fields() {
+    let mut obj = [0u64; 2];
+    let o = obj.as_mut_ptr() as Obj;
+    for kind in 0..16u8 {
+        for nptr in [0u8, 1, 2, 255] {
+            for len in [0u64, 3] {
+                obj[1] = len;
+                // SAFETY: `o` has a header and one word (an array's length).
+                let walk = unsafe { ptr_fields(o, kind, nptr).1 } != 0;
+                let none = no_ptr_fields(kind, nptr);
+                if kind == ARRAY {
+                    assert!(!none, "an array is walked");
+                } else {
+                    assert_eq!(none, !walk, "kind {kind} nptr {nptr}");
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn shared_child_survives() {
     let _g = crate::test_lock();

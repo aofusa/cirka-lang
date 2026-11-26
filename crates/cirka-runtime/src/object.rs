@@ -145,12 +145,26 @@ pub unsafe extern "C" fn cirka_free_object(o: Obj) {
     unsafe {
         crate::debug::check_live(o, "free");
         let (kind, nptr) = ((*o).kind, (*o).nptr);
-        if ptr_fields(o, kind, nptr).1 == 0 {
+        if no_ptr_fields(kind, nptr) {
             release(o, kind);
         } else {
             free_walk(o, kind, nptr);
         }
     }
+}
+
+/// Whether an object of `kind` with `nptr` in its header has no pointer
+/// fields to drop (as `ptr_fields`, but an empty array is walked): tests of
+/// bits of constants, where the `match` of `ptr_fields` reads a table of
+/// jumps from the read-only data (a line per free, FEAT-1028).
+#[inline(always)]
+pub(crate) fn no_ptr_fields(kind: u8, nptr: u8) -> bool {
+    // The kinds whose pointer fields the header counts.
+    const BY_NPTR: u32 = 1 << CON | 1 << PAP | 1 << FUN | 1 << THUNK | 1 << BLACKHOLE;
+    // The kinds that always have pointer fields to look at.
+    const WALKED: u32 = 1 << IND | 1 << MUTVAR | 1 << ARRAY;
+    let bit = 1u32 << (kind & 15);
+    (BY_NPTR | WALKED) & bit == 0 || (BY_NPTR & bit != 0 && nptr == 0)
 }
 
 /// `cirka_free_object` of an object with pointer fields: the dead objects
