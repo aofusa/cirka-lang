@@ -94,8 +94,71 @@ pub unsafe extern "C" fn cirka_bytes_from(p: *const u8, len: usize) -> object::O
         (*o).nptr = 0;
         (*o).kind = object::BYTES;
         *object::word(o, 0) = len;
-        core::ptr::copy_nonoverlapping(p, object::word(o, 1) as *mut u8, len);
+        copy_bytes(p, object::word(o, 1) as *mut u8, len);
         o
+    }
+}
+
+/// Copies `len` bytes from `src` to `dst` (not overlapping). Up to 64
+/// bytes (most strings made from a buffer: a received request, a number,
+/// a word) are copied inline with at most four loads and four stores of 16
+/// (or 8, 4, 1) bytes, overlapping in the middle and staying inside the
+/// `len` bytes of both sides; a longer copy calls `memcpy`. The C library's
+/// function is as quick for short copies, but its code lies on a page of
+/// its own (FEAT-1022).
+///
+/// # Safety
+/// `src` must be readable and `dst` writable for `len` bytes; they must not
+/// overlap.
+#[inline(always)]
+pub(crate) unsafe fn copy_bytes(src: *const u8, dst: *mut u8, len: usize) {
+    #[cfg(target_arch = "x86_64")]
+    // SAFETY: every access below is inside the `len` bytes of `src` or
+    // `dst` (the overlapping pairs start at 0 and end at `len`); SSE2 is
+    // part of x86-64.
+    unsafe {
+        use core::arch::x86_64::{__m128i, _mm_loadu_si128, _mm_storeu_si128};
+        let ld = |o: usize| _mm_loadu_si128(src.add(o) as *const __m128i);
+        let st = |o: usize, v| _mm_storeu_si128(dst.add(o) as *mut __m128i, v);
+        if len <= 16 {
+            if len >= 8 {
+                let (a, b) = (
+                    (src as *const u64).read_unaligned(),
+                    (src.add(len - 8) as *const u64).read_unaligned(),
+                );
+                (dst as *mut u64).write_unaligned(a);
+                (dst.add(len - 8) as *mut u64).write_unaligned(b);
+            } else if len >= 4 {
+                let (a, b) = (
+                    (src as *const u32).read_unaligned(),
+                    (src.add(len - 4) as *const u32).read_unaligned(),
+                );
+                (dst as *mut u32).write_unaligned(a);
+                (dst.add(len - 4) as *mut u32).write_unaligned(b);
+            } else if len > 0 {
+                let (a, m, z) = (*src, *src.add(len / 2), *src.add(len - 1));
+                *dst = a;
+                *dst.add(len / 2) = m;
+                *dst.add(len - 1) = z;
+            }
+        } else if len <= 32 {
+            let (a, b) = (ld(0), ld(len - 16));
+            st(0, a);
+            st(len - 16, b);
+        } else if len <= 64 {
+            let (a, b, c, d) = (ld(0), ld(16), ld(len - 32), ld(len - 16));
+            st(0, a);
+            st(16, b);
+            st(len - 32, c);
+            st(len - 16, d);
+        } else {
+            core::ptr::copy_nonoverlapping(src, dst, len);
+        }
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    // SAFETY: as documented.
+    unsafe {
+        core::ptr::copy_nonoverlapping(src, dst, len);
     }
 }
 

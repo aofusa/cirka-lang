@@ -720,3 +720,55 @@ fn raw_io_calls_give_the_libc_results() {
         sys::close(s[1]);
     }
 }
+
+/// `copy_bytes` (FEAT-1022) copies every length exactly and touches no
+/// byte outside the `len` bytes of either side: the source ends and the
+/// destination ends at an inaccessible page, the bytes before them are
+/// checked, and lengths cover each path (1-3, 4-7, 8-16, 17-32, 33-64,
+/// longer).
+#[test]
+fn copy_bytes_stays_inside_both_sides() {
+    use crate::sys;
+    use core::ffi::c_void;
+    const PAGE: usize = 4096;
+    const PROT_NONE: i32 = 0;
+    const PROT_RW: i32 = 3;
+    const MAP_PRIVATE_ANON: i32 = 0x22;
+    unsafe extern "C" {
+        fn mprotect(addr: *mut c_void, len: usize, prot: i32) -> i32;
+    }
+    // SAFETY: two mappings of two pages, the second page of each made
+    // inaccessible; the copies use the `len` bytes before it.
+    unsafe {
+        let map = || {
+            let p = sys::mmap(
+                core::ptr::null_mut(),
+                2 * PAGE,
+                PROT_RW,
+                MAP_PRIVATE_ANON,
+                -1,
+                0,
+            ) as *mut u8;
+            assert!(!p.is_null() && p as isize != -1);
+            assert_eq!(mprotect(p.add(PAGE) as *mut c_void, PAGE, PROT_NONE), 0);
+            p
+        };
+        let (s, d) = (map(), map());
+        for i in 0..PAGE {
+            *s.add(i) = (i * 7 + 3) as u8;
+        }
+        for len in 0..=200usize {
+            core::ptr::write_bytes(d, 0xAA, PAGE);
+            let (src, dst) = (s.add(PAGE - len), d.add(PAGE - len));
+            crate::copy_bytes(src, dst, len);
+            for i in 0..len {
+                assert_eq!(*dst.add(i), *src.add(i), "len {len}, byte {i}");
+            }
+            for i in 0..PAGE - len {
+                assert_eq!(*d.add(i), 0xAA, "len {len}: wrote before the destination");
+            }
+        }
+        sys::munmap(s as *mut c_void, 2 * PAGE);
+        sys::munmap(d as *mut c_void, 2 * PAGE);
+    }
+}

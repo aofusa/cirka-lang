@@ -77,7 +77,7 @@ int64_t cirka_bytes_copy(void* dst, int64_t off, void* src, int64_t i, int64_t n
 int64_t cirka_bytes_index(void* s, int64_t b, int64_t i, int64_t j);  // memchr。[i, j) で最初の b の位置、なければ -1
 int64_t cirka_bytes_eq(void* s, int64_t i, void* t, int64_t j, int64_t n); // memcmp。等しければ 1
 void*  cirka_bytes_resize(void* b, int64_t n); // b を消費し長さ n の BYTES を返す (内容は先頭から保つ。伸ばした部分は 0)。一意な malloc の塊は realloc でその場で伸縮 (FEAT-0096)
-void*  cirka_bytes_from(const void* p, size_t n); // p の n バイトの写しの BYTES。n が 0 ならランタイムの静的な空文字列 (不死。読み込みの空の結果は確保しない、FEAT-1002。MIR インタプリタも同じ外部関数の空の結果を数えない)
+void*  cirka_bytes_from(const void* p, size_t n); // p の n バイトの写しの BYTES。n が 0 ならランタイムの静的な空文字列 (不死。読み込みの空の結果は確保しない、FEAT-1002。MIR インタプリタも同じ外部関数の空の結果を数えない)。64 バイトまでは両端から重ねた 16 (8・4・1) バイトの読み書きで写し、memcpy を呼ばない (FEAT-1022)
 void*  cirka_apply_n(void* fun, size_t n, void** args);   // 未知関数の適用 (eval/apply)
 
 // 並行性 (§9、FEAT-0045)。ポインタ引数は借用
