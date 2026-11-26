@@ -10,9 +10,12 @@
 //!   page. Larger objects use `malloc`.
 //! - `CIRKA_ALLOC=system`: `malloc`/`free` for everything (valgrind/ASan).
 //!
-//! In both modes, objects of 2 MiB or more go on transparent huge pages
+//! In both modes, arrays of 2 MiB or more go on transparent huge pages
 //! where the system has them (`advise_huge`, FEAT-1011; `CIRKA_THP=0`
-//! keeps them on ordinary pages).
+//! keeps them on ordinary pages): the zero-filled objects of
+//! `alloc_zeroed` (unboxed arrays) and boxed arrays. Buffers grown with
+//! `realloc` (builders) and the other blocks from `malloc` keep small
+//! pages.
 //!
 //! The debug runtime (feature `debug-rt`) always uses `malloc` with a
 //! prefix (see `debug.rs`).
@@ -352,7 +355,6 @@ unsafe fn raw_alloc_slow(size: usize) -> *mut u8 {
         if p.is_null() {
             crate::io::fatal(b"out of memory", 2);
         }
-        advise_huge(p, size);
         p
     }
 }
@@ -373,15 +375,19 @@ fn huge_range(p: usize, size: usize) -> Option<(usize, usize)> {
     (start < end).then(|| (start, end - start))
 }
 
-/// Asks the kernel to back the huge pages inside a large object just
-/// allocated (or resized) by `malloc` at `p` with transparent huge pages
-/// (FEAT-1011, 05-runtime.md §3): a page fault per 2 MiB instead of per
-/// 4 KiB, and fewer TLB misses in loops over the object. The first block
-/// of a block from `mmap` keeps small pages (glibc wrote the header of the
-/// block there). Without transparent huge pages (the system setting
+/// Asks the kernel to back the huge pages inside an array of `size` bytes
+/// at `p`, just allocated by `malloc` or `calloc`, with transparent huge
+/// pages (FEAT-1011, 05-runtime.md §3): a page fault per 2 MiB instead of
+/// per 4 KiB, and fewer TLB misses in the loops over the array. The first
+/// block of a block from `mmap` keeps small pages (glibc wrote the header
+/// of the block there). Without transparent huge pages (the system setting
 /// `never`, an old kernel) `madvise` fails or does nothing, which is fine.
-#[cfg_attr(feature = "debug-rt", allow(dead_code))]
-fn advise_huge(p: *mut u8, size: usize) {
+///
+/// Only arrays: a buffer written once (a builder grown with `realloc`, a
+/// string) loses more than it gains, since the kernel zeroes a whole huge
+/// page at its first fault, which evicts the cache the writes would hit
+/// (cli-grep and string-split were 6 % slower).
+pub(crate) fn advise_huge(p: *mut u8, size: usize) {
     if size < HUGE || !thp_enabled() {
         return;
     }
@@ -522,7 +528,6 @@ pub unsafe fn resize_system(o: Obj, size: usize) -> Option<Obj> {
         if p.is_null() {
             crate::io::fatal(b"out of memory", 2);
         }
-        advise_huge(p as *mut u8, size);
         Some(p as Obj)
     }
 }
@@ -591,17 +596,54 @@ mod tests {
         panic!("no mapping contains {a:#x}");
     }
 
-    /// Whether the whole blocks of a fresh object of 8 huge pages carry
-    /// the huge-page advice (`hg`).
+    /// Whether the whole blocks of the `size` bytes at `p` carry the
+    /// huge-page advice (`hg`).
+    fn advised(p: *const u8, size: usize) -> bool {
+        let (start, _) = huge_range(p as usize, size).unwrap();
+        vm_flags(start).iter().any(|f| f == "hg")
+    }
+
+    /// Whether a fresh zero-filled object of 8 huge pages is advised.
     fn large_object_is_advised() -> bool {
         // SAFETY: test of allocator internals; the object is freed.
         unsafe {
             let size = 8 * HUGE;
             let p = alloc_zeroed(size);
-            let (start, _) = huge_range(p as usize, size).unwrap();
-            let advised = vm_flags(start).iter().any(|f| f == "hg");
+            let a = advised(p, size);
             dealloc(p as Obj);
-            advised
+            a
+        }
+    }
+
+    /// Boxed arrays are advised too; a large block from `malloc` and a
+    /// buffer grown with `realloc` (a builder) keep small pages (FEAT-1011:
+    /// a buffer written once loses more than it gains).
+    #[test]
+    fn only_arrays_get_huge_pages() {
+        let _g = crate::test_lock();
+        if cfg!(feature = "debug-rt")
+            || !std::path::Path::new("/sys/kernel/mm/transparent_hugepage").exists()
+            || !thp_enabled()
+        {
+            return;
+        }
+        // SAFETY: test of allocator internals; every object is freed, and
+        // the elements of the array are the static empty string.
+        unsafe {
+            let n = HUGE;
+            let a = crate::cirka_array_new(n as i64, crate::empty_bytes());
+            assert!(advised(a as *const u8, 16 + 8 * n));
+            crate::object::cirka_drop(a);
+            // Larger than glibc's largest dynamic `mmap` threshold (32 MiB),
+            // so these are fresh mappings, not heap memory that an earlier
+            // test may have advised.
+            let size = 20 * HUGE;
+            let p = cirka_alloc(size);
+            assert!(!advised(p, size));
+            dealloc(p as Obj);
+            let b = crate::bytes::resize(crate::cirka_bytes_new(1000), size, false);
+            assert!(!advised(b as *const u8, crate::bytes::bytes_size(size)));
+            crate::object::cirka_drop(b);
         }
     }
 

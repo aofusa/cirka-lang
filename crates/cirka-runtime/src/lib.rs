@@ -162,6 +162,7 @@ pub unsafe extern "C" fn cirka_array_new(len: i64, init: object::Obj) -> object:
             }
         }
         let o = alloc::cirka_alloc(16 + 8 * len) as object::Obj;
+        alloc::advise_huge(o as *mut u8, 16 + 8 * len);
         (*o).rc = 1;
         (*o).tag = 0;
         (*o).nptr = 0;
@@ -218,6 +219,7 @@ pub unsafe extern "C" fn cirka_array_unique(a: object::Obj) -> object::Obj {
         alloc::stats().array_copies += 1;
         let len = *object::word(a, 0);
         let o = alloc::cirka_alloc(16 + 8 * len) as object::Obj;
+        alloc::advise_huge(o as *mut u8, 16 + 8 * len);
         (*o).rc = 1;
         (*o).tag = 0;
         (*o).nptr = 0;
