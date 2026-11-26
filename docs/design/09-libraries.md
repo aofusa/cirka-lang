@@ -66,7 +66,7 @@ lib/cirka-base/
 - FFI (FEAT-0116、関数ポインタと errno は FEAT-0047): `Foreign`、`Foreign.{Ptr,Storable,C,C.Types,C.String,C.Error,Marshal,Marshal.Alloc,Marshal.Array,Marshal.Utils}`、
   `Data.{Bits,Int,Word}`。実体は `Cirka.Foreign` (ポインタ・`Bits`・`Storable`)、`Cirka.Foreign.Types` (`Int8`〜`Word64` と C の型。
   インスタンスは機械的な委譲なので `scripts/gen-foreign-types.py` で生成する)、`Cirka.Foreign.Marshal` (割り当て・配列・C 文字列。UTF-8)。
-  `alloca` は `malloc`/`free` で実装し、例外 (FEAT-0040) までは例外時に解放しない。`Integer` の `Bits` はまだない。
+  `alloca` は `malloc`/`free` で実装し、aCHC の例外 (FEAT-0145) までは例外時に解放しない。`Integer` の `Bits` はまだない。
 - 自己参照する値 (`let x = f x in x`) は循環データになり GC なしでは扱えないので、`fix`・`forever` は再帰関数で書く (共有はしない)。
 - `show :: Double` は GHC と同じ形式 (`0.1`・`1.0e-2`・`1.23456789e7`) をランタイムの `cirka_f64_show_hs` で出す。
 

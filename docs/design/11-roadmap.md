@@ -44,7 +44,7 @@ SX の各チケットを必要とする時点:
 | **H2 Haskell 実用化** | 0110–0119 | 型クラス・cirka-base・正格性解析・IO・数値・レコード・FFI・差分テスト・初期の拡張 | H1 | 差分テスト 50 本以上が GHC と一致、リーク 0 |
 | **H3 所有権拡張** | 0120–0128 | LinearTypes・LType/Unique・Drop/Release・一意配列・借用・`.chs` | H2 | 所有権エラーテスト一式。`.chs` 版ベンチを記録 |
 | **H4 FFI 拡張と評価** | 0130, 0132 | `extern` ブロック、**評価レポート** | H3 | 評価レポートが CirkaLang の設計に入力されている |
-| **H5 高度な型システム** | 0140–0144 | GADTs・型族・DataKinds・PolyKinds・FunctionalDependencies・型レベル Nat | H4 と **CirkaLang v0.0.4** のリリース | 各拡張の run / fail テスト |
+| **H5 高度な型システム** | 0140–0145 | GADTs・型族・DataKinds・PolyKinds・FunctionalDependencies・型レベル Nat、存在型の上の `Control.Exception` (FEAT-0145) | H4 と **CirkaLang v0.0.4** のリリース | 各拡張の run / fail テスト |
 | **H6 依存型と検証** | 0150–0154 | `foreach` とシングルトン、洗練型 (Liquid 互換 + `.chs` 構文)、契約、全域性、検査除去 | H5 と CirkaLang v0.0.4 | 検証テスト一式 |
 | **H7 効果・能力・セッション型** | 0160–0164 | 能力、`Eff es a`、並行性、セッション型、後期の評価 | H5 と **CirkaLang v0.0.7** のリリース | 効果のベンチと評価レポート (FEAT-0164) |
 

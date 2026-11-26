@@ -16,12 +16,12 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | 共通基盤 | M1 バックエンド基盤 | 7 / 7 |
 | 共通基盤 | M2 Perceus | 3 / 3 |
 | 共通基盤 | M3 共通 Core と Core→MIR | 4 / 4 |
-| 共通基盤 | SX 共通基盤の拡張 (各トラックの必要に応じて) | 62 / 79 |
+| 共通基盤 | SX 共通基盤の拡張 (各トラックの必要に応じて) | 76 / 92 |
 | aCHC | H1 Haskell 最小フロントエンド | 6 / 6 |
 | aCHC | H2 Haskell 実用化 (スコープ縮小版) | 10 / 10 |
 | aCHC | H3 所有権拡張 (.chs) | 9 / 9 |
 | aCHC | H4 FFI 拡張と評価 | 2 / 2 |
-| aCHC | H5 高度な型システム (CirkaLang v0.0.4 の後) | 0 / 5 |
+| aCHC | H5 高度な型システム (CirkaLang v0.0.4 の後) | 0 / 6 |
 | aCHC | H6 依存型と検証 (CirkaLang v0.0.4 の後) | 0 / 5 |
 | aCHC | H7 効果・能力・セッション型 (CirkaLang v0.0.7 の後) | 0 / 5 |
 | CirkaLang | CirkaLang v0.0.1 最小の正格言語・所有権・ネイティブ | 8 / 8 |
@@ -30,9 +30,9 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | CirkaLang | CirkaLang v0.0.4 証明と検証 | 6 / 6 |
 | CirkaLang | CirkaLang v0.0.5 並行性・サーバ・syscall | 5 / 5 |
 | CirkaLang | CirkaLang v0.0.6 Vulkan compute・数値計算 | 8 / 8 |
-| CirkaLang | CirkaLang v0.0.7 効果・能力・セッション型 | 0 / 4 |
+| CirkaLang | CirkaLang v0.0.7 効果・能力・セッション型 | 4 / 4 |
 | CirkaLang | CX 遠隔環境での GUI 検証 (任意) | 0 / 1 |
-| 第二段階 | P2 第二段階 (CirkaLang v0.1.0 以降) | 0 / 2 |
+| 第二段階 | P2 第二段階 (CirkaLang v0.1.0 以降) | 0 / 3 |
 
 ## 共通基盤
 
@@ -79,7 +79,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 
 | ID | タイトル | 状態 | 優先度 | 依存 |
 |---|---|---|---|---|
-| [FEAT-0040](features/FEAT-0040-unwinding.md) | 例外/パニックのアンワインド | todo | P1 | 0031 |
+| [FEAT-0040](features/FEAT-0040-unwinding.md) | 例外/パニックのアンワインド | in-progress | P1 | 0031 |
 | [FEAT-0041](features/FEAT-0041-core-optimizations.md) | Core 最適化の強化 | done | P0 | 0033 |
 | [FEAT-0042](features/FEAT-0042-escape-analysis.md) | エスケープ解析とスタック割り当て | todo | P2 | 0041 |
 | [FEAT-0043](features/FEAT-0043-benchmarks.md) | ベンチマーク集と性能レポート | done | P1 | 0016 |
@@ -231,6 +231,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-0142](features/FEAT-0142-hs-datakinds-polykinds.md) | DataKinds・PolyKinds・型演算子 | todo | P1 | 0140 |
 | [FEAT-0143](features/FEAT-0143-hs-fundeps.md) | FunctionalDependencies と制約ソルバの改良 | todo | P1 | 0110 |
 | [FEAT-0144](features/FEAT-0144-hs-typelits.md) | 型レベル Nat / Symbol (GHC.TypeLits 互換) | todo | P1 | 0142, 0141 |
+| [FEAT-0145](features/FEAT-0145-hs-exceptions.md) | Control.Exception と例外の経路の Release (aCHC) | todo | P1 | 0040, 0140 |
 
 ### H6 依存型と検証 (CirkaLang v0.0.4 の後)
 
@@ -348,6 +349,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 |---|---|---|---|---|
 | [FEAT-0300](features/FEAT-0300-cl-v010-design.md) | 第一段階の評価と CirkaLang v0.1.0 仕様 | todo | P1 | 0132, 0263 |
 | [FEAT-0301](features/FEAT-0301-cl-stdlib-design.md) | CirkaLang 標準ライブラリ設計 | todo | P2 | 0300 |
+| [FEAT-0302](features/FEAT-0302-cl-panic-unwind.md) | panic のアンワインドと Drop / Release の実行 (CirkaLang v0.1.0) | todo | P1 | 0040, 0300 |
 
 ## バグチケット
 

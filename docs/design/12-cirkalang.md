@@ -144,7 +144,7 @@ trait Monoid (a : Type) where
 - 正格評価。`Lazy a` / `delay` / `force` で明示的に遅延 (共通基盤のサンクを使う)。
 - 循環が生じうるのは `Lazy` の自己参照と可変参照 (`Ref`/`IORef` 相当) だけ。静的に警告し、リージョンを勧める。
   v0.0.3 (spec-v0.0.3.md §4、ADR-074): 局所の `let` は再帰せず可変の参照はリージョンだけなので、自己参照はトップレベルの値に限られ、W0310 で警告する。`&&` / `||` は短絡する。
-- 例外: `Result` が基本。`panic` は最初 abort、共通基盤のアンワインド (FEAT-0040) 後は unwind し、landing pad で `Drop`/`Release` を実行する。
+- 例外: `Result` が基本。`panic` は v0.0.x では abort。共通基盤のアンワインド (FEAT-0040) の上で、v0.1.0 (FEAT-0302) から unwind し、例外の経路でも `Drop`/`Release` を実行する。
 - メモリモデル・ランタイム・バックエンドは共通基盤 ([04](04-memory-model.md) / [05](05-runtime.md) / [07](07-backend.md))。
 
 ## 6. TT から共通 Core への変換 (消去)

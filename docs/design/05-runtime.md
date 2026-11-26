@@ -98,7 +98,8 @@ int64_t cirka_loop_blocking(void* l, void* work, void* done); // work をスレ�
 int64_t cirka_net_listen(void* host, int64_t port, int64_t backlog); // ほかに accept / connect / send / resolve …
 
 // 実行時エラー
-_Noreturn void cirka_panic(const char* msg, size_t len);   // error / パターン失敗 / <<loop>>
+_Noreturn void cirka_panic(const char* msg, size_t len);   // 内部エラー (捕まえられない。FEAT-0040 の後)
+void    cirka_panic_bytes(void* msg);            // メッセージの例外 (アンワインドの様式では保留の枠に置く。§6.2)
 
 // 起動
 int    main(int argc, char** argv);              // ランタイムが提供。cirka_main_closure を実行
@@ -149,7 +150,7 @@ int    main(int argc, char** argv);              // ランタイムが提供。c
   標準入力もバッファ付きで、`cirka_read_byte` / `cirka_peek_byte` (`isEOF`) で読む。
 - ファイルは H2 では丸ごとの読み書きだけ (`cirka_file_read` / `cirka_file_write`: `readFile`・`writeFile`・`appendFile`)。
   失敗すると GHC の未捕捉 `IOError` と同じ形式 (`prog: PATH: openFile: does not exist (No such file or directory)`) で終了コード 1。
-  任意のハンドル (`openFile`・`hGetLine` …) は例外 (FEAT-0040) の後で扱う。
+  任意のハンドル (`openFile`・`hGetLine` …) は aCHC の例外 (FEAT-0145) で扱う。
 - CirkaLang の標準ライブラリ (FEAT-0213、`stdio.rs`) は終了しない関数を使う: `cirka_fs_open(path, mode)` / `cirka_fd_close` / `cirka_fs_remove` は
   記述子か 0、失敗は `-errno`。`cirka_fd_read(fd, max)` (`max < 0` で最後まで。記述子 0 は標準入力のバッファを通す。最後まで読むときは通常のファイルなら `fstat` の大きさの
   塊に BYTES の頭と長さの分を空けて直接読み、足りなければ `realloc` で伸ばし、読み終えた塊をそのまま BYTES にする: FEAT-0096) は文字列を返し、
@@ -170,8 +171,67 @@ int    main(int argc, char** argv);              // ランタイムが提供。c
   stdout/stderr をフラッシュしてプロセスを終了(GHC と同じメッセージ形式・終了コード 1)。
   aCHC は `error` の呼び出しを型検査で `cirkaErrorCalledAt "<file>:<行>:<列> in main:<モジュール>"` に置き換え、
   GHC の `CallStack (from HasCallStack):` の行を出す。`head []` などライブラリ内部の呼び出し履歴 (GHC の base の行番号) は出さない。
-- **段階2 (FEAT-0040)**: Itanium C++ ABI のアンワインド (`_Unwind_RaiseException`)。生成コードは `invoke` + landing pad で
-  スコープ内の値を drop/release する(Rust の panic=unwind と同じ)。`catch`/`bracket`/`finally`/`throwIO` を実装。
+- **段階2 (FEAT-0040、ADR-123〜127)**: Itanium C++ ABI のアンワインド (libgcc の `_Unwind_RaiseException`)。例外は `catch`
+  (MIR の `catch apply`、Core の `catch#`) で捕まえられ、例外の経路では生成コードの landing pad が呼び出しの間に持っていた所有の参照を
+  drop する (Rust の panic=unwind と同じ)。型による選別・`bracket`/`finally` はフロントエンドのライブラリで、aCHC の
+  `Control.Exception` は FEAT-0145、CirkaLang の panic で `Drop`/`Release` を実行するのは v0.1.0 の FEAT-0302。
+
+### 6.1 二つの様式 (ADR-125)
+
+プログラムに `catch` が 1 つもなければ、例外を捕まえる場所がないので、後始末の結果は誰にも観測されない。このプログラムは
+**中止の様式** でコンパイルし、例外は今と同じく `<prog>: <msg>` を表示してその場で終える (後始末をせず、リークを検査しない)。
+landing pad も例外の検査も作らないので、`catch` を使わないプログラムの生成コードと性能は段階1と同じである (ゼロコスト)。
+`catch` があれば **アンワインドの様式** でコンパイルし、以下のとおりにアンワインドする。様式は MIR のモジュール (プログラム全体)
+で決まり (`Module::catches`)、生成した `cirka_main` が最初に `cirka_exception_enable()` でランタイムに知らせる。
+捕まらなかった例外の表示と終了コードは、二つの様式で同じである。
+
+### 6.2 例外の値と投げ方 (アンワインドの様式)
+
+- **例外の値** (payload) は任意のオブジェクト (所有の参照 1 つ。Core の型は `Any`)。ランタイムと生成コードが投げる例外は
+  BYTES のメッセージ (`panic "msg"` は静的な文字列のオブジェクト、`cirka_panic_bytes(s)` は `s` の dup、ランタイムの誤りは
+  確保したメッセージ) で、捕まらなければ `<prog>: <msg>` と表示する (BYTES でない値は `<prog>: uncaught exception`)。
+- **例外の枠**: スレッドの状態 (TLS) に `_Unwind_Exception` (クラス `CIRKCIRK`) と値を 1 組置く。landing pad は drop だけを
+  行い生成コードを呼ばないので、1 つのスレッドで伝わっている途中の例外は高々 1 つで、確保は要らない。
+- **投げるのは生成コードだけ** (ADR-123): 生成した `cirka.raise(p)` (`cold noinline noreturn`) が `cirka_exception_begin(p)`
+  (枠に値を入れて `_Unwind_Exception` を返す) の後に `_Unwind_RaiseException` を呼ぶ。Rust のフレームはアンワインドしない:
+  panic=abort の Rust では `extern "C-unwind"` の関数もアンワインドを中止する landing pad (`rust_eh_personality` を参照する) を持ち、
+  `extern "C"` の関数を通るアンワインドは未定義の動作になる。そのためランタイムから生成コードへの入口はすべて、例外をそこで止める
+  生成コードを通る (§6.3)。
+- **パーソナリティ関数** `cirka_personality` はランタイム (Rust) にある。LSDA (`.gcc_except_table`) の呼び出しの表から命令の位置の
+  landing pad を探し、探索の段では `catch` の節で止まり (ほかの言語の例外は止めない)、後始末の段では landing pad に例外 (`rax`) と
+  選択子 (`rdx`) を渡して移る。アンワインダが呼ぶだけで、自身はアンワインドされない。
+- **保留の枠** (TLS の 1 語): ランタイムの関数は例外を投げられないので、値を保留の枠に置いて呼び出し元の生成コードへ戻り、生成コードが
+  `cirka.raise_pending()` で投げる。枠を使うのは次の関数で、生成コードは呼び出しの後で枠を調べる (`cirka_force` は結果の null で知らせる)。
+
+| ランタイムの関数 | 保留の枠に置く例外 |
+|------|------|
+| `cirka_force` (サンク・CAF。結果は null) | 評価が投げた例外 (§6.4)、評価中のサンクを同じスレッドで評価した `<<loop>>` |
+| `cirka_panic_bytes(s)` | メッセージ `s` (dup) |
+| ファイルの読み書き (`cirka_file_read`・`cirka_file_write`)・バイト列の操作 (`cirka_bytes_copy` など、範囲外) | 今と同じメッセージ |
+
+  捕まえられないもの (中止の様式と同じくすぐに終える): `exit` (`cirka_exit`。例外ではない)、内部エラー (`no matching switch arm`・
+  `bad partial application`・`internal error: …`)、メモリ不足、スタックあふれ、MVar の永久の待ち (1 スレッドで待つ `BLOCKED`)、
+  `cirka_arg` の範囲外。
+
+### 6.3 ランタイムから生成コードへの入口 (ADR-127)
+
+| 入口 (生成コード) | 捕まえた例外 |
+|------|------|
+| `cirka_main` (ランタイムの `main_thread` が呼ぶ) | `cirka_uncaught(ue)` が `<prog>: <msg>` を表示し、値を drop し、終了コード 1 を返す。終了の処理 (フラッシュ・統計・リークの検査) は `main` が返ったときと同じで、後始末が済んでいるのでリークは 0 でなければならない |
+| サンクのスタブ `f$thk` (ランタイムの `evaluate` が呼ぶ。投げうる関数のものだけ) | 保留の枠に置き、null を返す (§6.4) |
+| `cirka_call_1` (スレッドの開始・イベントループのコールバック・スレッドプールの仕事) | `cirka_uncaught_exit(ue)` が表示してプロセスを終える (§9.1 のとおり、スレッドの中で捕まらなかった例外はプロセスを終える。ハンドルに結果が置かれず join が永久に待つことはない) |
+| `cb.<name>` (C からのコールバック) | C のフレームへは戻せないので、`cirka_uncaught_exit(ue)` で表示して終える |
+
+`cirka_uncaught_exit` は後始末をしていないスレッドが残りうるので、リークを検査しない (`exit` と同じ)。
+
+### 6.4 例外を投げたサンク (ADR-126)
+
+サンクの評価が例外を投げると、サンクは例外を覚え、再び評価されると同じ例外を投げる (GHC と同じ)。`evaluate` はスタブから null を
+受け取ると、捕捉した値の残り (借用の捕捉。所有の捕捉はスタブが取り出し、呼ばれた関数の landing pad が drop した) を drop し、
+語 1 に例外の値 (dup)、ヘッダの `nptr` に 1、語 0 にランタイムの関数 `cirka_thunk_reraise` を置いて種類を `THUNK` に戻す
+(待っていたほかのスレッドは THUNK を見て評価し、同じ例外を受け取る)。`cirka_thunk_reraise(t)` は語 1 の値を dup して保留の枠に置き、
+null を返す。ふつうのサンクと同じ形なので、走査 (解放・共有の印付け・リークの検査・循環の回収) は値を子として辿る。語 1 を
+持つため、捕捉のないサンクも 24 バイトで確保する (CAF の静的なサンクも 24 バイト)。
 
 ## 7. 起動と終了
 
@@ -212,7 +272,8 @@ OS のスレッド (pthread) を 1 対 1 で使う。グリーンスレッドは
   まだ走っているスレッドがあれば、循環回収の終了処理とリークの検査は行わない (リークの検査を求められていれば
   `cirka: leak check skipped: N threads still running` と知らせる。テストはこれを失敗にする)。
 - 各スレッドは自分の代替シグナルスタックを持ち、スタックの範囲を TLS に置く。スタックあふれはどのスレッドでも `stack overflow` と報告する。
-- スレッドの中の `error`・パニックは、アンワインド (FEAT-0040) までは今と同じくプロセス全体を終了する。
+- スレッドの中で捕まらなかった例外 (`error`・パニック) は、プロセス全体を終了する (§6.3。アンワインドの様式ではスレッドの入口の
+  `cirka_call_1` で止まり、`<prog>: <msg>` を表示する)。ハンドルに結果を置かないまま終わって join が永久に待つことはない。
 
 ### 9.2 スレッドごとの状態
 

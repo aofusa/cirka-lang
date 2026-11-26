@@ -28,14 +28,32 @@
 | `global g = f` | CAF: `@"g.g" = internal global { i64, ptr }` (サンクのヘッダと `f` を呼ぶスタブ)。`@cirka_caf_roots` に並べる。静的な大域変数 (FEAT-1006): `@"g.g" = internal constant { i64, … }` (構築子のヘッダ (RC 0) と、スロットの順のフィールド: 整数・`double`・文字列や大域変数や引数のない構築子の静的なオブジェクトへの `ptr`)。CAF の根にもスタブにも入れない。文字列リテラル (`@str.N = private constant { i64, i64, [n x i8] }`: ヘッダ・長さ・バイト) と引数のない構築子 (`@con.T.C = private constant i64`: ヘッダだけ) も定数で、LLVM は読み出し (リテラルの長さ・探す文字列のバイト・構築子のタグ) を畳み込める。CAF は評価で書き換えるので `global` のまま (FEAT-1020)。文字列リテラルと静的な大域変数は大きさを収める最小の 2 の冪 (8〜64 バイト) に、CAF は 16 バイトに揃える (64 バイト以下のオブジェクトがどこに置かれても 1 本のキャッシュラインに収まる。FEAT-1030) |
 | `extern cirka_bytes_copy` / `cirka_bytes_eq` / `cirka_bytes_index` (バイト列のコピー・範囲の比較・バイトの探索、FEAT-0095) | 呼び出さずにインラインで生成する (FEAT-0097): 長さ 0 以下の判定、範囲の検査 (失敗は `panic`)、`llvm.memmove` / `memcmp(..) == 0` / バイトの探索。ランタイムの関数と同じ意味で、長さが定数なら LLVM がロード・ストアと比較に展開する。バイトの探索 (FEAT-1019) は 16 バイトのベクトルの比較 (`<16 x i8>` の `icmp eq` を `i16` のマスクにして `cttz`) で範囲の先頭から 64 バイトまでを調べ、16 バイトに満たない端は範囲の終わりで終わる 16 バイトを読み直す。残りが 64 バイトを超えるときだけ `memchr` を呼ぶ。16 バイトずつの比較は展開しないループのまま残し (`llvm.loop.unroll.disable`)、16 バイトより短い範囲の経路と `memchr` の経路には起こりにくい重みを付けて、比較の経路の外に置く (FEAT-1025: 展開した 4 つの比較とその出口が並ぶと、探索の熱い経路が多くのキャッシュラインに散らばる)。範囲が 16 バイトより短いときは文字列の中の 16 バイトの窓を読んで範囲の外のレーンをマスクで捨て、文字列が 16 バイトより短いときはバイトのループで調べる。読むのはどれも文字列の `[0, len)` の中だけで、範囲の外のバイトは結果に影響しない |
 
-- 属性・メタデータ (FEAT-0058、16-performance.md §3): 生成するすべての関数に `nounwind` (panic=abort の間)。オブジェクトのヘッダ (RC・タグ) と
+- 属性・メタデータ (FEAT-0058、16-performance.md §3): 投げない関数 (中止の様式ではすべての関数) に `nounwind`。オブジェクトのヘッダ (RC・タグ) と
   フィールドの load/store に別々の `!tbaa` を付ける (生きているオブジェクトの中で重ならない)。`cirka_alloc` の結果は `noalias nonnull`、`cirka_panic` は `cold`。 MIR の `cold fn` (FEAT-0070、一意な配列のループの元の本体) は `cold noinline`。 プログラムは 1 つの LLVM モジュールで、外から呼ばれるのは `cirka_main` だけなので、それ以外の関数はすべて `internal` にする (FEAT-0072。LLVM が呼び出しの定数を伝え、1 か所からの関数を丸ごとインライン化できる)。
 - LLVM の末尾再帰の除去 (TailCallElim。LLVM 18 で確認) は、自分自身の呼び出しの結果に足す関数を累積引数のループにするとき、別の関数への `musttail` の後の `ret` も書き換えて
   モジュールを壊す。そのような関数 (自分自身の非末尾呼び出しと、他の関数への `musttail` を両方含むもの) には `"disable-tail-calls"="true"` を付けて除外する
   (`musttail` は保証されたまま。FEAT-0065: unboxed の結果でこの形が増えた)。
 - 名前マングリング: `_C<モジュール長><モジュール名><名前長><名前>`(Rust v0 風。`achc` / `cirka` の両方で `--demangle` を用意)。
 - 呼び出し規約 `tailcc` はすべて x86_64 で `musttail` を保証する。aCHC / CirkaLang から生成した関数どうしの呼び出しはすべて `tailcc`。
-- アンワインド導入後 (FEAT-0040) は、drop が必要な値を持つ呼び出しを `invoke` にし、landing pad で drop して `resume`。
+- 例外 (FEAT-0040、05-runtime.md §6、06-ir.md §2.5): 中止の様式 (`catch apply` のないプログラム) では段階1と同じコードを作る
+  (`raise x` は `cirka_raise_abort(x)`、`panic` は `cirka_panic`)。アンワインドの様式では次のとおり。
+  - 投げうる関数 (`unwind::may_raise`) から `nounwind` を外す (LLVM が `.eh_frame` の CFI を出す)。landing pad を持つ関数に
+    `personality ptr @cirka_personality`。投げない関数・ランタイムの関数の呼び出しは今と同じ。
+  - 投げうる関数の `call`・`apply` は、後始末の集合 (`unwind::cleanups`) が空でなければ `invoke` にし、landing pad
+    (`landingpad { ptr, i32 } cleanup`) で集合の参照を drop し (トークンは `cirka_free_raw`)、`resume` する。集合が同じ位置は
+    landing pad を共有する。空なら `call` のまま (アンワインドはフレームを素通りする)。`musttail` の呼び出しは持っているものがないので変わらない。
+  - `force` の遅い経路 (`cirka_force`) の結果が null なら、`raising_extern` の呼び出しの後に保留の枠 (`cirka_exception_pending()`) が
+    空でなければ、検査付きの演算の検査に落ちたら、冷たいブロックでその位置の後始末の集合を drop してから投げる
+    (`cirka.raise_pending()` / `cirka.raise(@静的な文字列)`)。landing pad は要らない。
+  - `raise x` は `cirka.raise(x)`、`panic "msg"` は静的な文字列の `cirka.raise`。内部エラー (`no matching switch arm` など) は `cirka_panic` のまま。
+  - `let (st, v) = catch apply c(args)` は `invoke` で、landing pad は `catch ptr null` (自分の例外だけを止める) の後に
+    `cirka_exception_take(ue)` で値を受け取り、`st` を 1 にして合流する。
+  - 入口 (05-runtime.md §6.3): `cirka_main` は最初に `cirka_exception_enable()` を呼び、`main` を `invoke` して捕まえた例外を
+    `cirka_uncaught` に渡す。投げうるサンクのスタブは捕まえた例外を `cirka_exception_pend` で保留の枠に置いて null を返す。
+    `cirka_call_1` と C からのコールバックの入口は捕まえた例外を `cirka_uncaught_exit` に渡す。`apply` の汎用の関数
+    (`cirka_apply_N_slow`) は、過剰適用の残りの引数を後始末し、サンクの評価が投げれば引数を drop して投げる。借用の捕捉を持つ
+    クロージャのスタブは、呼び出しの間に持っている環境を後始末する。
+  - 捕捉のないサンクと CAF の静的なサンクは 24 バイトにする (投げたサンクが例外の値を語 1 に置く。05-runtime.md §6.4)。
 
 ## 3. 最適化レベル
 
