@@ -158,6 +158,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-1016](features/FEAT-1016-socket-receive-fast-paths.md) | ソケットの受信の短い経路 (`errno` は空の結果だけ、空とわかっている受信は短い入口) | done | P1 | 1001, 1013, 0091 |
 | [FEAT-1017](features/FEAT-1017-static-objects-inline-rc.md) | 静的なオブジェクトの `dup` / `drop` を関数の外のブロックへ飛ばさずに済ませる | done | P1 | 0089, 1006, 0091 |
 | [FEAT-1018](features/FEAT-1018-loop-alignment.md) | ループの先頭を 32 / 64 バイトに揃えるかを調べる (採らない) | done | P2 | 1017, 0091 |
+| [FEAT-1019](features/FEAT-1019-inline-byte-search.md) | 文字列のバイトの探索を C ライブラリの `memchr` を呼ばずに行う | done | P1 | 0097, 0091 |
 
 
 ## aCHC

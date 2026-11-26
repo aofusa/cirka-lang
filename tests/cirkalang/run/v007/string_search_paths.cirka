@@ -1,0 +1,88 @@
+-- The byte search of the strings (FEAT-1019) against a naive answer: every
+-- range of strings of 0 to 40 bytes with an `x` at each position or none
+-- (the byte loop of a short string, the masked 16 bytes, one and two
+-- vector steps), the ranges of longer strings that start or end near the
+-- 16-byte steps and the 64 bytes searched inline (then the C library),
+-- and a pattern of two bytes, whose first byte is searched.
+import Data.String as S
+import Data.String (toStr)
+
+-- `n` bytes `a` with an `x` at `p` (none when p < 0).
+marked : Int -> Int -> String
+marked n p =
+  if p < 0 then S.replicate n "a"
+  else S.replicate p "a" ++ "x" ++ S.replicate (n - p - 1) "a"
+
+-- `n` bytes `a` with `xy` at `p` and an `x` (no `y` after it) at `q`.
+pair : Int -> Int -> Int -> String
+pair n p q = S.fromChars (pairChars n p q 0)
+
+pairChars : Int -> Int -> Int -> Int -> List Char
+pairChars n p q k =
+  if k >= n then Nil
+  else (if k == p || k == q then 'x' else if k == p + 1 then 'y' else 'a') :: pairChars n p q (k + 1)
+
+orNone : Maybe Int -> Int
+orNone (Just k) = k
+orNone Nothing = 0 - 1
+
+-- The index of `x` at p in [a, b), from a, or -1.
+want : Int -> Int -> Int -> Int
+want p a b = if p >= a && p < b then p - a else 0 - 1
+
+-- (cases, wrong) over [a, b) for b from b0 to n.
+rangesB : String -> Int -> Int -> Int -> Int -> Int -> Int -> (Int, Int)
+rangesB s n p a b c w =
+  if b > n then (c, w)
+  else
+    let k = orNone (S.indexOfChar (S.slice (toStr s) a b) 'x') in
+    rangesB s n p a (b + 1) (c + 1) (if k == want p a b then w else w + 1)
+
+-- Over the starts in `as` (those within the string).
+rangesA : String -> Int -> Int -> List Int -> Int -> Int -> (Int, Int)
+rangesA s n p Nil c w = (c, w)
+rangesA s n p (a :: as) c w =
+  if a < 0 || a > n then rangesA s n p as c w
+  else case rangesB s n p a a c w of
+    (c2, w2) => rangesA s n p as c2 w2
+
+upTo : Int -> Int -> List Int
+upTo i n = if i > n then Nil else i :: upTo (i + 1) n
+
+-- Over the marks p from -1 to n - 1.
+marks : Int -> (Int -> List Int) -> Int -> Int -> Int -> (Int, Int)
+marks n starts p c w =
+  if p >= n then (c, w)
+  else case rangesA (marked n p) n p (starts n) c w of
+    (c2, w2) => marks n starts (p + 1) c2 w2
+
+-- Over the lengths in `ns`.
+lengths : List Int -> (Int -> List Int) -> Int -> Int -> (Int, Int)
+lengths Nil starts c w = (c, w)
+lengths (n :: ns) starts c w = case marks n starts (0 - 1) c w of
+  (c2, w2) => lengths ns starts c2 w2
+
+-- Starts near the steps of the search in a long string.
+nearSteps : Int -> List Int
+nearSteps n = 0 :: 1 :: 7 :: 15 :: 16 :: 17 :: 31 :: 33 :: 47 :: 63 :: 64 :: 65 :: (n - 17) :: (n - 16) :: (n - 15) :: (n - 1) :: n :: Nil
+
+-- The two-byte pattern `xy` in [a, b) of strings with a lone `x` before.
+pairs : Int -> Int -> Int -> Int -> Int -> (Int, Int)
+pairs n p q c w =
+  if p + 1 >= n then (c, w)
+  else if q >= n then pairs n (p + 1) 0 c w
+  else if q == p || q == p + 1 then pairs n p (q + 1) c w
+  else
+    let s = pair n p q in
+    let k = orNone (S.indexOf (S.slice (toStr s) 1 n) "xy") in
+    let ok = if p >= 1 then k == p - 1 else k == 0 - 1 in
+    pairs n p (q + 1) (c + 1) (if ok then w else w + 1)
+
+report : String -> (Int, Int) -> IO ()
+report what (c, w) = putStrLn (what ++ ": " ++ showInt w ++ " wrong of " ++ showInt c)
+
+main : IO ()
+main = do
+  report "short strings" (lengths (upTo 0 40) (\n => upTo 0 n) 0 0)
+  report "long strings" (lengths (63 :: 64 :: 65 :: 80 :: 81 :: 96 :: 97 :: 150 :: Nil) nearSteps 0 0)
+  report "pattern" (pairs 90 0 0 0 0)

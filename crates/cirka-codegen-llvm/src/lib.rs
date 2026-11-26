@@ -125,6 +125,9 @@ const RUNTIME_DECLS: &[(&str, &str)] = &[
     ),
     ("memcmp", "i32 @memcmp(ptr, ptr, i64)"),
     ("memchr", "ptr @memchr(ptr, i32, i64)"),
+    // The lane of the first match of the inline byte search (FEAT-1019).
+    ("llvm.cttz.i16", "i16 @llvm.cttz.i16(i16, i1)"),
+    ("llvm.cttz.i32", "i32 @llvm.cttz.i32(i32, i1)"),
 ];
 
 struct Gen<'m> {
@@ -591,24 +594,7 @@ impl<'m> Gen<'m> {
                 let checked = c.cur.clone();
                 c.line(&format!("br i1 {byte}, label %{search}, label %{done}"));
                 c.label(&search);
-                let base = Self::byte_ptr(c, s, "0");
-                let p = Self::byte_ptr(c, s, i);
-                let b32 = c.t();
-                c.line(&format!("{b32} = trunc i64 {b} to i32"));
-                let r = c.t();
-                c.line(&format!(
-                    "{r} = call ptr @memchr(ptr {p}, i32 {b32}, i64 {n})"
-                ));
-                let none = c.t();
-                c.line(&format!("{none} = icmp eq ptr {r}, null"));
-                let at = c.t();
-                c.line(&format!("{at} = ptrtoint ptr {r} to i64"));
-                let at0 = c.t();
-                c.line(&format!("{at0} = ptrtoint ptr {base} to i64"));
-                let k = c.t();
-                c.line(&format!("{k} = sub i64 {at}, {at0}"));
-                let res = c.t();
-                c.line(&format!("{res} = select i1 {none}, i64 -1, i64 {k}"));
+                let res = self.byte_scan(c, s, b, i, j, &n);
                 let found = c.cur.clone();
                 c.line(&format!("br label %{done}"));
                 c.label(&done);
@@ -618,6 +604,241 @@ impl<'m> Gen<'m> {
             }
         }
         true
+    }
+
+    /// The first index in `[i, j)` of the byte `b` (0..=255) in the BYTES
+    /// object `s`, or -1, for `0 <= i < j <= len s` and `n = j - i`
+    /// (FEAT-1019). 16 bytes at a time with vector compares, then the 16
+    /// bytes that end at `j`; what is left after the first 64 bytes (a long
+    /// search) goes to the C library's `memchr`. Fewer than 16 bytes are
+    /// compared in the 16 bytes from `min(i, len - 16)`, outside lanes
+    /// masked, and a string shorter than 16 bytes byte by byte. Every load
+    /// is within `[0, len s)`. Ends in the block of the result.
+    fn byte_scan(
+        &mut self,
+        c: &mut FnCtx<'_>,
+        s: &str,
+        b: &str,
+        i: &str,
+        j: &str,
+        n: &str,
+    ) -> String {
+        let vloop = self.fresh_label("bscan.vloop");
+        let vhit = self.fresh_label("bscan.vhit");
+        let vnext = self.fresh_label("bscan.vnext");
+        let after = self.fresh_label("bscan.after");
+        let tailz = self.fresh_label("bscan.tailz");
+        let tail = self.fresh_label("bscan.tail");
+        let thit = self.fresh_label("bscan.thit");
+        let libc = self.fresh_label("bscan.libc");
+        let short = self.fresh_label("bscan.short");
+        let window = self.fresh_label("bscan.window");
+        let whit = self.fresh_label("bscan.whit");
+        let bytes = self.fresh_label("bscan.bytes");
+        let bnext = self.fresh_label("bscan.bnext");
+        let found = self.fresh_label("bscan.found");
+        let start = c.cur.clone();
+        let base = Self::byte_ptr(c, s, "0");
+        let p = c.t();
+        c.line(&format!(
+            "{p} = getelementptr inbounds i8, ptr {base}, i64 {i}"
+        ));
+        let b8 = c.t();
+        c.line(&format!("{b8} = trunc i64 {b} to i8"));
+        let ins = c.t();
+        c.line(&format!(
+            "{ins} = insertelement <16 x i8> poison, i8 {b8}, i64 0"
+        ));
+        let sp = c.t();
+        c.line(&format!(
+            "{sp} = shufflevector <16 x i8> {ins}, <16 x i8> poison, <16 x i32> zeroinitializer"
+        ));
+        let long = c.t();
+        c.line(&format!("{long} = icmp sgt i64 {n}, 15"));
+        c.line(&format!("br i1 {long}, label %{vloop}, label %{short}"));
+        // 16 bytes at a time from i, at most 64 bytes.
+        c.label(&vloop);
+        let k = c.t();
+        let k2 = c.t();
+        c.line(&format!(
+            "{k} = phi i64 [ 0, %{start} ], [ {k2}, %{vnext} ]"
+        ));
+        let q = c.t();
+        c.line(&format!(
+            "{q} = getelementptr inbounds i8, ptr {p}, i64 {k}"
+        ));
+        let m = Self::match_lanes(c, &q, &sp);
+        let hit = c.t();
+        c.line(&format!("{hit} = icmp ne i16 {m}, 0"));
+        c.line(&format!("br i1 {hit}, label %{vhit}, label %{vnext}"));
+        c.label(&vhit);
+        let t = Self::first_lane(c, &m);
+        let ik = c.t();
+        c.line(&format!("{ik} = add i64 {i}, {k}"));
+        let r1 = c.t();
+        c.line(&format!("{r1} = add i64 {ik}, {t}"));
+        c.line(&format!("br label %{found}"));
+        c.label(&vnext);
+        c.line(&format!("{k2} = add i64 {k}, 16"));
+        let rest = c.t();
+        c.line(&format!("{rest} = sub i64 {n}, {k2}"));
+        let more = c.t();
+        c.line(&format!("{more} = icmp sgt i64 {rest}, 15"));
+        let inline = c.t();
+        c.line(&format!("{inline} = icmp ult i64 {k2}, 64"));
+        let go = c.t();
+        c.line(&format!("{go} = and i1 {more}, {inline}"));
+        c.line(&format!("br i1 {go}, label %{vloop}, label %{after}"));
+        c.label(&after);
+        c.line(&format!("br i1 {more}, label %{libc}, label %{tailz}"));
+        // Fewer than 16 bytes left: the 16 that end at j (the lanes before
+        // k2 did not match).
+        c.label(&tailz);
+        let none = c.t();
+        c.line(&format!("{none} = icmp eq i64 {rest}, 0"));
+        c.line(&format!("br i1 {none}, label %{found}, label %{tail}"));
+        c.label(&tail);
+        let off = c.t();
+        c.line(&format!("{off} = sub i64 {n}, 16"));
+        let q2 = c.t();
+        c.line(&format!(
+            "{q2} = getelementptr inbounds i8, ptr {p}, i64 {off}"
+        ));
+        let m2 = Self::match_lanes(c, &q2, &sp);
+        let hit2 = c.t();
+        c.line(&format!("{hit2} = icmp ne i16 {m2}, 0"));
+        c.line(&format!("br i1 {hit2}, label %{thit}, label %{found}"));
+        c.label(&thit);
+        let t2 = Self::first_lane(c, &m2);
+        let io = c.t();
+        c.line(&format!("{io} = add i64 {i}, {off}"));
+        let r2 = c.t();
+        c.line(&format!("{r2} = add i64 {io}, {t2}"));
+        c.line(&format!("br label %{found}"));
+        // A long search: the C library from i + 64.
+        c.label(&libc);
+        let q3 = c.t();
+        c.line(&format!(
+            "{q3} = getelementptr inbounds i8, ptr {p}, i64 {k2}"
+        ));
+        let b32 = c.t();
+        c.line(&format!("{b32} = trunc i64 {b} to i32"));
+        let r = c.t();
+        c.line(&format!(
+            "{r} = call ptr @memchr(ptr {q3}, i32 {b32}, i64 {rest})"
+        ));
+        let null = c.t();
+        c.line(&format!("{null} = icmp eq ptr {r}, null"));
+        let at = c.t();
+        c.line(&format!("{at} = ptrtoint ptr {r} to i64"));
+        let at0 = c.t();
+        c.line(&format!("{at0} = ptrtoint ptr {base} to i64"));
+        let kk = c.t();
+        c.line(&format!("{kk} = sub i64 {at}, {at0}"));
+        let r3 = c.t();
+        c.line(&format!("{r3} = select i1 {null}, i64 -1, i64 {kk}"));
+        c.line(&format!("br label %{found}"));
+        // Fewer than 16 bytes.
+        c.label(&short);
+        let len = Self::load_field(c, s, 0, Ty::I64);
+        let wide = c.t();
+        c.line(&format!("{wide} = icmp sgt i64 {len}, 15"));
+        c.line(&format!("br i1 {wide}, label %{window}, label %{bytes}"));
+        // The 16 bytes from min(i, len - 16) hold [i, j); the lanes
+        // outside it are masked.
+        c.label(&window);
+        let l16 = c.t();
+        c.line(&format!("{l16} = sub i64 {len}, 16"));
+        let lt = c.t();
+        c.line(&format!("{lt} = icmp slt i64 {i}, {l16}"));
+        let w = c.t();
+        c.line(&format!("{w} = select i1 {lt}, i64 {i}, i64 {l16}"));
+        let q4 = c.t();
+        c.line(&format!(
+            "{q4} = getelementptr inbounds i8, ptr {base}, i64 {w}"
+        ));
+        let m4 = Self::match_lanes(c, &q4, &sp);
+        let m4w = c.t();
+        c.line(&format!("{m4w} = zext i16 {m4} to i32"));
+        let lo = c.t();
+        c.line(&format!("{lo} = sub i64 {i}, {w}"));
+        let hi = c.t();
+        c.line(&format!("{hi} = sub i64 {j}, {w}"));
+        let lo32 = c.t();
+        c.line(&format!("{lo32} = trunc i64 {lo} to i32"));
+        let hi32 = c.t();
+        c.line(&format!("{hi32} = trunc i64 {hi} to i32"));
+        let from = c.t();
+        c.line(&format!("{from} = shl i32 -1, {lo32}"));
+        let upto = c.t();
+        c.line(&format!("{upto} = shl i32 1, {hi32}"));
+        let below = c.t();
+        c.line(&format!("{below} = sub i32 {upto}, 1"));
+        let mask = c.t();
+        c.line(&format!("{mask} = and i32 {from}, {below}"));
+        let mm = c.t();
+        c.line(&format!("{mm} = and i32 {m4w}, {mask}"));
+        let hit4 = c.t();
+        c.line(&format!("{hit4} = icmp ne i32 {mm}, 0"));
+        c.line(&format!("br i1 {hit4}, label %{whit}, label %{found}"));
+        c.label(&whit);
+        let t4 = c.t();
+        c.line(&format!(
+            "{t4} = call i32 @llvm.cttz.i32(i32 {mm}, i1 true)"
+        ));
+        let t4w = c.t();
+        c.line(&format!("{t4w} = zext i32 {t4} to i64"));
+        let r4 = c.t();
+        c.line(&format!("{r4} = add i64 {w}, {t4w}"));
+        c.line(&format!("br label %{found}"));
+        // A string shorter than 16 bytes: byte by byte.
+        c.label(&bytes);
+        let x = c.t();
+        let x2 = c.t();
+        c.line(&format!(
+            "{x} = phi i64 [ {i}, %{short} ], [ {x2}, %{bnext} ]"
+        ));
+        let qx = c.t();
+        c.line(&format!(
+            "{qx} = getelementptr inbounds i8, ptr {base}, i64 {x}"
+        ));
+        let bx = c.t();
+        c.line(&format!("{bx} = load i8, ptr {qx}, align 1"));
+        let eq = c.t();
+        c.line(&format!("{eq} = icmp eq i8 {bx}, {b8}"));
+        c.line(&format!("br i1 {eq}, label %{found}, label %{bnext}"));
+        c.label(&bnext);
+        c.line(&format!("{x2} = add i64 {x}, 1"));
+        let more2 = c.t();
+        c.line(&format!("{more2} = icmp slt i64 {x2}, {j}"));
+        c.line(&format!("br i1 {more2}, label %{bytes}, label %{found}"));
+        c.label(&found);
+        let res = c.t();
+        c.line(&format!(
+            "{res} = phi i64 [ {r1}, %{vhit} ], [ -1, %{tailz} ], [ -1, %{tail} ], [ {r2}, %{thit} ], [ {r3}, %{libc} ], [ -1, %{window} ], [ {r4}, %{whit} ], [ {x}, %{bytes} ], [ -1, %{bnext} ]"
+        ));
+        res
+    }
+
+    /// The lanes of the 16 bytes at `q` equal to the bytes of `sp` (an
+    /// `i16`, bit k for byte k).
+    fn match_lanes(c: &mut FnCtx<'_>, q: &str, sp: &str) -> String {
+        let v = c.t();
+        c.line(&format!("{v} = load <16 x i8>, ptr {q}, align 1"));
+        let e = c.t();
+        c.line(&format!("{e} = icmp eq <16 x i8> {v}, {sp}"));
+        let m = c.t();
+        c.line(&format!("{m} = bitcast <16 x i1> {e} to i16"));
+        m
+    }
+
+    /// The first lane set in the lanes `m` (not 0), as an `i64`.
+    fn first_lane(c: &mut FnCtx<'_>, m: &str) -> String {
+        let t = c.t();
+        c.line(&format!("{t} = call i16 @llvm.cttz.i16(i16 {m}, i1 true)"));
+        let w = c.t();
+        c.line(&format!("{w} = zext i16 {t} to i64"));
+        w
     }
 
     /// Whether `[start, start + n)`, for `n > 0`, is not within the bytes of
