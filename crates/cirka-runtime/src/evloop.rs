@@ -115,8 +115,13 @@ impl<T: Copy> Buf<T> {
     }
 
     fn free(&mut self) {
-        // SAFETY: malloc'ed (or null).
-        unsafe { sys::free(self.ptr as *mut c_void) };
+        // An empty buffer that never grew has nothing to free: the loop
+        // takes and frees its (usually empty) queues on every turn, without
+        // a call into the C library (FEAT-1024).
+        if !self.ptr.is_null() {
+            // SAFETY: malloc'ed.
+            unsafe { sys::free(self.ptr as *mut c_void) };
+        }
         *self = Buf::new();
     }
 }
@@ -224,8 +229,21 @@ struct Inbox {
     items: Buf<(Obj, Obj)>,
     /// Under `lock`: blocking jobs submitted and not yet completed.
     jobs: usize,
+    /// `items.len + jobs`, stored under `lock` whenever either changes, so
+    /// that the loop's thread sees an empty inbox without taking the lock
+    /// on every turn (FEAT-1024). An action queued after the loop read 0
+    /// also wakes the loop through the eventfd, as with the lock.
+    pending: AtomicUsize,
     /// Under `lock`: the loop is gone; nothing more is queued.
     closed: bool,
+}
+
+impl Inbox {
+    /// Records `items.len + jobs` (under `lock`).
+    fn note_pending(&self) {
+        self.pending
+            .store(self.items.len + self.jobs, Ordering::Release);
+    }
 }
 
 struct Loop {
@@ -353,6 +371,7 @@ fn new_inbox() -> *mut Inbox {
             efd,
             items: Buf::new(),
             jobs: 0,
+            pending: AtomicUsize::new(0),
             closed: false,
         });
         b
@@ -402,9 +421,11 @@ unsafe fn inbox_push(b: *mut Inbox, cb: Obj, arg: Obj, job: bool) -> bool {
                 (*b).jobs -= 1;
             }
             if (*b).closed {
+                (*b).note_pending();
                 return false;
             }
             (*b).items.push((cb, arg));
+            (*b).note_pending();
         }
         wake(b);
         true
@@ -479,7 +500,9 @@ extern "C" fn loop_finalize(p: usize) {
         let mut items = {
             let _g = (*b).lock.lock();
             (*b).closed = true;
-            (*b).items.take()
+            let items = (*b).items.take();
+            (*b).note_pending();
+            items
         };
         while let Some((cb, arg)) = items.pop() {
             cirka_drop(cb);
@@ -1007,9 +1030,14 @@ unsafe fn run_inbox(l: *mut Loop) {
     // SAFETY: the queue is taken under the lock; its values are shared.
     unsafe {
         let b = (*l).inbox;
+        if (*b).pending.load(Ordering::Acquire) == 0 {
+            return;
+        }
         let mut items = {
             let _g = (*b).lock.lock();
-            (*b).items.take()
+            let items = (*b).items.take();
+            (*b).note_pending();
+            items
         };
         for i in 0..items.len {
             let (cb, arg) = items.get(i);
@@ -1029,8 +1057,11 @@ unsafe fn run_inbox(l: *mut Loop) {
 /// # Safety
 /// `b` must be a live inbox.
 unsafe fn inbox_state(b: *mut Inbox) -> (bool, bool) {
-    // SAFETY: under the lock.
+    // SAFETY: under the lock; an empty inbox without it (`pending`).
     unsafe {
+        if (*b).pending.load(Ordering::Acquire) == 0 {
+            return (false, false);
+        }
         let _g = (*b).lock.lock();
         ((*b).items.len > 0, (*b).jobs > 0)
     }
@@ -1126,7 +1157,10 @@ pub unsafe extern "C" fn cirka_loop_run(o: Obj) -> i64 {
         let mut evs = [sys::epoll_event { events: 0, data: 0 }; BATCH];
         let result = loop {
             run_inbox(l);
-            run_timers(l, now_ns());
+            // The clock is read only when there are timers (FEAT-1024).
+            if (*l).heap.len > 0 {
+                run_timers(l, now_ns());
+            }
             if (*l).stop {
                 break 1;
             }
@@ -1431,6 +1465,7 @@ pub unsafe extern "C" fn cirka_loop_blocking(o: Obj, work: Obj, done: Obj) -> i6
         {
             let _g = (*b).lock.lock();
             (*b).jobs += 1;
+            (*b).note_pending();
         }
         let j = sys::malloc(size_of::<Job>()) as *mut Job;
         if j.is_null() {
@@ -1942,6 +1977,48 @@ mod tests {
             cirka_drop(l);
         }
         assert_eq!(balance(), b0, "the pool's statistics are in the totals");
+    }
+
+    /// The count of queued actions and jobs in flight that the loop reads
+    /// without the lock (FEAT-1024) follows every change of the queue.
+    #[test]
+    fn the_inbox_counts_what_is_pending() {
+        let _g = crate::test_lock();
+        let b0 = balance();
+        OWNER.store(crate::tls::thread_id(), Ordering::Relaxed);
+        // SAFETY: a loop of this thread, its inbox and live closures.
+        unsafe {
+            let l = cirka_loop_new();
+            let b = (*owned(l)).inbox;
+            let pending = || (*b).pending.load(Ordering::Acquire);
+            assert_eq!(pending(), 0);
+            assert_eq!(inbox_state(b), (false, false));
+            // A job counts until its result has run on the loop (a job
+            // that completes turns into a queued action).
+            let (w, d) = (closure(work), closure(done));
+            assert_eq!(cirka_loop_blocking(l, w, d), 0);
+            assert_eq!(cirka_loop_blocking(l, w, d), 0);
+            cirka_drop(w);
+            cirka_drop(d);
+            assert_eq!(pending(), 2);
+            assert_eq!(cirka_loop_run(l), 0);
+            assert_eq!(take_log(), b"dd");
+            assert_eq!(pending(), 0);
+            assert_eq!(inbox_state(b), (false, false));
+            // A posted action counts until the loop has taken it.
+            let rm = cirka_loop_remote(l);
+            let p = closure(posted);
+            assert_eq!(cirka_remote_post(rm, p), 0);
+            cirka_drop(p);
+            assert_eq!(pending(), 1);
+            assert_eq!(inbox_state(b), (true, false));
+            cirka_drop(rm);
+            assert_eq!(cirka_loop_run(l), 0);
+            assert_eq!(take_log(), b"p");
+            assert_eq!(pending(), 0);
+            cirka_drop(l);
+        }
+        assert_eq!(balance(), b0);
     }
 
     #[test]

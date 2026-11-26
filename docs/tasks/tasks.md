@@ -163,6 +163,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-1021](features/FEAT-1021-errno-address-in-tls.md) | `errno` のアドレスを TLS ブロックに覚える | done | P1 | 1016, 0091 |
 | [FEAT-1022](features/FEAT-1022-short-byte-copies.md) | バッファから作る短い文字列の写しをインラインで行う | done | P1 | 1002, 0091 |
 | [FEAT-1023](features/FEAT-1023-hot-runtime-sections.md) | 演算ごとに動くランタイムの関数をテキストの先頭にまとめる | done | P1 | 1019, 1022, 0091 |
+| [FEAT-1024](features/FEAT-1024-lighter-loop-turns.md) | イベントループの 1 回りで、使わない受け箱・タイマーの処理を飛ばす | done | P1 | 1014, 0091 |
 
 
 ## aCHC
