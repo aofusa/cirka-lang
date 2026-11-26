@@ -199,6 +199,24 @@ pub fn llvm_opt_level(opt_level: u8) -> u8 {
     }
 }
 
+/// The optimization arguments of `clang` for `opt_level`: `-O<n>`, and at
+/// LLVM `-O3` the vectorization of floating-point reductions that keeps
+/// the order of the additions (FEAT-1010, 07-backend.md §3): the
+/// additions are done lane by lane in the original order, so the result
+/// does not change, and the other operations of the loop (divisions,
+/// multiplications, conversions) are done several at a time.
+pub fn llvm_opt_args(opt_level: u8) -> Vec<String> {
+    let l = llvm_opt_level(opt_level);
+    let mut args = vec![format!("-O{l}")];
+    if l >= 3 {
+        args.extend([
+            "-mllvm".to_string(),
+            "-force-ordered-reductions".to_string(),
+        ]);
+    }
+    args
+}
+
 /// Compiles LLVM IR text into an executable.
 pub fn link_ir(
     cfg: &Config,
@@ -212,7 +230,7 @@ pub fn link_ir(
     std::fs::write(&ll, ir).map_err(|e| format!("cannot write {}: {e}", ll.display()))?;
     let rt = find_runtime(cfg, opts.runtime)?;
     let mut cmd = Command::new(&cfg.clang);
-    cmd.arg(format!("-O{}", llvm_opt_level(opts.opt_level)))
+    cmd.args(llvm_opt_args(opts.opt_level))
         .arg(format!("--target={}", cfg.target))
         .arg("-Wno-override-module");
     if opts.runtime == RuntimeKind::Tsan {
@@ -286,7 +304,7 @@ pub fn verify_ir(cfg: &Config, ir_path: &Path) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::llvm_opt_level;
+    use super::{llvm_opt_args, llvm_opt_level};
 
     #[test]
     fn release_builds_use_llvm_o3() {
@@ -294,5 +312,17 @@ mod tests {
         assert_eq!(llvm_opt_level(1), 1);
         assert_eq!(llvm_opt_level(2), 3);
         assert_eq!(llvm_opt_level(3), 3);
+    }
+
+    #[test]
+    fn release_builds_vectorize_ordered_reductions() {
+        assert_eq!(llvm_opt_args(0), ["-O0"]);
+        assert_eq!(llvm_opt_args(1), ["-O1"]);
+        for l in [2, 3] {
+            assert_eq!(
+                llvm_opt_args(l),
+                ["-O3", "-mllvm", "-force-ordered-reductions"]
+            );
+        }
     }
 }

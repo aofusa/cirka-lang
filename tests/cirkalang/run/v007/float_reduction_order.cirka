@@ -1,0 +1,35 @@
+-- max-allocs: 20
+-- Sums whose value depends on the order of the additions (FEAT-1010):
+-- native code vectorizes these loops, the divisions several at a time,
+-- and must still print what the interpreter prints, which adds the terms
+-- one by one (floating-point addition is not associative, so only the
+-- other operations may be done together).
+import Data.Array.Unboxed as U
+
+-- The sum over k from `k` of u[k] / (k + 1), in order.
+weighted : (k : Int) -> (u : U.UArray Float) -> Float -> Float
+  requires 0 <= k
+weighted k u s =
+  if k >= U.size u then s
+  else weighted (k + 1) u (s +. U.index u k /. toFloat (k + 1))
+
+-- Row `i` of spectral-norm's matrix times `u`, from column `k`.
+row : Int -> (k : Int) -> (u : U.UArray Float) -> Float -> Float
+  requires 0 <= k
+row i k u s =
+  if k >= U.size u then s
+  else row i (k + 1) u (s +. U.index u k /. toFloat ((i + k) * (i + k + 1) / 2 + i + 1))
+
+-- Terms of very different sizes, whose sum depends on the order.
+term : Int -> Float
+term i =
+  if i % 3 == 0 then 1.0e16
+  else if i % 3 == 1 then 0.7
+  else 0.0 -. 1.0e16
+
+main : IO ()
+main = do
+  let u = U.generate 1001 (\i => term i)
+  printFloat (weighted 0 u 0.0)
+  printFloat (row 3 0 u 0.25)
+  printFloat (row 500 0 u 0.0)
