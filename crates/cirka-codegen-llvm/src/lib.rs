@@ -2593,6 +2593,55 @@ entry:
         assert_eq!(checks, 3, "{main}");
     }
 
+    /// The byte search compares 16 bytes at a time (FEAT-1019): vector
+    /// loads and compares, the mask's lowest set bit, a masked window for
+    /// short ranges, and `memchr` only in the block reached after 64 bytes
+    /// without a match.
+    #[test]
+    fn byte_search_compares_16_bytes_at_a_time() {
+        let src = "extern fn cirka_bytes_index(ptr, i64, i64, i64) -> i64
+
+fn main() -> i64 {
+entry:
+  let b = prim bytes_new(100)
+  let k = extern cirka_bytes_index(b, 103, 3, 90)
+  drop b
+  ret k
+}
+";
+        let m = cirka_mir::parse::parse(cirka_diagnostics::FileId(0), src).unwrap();
+        let ir = emit(&m, Options::default());
+        let main = function_ir(&ir, "main");
+        for op in [
+            "= load <16 x i8>, ptr ",
+            "= icmp eq <16 x i8> ",
+            "= bitcast <16 x i1> ",
+            "call i16 @llvm.cttz.i16(i16 ",
+            "call i32 @llvm.cttz.i32(i32 ",
+        ] {
+            assert!(main.contains(op), "{op}: {main}");
+        }
+        for decl in [
+            "declare i16 @llvm.cttz.i16(i16, i1)",
+            "declare i32 @llvm.cttz.i32(i32, i1)",
+        ] {
+            assert!(ir.contains(decl), "{decl}: {ir}");
+        }
+        // The blocks of `main`, by label: `memchr` is called once, in the
+        // block for the rest of a long search.
+        let mut label = "entry";
+        let mut calls = Vec::new();
+        for l in main.lines() {
+            if let Some(name) = l.strip_suffix(':') {
+                label = name;
+            } else if l.contains("call ptr @memchr(") {
+                calls.push(label.to_string());
+            }
+        }
+        assert_eq!(calls.len(), 1, "{main}");
+        assert!(calls[0].starts_with("bscan.libc"), "{calls:?}: {main}");
+    }
+
     /// Numeric loops (FEAT-0063): libm calls become intrinsics, the
     /// uniqueness check is inline with the copy on the cold side, and
     /// element accesses have their own TBAA tag.
