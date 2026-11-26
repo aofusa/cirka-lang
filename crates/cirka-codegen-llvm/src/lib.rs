@@ -381,18 +381,28 @@ impl<'m> Gen<'m> {
             return;
         }
         let rc = c.t();
+        let zero = c.t();
         let pos = c.t();
-        let (inc, slow, done) = (
+        let (live, inc, atom, done) = (
+            self.fresh_label("dup.live"),
             self.fresh_label("dup.inc"),
-            self.fresh_label("dup.slow"),
+            self.fresh_label("dup.atomic"),
             self.fresh_label("dup.done"),
         );
         c.line(&format!(
             "{rc} = load atomic i32, ptr {o} unordered, align 8{TBAA_HEADER}"
         ));
+        // A static object (`rc` 0) needs nothing. It is tested before the
+        // fast path, so that it jumps forward within the hot code instead
+        // of to a cold block and back (FEAT-1017).
+        c.line(&format!("{zero} = icmp eq i32 {rc}, 0"));
+        c.line(&format!(
+            "br i1 {zero}, label %{done}, label %{live}, !prof !1"
+        ));
+        c.label(&live);
         c.line(&format!("{pos} = icmp sgt i32 {rc}, 0"));
         c.line(&format!(
-            "br i1 {pos}, label %{inc}, label %{slow}, !prof !0"
+            "br i1 {pos}, label %{inc}, label %{atom}, !prof !0"
         ));
         c.label(&inc);
         let rc1 = c.t();
@@ -401,11 +411,7 @@ impl<'m> Gen<'m> {
             "store atomic i32 {rc1}, ptr {o} unordered, align 8{TBAA_HEADER}"
         ));
         c.line(&format!("br label %{done}"));
-        c.label(&slow);
-        let neg = c.t();
-        let atom = self.fresh_label("dup.atomic");
-        c.line(&format!("{neg} = icmp slt i32 {rc}, 0"));
-        c.line(&format!("br i1 {neg}, label %{atom}, label %{done}"));
+        // `rc` < 0: shared between threads.
         c.label(&atom);
         c.line(&format!("call void @cirka_dup(ptr {o})"));
         c.line(&format!("br label %{done}"));
@@ -418,16 +424,24 @@ impl<'m> Gen<'m> {
             return;
         }
         let rc = c.t();
+        let zero = c.t();
         let gt1 = c.t();
+        let live = self.fresh_label("drop.live");
         let dec = self.fresh_label("drop.dec");
         let slow = self.fresh_label("drop.slow");
         let free = self.fresh_label("drop.free");
-        let other = self.fresh_label("drop.other");
         let shared = self.fresh_label("drop.shared");
         let done = self.fresh_label("drop.done");
         c.line(&format!(
             "{rc} = load atomic i32, ptr {o} unordered, align 8{TBAA_HEADER}"
         ));
+        // A static object (`rc` 0) needs nothing: tested first, as in
+        // `emit_dup` (FEAT-1017).
+        c.line(&format!("{zero} = icmp eq i32 {rc}, 0"));
+        c.line(&format!(
+            "br i1 {zero}, label %{done}, label %{live}, !prof !1"
+        ));
+        c.label(&live);
         c.line(&format!("{gt1} = icmp sgt i32 {rc}, 1"));
         c.line(&format!(
             "br i1 {gt1}, label %{dec}, label %{slow}, !prof !0"
@@ -442,14 +456,11 @@ impl<'m> Gen<'m> {
         c.label(&slow);
         let is1 = c.t();
         c.line(&format!("{is1} = icmp eq i32 {rc}, 1"));
-        c.line(&format!("br i1 {is1}, label %{free}, label %{other}"));
+        c.line(&format!("br i1 {is1}, label %{free}, label %{shared}"));
         c.label(&free);
         c.line(&format!("call void @cirka_free_object(ptr {o})"));
         c.line(&format!("br label %{done}"));
-        c.label(&other);
-        let neg = c.t();
-        c.line(&format!("{neg} = icmp slt i32 {rc}, 0"));
-        c.line(&format!("br i1 {neg}, label %{shared}, label %{done}"));
+        // `rc` < 0: shared between threads.
         c.label(&shared);
         c.line(&format!("call void @cirka_dec_ref_slow(ptr {o})"));
         c.line(&format!("br label %{done}"));
@@ -2558,6 +2569,63 @@ entry:
         let slow = body("cirka_apply_2_slow");
         assert!(slow.contains("noinline"), "{slow}");
         assert!(slow.contains("cirka_mk_pap"), "{slow}");
+    }
+
+    /// `dup` and `drop` test for a static object (`rc` 0) right after
+    /// loading the count, before their fast paths: it jumps forward past
+    /// the update instead of to a cold block and back, and the cold blocks
+    /// only free or reach a shared object (FEAT-1017).
+    #[test]
+    fn dup_and_drop_leave_static_objects_first() {
+        let src = r"
+type Int { I = 0 { v: i64 } }
+
+fn keep(x: ptr @borrowed, y: ptr) -> ptr {
+entry:
+  dup x
+  drop y
+  ret x
+}
+
+fn main() -> i64 {
+entry:
+  let a = alloc Int.I(1)
+  let b = alloc Int.I(2)
+  let r = call keep(a, b)
+  drop r
+  drop a
+  ret 0
+}
+";
+        let m = cirka_mir::parse::parse(cirka_diagnostics::FileId(0), src).unwrap();
+        let ir = emit(&m, Options::default());
+        let start = ir
+            .find("@\"_C4keep\"(")
+            .unwrap_or_else(|| panic!("no keep\n{ir}"));
+        let body = &ir[start..];
+        let body = &body[..body.find("\n}").unwrap()];
+        let lines: Vec<&str> = body.lines().map(str::trim).collect();
+        let loads: Vec<usize> = (0..lines.len())
+            .filter(|&i| lines[i].contains("= load atomic i32, ptr"))
+            .collect();
+        assert_eq!(loads.len(), 2, "{body}");
+        for (&i, op) in loads.iter().zip(["dup", "drop"]) {
+            let rc = lines[i].split(" = ").next().unwrap();
+            assert_eq!(
+                lines[i + 1].split(" = ").nth(1),
+                Some(&*format!("icmp eq i32 {rc}, 0")),
+                "{body}"
+            );
+            let br = lines[i + 2];
+            assert!(
+                br.starts_with("br i1 ")
+                    && br.contains(&format!("label %{op}.done"))
+                    && br.contains(&format!("label %{op}.live"))
+                    && br.ends_with("!prof !1"),
+                "{body}"
+            );
+        }
+        assert!(!body.contains("drop.other"), "{body}");
     }
 
     /// A thread-sanitized build instruments every generated function;

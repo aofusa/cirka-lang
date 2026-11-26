@@ -18,8 +18,8 @@
 | `call` (非末尾) | `call tailcc` |
 | 複数の結果を返す関数 (`-> (ptr, i64)`、FEAT-0065) | 構造体を返す `define tailcc { ptr, i64 }`。`ret (a, b)` は `insertvalue`、`let (a, b) = call` は `call` と `extractvalue` |
 | `extern f(...)` | `call ccc` (C ABI。構造体の値渡しは `clang` の ABI 規則に従って展開)。C シグネチャ付きなら引数を C の型へ (`trunc`/`inttoptr`/`fptrunc`)、結果を `i64`/`double` へ (`sext`/`zext`/`ptrtoint`/`fpext`) 変換する |
-| `dup x` | インライン: `rc = load i32; if rc > 0 { store rc+1 } else if rc < 0 { atomicrmw sub } ` (0 は不死で何もしない) |
-| `drop x` | インライン: `rc > 1 → store rc-1`、`rc == 1 → call @cirka_free_object`、`rc < 0 → call @cirka_dec_ref_slow` |
+| `dup x` | インライン: `rc = load i32`、`rc == 0 → 何もしない` (不死の静的なオブジェクト)、`rc > 0 → store rc+1`、`rc < 0 → call @cirka_dup` (共有。冷たいブロック)。RC 0 は速い経路の前に調べ、同じ線の中で前へ飛ぶだけにする (FEAT-1017。速い経路の後に調べると、引数やランタイムの結果として届く静的なオブジェクト (空文字列・IO トークン・`noTimeout` のような静的な構築子) は関数の末尾の冷たいブロックへ飛んで戻り、使わないキャッシュラインに触れる) |
+| `drop x` | インライン: `rc == 0 → 何もしない` (同上)、`rc > 1 → store rc-1`、`rc == 1 → call @cirka_free_object`、`rc < 0 → call @cirka_dec_ref_slow` (後の 2 つは冷たいブロック) |
 | `dup y₁..yₖ; drop x` / `dup y₁..yₖ; let t = drop_reuse x` (yᵢ は x のフィールドの射影) | **drop 特殊化**: `rc(x) == 1` なら dup と対応するフィールドの drop を打ち消し、残りのポインタフィールドだけ drop して `x` のセルを解放 (または再利用トークンにする)。そうでなければ yᵢ を dup して x を drop |
 | `alloc` | インライン: スレッドローカルなフリーリストから pop、空なら `call @cirka_alloc`。ヘッダを store |
 | `switch` | `switch i16 tag` (ヘッダの tag を load)。既定の腕がなければ既定の行き先は `panic`。ただし腕が型のすべての構成子を覆うとき (Core → MIR は網羅的でない照合に明示の `panic` の腕を付ける) は最後の腕を既定の行き先にし、腕が 1 つなら tag を読まず無条件に分岐する。検査付きのランタイム (`debug_rt`) では `panic` を残す (FEAT-0093) |

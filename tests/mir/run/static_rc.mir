@@ -1,0 +1,61 @@
+// `dup` and `drop` of objects received as arguments, which may be static
+// (`rc` 0: string literals, static globals) or allocated: a static object
+// is left as it is, an allocated one is counted and freed (FEAT-1017).
+type Int { I = 0 { v: i64 } }
+extern fn cirka_write_i64(i64) -> void
+extern fn cirka_write_char(i64) -> void
+extern fn cirka_write_bytes(ptr) -> void
+global seven = seven_init
+
+fn seven_init() -> ptr {
+entry:
+  let r = alloc Int.I(7)
+  ret r
+}
+
+// Takes two more references to `x` and gives them back, `n` times.
+fn churn(x: ptr @borrowed, n: i64) -> i64 {
+entry:
+  switch n { 0 => done, default => more }
+done:
+  ret 0
+more:
+  dup x
+  dup x
+  drop x
+  drop x
+  let n1 = prim sub(n, 1)
+  tailcall churn(x, n1)
+}
+
+// The value of the integer `x` after `churn`; `x` is consumed.
+fn value(x: ptr) -> i64 {
+entry:
+  let _ = call churn(x, 3)
+  let v = proj x Int.I.v
+  drop x
+  ret v
+}
+
+fn main() -> i64 {
+entry:
+  let s = lit "static\n"
+  let _ = call churn(s, 3)
+  let _ = extern cirka_write_bytes(s)
+  drop s
+  let g = global seven
+  let a = force g
+  let va = call value(a)
+  let _ = extern cirka_write_i64(va)
+  let _ = extern cirka_write_char(10)
+  let h = alloc Int.I(8)
+  dup h
+  let vh = call value(h)
+  let _ = extern cirka_write_i64(vh)
+  let _ = extern cirka_write_char(10)
+  let vh2 = proj h Int.I.v
+  let _ = extern cirka_write_i64(vh2)
+  let _ = extern cirka_write_char(10)
+  drop h
+  ret 0
+}
