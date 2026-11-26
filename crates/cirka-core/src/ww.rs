@@ -563,6 +563,191 @@ fn params_at_calls(p: &Program, values: bool) -> HashMap<String, Vec<bool>> {
     }
 }
 
+/// A literal, lambda or constructor: built as a value, not a thunk (a
+/// newtype constructor is its field), or a variable of `env` (evaluated).
+/// A constructor is built in a lazy position only when its strict fields
+/// are safe to compute now (BUG-0014, the code generator's `builds_now`):
+/// values, or operations that cannot fail on values.
+fn is_value(p: &Program, e: &Expr, env: &HashSet<u32>) -> bool {
+    match e {
+        Expr::Lit(_) | Expr::Lam(..) => true,
+        Expr::Var(x) => env.contains(&x.id),
+        Expr::Con(c, _, args) => match p.ctor(c) {
+            Some((d, _)) if d.newtype => args.first().is_some_and(|a| is_value(p, a, env)),
+            Some((d, i)) => args
+                .iter()
+                .zip(&d.ctors[i].strict)
+                .all(|(a, st)| !*st || safe(p, a, env)),
+            None => false,
+        },
+        _ => false,
+    }
+}
+
+/// Computing `e` now cannot fail: a value, or a primitive operation that
+/// cannot fail on such operands.
+fn safe(p: &Program, e: &Expr, env: &HashSet<u32>) -> bool {
+    match e {
+        Expr::Prim(op, _, args) => total_prim(*op) && args.iter().all(|a| safe(p, a, env)),
+        Expr::Cast(x, _) => safe(p, x, env),
+        _ => is_value(p, e, env),
+    }
+}
+
+/// Which results of each function returning an unboxed tuple (CPR,
+/// 06-ir.md §1.7) are evaluated at every return, so that MIR does not
+/// `force` them where a `case` takes the call apart (FEAT-1012: the boxed
+/// fields of a strict constructor). A result is evaluated when every
+/// return gives it a value ([`is_value`], through casts) or a variable
+/// known to be evaluated: a parameter every call passes evaluated
+/// ([`whnf_params`]), a strict `let`, a case binder, a strict or unboxed
+/// field, a lazily bound value, or an evaluated result of a call taken
+/// apart. A return that calls such a function shares its results. A
+/// greatest fixed point; anything else in return position makes every
+/// result unknown. Results of unboxed types are always evaluated.
+pub fn whnf_results(p: &Program) -> HashMap<String, Vec<bool>> {
+    let params = whnf_params(p);
+    let spec = Spec::new(p);
+    let mut res: HashMap<String, Vec<bool>> = HashMap::new();
+    for b in &p.binds {
+        let mut t = &b.ty;
+        while let Type::Forall(_, _, x) | Type::Fun(_, _, x) = t {
+            t = x;
+        }
+        if let Type::Con(c, ts) = t
+            && crate::cpr::is_utup(c)
+        {
+            res.insert(b.name.clone(), vec![true; ts.len()]);
+        }
+    }
+    loop {
+        let mut changed = false;
+        for b in &p.binds {
+            let Some(cur) = res.get(&b.name).cloned() else {
+                continue;
+            };
+            let (_, xs, body) = split_fun(&b.expr);
+            let mut env = HashSet::new();
+            let ev = params.get(&b.name).filter(|e| e.len() == xs.len());
+            for (i, x) in xs.iter().enumerate() {
+                if x.ty.is_unboxed() || ev.is_some_and(|e| e[i]) {
+                    env.insert(x.id.id);
+                }
+            }
+            let mut flags = cur.clone();
+            RetWalk {
+                p,
+                spec: &spec,
+                res: &res,
+            }
+            .ret(body, &mut env, &mut flags);
+            if flags != cur {
+                res.insert(b.name.clone(), flags);
+                changed = true;
+            }
+        }
+        if !changed {
+            return res;
+        }
+    }
+}
+
+/// The walk of [`whnf_results`] over the returns of a function body.
+struct RetWalk<'a> {
+    p: &'a Program,
+    spec: &'a Spec<'a>,
+    res: &'a HashMap<String, Vec<bool>>,
+}
+
+impl RetWalk<'_> {
+    /// The results of the function returning an unboxed tuple that `e`
+    /// calls saturated (after the bindings Core Lint allows before it).
+    fn call(&self, e: &Expr) -> Option<&Vec<bool>> {
+        let mut e = e;
+        while let Expr::Let(_, b) | Expr::LetStrict(_, _, b) = e {
+            e = b;
+        }
+        let (mut h, args) = e.collect_args();
+        while let Expr::TyApp(x, _) = h {
+            h = x;
+        }
+        let Expr::Global(g) = h else { return None };
+        let b = self.p.bind(g)?;
+        (split_fun(&b.expr).1.len() == args.len())
+            .then(|| self.res.get(g))
+            .flatten()
+    }
+
+    fn ret(&self, e: &Expr, env: &mut HashSet<u32>, flags: &mut [bool]) {
+        match e {
+            Expr::Let(Bind::NonRec(b, r), body) => {
+                // Lowered as a value in a lazy position, not a thunk.
+                if (is_value(self.p, r, env) && !matches!(&**r, Expr::Lam(..))) || b.ty.is_unboxed()
+                {
+                    env.insert(b.id.id);
+                }
+                self.ret(body, env, flags);
+            }
+            Expr::Let(Bind::Rec(_), body) => self.ret(body, env, flags),
+            Expr::LetStrict(b, _, body) => {
+                env.insert(b.id.id);
+                self.ret(body, env, flags);
+            }
+            Expr::Case(s, cb, _, alts) => {
+                env.insert(cb.id.id);
+                let taken = self.call(s).cloned();
+                for a in alts {
+                    let mut env = env.clone();
+                    if let AltCon::Con(c, fs) = &a.con {
+                        if crate::cpr::is_utup(c) {
+                            for (i, f) in fs.iter().enumerate() {
+                                let known = taken.as_ref().is_some_and(|t| t.get(i) == Some(&true));
+                                if known || f.ty.is_unboxed() {
+                                    env.insert(f.id.id);
+                                }
+                            }
+                        } else {
+                            let values = self.spec.evaluated_binders(c, fs);
+                            env.extend(values.into_iter().map(|f| f.id.id));
+                        }
+                    }
+                    self.ret(&a.rhs, &mut env, flags);
+                }
+            }
+            Expr::Panic(..) => {}
+            Expr::Cast(x, _) => self.ret(x, env, flags),
+            Expr::Con(c, ts, args) if crate::cpr::is_utup(c) => {
+                for (i, a) in args.iter().enumerate() {
+                    let unboxed = ts.get(i).is_some_and(Type::is_unboxed);
+                    if !unboxed
+                        && !value_through_casts(self.p, a, env)
+                        && let Some(f) = flags.get_mut(i)
+                    {
+                        *f = false;
+                    }
+                }
+            }
+            e => match self.call(e) {
+                Some(g) if g.len() == flags.len() => {
+                    for (f, v) in flags.iter_mut().zip(g) {
+                        *f &= *v;
+                    }
+                }
+                _ => flags.iter_mut().for_each(|f| *f = false),
+            },
+        }
+    }
+}
+
+/// [`is_value`] behind casts (the zeros of the other constructors of a
+/// sum are casts of a literal).
+fn value_through_casts(p: &Program, e: &Expr, env: &HashSet<u32>) -> bool {
+    match e {
+        Expr::Cast(x, _) => value_through_casts(p, x, env),
+        e => is_value(p, e, env),
+    }
+}
+
 struct CallWalk<'a> {
     p: &'a Program,
     spec: &'a Spec<'a>,
@@ -575,35 +760,8 @@ struct CallWalk<'a> {
 }
 
 impl CallWalk<'_> {
-    /// A literal, lambda or constructor: built as a value, not a thunk (a
-    /// newtype constructor is its field). A constructor is built in a lazy
-    /// position only when its strict fields are safe to compute now
-    /// (BUG-0014, the code generator's `builds_now`): values, or
-    /// operations that cannot fail on values.
     fn is_value(&self, e: &Expr, env: &HashSet<u32>) -> bool {
-        match e {
-            Expr::Lit(_) | Expr::Lam(..) => true,
-            Expr::Var(x) => env.contains(&x.id),
-            Expr::Con(c, _, args) => match self.p.ctor(c) {
-                Some((d, _)) if d.newtype => args.first().is_some_and(|a| self.is_value(a, env)),
-                Some((d, i)) => args
-                    .iter()
-                    .zip(&d.ctors[i].strict)
-                    .all(|(a, st)| !*st || self.safe(a, env)),
-                None => false,
-            },
-            _ => false,
-        }
-    }
-
-    /// Computing `e` now cannot fail: a value, or a primitive operation
-    /// that cannot fail on such operands.
-    fn safe(&self, e: &Expr, env: &HashSet<u32>) -> bool {
-        match e {
-            Expr::Prim(op, _, args) => total_prim(*op) && args.iter().all(|a| self.safe(a, env)),
-            Expr::Cast(x, _) => self.safe(x, env),
-            _ => self.is_value(e, env),
-        }
+        is_value(self.p, e, env)
     }
 
     fn clear(&mut self, f: &str, from: usize) {

@@ -1813,7 +1813,7 @@ fn opt_returns_products_as_unboxed_tuples() {
     let w = p
         .binds
         .iter()
-        .find(|b| b.name.starts_with("go") && b.name.ends_with("$c"));
+        .find(|b| b.name.starts_with("go") && b.name.contains("$c"));
     let w = w.unwrap_or_else(|| panic!("{all}"));
     assert_eq!(
         w.ty.to_string().matches("UTup2 Int# Int#").count(),
@@ -1859,7 +1859,7 @@ fn opt_returns_sums_as_unboxed_tuples() {
     let w = p
         .binds
         .iter()
-        .find(|b| b.name.starts_with("go") && b.name.ends_with("$c"));
+        .find(|b| b.name.starts_with("go") && b.name.contains("$c"));
     let w = w.unwrap_or_else(|| panic!("{all}"));
     assert_eq!(
         w.ty.to_string().matches("UTup2 Int# Int#").count(),
@@ -1896,15 +1896,167 @@ fn opt_flattens_products_inside_sum_results() {
     let w = p
         .binds
         .iter()
-        .find(|b| b.name.starts_with("go") && b.name.ends_with("$c"));
+        .find(|b| b.name.starts_with("go") && b.name.contains("$c"));
     let w = w.unwrap_or_else(|| panic!("{all}"));
     assert!(w.ty.to_string().contains("UTup3 Int# Int# Int#"), "{all}");
 }
 
+/// `go` returns its string argument in a `Just` when it finds `i` with
+/// `i * i == 49`, `Nothing` at the end (FEAT-1012).
+const SUM_BOXED: &str = "(data Maybe (a) (Nothing) (Just a))
+ (extern arg () Int#)
+ (def go (-> Int# Int# TY (Maybe TY))
+   (lam ((i Int#) (n Int#) (s TY))
+     (case (prim ge i n) (c Int#) (Maybe TY)
+       (0 (case (prim eq (prim mul i i) 49) (d Int#) (Maybe TY)
+            (0 (go (prim add i 1) n s))
+            (_ (con Just (TY) s))))
+       (_ (con Nothing (TY))))))
+ (def main Int#
+   (case (go 0 (extern arg) ARG) (r (Maybe TY)) Int#
+     ((Nothing) 7)
+     ((Just x) USE)))";
+
+#[test]
+fn opt_returns_sums_with_boxed_fields() {
+    // The worker returns the index and the string itself; `Nothing` gives
+    // the string the static empty one. `main` builds no `Just`.
+    let src = format!(
+        "{PRELUDE}{}",
+        SUM_BOXED
+            .replace("TY", "Bytes")
+            .replace("ARG", "\"seven\"")
+            .replace("USE", "(prim bytes_len x)")
+    );
+    let mut p = parse_program(FileId(0), &src).unwrap();
+    assert!(lint::lint_program(&p).is_empty(), "{}", print_program(&p));
+    let st = opt::optimize_with_stats(&mut p).unwrap();
+    let all = print_program(&p);
+    assert!(lint::lint_program(&p).is_empty(), "{all}");
+    assert!(st.product_results >= 1, "{st:?}\n{all}");
+    let w = p
+        .binds
+        .iter()
+        .find(|b| b.name.starts_with("go") && b.name.contains("$c"));
+    let w = w.unwrap_or_else(|| panic!("{all}"));
+    assert!(w.ty.to_string().contains("UTup2 Int# Bytes"), "{all}");
+    assert!(print::print_expr(&w.expr).contains("\"\""), "{all}");
+    let m = print::print_expr(&p.bind("main").unwrap().expr);
+    assert!(!m.contains("con Just"), "{m}");
+}
+
+#[test]
+fn opt_returns_sums_with_boxed_fields_of_any_type() {
+    // A boxed `Int` leaf: `Nothing` gives it the empty string cast to `Int`.
+    let src = format!(
+        "{PRELUDE}{}",
+        SUM_BOXED
+            .replace("TY", "Int")
+            .replace("ARG", "(con I# () (extern arg))")
+            .replace("USE", "(case x (s Int) Int# ((I# u) u))")
+    );
+    let mut p = parse_program(FileId(0), &src).unwrap();
+    assert!(lint::lint_program(&p).is_empty(), "{}", print_program(&p));
+    opt::optimize(&mut p).unwrap();
+    let all = print_program(&p);
+    assert!(lint::lint_program(&p).is_empty(), "{all}");
+    let w = p
+        .binds
+        .iter()
+        .find(|b| b.name.starts_with("go") && b.name.contains("$c"));
+    let w = w.unwrap_or_else(|| panic!("{all}"));
+    assert!(w.ty.to_string().contains("UTup2 Int# Int"), "{all}");
+    assert!(
+        print::print_expr(&w.expr).contains("(cast \"\" Int)"),
+        "{all}"
+    );
+}
+
+/// Optimizes a program where `make` builds a `Node` in every return and
+/// `main` is `main_body`; tells whether `make` got a worker, and prints the
+/// program.
+fn make_gets_worker(main_body: &str) -> (bool, String) {
+    let src = format!(
+        "{PRELUDE}(data Tree () (Leaf) (Node (! Tree) (! Tree)))
+         (extern arg () Int#)
+         (def make (-> Int# Tree)
+           (lam ((d Int#))
+             (case d (c Int#) Tree
+               (0 (let ((a Tree (con Leaf ()))) (let ((b Tree (con Leaf ()))) (con Node () a b))))
+               (_ (let! (l Tree (make (prim sub d 1)))
+                    (let! (r Tree (make (prim sub d 1)))
+                      (con Node () l r)))))))
+         (def check (-> Tree Int#)
+           (lam ((t Tree))
+             (case t (u Tree) Int#
+               ((Leaf) 0)
+               ((Node l r) (prim add 1 (prim add (check l) (check r)))))))
+         (def main Int# {main_body})"
+    );
+    let mut p = parse_program(FileId(0), &src).unwrap();
+    assert!(lint::lint_program(&p).is_empty(), "{}", print_program(&p));
+    opt::optimize_with_stats(&mut p).unwrap();
+    let all = print_program(&p);
+    assert!(lint::lint_program(&p).is_empty(), "{all}");
+    let w = p
+        .binds
+        .iter()
+        .any(|b| b.name.starts_with("make") && b.name.contains("$c"));
+    (w, all)
+}
+
+#[test]
+fn opt_splits_sums_with_boxed_fields_only_where_taken_apart() {
+    // The tree is stored in fields and passed to `check`: a worker would
+    // only move the allocation of each `Node` to its callers (FEAT-1012,
+    // binary-trees).
+    let (w, all) = make_gets_worker("(check (make (extern arg)))");
+    assert!(!w, "{all}");
+    // A `case` takes the result apart: the `Node` is not built.
+    let (w, all) = make_gets_worker(
+        "(case (make (extern arg)) (t Tree) Int# ((Leaf) 0) ((Node l r) (prim add (check l) 1)))",
+    );
+    assert!(w, "{all}");
+    // Also through a variable bound to the call.
+    let (w, all) = make_gets_worker(
+        "(let! (t Tree (make (extern arg))) (case t (u Tree) Int# ((Leaf) 0) ((Node l r) (prim add (check l) (check t)))))",
+    );
+    assert!(w, "{all}");
+}
+
+#[test]
+fn whnf_results_follow_every_return() {
+    let src = "(data UTup2 (t0 t1) (UTup2 t0 t1))
+     (data Box (a) (B a))
+     (extern arg () Int#)
+     (def get (-> (Box Bytes) (UTup2 Int# Bytes))
+       (lam ((b (Box Bytes)))
+         (case b (c (Box Bytes)) (UTup2 Int# Bytes)
+           ((B x) (con UTup2 (Int# Bytes) 1 x)))))
+     (def made (-> Int# (UTup2 Int# Bytes))
+       (lam ((n Int#))
+         (case n (c Int#) (UTup2 Int# Bytes)
+           (0 (con UTup2 (Int# Bytes) 0 \"\"))
+           (1 (let! (s Bytes (prim bytes_new n)) (con UTup2 (Int# Bytes) 1 s)))
+           (_ (made (prim sub n 1))))))
+     (def main Int#
+       (case (get (con B (Bytes) \"x\")) (u (UTup2 Int# Bytes)) Int#
+         ((UTup2 t s) (case (made (extern arg)) (v (UTup2 Int# Bytes)) Int#
+           ((UTup2 k w) (prim add (prim bytes_len s) (prim bytes_len w)))))))";
+    let p = parse_program(FileId(0), src).unwrap();
+    assert!(lint::lint_program(&p).is_empty(), "{}", print_program(&p));
+    let r = crate::ww::whnf_results(&p);
+    // The field of a lazy constructor may be a thunk.
+    assert_eq!(r["get"], vec![true, false]);
+    // A literal, a strict `let`, and the recursive call's own results.
+    assert_eq!(r["made"], vec![true, true]);
+    assert!(!r.contains_key("main"));
+}
+
 #[test]
 fn opt_keeps_sums_with_boxed_fields() {
-    // `Just` of a `Maybe` (a sum is not flattened inside a field): a boxed
-    // leaf, no worker.
+    // `Just` of a `Maybe` built by the return (a sum is not flattened
+    // inside a field, and the boxed leaf is not an atom): no worker.
     let src = format!(
         "{PRELUDE}{}",
         SUM_LOOP
@@ -1927,7 +2079,7 @@ fn opt_keeps_sums_with_boxed_fields() {
     assert!(
         !p.binds
             .iter()
-            .any(|b| b.name.starts_with("go") && b.name.ends_with("$c")),
+            .any(|b| b.name.starts_with("go") && b.name.contains("$c")),
         "{all}"
     );
 }
@@ -1952,7 +2104,7 @@ fn opt_sum_results_need_cheap_leaves() {
     assert!(
         !p.binds
             .iter()
-            .any(|b| b.name.starts_with("go") && b.name.ends_with("$c")),
+            .any(|b| b.name.starts_with("go") && b.name.contains("$c")),
         "{all}"
     );
 }

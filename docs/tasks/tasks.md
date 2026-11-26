@@ -16,7 +16,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | 共通基盤 | M1 バックエンド基盤 | 7 / 7 |
 | 共通基盤 | M2 Perceus | 3 / 3 |
 | 共通基盤 | M3 共通 Core と Core→MIR | 4 / 4 |
-| 共通基盤 | SX 共通基盤の拡張 (各トラックの必要に応じて) | 55 / 72 |
+| 共通基盤 | SX 共通基盤の拡張 (各トラックの必要に応じて) | 56 / 73 |
 | aCHC | H1 Haskell 最小フロントエンド | 6 / 6 |
 | aCHC | H2 Haskell 実用化 (スコープ縮小版) | 10 / 10 |
 | aCHC | H3 所有権拡張 (.chs) | 9 / 9 |
@@ -151,6 +151,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-1009](features/FEAT-1009-product-joins.md) | 分岐が作ってすぐ分解する積の値は、フィールドを合流点へ渡す (積の合流点) | done | P1 | 0065, 0074, 0091 |
 | [FEAT-1010](features/FEAT-1010-ordered-fp-reductions.md) | 浮動小数点の縮約のループを、加算の順序を保ったままベクトル化する | done | P1 | 1000, 0091 |
 | [FEAT-1011](features/FEAT-1011-huge-pages-for-large-objects.md) | 大きな配列を透過的な巨大ページに置く | done | P1 | 0068, 0091 |
+| [FEAT-1012](features/FEAT-1012-boxed-sum-results.md) | 和型の構築子を返す関数は、箱のフィールドもそのまま返す | done | P1 | 1008, 0091 |
 
 
 ## aCHC

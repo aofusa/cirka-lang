@@ -1,0 +1,22 @@
+-- max-allocs: 40
+-- A function whose returns build the constructors of a sum type with
+-- boxed fields (FEAT-1012) returns the index of the constructor and the
+-- fields themselves (the static empty string for the fields of the
+-- constructor it does not build): the loop that calls it and takes the
+-- result apart allocates no `Found` (2000 calls).
+data Hit = Found String Int | Missing
+
+find : List String -> Int -> Int -> Hit
+find ws m i = case ws of
+  [] => Missing
+  w :: rest => if strLength w >= m then Found w i else find rest m (i + 1)
+
+loop : List String -> Int -> Int -> Int
+loop ws k acc =
+  if k <= 0 then acc
+  else case find ws (k % 7) 0 of
+    Found w i => loop ws (k - 1) (acc + strLength w * 10 + i)
+    Missing => loop ws (k - 1) (acc + 1)
+
+main : IO ()
+main = printInt (loop ["a", "bb", "ccc", "dddd", "eeeee"] 2000 0)

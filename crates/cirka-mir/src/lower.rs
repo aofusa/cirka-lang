@@ -92,6 +92,10 @@ struct Lowerer<'p> {
     /// Functions returning several values (an unboxed tuple in Core,
     /// 06-ir.md §1.7) and their result types.
     multi: HashMap<String, Vec<Ty>>,
+    /// Per function of `multi`, which results every return gives
+    /// evaluated (`whnf_results`, FEAT-1012): not forced where a case
+    /// takes the call apart.
+    multi_whnf: HashMap<String, Vec<bool>>,
     /// The join blocks being lowered (FEAT-1009): per parameter, whether
     /// every jump so far passes a value in WHNF.
     joins: HashMap<u32, Vec<bool>>,
@@ -228,6 +232,7 @@ impl<'p> Lowerer<'p> {
             box_f: CtorRef { ty: 0, ctor: 0 },
             wrappers: HashMap::new(),
             multi: HashMap::new(),
+            multi_whnf: HashMap::new(),
             joins: HashMap::new(),
             counter: 0,
             errors: Vec::new(),
@@ -432,6 +437,7 @@ impl<'p> Lowerer<'p> {
             self.tops.insert(b.name.clone(), top);
         }
         let evaluated = core::ww::whnf_params(p);
+        self.multi_whnf = core::ww::whnf_results(p);
         for b in &p.binds {
             let (params, body) = lam_chain(&b.expr);
             let name = match &self.tops[&b.name] {
@@ -1772,6 +1778,7 @@ impl<'p> Lowerer<'p> {
         };
         let ops = self.call_args(fb, env, &func, &fvs, &args)?;
         let rs = self.multi[&func].clone();
+        let known = self.multi_whnf.get(&func).cloned().unwrap_or_default();
         let vars: Vec<Var> = bs
             .iter()
             .zip(&rs)
@@ -1782,13 +1789,13 @@ impl<'p> Lowerer<'p> {
             func,
             args: ops,
         });
-        for ((b, v), r) in bs.iter().zip(vars).zip(rs) {
+        for (i, ((b, v), r)) in bs.iter().zip(vars).zip(rs).enumerate() {
             env.insert(
                 b.id.id,
                 Bound::Val {
                     op: Operand::Var(v),
                     ty: b.ty.clone(),
-                    whnf: r != Ty::Ptr,
+                    whnf: r != Ty::Ptr || known.get(i) == Some(&true),
                 },
             );
         }

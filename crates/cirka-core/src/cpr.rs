@@ -19,9 +19,8 @@
 //! fixed point: a tail call of another such function contributes its shape.
 //!
 //! A function whose every return builds a constructor of one *sum* type
-//! (FEAT-1008), with fields that flatten to unboxed values only, returns
-//! the index of the constructor and the leaves of every constructor it
-//! builds, zeros for those of the others:
+//! (FEAT-1008) returns the index of the constructor and the leaves of
+//! every constructor it builds, zeros for those of the others:
 //!
 //! ```text
 //! f    = λx̄. … Nothing … (Just (I# n)) … f ȳ …
@@ -35,7 +34,11 @@
 //! or `Nothing`) allocates neither the `Just` nor the `I#`. The leaves of
 //! a sum must be cheap in every return (atoms or primitive operations on
 //! them): returning them evaluates nothing a lazy field would have left
-//! unevaluated.
+//! unevaluated. A boxed leaf (FEAT-1012: `Reply out rest | Bad` of two
+//! strings) is returned as is; the returns of the other constructors give
+//! it the static empty string, cast to its type, which nothing reads and
+//! whose `dup` and `drop` do nothing. Its type must not be linear (a cast
+//! cannot make a linear value).
 //!
 //! `UTup<n>` has no runtime representation. Core Lint ([`check_placement`])
 //! only allows it to be built in the return position of a top-level
@@ -348,14 +351,17 @@ impl Shape {
                 ty,
                 fields: fields.into_iter().zip(f2).map(|(a, b)| a.meet(b)).collect(),
             },
-            // The constructors either builds, with the fields met where
-            // both build one.
+            // The constructors either builds. One that both build must
+            // have fields of the same shapes: a meet of the fields could
+            // leave a boxed leaf in one function where another flattens
+            // it, and a tail call between two sum workers passes the
+            // leaves of a constructor both build as they are (`resum`).
             (Shape::Sum { ts, ty, alts }, Shape::Sum { alts: a2, .. })
                 if alts.len() == a2.len()
                     && alts.iter().zip(a2).all(|((k1, f1), (k2, f2))| {
                         k1 == k2
                             && match (f1, f2) {
-                                (Some(x), Some(y)) => x.len() == y.len(),
+                                (Some(x), Some(y)) => same_fields(x, y),
                                 _ => true,
                             }
                     }) =>
@@ -366,16 +372,7 @@ impl Shape {
                     alts: alts
                         .into_iter()
                         .zip(a2)
-                        .map(|((k, f1), (_, f2))| {
-                            let f = match (f1, f2) {
-                                (None, f2) => f2.clone(),
-                                (f1, None) => f1,
-                                (Some(x), Some(y)) => {
-                                    Some(x.into_iter().zip(y).map(|(a, b)| a.meet(b)).collect())
-                                }
-                            };
-                            (k, f)
-                        })
+                        .map(|((k, f1), (_, f2))| (k, f1.or_else(|| f2.clone())))
                         .collect(),
                 }
             }
@@ -395,13 +392,18 @@ fn field_leaves(fs: &[Shape]) -> Vec<Type> {
     out
 }
 
-/// A value of the unboxed type `t`: the leaves of the constructors a
-/// return of a sum does not build.
+/// A value of type `t` for the leaves of the constructors a return of a
+/// sum does not build: zero of an unboxed type, and for a boxed type
+/// (FEAT-1012) the static empty string, cast to `t`. Nothing reads it (the
+/// wrapper builds the constructor of the index only), and as a static
+/// object its `dup` and `drop` do nothing.
 fn zero(t: &Type) -> Expr {
     match t {
         Type::Con(c, _) if c == UNIT => Expr::Lit(Lit::Unit),
         Type::Con(c, _) if c == DOUBLE => Expr::Lit(Lit::Double(0.0)),
-        _ => Expr::Lit(Lit::Int(0)),
+        t if t.is_unboxed() => Expr::Lit(Lit::Int(0)),
+        t if t.alpha_eq(&Type::bytes()) => Expr::Lit(Lit::Str(Vec::new())),
+        t => Expr::Cast(Box::new(Expr::Lit(Lit::Str(Vec::new()))), t.clone()),
     }
 }
 
@@ -641,9 +643,10 @@ fn returns(
 /// and a single result only when it is unboxed (a lazy field may be a
 /// thunk, which a function must not return).
 ///
-/// A sum (FEAT-1008): unboxed leaves only (those of the constructors a
-/// return does not build are zeros), at least one besides the index.
-fn acceptable(s: &Shape) -> bool {
+/// A sum (FEAT-1008): at least one leaf besides the index. Its boxed
+/// leaves (FEAT-1012) must not be linear: the returns of the other
+/// constructors give them a cast of the static empty string ([`zero`]).
+fn acceptable(p: &Program, tvs: &[(TyVar, Kind)], s: &Shape) -> bool {
     let mut ls = Vec::new();
     s.leaves(&mut ls);
     match s {
@@ -654,9 +657,121 @@ fn acceptable(s: &Shape) -> bool {
             n => n <= MAX_LEAVES,
         },
         Shape::Sum { .. } => {
-            ls.len() > 1 && ls.len() <= MAX_LEAVES && ls.iter().all(Type::is_unboxed)
+            ls.len() > 1
+                && ls.len() <= MAX_LEAVES
+                && ls.iter().all(|t| t.is_unboxed() || !linear(p, t, tvs, 0))
         }
     }
+}
+
+/// Whether `s` is a sum with a boxed leaf (FEAT-1012).
+fn boxed_sum(s: &Shape) -> bool {
+    let mut ls = Vec::new();
+    s.leaves(&mut ls);
+    matches!(s, Shape::Sum { .. }) && ls.iter().any(|t| !t.is_unboxed())
+}
+
+/// Drops the plans of sums with a boxed leaf whose results no `case` takes
+/// apart (FEAT-1012). Their wrapper would only rebuild the value where it
+/// is stored or passed on (`make`, which builds a tree), so the allocation
+/// moves to the caller and the results add work. A function is wanted
+/// when a `case` with constructor alternatives scrutinizes a saturated
+/// call of it, directly or through a variable bound to the call, or when a
+/// wanted function returns its call. The plans that remain are closed
+/// under the calls in return position: the worker of one calls the
+/// workers of the others.
+fn keep_wanted(p: &Program, plans: &mut HashMap<String, Shape>, cands: &HashMap<String, Cand>) {
+    if plans.values().any(boxed_sum) {
+        // The candidate a saturated call `e` (under casts) makes.
+        let callee = |e: &Expr| -> Option<String> {
+            let mut e = e;
+            while let Expr::Cast(x, _) = e {
+                e = x;
+            }
+            let g = call_head(e)?;
+            let c = cands.get(g)?;
+            (e.collect_args().1.len() == c.params.len()).then(|| g.to_string())
+        };
+        // Binders are unique: no scoping is needed.
+        let mut bound: HashMap<u32, String> = HashMap::new();
+        for b in &p.binds {
+            walk(&b.expr, &mut |e| {
+                if let Expr::Let(Bind::NonRec(x, r), _) | Expr::LetStrict(x, r, _) = e
+                    && let Some(g) = callee(r)
+                {
+                    bound.insert(x.id.id, g);
+                }
+            });
+        }
+        let mut wanted: HashSet<String> = HashSet::new();
+        for b in &p.binds {
+            walk(&b.expr, &mut |e| {
+                let Expr::Case(s, _, _, alts) = e else {
+                    return;
+                };
+                if !alts.iter().any(|a| matches!(a.con, AltCon::Con(..))) {
+                    return;
+                }
+                let mut s = &**s;
+                while let Expr::Cast(x, _) = s {
+                    s = x;
+                }
+                let g = match s {
+                    Expr::Var(x) => bound.get(&x.id).cloned(),
+                    s => callee(s),
+                };
+                wanted.extend(g);
+            });
+        }
+        let mut work: Vec<String> = wanted.iter().cloned().collect();
+        while let Some(f) = work.pop() {
+            for g in return_calls(p, &f, cands) {
+                if wanted.insert(g.clone()) {
+                    work.push(g);
+                }
+            }
+        }
+        plans.retain(|f, s| !boxed_sum(s) || wanted.contains(f));
+    }
+    loop {
+        let gone: Vec<String> = plans
+            .keys()
+            .filter(|f| {
+                return_calls(p, f, cands)
+                    .iter()
+                    .any(|g| !plans.contains_key(g))
+            })
+            .cloned()
+            .collect();
+        if gone.is_empty() {
+            return;
+        }
+        for f in gone {
+            plans.remove(&f);
+        }
+    }
+}
+
+/// The candidates that `f` calls in return position.
+fn return_calls(p: &Program, f: &str, cands: &HashMap<String, Cand>) -> Vec<String> {
+    fn go(e: &Expr, me: &str, cands: &HashMap<String, Cand>, out: &mut Vec<String>) {
+        match e {
+            Expr::Let(_, body) | Expr::LetStrict(_, _, body) => go(body, me, cands, out),
+            Expr::Case(_, _, _, alts) => alts.iter().for_each(|a| go(&a.rhs, me, cands, out)),
+            Expr::Cast(x, t) if same_result_call(x, t, me, cands) => go(x, me, cands, out),
+            e => {
+                if let Some(g) = cand_call(e, me, cands) {
+                    out.push(g.to_string());
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    if let Some(b) = p.bind(f) {
+        let (_, _, body) = split_fun(&b.expr);
+        go(body, f, cands, &mut out);
+    }
+    out
 }
 
 /// Splits the functions with constructed product results; returns how many.
@@ -733,7 +848,7 @@ pub fn product_results(p: &mut Program, next: &mut u32) -> usize {
                 &mut acc,
             );
             let new = match acc {
-                Some(s) if acceptable(&s) => Some(s),
+                Some(s) if acceptable(p, &c.tvs, &s) => Some(s),
                 Some(_) => Some(Shape::Leaf(c.res.clone())),
                 // Only divergence and calls of functions not known yet.
                 None => None,
@@ -753,10 +868,15 @@ pub fn product_results(p: &mut Program, next: &mut u32) -> usize {
             break;
         }
     }
-    let plans: HashMap<String, Shape> = shapes
+    let mut plans: HashMap<String, Shape> = shapes
         .into_iter()
-        .filter_map(|(f, s)| s.filter(acceptable).map(|s| (f, s)))
+        .filter_map(|(f, s)| {
+            let tvs = &cands[&f].tvs;
+            s.filter(|s| acceptable(p, tvs, s)).map(|s| (f, s))
+        })
         .collect();
+    keep_wanted(p, &mut plans, &cands);
+
     if plans.is_empty() {
         return 0;
     }
@@ -1065,8 +1185,9 @@ struct Tr<'a> {
 impl Tr<'_> {
     /// The results of the call of another sum worker (shape `gs`, the
     /// constructors `ga`) as ours (`ma`): the same index, its leaves for
-    /// the constructors it builds (theirs are the same shapes, `acceptable`
-    /// leaves no boxed leaf a meet could have made), zeros for the others.
+    /// the constructors it builds (theirs are the same shapes: the meet of
+    /// two sums keeps a constructor both build only with the same fields),
+    /// zeros for the others.
     fn resum(
         &self,
         call: Expr,

@@ -3226,6 +3226,44 @@ fn cold_functions_round_trip_through_the_text_format() {
     assert!(parse(FileId(0), &printed).unwrap().func("f").unwrap().cold);
 }
 
+// ---- FEAT-1012: evaluated results of unboxed tuples ----
+
+/// Lowers a program where `pair` returns an unboxed tuple whose boxed
+/// result is `res`, and `main` takes the call apart and stores the result
+/// in a strict field; tells whether `main` forces it.
+fn main_forces_result(res: &str) -> bool {
+    let src = format!(
+        "(data UTup2 (t0 t1) (UTup2 t0 t1))
+         (data Box () (B (! Bytes)))
+         (data Lazy () (L Bytes))
+         (extern arg () Int#)
+         (def pair (-> Int# (UTup2 Int# Bytes))
+           (lam ((n Int#))
+             (case n (c Int#) (UTup2 Int# Bytes)
+               (0 (con UTup2 (Int# Bytes) 0 \"\"))
+               (_ {res}))))
+         (def main Int#
+           (case (pair (extern arg)) (u (UTup2 Int# Bytes)) Int#
+             ((UTup2 k s) (case (con B () s) (b Box) Int# ((B t) (prim bytes_len t))))))"
+    );
+    let core = cirka_core::parse_program(FileId(0), &src).unwrap();
+    let m = lower::lower_program(&core).unwrap();
+    let f = m.func("main").unwrap();
+    crate::print::print_function(&m, f).contains("force ")
+}
+
+#[test]
+fn evaluated_tuple_results_are_not_forced() {
+    // Every return gives a string evaluated: a literal and a strict `let`.
+    assert!(!main_forces_result(
+        "(let! (s Bytes (prim bytes_new n)) (con UTup2 (Int# Bytes) 1 s))"
+    ));
+    // The field of a lazy constructor may be a thunk.
+    assert!(main_forces_result(
+        "(case (con L () (prim bytes_new n)) (l Lazy) (UTup2 Int# Bytes) ((L s) (con UTup2 (Int# Bytes) 1 s)))"
+    ));
+}
+
 // ---- BUG-0014: lazily bound constructors ----
 
 /// Lowers a program that binds `(con B () field)` lazily and uses it in one
