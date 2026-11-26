@@ -47,6 +47,7 @@ unsafe fn c_string(s: Obj) -> *mut c_char {
 
 /// The last error of this thread (0 after a success).
 #[unsafe(no_mangle)]
+#[unsafe(link_section = ".text.hot.cirka_errno")]
 pub extern "C" fn cirka_errno() -> i64 {
     i64::from(errno())
 }

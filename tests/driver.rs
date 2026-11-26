@@ -154,3 +154,83 @@ fn cirka_source_tests() {
     assert_eq!(out.code, 1, "{}", out.stderr);
     assert!(out.stderr.contains("not supported"), "{}", out.stderr);
 }
+
+/// The runtime functions that run for each operation of a program are
+/// linked next to each other, with the program's closure calls
+/// (`.text.hot.*`, FEAT-1023): between the first and the last of those a
+/// server uses there is no other function, of the runtime or of the
+/// program.
+#[test]
+fn hot_runtime_functions_are_linked_together() {
+    cirka_testkit::init();
+    cirka_driver::native::ensure_runtime_built().unwrap();
+    let (_, cirka) = cirka_integration::cli_bins();
+    let work = cirka_testkit::work_dir("driver-hot", "net_recv_empty");
+    let exe = work.join("net_recv_empty");
+    let src = repo_root().join("tests/cirkalang/run/v007/net_recv_empty.cirka");
+    let bd = format!("--build-dir={}", work.display());
+    let args = ["build", "-O2", &bd, "-o", exe.to_str().unwrap(), src.to_str().unwrap()];
+    let out = run(cirka, &args, &work);
+    assert_eq!(out.code, 0, "{}{}", out.stdout, out.stderr);
+    let nm = Command::new("nm")
+        .args(["-n", "--defined-only"])
+        .arg(&exe)
+        .output()
+        .unwrap();
+    assert!(nm.status.success());
+    // The functions of the text, in address order.
+    let text = String::from_utf8_lossy(&nm.stdout);
+    let syms: Vec<&str> = text
+        .lines()
+        .filter_map(|l| match l.split_whitespace().collect::<Vec<_>>()[..] {
+            [_, "T" | "t", name] => Some(name),
+            _ => None,
+        })
+        .collect();
+    let used = [
+        "cirka_alloc",
+        "cirka_free_object",
+        "cirka_errno",
+        "cirka_loop_run",
+        "cirka_async_watch",
+        "cirka_async_events",
+        "cirka_sock_recv",
+        "cirka_call_1",
+    ];
+    let at = |name: &str| {
+        syms.iter()
+            .position(|s| *s == name)
+            .unwrap_or_else(|| panic!("{name} is not linked:\n{text}"))
+    };
+    let lo = used.iter().map(|n| at(n)).min().unwrap();
+    let hi = used.iter().map(|n| at(n)).max().unwrap();
+    let hot = |s: &str| {
+        s.starts_with("cirka_apply_") && !s.ends_with("_slow")
+            || s.contains("read_now")
+            || s.contains("free_walk")
+            || [
+                "cirka_alloc",
+                "cirka_free_object",
+                "cirka_free_raw",
+                "cirka_drop_reuse",
+                "cirka_dec_ref_slow",
+                "cirka_dup",
+                "cirka_drop",
+                "cirka_force",
+                "cirka_mk_pap",
+                "cirka_errno",
+                "cirka_loop_run",
+                "cirka_async_watch",
+                "cirka_async_events",
+                "cirka_sock_recv",
+                "cirka_sock_send",
+                "cirka_net_send",
+                "cirka_sock_accept",
+                "cirka_bytes_from",
+                "cirka_call_1",
+            ]
+            .contains(&s)
+    };
+    let others: Vec<&str> = syms[lo..=hi].iter().copied().filter(|s| !hot(s)).collect();
+    assert!(others.is_empty(), "{others:?} among the hot functions:\n{text}");
+}

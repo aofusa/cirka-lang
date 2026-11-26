@@ -190,7 +190,8 @@ fn header_declares_the_library_functions() {
             if l.trim() != "#[unsafe(no_mangle)]" {
                 continue;
             }
-            let sig = lines.next().unwrap();
+            // Further attributes (e.g. `link_section`) may come first.
+            let sig = lines.find(|l| !l.trim().starts_with("#[")).unwrap();
             let name = sig.split("fn ").nth(1).unwrap().split('(').next().unwrap();
             assert!(
                 h.contains(&format!(" {name}(")) || h.contains(&format!("*{name}(")),

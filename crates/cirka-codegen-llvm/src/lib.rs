@@ -2088,7 +2088,7 @@ impl<'m> Gen<'m> {
         let all = targs(&args);
         let _ = writeln!(
             s,
-            "define internal tailcc ptr @cirka_apply_{n}(ptr %f, {all}) #0 {{"
+            "define internal tailcc ptr @cirka_apply_{n}(ptr %f, {all}) hot #0 {{"
         );
         s.push_str(
             "entry:\n  %kp = getelementptr inbounds i8, ptr %f, i64 7\n  %k = load atomic i8, ptr %kp unordered, align 1\n",
@@ -2343,9 +2343,12 @@ impl<'m> Gen<'m> {
             "!8 = !{!7, !7, i64 0}\n",
         ));
         // The C ABI entry through which the runtime applies a closure (a
-        // new thread runs its IO action, 05-runtime.md §9.1).
+        // new thread runs its IO action, 05-runtime.md §9.1; the event
+        // loop runs a callback). `hot`, as the closure calls: LLVM puts
+        // them in `.text.hot.`, next to the runtime's functions that run
+        // for each operation (FEAT-1023).
         self.out.push_str(
-            "define ptr @cirka_call_1(ptr %f, ptr %a) #0 {\nentry:\n  %r = call tailcc ptr @cirka_apply_1(ptr %f, ptr %a)\n  ret ptr %r\n}\n",
+            "define ptr @cirka_call_1(ptr %f, ptr %a) hot #0 {\nentry:\n  %r = call tailcc ptr @cirka_apply_1(ptr %f, ptr %a)\n  ret ptr %r\n}\n",
         );
         let ts = if self.opts.tsan {
             " sanitize_thread"
@@ -2811,7 +2814,7 @@ entry:
             external,
             vec![
                 "define i64 @cirka_main() {",
-                "define ptr @cirka_call_1(ptr %f, ptr %a) #0 {"
+                "define ptr @cirka_call_1(ptr %f, ptr %a) hot #0 {"
             ],
             "{ir}"
         );

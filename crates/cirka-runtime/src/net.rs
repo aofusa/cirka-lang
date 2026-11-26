@@ -362,6 +362,7 @@ pub unsafe extern "C" fn cirka_fd_write_from(fd: i64, data: Obj, off: i64) -> i6
 /// # Safety
 /// `data` must be a live BYTES object (borrowed).
 #[unsafe(no_mangle)]
+#[unsafe(link_section = ".text.hot.cirka_net_send")]
 pub unsafe extern "C" fn cirka_net_send(fd: i64, data: Obj, off: i64) -> i64 {
     // SAFETY: `data` is live; the range is checked.
     unsafe {
@@ -606,6 +607,7 @@ fn empty_with(e: i32) -> Obj {
 /// The read of [`read_with`]; `s` is the slot of `fd` in the running loop
 /// (null if there is none).
 #[inline(never)]
+#[unsafe(link_section = ".text.hot.cirka_read_now")]
 fn read_now(
     fd: i64,
     s: *mut Slot,
@@ -657,6 +659,7 @@ fn read_now(
 /// # Safety
 /// `h` must be a live descriptor object.
 #[unsafe(no_mangle)]
+#[unsafe(link_section = ".text.hot.cirka_sock_recv")]
 pub unsafe extern "C" fn cirka_sock_recv(h: Obj, max: i64) -> Obj {
     // SAFETY: guaranteed by the caller.
     let (fd, ident) = unsafe { handle_ident(h) };
@@ -673,6 +676,7 @@ pub unsafe extern "C" fn cirka_sock_recv(h: Obj, max: i64) -> Obj {
 /// `h` must be a live descriptor object, `data` a live BYTES object
 /// (both borrowed).
 #[unsafe(no_mangle)]
+#[unsafe(link_section = ".text.hot.cirka_sock_send")]
 pub unsafe extern "C" fn cirka_sock_send(h: Obj, data: Obj, off: i64) -> i64 {
     // SAFETY: guaranteed by the caller.
     unsafe {
@@ -699,6 +703,7 @@ pub unsafe extern "C" fn cirka_sock_send(h: Obj, data: Obj, off: i64) -> i64 {
 /// # Safety
 /// `h` must be a live descriptor object.
 #[unsafe(no_mangle)]
+#[unsafe(link_section = ".text.hot.cirka_sock_accept")]
 pub unsafe extern "C" fn cirka_sock_accept(h: Obj) -> i64 {
     // SAFETY: guaranteed by the caller.
     let (fd, ident) = unsafe { handle_ident(h) };

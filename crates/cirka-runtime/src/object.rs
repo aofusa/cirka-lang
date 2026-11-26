@@ -133,6 +133,7 @@ pub(crate) unsafe fn dec_dies(c: Obj) -> bool {
 /// # Safety
 /// `o` must be a heap object that is no longer referenced.
 #[unsafe(no_mangle)]
+#[unsafe(link_section = ".text.hot.cirka_free_object")]
 pub unsafe extern "C" fn cirka_free_object(o: Obj) {
     // SAFETY: `o` is dead and owned by this routine.
     unsafe {
@@ -152,6 +153,7 @@ pub unsafe extern "C" fn cirka_free_object(o: Obj) {
 /// # Safety
 /// As for `cirka_free_object`; `kind` and `nptr` are those of `o`.
 #[inline(never)]
+#[unsafe(link_section = ".text.hot.cirka_free_walk")]
 unsafe fn free_walk(o: Obj, kind: u8, nptr: u8) {
     // SAFETY: every object on the list is dead and owned by this routine.
     unsafe {
@@ -223,6 +225,7 @@ unsafe fn release_resources(x: Obj, kind: u8) {
 /// # Safety
 /// `o` must be a live object (or a static one).
 #[unsafe(no_mangle)]
+#[unsafe(link_section = ".text.hot.cirka_dup")]
 pub unsafe extern "C" fn cirka_dup(o: Obj) {
     // SAFETY: o is live.
     unsafe {
@@ -241,6 +244,7 @@ pub unsafe extern "C" fn cirka_dup(o: Obj) {
 /// # Safety
 /// `o` must be a live object owned by the caller.
 #[unsafe(no_mangle)]
+#[unsafe(link_section = ".text.hot.cirka_drop")]
 pub unsafe extern "C" fn cirka_drop(o: Obj) {
     // SAFETY: o is live and owned.
     unsafe {
@@ -256,6 +260,7 @@ pub unsafe extern "C" fn cirka_drop(o: Obj) {
 /// # Safety
 /// `o` must be a live shared object owned by the caller.
 #[unsafe(no_mangle)]
+#[unsafe(link_section = ".text.hot.cirka_dec_ref_slow")]
 pub unsafe extern "C" fn cirka_dec_ref_slow(o: Obj) {
     // SAFETY: as for cirka_drop.
     unsafe { cirka_drop(o) }
@@ -286,6 +291,7 @@ pub unsafe extern "C" fn cirka_drop_fields(o: Obj) {
 /// # Safety
 /// `o` must be a heap object with no remaining references.
 #[unsafe(no_mangle)]
+#[unsafe(link_section = ".text.hot.cirka_free_raw")]
 pub unsafe extern "C" fn cirka_free_raw(o: Obj) {
     if o.is_null() {
         return;
@@ -305,6 +311,7 @@ pub unsafe extern "C" fn cirka_free_raw(o: Obj) {
 /// # Safety
 /// `o` must be a live object owned by the caller.
 #[unsafe(no_mangle)]
+#[unsafe(link_section = ".text.hot.cirka_drop_reuse")]
 pub unsafe extern "C" fn cirka_drop_reuse(o: Obj) -> Obj {
     // SAFETY: o is live and owned.
     unsafe {

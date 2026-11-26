@@ -52,14 +52,16 @@
 ## 4. リンク
 
 ```
-$CIRKA_CLANG -O3 --target=$CIRKA_TARGET -c out.ll -o out.o
-$CIRKA_CLANG -fuse-ld=lld out.o -lm <prefix>/lib/libcirka_rt.a -lm -lpthread -o a.out
+$CIRKA_CLANG -O3 --target=$CIRKA_TARGET -Wno-override-module out.ll -lm <runtime>/libcirka_rt.a -lm -lpthread -Wl,--gc-sections -o a.out
 ```
+
+(最適化の引数は §3。リンカはシステムの既定の GNU ld。)
 
 - `libcirka_rt.a` は `cargo build -p cirka-runtime` で作り、`achc` 実行ファイルからの相対パス、または `CIRKA_RUNTIME_DIR` で探す。
 - `-lm` はランタイムより前にも置く。`libcirka_rt.a` には Rust の compiler-builtins の数学関数 (`cbrt`・`fma`・`floor` など) が
   弱いシンボルとして入っており、後ろに置くとプログラムの呼び出しがそちらに解決されて C ライブラリの関数と結果や性能が変わる (BUG-0028)。
 - FFI で指定されたライブラリ (`extern` の `link` 属性、`achc.toml` の `[link]`) を追加する。
+- コードの配置 (FEAT-1023): プログラムの演算ごとに動くランタイムの関数 (確保と解放・RC の遅い経路・`force`・部分適用・イベントループとそれが動かすソケットの I/O・`errno`) は `.text.hot.<名前>` の節に置き、生成コードのクロージャの呼び出し (`cirka_apply_N`・`cirka_call_1`) には `hot` 属性を付ける (LLVM は `.text.hot.` の節に置く)。GNU ld の既定のリンカスクリプトは `.text.hot.*` をテキストの先頭にまとめるので、プログラムが実行するランタイムのコードは数ページに収まる (ランタイムの 40 KiB ほどのコードに散らばると、システムコールの後に冷えた TLB とキャッシュをページごとに引き直す)。初期化・遅い経路・エラーの処理は既定の節のまま。
 - 将来: LTO で `libcirka_rt` の高速経路も含めてインライン化(ランタイムを LLVM bitcode でも出力)。
 
 ## 5. デバッグ情報

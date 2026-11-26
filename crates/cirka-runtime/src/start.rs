@@ -63,6 +63,7 @@ fn contended(rc: i32) -> bool {
 /// # Safety
 /// `o` must be a live object owned by the caller.
 #[unsafe(no_mangle)]
+#[unsafe(link_section = ".text.hot.cirka_force")]
 pub unsafe extern "C" fn cirka_force(o: Obj) -> Obj {
     // SAFETY: o is live. The value word of an indirection is written
     // before its kind (Release) and read after it (Acquire).
@@ -228,6 +229,7 @@ unsafe fn finish_shared(o: Obj, r: Obj, rc: i32) -> Obj {
 /// # Safety
 /// `fun` must be a live FUN object; `args` must point to `n` owned objects.
 #[unsafe(no_mangle)]
+#[unsafe(link_section = ".text.hot.cirka_mk_pap")]
 pub unsafe extern "C" fn cirka_mk_pap(fun: Obj, n: usize, args: *const Obj) -> Obj {
     // SAFETY: fresh allocation of 8 + 8*(1+n) bytes.
     unsafe {

@@ -254,6 +254,7 @@ fn reserve(
 /// # Safety
 /// Returns uninitialized memory; aborts when out of memory.
 #[unsafe(no_mangle)]
+#[unsafe(link_section = ".text.hot.cirka_alloc")]
 pub unsafe extern "C" fn cirka_alloc(size: usize) -> *mut u8 {
     stat_alloc();
     // SAFETY: allocator internals.

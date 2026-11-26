@@ -3,6 +3,14 @@
 //! A `no_std` static library depending only on libc. Generated code calls
 //! it through the C ABI; the public functions are declared in
 //! `include/cirka_rt.h`. See docs/design/05-runtime.md.
+//!
+//! The functions that run for each operation of a program (allocating and
+//! freeing, the slow paths of reference counting, forcing, closures, the
+//! event loop and the socket I/O it drives) are placed in `.text.hot.*`
+//! sections, which the linker puts together at the start of the text, with
+//! the generated closure calls (`hot`): a program then runs its runtime
+//! code from a few pages instead of pages spread over the whole runtime
+//! (FEAT-1023, 07-backend.md §4).
 #![cfg_attr(not(test), no_std)]
 #![allow(unsafe_code)]
 #![allow(clippy::missing_safety_doc)]
@@ -82,6 +90,7 @@ pub fn empty_bytes() -> object::Obj {
 /// # Safety
 /// `p` must point to `len` readable bytes.
 #[unsafe(no_mangle)]
+#[unsafe(link_section = ".text.hot.cirka_bytes_from")]
 pub unsafe extern "C" fn cirka_bytes_from(p: *const u8, len: usize) -> object::Obj {
     if len == 0 {
         return empty_bytes();

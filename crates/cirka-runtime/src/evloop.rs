@@ -1109,6 +1109,7 @@ unsafe fn dispatch(l: *mut Loop, ev: sys::epoll_event) {
 /// # Safety
 /// `o` must be a live loop of this thread.
 #[unsafe(no_mangle)]
+#[unsafe(link_section = ".text.hot.cirka_loop_run")]
 pub unsafe extern "C" fn cirka_loop_run(o: Obj) -> i64 {
     // SAFETY: the loop's own state, on its thread; the caller's reference
     // keeps the loop alive while callbacks run.
@@ -1286,6 +1287,7 @@ pub unsafe extern "C" fn cirka_async_run(cb: Obj) -> i64 {
 /// # Safety
 /// `h` must be a live descriptor object, `cb` a live IO action.
 #[unsafe(no_mangle)]
+#[unsafe(link_section = ".text.hot.cirka_async_watch")]
 pub unsafe extern "C" fn cirka_async_watch(h: Obj, events: i64, ms: i64, cb: Obj) -> i64 {
     // SAFETY: the running loop's state, on its thread.
     unsafe {
@@ -1308,6 +1310,7 @@ pub unsafe extern "C" fn cirka_async_watch(h: Obj, events: i64, ms: i64, cb: Obj
 /// hang-up (with the events watched for), 8 timeout, `-errno` when a
 /// watch could not be set up; 0 for a timer.
 #[unsafe(no_mangle)]
+#[unsafe(link_section = ".text.hot.cirka_async_events")]
 pub extern "C" fn cirka_async_events() -> i64 {
     // SAFETY: the running loop's state, on its thread.
     unsafe { (*current()).events }
