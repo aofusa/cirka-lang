@@ -1091,6 +1091,43 @@ fn opt_keeps_a_strict_let_of_a_case_with_large_branches() {
 }
 
 #[test]
+fn opt_case_of_case_into_nested_known_returns() {
+    // `if k < 3 && k > n then .. else ..` with `&&` inlined: every inner
+    // return is `True` or `False` (under a nested case). `big` is larger
+    // than `INLINE_SIZE`.
+    let big = format!("{}k{}", "(prim add k ".repeat(40), ")".repeat(40));
+    let small = "(prim sub k 1)";
+    let src = |if_false: &str, if_true: &str| {
+        format!(
+            "(data Bool () (False) (True))
+ (extern arg () Int#)
+ (def main Int#
+   (let! (k Int# (extern arg))
+     (let! (n Int# (extern arg))
+       (let! (s Bool (case (prim lt k 3) (c Int#) Bool
+                       (0 (con False ()))
+                       (_ (case (prim gt k n) (d Int#) Bool
+                            (0 (con False ()))
+                            (_ (con True ()))))))
+         (case s (t Bool) Int#
+           ((False) {if_false})
+           ((True) {if_true}))))))"
+        )
+    };
+    // The large branch is selected once: the branches move into the
+    // nested case and no `Bool` is built or examined (FEAT-1029); the
+    // small one is copied for each `False`.
+    let (m, _) = opt_main(&src(small, &big));
+    assert!(!m.contains("Bool"), "{m}");
+    assert_eq!(m.matches("(prim add k k)").count(), 1, "{m}");
+    assert_eq!(m.matches(small).count(), 2, "{m}");
+    // A large branch selected by two returns is not copied.
+    let (m, _) = opt_main(&src(&big, small));
+    assert!(m.contains("Bool"), "{m}");
+    assert_eq!(m.matches("(prim add k k)").count(), 1, "{m}");
+}
+
+#[test]
 fn opt_keeps_a_strict_let_before_a_case_of_another_variable() {
     // `s` is evaluated for its effect (it may diverge), and the `case` that
     // follows is about `o`.

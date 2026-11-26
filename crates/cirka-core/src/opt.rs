@@ -2150,7 +2150,39 @@ impl Simp<'_> {
         // point with its fields (FEAT-1009), so a copy of `alts` in each of
         // them saves no allocation.
         let tuple = matches!(alts, [Alt { con: AltCon::Con(c, _), .. }] if crate::cpr::is_utup(c));
-        (known && !tuple) || small
+        (known && !tuple) || small || (!tuple && self.few_copies(alts, alts2))
+    }
+
+    /// Whether every return of the inner alternatives `alts2` is known,
+    /// also under nested cases (`a && b` inlined: `case a of True -> case
+    /// b' of {1 -> True; _ -> False}; False -> False`), and the outer
+    /// alternatives `alts` that more than one return selects are small:
+    /// case-of-case then leaves one alternative per return, so only those
+    /// are copied (FEAT-1029). The condition of an `if` on `&&`, `||` or
+    /// an inlined test returning `Bool` becomes branches, without the
+    /// static `Bool` object read back to branch again.
+    fn few_copies(&self, alts: &[Alt], alts2: &[Alt]) -> bool {
+        let mut tails = Vec::new();
+        if !alts2.iter().all(|a| known_tails(&a.rhs, &mut tails)) {
+            return false;
+        }
+        let mut copies = vec![0usize; alts.len()];
+        for c in &tails {
+            let pick = alts
+                .iter()
+                .position(|a| matches!(&a.con, AltCon::Con(k, _) if k == c))
+                .or_else(|| alts.iter().position(|a| a.con == AltCon::Default));
+            match pick {
+                Some(i) => copies[i] += 1,
+                // An incomplete match keeps the whole case.
+                None => return false,
+            }
+        }
+        alts.iter()
+            .zip(copies)
+            .map(|(a, n)| n.saturating_sub(1) * size(&a.rhs))
+            .sum::<usize>()
+            <= INLINE_SIZE
     }
 
     /// `cast(e, t)`, without the cast of a constructor or a variable to
@@ -2568,6 +2600,30 @@ fn single_con_tail(e: &Expr) -> bool {
     match e {
         Expr::Con(..) => true,
         Expr::Let(_, b) | Expr::LetStrict(_, _, b) => single_con_tail(b),
+        _ => false,
+    }
+}
+
+/// Collects the constructor each return of `e` builds into `out` (see
+/// `few_copies`): constructors under lets, and the returns of cases whose
+/// alternatives bind no linear fields; a panic returns nothing. `false`
+/// when a return is anything else (a variable, a call, a literal).
+fn known_tails(e: &Expr, out: &mut Vec<String>) -> bool {
+    match e {
+        Expr::Con(c, _, _) => {
+            out.push(c.clone());
+            true
+        }
+        Expr::Panic(..) => true,
+        Expr::Let(_, b) | Expr::LetStrict(_, _, b) => known_tails(b, out),
+        Expr::Case(_, b, _, alts) => {
+            b.mult == Mult::Many
+                && alts.iter().all(|a| match &a.con {
+                    AltCon::Con(_, fs) => fs.iter().all(|f| f.mult == Mult::Many),
+                    _ => true,
+                })
+                && alts.iter().all(|a| known_tails(&a.rhs, out))
+        }
         _ => false,
     }
 }
