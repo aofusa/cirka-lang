@@ -20,13 +20,11 @@ const O_CLOEXEC: i32 = 0o2000000;
 const EINTR: i32 = 4;
 
 fn errno() -> i32 {
-    // SAFETY: the thread's errno location.
-    unsafe { *sys::__errno_location() }
+    crate::tls::errno()
 }
 
 fn set_errno(e: i32) {
-    // SAFETY: the thread's errno location.
-    unsafe { *sys::__errno_location() = e }
+    crate::tls::set_errno(e)
 }
 
 /// `s` as a NUL-terminated C string in a malloc'ed buffer (free it).
@@ -398,8 +396,7 @@ pub extern "C" fn cirka_random_u64() -> i64 {
         // SAFETY: `buf[got..]` is writable for `buf.len() - got` bytes.
         let n = unsafe { sys::getrandom(buf.as_mut_ptr().add(got).cast(), buf.len() - got, 0) };
         if n < 0 {
-            // SAFETY: the calling thread's errno.
-            if unsafe { *sys::__errno_location() } == EINTR {
+            if errno() == EINTR {
                 continue;
             }
             crate::io::fatal(b"cirka: getrandom failed", 1);

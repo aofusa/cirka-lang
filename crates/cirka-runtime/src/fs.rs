@@ -58,8 +58,7 @@ unsafe fn io_error(path: Obj, op: &[u8], errno: i32) -> ! {
 }
 
 fn errno() -> i32 {
-    // SAFETY: the thread's errno location.
-    unsafe { *sys::__errno_location() }
+    crate::tls::errno()
 }
 
 /// The contents of the file at `path` as a fresh BYTES object.

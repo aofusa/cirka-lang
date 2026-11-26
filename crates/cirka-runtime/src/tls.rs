@@ -47,6 +47,14 @@ pub struct Tls {
     /// The event loop whose `cirka_loop_run` runs on this thread (the
     /// innermost; null if none): callbacks find it without capturing it.
     pub cur_loop: *mut crate::object::Header,
+    /// The address of this thread's `errno` (the C library's), asked on
+    /// first use (null until then): see [`errno_ptr`].
+    pub errno_at: *mut core::ffi::c_int,
+    /// The buffer `net.rs` reads into (null until the first read). A
+    /// thread the runtime started frees it when it exits; a foreign thread
+    /// keeps it, as it keeps its free lists (`alloc::thread_exit`).
+    /// Next to `cur_loop` and `errno_at`: a receive uses the three.
+    pub recv_buf: *mut u8,
     /// Operations of the running callback that completed at once
     /// (`evloop::spend`).
     pub io_spent: u32,
@@ -56,10 +64,6 @@ pub struct Tls {
     /// Results of the last call of `os.rs` beyond its return value (the
     /// pipes of a spawn, the status of a wait, the fields of a stat).
     pub os: [i64; 6],
-    /// The buffer `net.rs` reads into (null until the first read). A
-    /// thread the runtime started frees it when it exits; a foreign thread
-    /// keeps it, as it keeps its free lists (`alloc::thread_exit`).
-    pub recv_buf: *mut u8,
 }
 
 const TLS_SIZE: usize = core::mem::size_of::<Tls>();
@@ -124,6 +128,47 @@ fn assign_id() -> u64 {
     id
 }
 
+/// The address of this thread's `errno`. The C library's `errno` is a
+/// thread-local variable whose address does not change while the thread
+/// runs: it is asked once (`__errno_location`) and kept in the block, so
+/// that reading or setting `errno` is a load from the block instead of a
+/// call into the C library, whose code lies on a page of its own
+/// (FEAT-1021).
+#[inline(always)]
+pub fn errno_ptr() -> *mut core::ffi::c_int {
+    let t = tls();
+    // SAFETY: the block of the current thread, used by this thread only.
+    let p = unsafe { (*t).errno_at };
+    if p.is_null() { errno_init(t) } else { p }
+}
+
+/// Asks for the address of `errno` on the first use in a thread.
+#[cold]
+#[inline(never)]
+fn errno_init(t: *mut Tls) -> *mut core::ffi::c_int {
+    // SAFETY: the C library's errno of this thread; the block of the
+    // current thread.
+    unsafe {
+        let p = crate::sys::__errno_location();
+        (*t).errno_at = p;
+        p
+    }
+}
+
+/// This thread's `errno`.
+#[inline(always)]
+pub fn errno() -> i32 {
+    // SAFETY: the address of this thread's errno.
+    unsafe { *errno_ptr() }
+}
+
+/// Sets this thread's `errno`.
+#[inline(always)]
+pub fn set_errno(e: i32) {
+    // SAFETY: the address of this thread's errno.
+    unsafe { *errno_ptr() = e }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -144,5 +189,30 @@ mod tests {
         // SAFETY: the current thread's block.
         assert_eq!(unsafe { (*tls()).stack_lo }, 7);
         assert_eq!(a % 64, 0, "the block is aligned");
+    }
+
+    /// `errno` through the address kept in the block is the C library's
+    /// `errno` of the thread, in each thread (FEAT-1021).
+    #[test]
+    fn errno_is_the_c_librarys_of_each_thread() {
+        // SAFETY: this thread's errno location.
+        let c = || unsafe { *crate::sys::__errno_location() };
+        set_errno(17);
+        assert_eq!(c(), 17);
+        // SAFETY: as above.
+        unsafe { *crate::sys::__errno_location() = 23 };
+        assert_eq!(errno(), 23);
+        let (other, mine) = std::thread::spawn(move || {
+            // SAFETY: the new thread's block, still zero.
+            assert!(unsafe { (*tls()).errno_at }.is_null());
+            set_errno(5);
+            // SAFETY: the new thread's errno location.
+            (errno(), unsafe { *crate::sys::__errno_location() })
+        })
+        .join()
+        .unwrap();
+        assert_eq!((other, mine), (5, 5));
+        assert_eq!(errno(), 23, "the other thread's errno is its own");
+        assert_eq!(errno_ptr(), unsafe { crate::sys::__errno_location() });
     }
 }

@@ -28,13 +28,11 @@ const MSG_NOSIGNAL: c_int = 0x4000;
 const RECV_MAX: usize = 65536;
 
 fn errno() -> i32 {
-    // SAFETY: the thread's errno location.
-    unsafe { *sys::__errno_location() }
+    crate::tls::errno()
 }
 
 fn set_errno(e: i32) {
-    // SAFETY: the thread's errno location.
-    unsafe { *sys::__errno_location() = e }
+    crate::tls::set_errno(e)
 }
 
 fn neg_errno() -> i64 {

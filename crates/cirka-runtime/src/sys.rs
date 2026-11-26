@@ -336,8 +336,7 @@ mod raw {
     #[inline(always)]
     fn libc_result(r: isize) -> isize {
         if r < 0 {
-            // SAFETY: this thread's errno.
-            unsafe { *super::__errno_location() = -r as c_int };
+            crate::tls::set_errno(-r as c_int);
             -1
         } else {
             r

@@ -160,6 +160,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-1018](features/FEAT-1018-loop-alignment.md) | ループの先頭を 32 / 64 バイトに揃えるかを調べる (採らない) | done | P2 | 1017, 0091 |
 | [FEAT-1019](features/FEAT-1019-inline-byte-search.md) | 文字列のバイトの探索を C ライブラリの `memchr` を呼ばずに行う | done | P1 | 0097, 0091 |
 | [FEAT-1020](features/FEAT-1020-static-objects-as-constants.md) | 静的なオブジェクトを LLVM の定数にする | done | P1 | 1006, 1017, 0091 |
+| [FEAT-1021](features/FEAT-1021-errno-address-in-tls.md) | `errno` のアドレスを TLS ブロックに覚える | done | P1 | 1016, 0091 |
 
 
 ## aCHC

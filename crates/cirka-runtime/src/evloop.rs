@@ -48,8 +48,7 @@ const INBOX_DATA: u64 = u64::MAX;
 const BATCH: usize = 256;
 
 fn errno() -> i32 {
-    // SAFETY: the thread's errno location.
-    unsafe { *sys::__errno_location() }
+    crate::tls::errno()
 }
 
 fn oom() -> ! {
