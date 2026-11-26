@@ -661,8 +661,15 @@ impl<'m> Gen<'m> {
         ));
         let long = c.t();
         c.line(&format!("{long} = icmp sgt i64 {n}, 15"));
-        c.line(&format!("br i1 {long}, label %{vloop}, label %{short}"));
-        // 16 bytes at a time from i, at most 64 bytes.
+        // The paths for short ranges and long searches are laid out after
+        // the 16-byte compares (FEAT-1025): a search that ends within the
+        // first 64 bytes runs on a few straight cache lines.
+        c.line(&format!(
+            "br i1 {long}, label %{vloop}, label %{short}, !prof !0"
+        ));
+        // 16 bytes at a time from i, at most 64 bytes: a loop that stays a
+        // loop (`!9`; unrolled, its four compares and their exits spread
+        // the code of every search).
         c.label(&vloop);
         let k = c.t();
         let k2 = c.t();
@@ -694,9 +701,13 @@ impl<'m> Gen<'m> {
         c.line(&format!("{inline} = icmp ult i64 {k2}, 64"));
         let go = c.t();
         c.line(&format!("{go} = and i1 {more}, {inline}"));
-        c.line(&format!("br i1 {go}, label %{vloop}, label %{after}"));
+        c.line(&format!(
+            "br i1 {go}, label %{vloop}, label %{after}, !llvm.loop !9"
+        ));
         c.label(&after);
-        c.line(&format!("br i1 {more}, label %{libc}, label %{tailz}"));
+        c.line(&format!(
+            "br i1 {more}, label %{libc}, label %{tailz}, !prof !1"
+        ));
         // Fewer than 16 bytes left: the 16 that end at j (the lanes before
         // k2 did not match).
         c.label(&tailz);
@@ -2341,6 +2352,9 @@ impl<'m> Gen<'m> {
             "!6 = !{!4, !4, i64 0}\n",
             "!7 = !{!\"cirka.elem\", !2, i64 0}\n",
             "!8 = !{!7, !7, i64 0}\n",
+            // The loop of the inline byte search is not unrolled (FEAT-1025).
+            "!9 = distinct !{!9, !10}\n",
+            "!10 = !{!\"llvm.loop.unroll.disable\"}\n",
         ));
         // The C ABI entry through which the runtime applies a closure (a
         // new thread runs its IO action, 05-runtime.md §9.1; the event
@@ -2643,6 +2657,48 @@ entry:
         }
         assert_eq!(calls.len(), 1, "{main}");
         assert!(calls[0].starts_with("bscan.libc"), "{calls:?}: {main}");
+    }
+
+    /// The 16-byte compares of the byte search are a loop LLVM does not
+    /// unroll, and the paths for short ranges and long searches are
+    /// unlikely (FEAT-1025).
+    #[test]
+    fn byte_search_keeps_its_loop_and_cold_paths_aside() {
+        let src = "extern fn cirka_bytes_index(ptr, i64, i64, i64) -> i64
+
+fn main() -> i64 {
+entry:
+  let b = prim bytes_new(100)
+  let k = extern cirka_bytes_index(b, 103, 3, 90)
+  drop b
+  ret k
+}
+";
+        let m = cirka_mir::parse::parse(cirka_diagnostics::FileId(0), src).unwrap();
+        let ir = emit(&m, Options::default());
+        let main = function_ir(&ir, "main");
+        // The conditional branch to the blocks named `a` and `b`.
+        let branch = |a: &str, b: &str| {
+            main.lines()
+                .find(|l| {
+                    l.contains("br i1 ")
+                        && l.contains(&format!("label %{a}"))
+                        && l.contains(&format!("label %{b}"))
+                })
+                .unwrap_or_else(|| panic!("no branch to {a} and {b}: {main}"))
+        };
+        // The back edge of the compares carries the loop's metadata.
+        let back = branch("bscan.vloop", "bscan.after");
+        assert!(back.ends_with(", !llvm.loop !9"), "{back}");
+        let long = branch("bscan.vloop", "bscan.short");
+        assert!(long.ends_with(", !prof !0"), "{long}");
+        let rest = branch("bscan.libc", "bscan.tailz");
+        assert!(rest.ends_with(", !prof !1"), "{rest}");
+        assert!(ir.contains("\n!9 = distinct !{!9, !10}\n"), "{ir}");
+        assert!(
+            ir.contains("\n!10 = !{!\"llvm.loop.unroll.disable\"}\n"),
+            "{ir}"
+        );
     }
 
     /// Numeric loops (FEAT-0063): libm calls become intrinsics, the
