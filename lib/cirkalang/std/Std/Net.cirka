@@ -176,10 +176,12 @@ recvTimeout (MkTcpStream h) n ms k = recvOn h n ms k
 private recvOn : Handle -> Int -> Int -> (1 k : (1 s : TcpStream) -> Result IOError String -> IO ()) -> IO ()
 recvOn h n ms k = do
   d <- cirka_sock_recv h n
-  e <- cirka_errno
-  if e == eagain
-    then waitFor h 1 ms (\w => if w == 0 then recvOn h n ms k else k (MkTcpStream h) (Err (err w)))
-    else k (MkTcpStream h) (if e == 0 then Ok d else Err (err e))
+  -- Bytes leave `errno` as it was: only an empty result is read by it.
+  if strLength d > 0 then k (MkTcpStream h) (Ok d) else do
+    e <- cirka_errno
+    if e == eagain
+      then waitFor h 1 ms (\w => if w == 0 then recvOn h n ms k else k (MkTcpStream h) (Err (err w)))
+      else k (MkTcpStream h) (if e == 0 then Ok d else Err (err e))
 
 -- Sends all of `d`.
 sendAll : (1 s : TcpStream) -> String -> (1 k : (1 s : TcpStream) -> Result IOError () -> IO ()) -> IO ()
@@ -272,10 +274,11 @@ recvFromTimeout (MkUdpSocket h) n ms k = recvFromOn h n ms k
 private recvFromOn : Handle -> Int -> Int -> (1 k : (1 u : UdpSocket) -> Result IOError Datagram -> IO ()) -> IO ()
 recvFromOn h n ms k = do
   d <- cirka_sock_recvfrom h n
-  e <- cirka_errno
-  if e == eagain
-    then waitFor h 1 ms (\w => if w == 0 then recvFromOn h n ms k else k (MkUdpSocket h) (Err (err w)))
-    else if e /= 0 then k (MkUdpSocket h) (Err (err e)) else received h d k
+  if strLength d > 0 then received h d k else do
+    e <- cirka_errno
+    if e == eagain
+      then waitFor h 1 ms (\w => if w == 0 then recvFromOn h n ms k else k (MkUdpSocket h) (Err (err w)))
+      else if e /= 0 then k (MkUdpSocket h) (Err (err e)) else received h d k
 
 private received : Handle -> String -> (1 k : (1 u : UdpSocket) -> Result IOError Datagram -> IO ()) -> IO ()
 received h d k = do

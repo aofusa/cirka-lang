@@ -1,0 +1,84 @@
+-- skip-backend: interp
+-- Receives that end empty (FEAT-1016): the library reads `errno` only
+-- when a receive gives no bytes. An empty datagram is a datagram (with
+-- `errno` 0), and a stream ends with an empty string after its data.
+module Main
+
+import Std.Async
+import Std.Net
+import Std.IO (IOError)
+
+say : String -> IO ()
+say s = putStr (s ++ "\n")
+
+-- `b` receives an empty datagram and then `x` from `a`; then the stream
+-- runs.
+datagrams : (0 net : Cap Network) -> (1 a : UdpSocket) -> (1 b : UdpSocket) -> IO ()
+datagrams net a b = do
+  (a, pa) <- udpPort a
+  (b, pb) <- udpPort b
+  recvFrom b 100 (\b, r => case r of
+    Ok (MkDatagram d _ port) => do
+      say ("first: " ++ show (strLength d) ++ " bytes" ++ (if port == pa then " from a" else " from elsewhere"))
+      recvFrom b 100 (\b, r2 => case r2 of
+        Ok (MkDatagram d2 _ _) => do
+          say ("second: " ++ d2)
+          closeUdp b
+          stream net
+        Err e => do
+          say ("recv failed: " ++ show e)
+          closeUdp b)
+    Err e => do
+      say ("recv failed: " ++ show e)
+      closeUdp b)
+  sendTo a "127.0.0.1" pb "" (\a, w => sendTo a "127.0.0.1" pb "x" (\a, w2 => closeUdp a))
+
+-- A stream that its client ends after `hello`.
+stream : (0 net : Cap Network) -> IO ()
+stream net = do
+  r <- listen net "127.0.0.1" 0
+  case r of
+    Ok l => do
+      (l, port) <- listenerPort l
+      connect net "127.0.0.1" port (\rc => case rc of
+        Ok c => sendAll c "hello" (\c, w => do
+          c <- shutdownWrite c
+          close c)
+        Err e => say ("connect failed: " ++ show e))
+      accept l (\l, ra => do
+        closeListener l
+        case ra of
+          Ok s => drain s
+          Err e => say ("accept failed: " ++ show e))
+    Err e => say ("listen failed: " ++ show e)
+
+-- Reads `s` to its end, saying what arrives.
+drain : (1 s : TcpStream) -> IO ()
+drain s = recv s 100 (\s, r => case r of
+  Ok d => if d == "" then ended s else got s d
+  Err e => do
+    say ("recv failed: " ++ show e)
+    close s)
+
+got : (1 s : TcpStream) -> String -> IO ()
+got s d = do
+  say ("data: " ++ d)
+  drain s
+
+ended : (1 s : TcpStream) -> IO ()
+ended s = do
+  say "end of stream"
+  close s
+
+main : Cap Network -> IO ()
+main net = runLoop (do
+  ra <- bindUdp net "127.0.0.1" 0
+  case ra of
+    Ok a => do
+      rb <- bindUdp net "127.0.0.1" 0
+      case rb of
+        Ok b => datagrams net a b
+        Err e => do
+          say ("bind failed: " ++ show e)
+          closeUdp a
+    Err e => say ("bind failed: " ++ show e))

@@ -8,7 +8,8 @@
 //! continuation dropped with its loop still closes its socket.
 
 use crate::evloop::{
-    EV_READ, EV_WRITE, budget_left, drain, drained, foreign, forget, fresh_ident, spend,
+    EV_READ, EV_WRITE, Slot, budget_left, drain, drain_at, drained, drained_at, foreign, forget,
+    fresh_ident, slot, spend,
 };
 use crate::object::{FOREIGN, Obj, word};
 use crate::{io, sys};
@@ -566,52 +567,82 @@ pub(crate) fn thread_exit() {
 }
 
 /// Reads with `f` into a buffer of at most `max` bytes (1 to 64 KiB) and
-/// returns the bytes read, with `errno` 0; empty with `errno` 0 when `f`
+/// returns the bytes read, leaving `errno` as it was (FEAT-1016: only an
+/// empty result tells something by `errno`); empty with `errno` 0 when `f`
 /// returns 0, and empty with the error (`EAGAIN` also when the budget of
 /// the running callback is spent). `fd` belongs to the descriptor object
 /// with serial `ident`: a read that finds nothing tells the event loop,
 /// and one the loop knows would find nothing (`drained`) reports `EAGAIN`
 /// without a system call (FEAT-1001). So does a short read of a `stream`.
+///
+/// The checks are inlined into the caller and the read is not, so that a
+/// receive the loop knows would find nothing (half of a server's: the one
+/// after each answer) pays for no more than the checks; the slot of `fd`
+/// is looked up once (FEAT-1016).
+#[inline(always)]
 fn read_with(
     fd: i64,
     ident: u32,
     max: i64,
     stream: bool,
+    f: impl FnMut(c_int, *mut c_void, usize) -> isize,
+) -> Obj {
+    if fd < 0 {
+        return empty_with(EBADF);
+    }
+    let s = slot(fd, ident);
+    // SAFETY: `s` is null or a slot of the running loop, just looked up.
+    if !budget_left() || unsafe { drained_at(s, EV_READ) } {
+        return empty_with(EAGAIN);
+    }
+    read_now(fd, s, max, stream, f)
+}
+
+/// An empty result, with `errno` set to `e`.
+fn empty_with(e: i32) -> Obj {
+    set_errno(e);
+    // SAFETY: no bytes.
+    unsafe { crate::cirka_bytes_from(core::ptr::null_mut(), 0) }
+}
+
+/// The read of [`read_with`]; `s` is the slot of `fd` in the running loop
+/// (null if there is none).
+#[inline(never)]
+fn read_now(
+    fd: i64,
+    s: *mut Slot,
+    max: i64,
+    stream: bool,
     mut f: impl FnMut(c_int, *mut c_void, usize) -> isize,
 ) -> Obj {
     let n = (max.max(1) as usize).min(RECV_MAX);
-    let mut err = 0;
-    let mut len = 0;
-    let mut buf = core::ptr::null_mut();
-    if fd < 0 {
-        err = EBADF;
-    } else if !budget_left() || drained(fd, ident, EV_READ) {
-        err = EAGAIN;
-    } else {
-        buf = recv_buffer();
-        loop {
-            let r = f(fd as c_int, buf as *mut c_void, n);
-            if r >= 0 {
-                len = r as usize;
-                spend();
-                if stream && len > 0 && len < n {
-                    drain(fd, ident, EV_READ, true);
-                }
-                break;
+    let buf = recv_buffer();
+    loop {
+        let r = f(fd as c_int, buf as *mut c_void, n);
+        if r > 0 {
+            spend();
+            let len = r as usize;
+            if stream && len < n {
+                // SAFETY: the read added no watch, so `s` is still null or
+                // a slot of the running loop.
+                unsafe { drain_at(s, EV_READ, true) };
             }
-            if errno() != EINTR {
-                err = errno();
-                if err == EAGAIN {
-                    drain(fd, ident, EV_READ, false);
-                }
-                break;
+            // SAFETY: the read wrote the first `len` bytes of the buffer.
+            return unsafe { crate::cirka_bytes_from(buf, len) };
+        }
+        if r == 0 {
+            spend();
+            return empty_with(0);
+        }
+        let err = errno();
+        if err != EINTR {
+            if err == EAGAIN {
+                // SAFETY: as above.
+                unsafe { drain_at(s, EV_READ, false) };
             }
+            return empty_with(err);
         }
     }
-    set_errno(err);
-    // SAFETY: the first `len` bytes of the buffer were written by the read
-    // (none when it is null).
-    unsafe { crate::cirka_bytes_from(buf, len) }
 }
 
 /// Reads at most `max` bytes from the stream socket of `h` (TCP; a read of
@@ -619,10 +650,11 @@ fn read_with(
 /// FEAT-1001; datagrams are read with `cirka_sock_recvfrom`) with `recv`
 /// (FEAT-1013: `read` also goes through the checks of a file read, the
 /// file permission hook of the security module among them): the bytes
-/// (with `errno` 0); empty with `errno` 0 at the end of the stream; empty
-/// with `EAGAIN` when nothing is there yet as far as the running loop
-/// knows (a watch then waits for the next readiness) or the budget of the
-/// running callback is spent; empty with the error otherwise.
+/// (leaving `errno` as it was, FEAT-1016); empty with `errno` 0 at the end
+/// of the stream; empty with `EAGAIN` when nothing is there yet as far as
+/// the running loop knows (a watch then waits for the next readiness) or
+/// the budget of the running callback is spent; empty with the error
+/// otherwise.
 ///
 /// # Safety
 /// `h` must be a live descriptor object.
@@ -1089,10 +1121,19 @@ mod tests {
         unsafe {
             let h = STREAM.load(Ordering::Relaxed) as Obj;
             loop {
+                // Bytes leave `errno` as it was (FEAT-1016): it is set to
+                // something no receive gives.
+                set_errno(9999);
                 let d = cirka_sock_recv(h, 100);
                 let e = errno();
                 let v = io::bytes_of(d).to_vec();
                 cirka_drop(d);
+                if !v.is_empty() {
+                    assert_eq!(e, 9999);
+                    log(&v);
+                    log(b"|");
+                    continue;
+                }
                 if e == EAGAIN {
                     if *LOG.lock().unwrap() == b"abc|" {
                         let de = closure(send_de_and_end);
@@ -1105,12 +1146,8 @@ mod tests {
                     break;
                 }
                 assert_eq!(e, 0);
-                if v.is_empty() {
-                    log(b"[eof]");
-                    break;
-                }
-                log(&v);
-                log(b"|");
+                log(b"[eof]");
+                break;
             }
         }
         t
@@ -1202,6 +1239,95 @@ mod tests {
         }
     }
 
+    /// The socket of `STREAM` after a short read: data sent since is there
+    /// (a peek sees it), yet the receive reports `EAGAIN` without reading
+    /// it, and only that empty result sets `errno`. The edge of the data
+    /// wakes the next watch, whose receive gets it (FEAT-1016).
+    extern "C" fn known_empty(t: Obj) -> Obj {
+        const MSG_PEEK: c_int = 2;
+        const MSG_DONTWAIT: c_int = 0x40;
+        // SAFETY: the descriptor object outlives the loop; strings and
+        // closures are released; a valid buffer for the peek.
+        unsafe {
+            let h = STREAM.load(Ordering::Relaxed) as Obj;
+            let d = cirka_sock_recv(h, 100);
+            assert_eq!(io::bytes_of(d), b"abc");
+            cirka_drop(d);
+            let m = text("xy");
+            assert_eq!(cirka_net_send(CLIENT.load(Ordering::Relaxed), m, 0), 2);
+            cirka_drop(m);
+            let fd = cirka_handle_fd(h) as c_int;
+            let mut buf = [0u8; 8];
+            let peek = |buf: &mut [u8; 8]| {
+                sys::recvfrom(
+                    fd,
+                    buf.as_mut_ptr() as *mut c_void,
+                    8,
+                    MSG_PEEK | MSG_DONTWAIT,
+                    core::ptr::null_mut(),
+                    core::ptr::null_mut(),
+                )
+            };
+            while peek(&mut buf) < 2 {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            set_errno(9999);
+            let e = cirka_sock_recv(h, 100);
+            assert!(io::bytes_of(e).is_empty(), "the data was not read");
+            assert_eq!(errno(), EAGAIN);
+            cirka_drop(e);
+            let cb = closure(log_recv);
+            assert_eq!(cirka_async_watch(h, EV_READ, -1, cb), 0);
+            cirka_drop(cb);
+        }
+        t
+    }
+
+    /// Receives on `STREAM` and logs the bytes.
+    extern "C" fn log_recv(t: Obj) -> Obj {
+        // SAFETY: the descriptor object outlives the loop; the string is
+        // released.
+        unsafe {
+            let d = cirka_sock_recv(STREAM.load(Ordering::Relaxed) as Obj, 100);
+            log(io::bytes_of(d));
+            cirka_drop(d);
+        }
+        t
+    }
+
+    #[test]
+    fn a_receive_known_empty_does_not_read() {
+        let _g = crate::test_lock();
+        let (c, s) = tcp_pair();
+        CLIENT.store(c, Ordering::Relaxed);
+        // SAFETY: a descriptor object, a string and closures, released
+        // below.
+        unsafe {
+            let h = cirka_fd_handle(s);
+            STREAM.store(h as i64, Ordering::Relaxed);
+            let m = text("abc");
+            assert_eq!(cirka_net_send(c, m, 0), 3);
+            cirka_drop(m);
+            extern "C" fn start(t: Obj) -> Obj {
+                // SAFETY: the descriptor object outlives the loop; the
+                // closure is released.
+                unsafe {
+                    let h = STREAM.load(Ordering::Relaxed) as Obj;
+                    let cb = closure(known_empty);
+                    assert_eq!(cirka_async_watch(h, EV_READ, -1, cb), 0);
+                    cirka_drop(cb);
+                }
+                t
+            }
+            let p = closure(start);
+            assert_eq!(cirka_async_run(p), 0);
+            assert_eq!(core::mem::take(&mut *LOG.lock().unwrap()), b"xy");
+            cirka_drop(p);
+            cirka_drop(h);
+            crate::stdio::cirka_fd_close(c);
+        }
+    }
+
     /// A descriptor object whose descriptor is closed.
     fn h_closed() -> Obj {
         let mut fds = [0i32; 2];
@@ -1243,9 +1369,14 @@ mod tests {
             assert_eq!(cirka_sock_sendto(a, m, bad, pb), -EINVAL);
             // Blocking reads would wait: the datagrams are there already
             // on the loopback interface.
+            set_errno(9999);
             let d = cirka_sock_recvfrom(b, 100);
             assert_eq!(io::bytes_of(d), b"datagram");
-            assert_eq!(crate::stdio::cirka_errno(), 0);
+            assert_eq!(
+                crate::stdio::cirka_errno(),
+                9999,
+                "bytes leave errno as it was"
+            );
             let host = cirka_net_peer_host();
             assert_eq!(io::bytes_of(host), b"127.0.0.1");
             assert_eq!(cirka_net_peer_port(), pa);

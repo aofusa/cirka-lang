@@ -130,7 +130,7 @@ impl<T: Copy> Buf<T> {
 /// operations of `net.rs` tell it (`drain`) when they find nothing to read
 /// or no room to write. The kernel reports each change after that.
 #[derive(Clone, Copy)]
-struct Slot {
+pub(crate) struct Slot {
     /// The callback (null if the descriptor is not watched).
     cb: Obj,
     /// The registration in the epoll set (the high half of its epoll
@@ -678,11 +678,30 @@ unsafe fn slot_of(fd: i64, ident: u32) -> *mut Slot {
 /// `EV_WRITE`): the operation would find nothing to read or no room
 /// (`EAGAIN`) and may report it without a system call (FEAT-1001).
 pub(crate) fn drained(fd: i64, ident: u32, ev: i64) -> bool {
+    // SAFETY: the running loop's slot, on its thread.
+    unsafe { drained_at(slot(fd, ident), ev) }
+}
+
+/// The slot of the descriptor `fd` of the object with serial `ident` in
+/// the loop running on this thread, or null (no loop runs, or the
+/// descriptor is not registered). An operation keeps it for
+/// [`drained_at`] and [`drain_at`] so that it looks the slot up once
+/// (FEAT-1016).
+#[inline]
+pub(crate) fn slot(fd: i64, ident: u32) -> *mut Slot {
     // SAFETY: the running loop's state, on its thread.
-    unsafe {
-        let s = slot_of(fd, ident);
-        !s.is_null() && i64::from((*s).ready) & ev == 0
-    }
+    unsafe { slot_of(fd, ident) }
+}
+
+/// [`drained`] of the slot `s` (null: not known to be drained).
+///
+/// # Safety
+/// `s` must be null or a slot of the loop running on this thread, from
+/// [`slot`] (no watch was added since: that may move the slots).
+#[inline]
+pub(crate) unsafe fn drained_at(s: *mut Slot, ev: i64) -> bool {
+    // SAFETY: guaranteed by the caller.
+    unsafe { !s.is_null() && i64::from((*s).ready) & ev == 0 }
 }
 
 /// Tells the loop running on this thread that the descriptor `fd` of the
@@ -706,9 +725,18 @@ pub(crate) fn forget(fd: i64, ident: u32) {
 /// data was reported (`Slot::sticky`; a read stops short there). The next
 /// edge the kernel reports makes it ready again.
 pub(crate) fn drain(fd: i64, ident: u32, ev: i64, short: bool) {
-    // SAFETY: the running loop's state, on its thread.
+    // SAFETY: the running loop's slot, on its thread.
+    unsafe { drain_at(slot(fd, ident), ev, short) }
+}
+
+/// [`drain`] of the slot `s` (null: nothing to record).
+///
+/// # Safety
+/// As for [`drained_at`].
+#[inline]
+pub(crate) unsafe fn drain_at(s: *mut Slot, ev: i64, short: bool) {
+    // SAFETY: guaranteed by the caller.
     unsafe {
-        let s = slot_of(fd, ident);
         if !s.is_null() && !(short && (*s).sticky) {
             (*s).ready &= !(ev as u8);
         }
