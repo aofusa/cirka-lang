@@ -154,7 +154,7 @@ Rust は安全性の一部を実行時の検査で担保し、最適化はクレ
 | Core | 状態トークンの worker を newtype が包む任意の状態の関数 (CirkaLang の借用) に一般化し、bind のクロージャをなくす | 済 (FEAT-0220) |
 | Core | 箱入りの評価済みの値 1 つだけを返す積の結果の分解 (結果が `()` の借用の計算の組をなくす) | FEAT-0081 |
 | MIR / LLVM | 一意性・再利用トークンの型を MIR に持たせ、引数に `nonnull`・`noalias`・`readonly` を付ける | FEAT-0062 |
-| LLVM | ランタイムの高速経路のインライン化 (ランタイムを bitcode でも出力し LTO) | FEAT-0060 |
+| LLVM | ランタイムの高速経路のインライン化 (ランタイムを bitcode でも出力し LTO。2026-11-26 の評価では効果が小さく混在し、既定にしない: 確保・解放・`errno` の熱い経路は生成コードで行う (FEAT-1027)) | FEAT-0060 |
 | ランタイム | アロケータの改善 | FEAT-0051 |
 | 検証 | 証明に基づく実行時検査の除去 (`Data.Array.index`・`divNZ`・`modNZ`・`unreachable`。bench/binary-search で 3.8% 速い) | 済 (FEAT-0234) |
 | 検証 / Core | 一意な配列 (`Sized n a`) と unboxed 配列と文字列のビューの、証明した添字の読み書きを検査のない演算にする (ループの入口の検査が示せない `i - 1` なども。bench/stencil で命令数 20% 減、Rust と同等)。呼び出しを返すだけの `let!` を呼び出しにする (`ensures` の自己呼び出しを末尾呼び出しに戻し CPR を効かせる) | 済 (FEAT-0254) |

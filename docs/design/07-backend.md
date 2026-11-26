@@ -70,7 +70,9 @@ $CIRKA_CLANG -O3 --target=$CIRKA_TARGET -Wno-override-module out.ll -lm <runtime
   GOT は専用のページにある。`scripts/build-runtime.sh` とドライバ (`native.rs`) は同じ `RUSTFLAGS` で作る (違うと cargo が
   たがいに作り直す)。生成コードの関数 (`cirka_call_1`) はランタイムからは外部の名前なので GOT を通る: イベントループは
   そのアドレスをスレッドの状態に一度だけ置いて呼ぶ。
-- 将来: LTO で `libcirka_rt` の高速経路も含めてインライン化(ランタイムを LLVM bitcode でも出力)。
+- 将来: LTO で `libcirka_rt` の高速経路も含めてインライン化(ランタイムを LLVM bitcode でも出力)。2026-11-26 の評価 (FEAT-0060 のメモ) では
+  効果が小さく混在し (n-body -3 %、array-sort +2 %、HTTP サーバは変わらない)、`-O2` のリンクが数倍かかるので既定にしない。
+  確保・大きさのわかる解放・`errno` の熱い経路は生成コードで行う (FEAT-1027)。
 
 ## 5. デバッグ情報
 
