@@ -130,10 +130,16 @@ pub(crate) unsafe fn dec_dies(c: Obj) -> bool {
 /// nothing) is released at once (FEAT-1014): the walk, which needs more
 /// registers, is out of line.
 ///
+/// Never inlined: the runtime's own drops (`cirka_drop`, inlined where
+/// it is used) then stay a test of the count and a call, as the generated
+/// code's (with one code generation unit, FEAT-1026, LLVM would otherwise
+/// copy the whole free into `cirka_drop` and stop inlining that).
+///
 /// # Safety
 /// `o` must be a heap object that is no longer referenced.
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.hot.cirka_free_object")]
+#[inline(never)]
 pub unsafe extern "C" fn cirka_free_object(o: Obj) {
     // SAFETY: `o` is dead and owned by this routine.
     unsafe {

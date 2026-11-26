@@ -155,6 +155,105 @@ fn cirka_source_tests() {
     assert!(out.stderr.contains("not supported"), "{}", out.stderr);
 }
 
+/// The output of a tool run on `path` (it must succeed).
+fn tool_output(tool: &str, args: &[&str], path: &std::path::Path) -> String {
+    let out = Command::new(tool).args(args).arg(path).output().unwrap();
+    assert!(out.status.success(), "{tool} {args:?} {}", path.display());
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// The runtime reaches its own functions and statics directly, not
+/// through the GOT (FEAT-1026): no GOT slot of a program holds the address
+/// of a static or of a C entry point (`cirka_*`) of the runtime's own
+/// object. (The archive also holds `core`, `compiler_builtins` and
+/// `cirka_bigint`, which reach the runtime and each other through the
+/// GOT; the program's own functions, such as `cirka_call_1`, are reached
+/// from the runtime through the GOT too.)
+#[test]
+fn runtime_symbols_are_not_reached_through_the_got() {
+    use cirka_driver::native::{RuntimeKind, find_runtime};
+    use std::collections::{HashMap, HashSet};
+    cirka_testkit::init();
+    cirka_driver::native::ensure_runtime_built().unwrap();
+    let rt = find_runtime(&cirka_driver::Config::from_env(), RuntimeKind::Release).unwrap();
+    let (_, cirka) = cirka_integration::cli_bins();
+    let work = cirka_testkit::work_dir("driver-got", "net_recv_empty");
+    let exe = work.join("net_recv_empty");
+    let src = repo_root().join("tests/cirkalang/run/v007/net_recv_empty.cirka");
+    let bd = format!("--build-dir={}", work.display());
+    let args = [
+        "build",
+        "-O2",
+        &bd,
+        "-o",
+        exe.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ];
+    let out = run(cirka, &args, &work);
+    assert_eq!(out.code, 0, "{}{}", out.stdout, out.stderr);
+    // The statics and C entry points of the runtime's object
+    // (`archive:member:address type name`).
+    let members = tool_output("nm", &["-A", "--defined-only"], &rt);
+    let own: HashSet<&str> = members
+        .lines()
+        .filter_map(|l| match l.split_whitespace().collect::<Vec<_>>()[..] {
+            [file, ty, name] => {
+                let member = file.rsplit(':').nth(1)?;
+                let data = "bBdDrR".contains(ty);
+                let entry = ty == "T" && name.starts_with("cirka_");
+                (member.starts_with("cirka_rt-") && (data || entry)).then_some(name)
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(own.contains("cirka_alloc"), "{members}");
+    // The program's symbols by address.
+    let syms = tool_output("nm", &["--defined-only"], &exe);
+    let mut at: HashMap<u64, Vec<&str>> = HashMap::new();
+    for l in syms.lines() {
+        if let [a, _, name] = l.split_whitespace().collect::<Vec<_>>()[..] {
+            at.entry(u64::from_str_radix(a, 16).unwrap())
+                .or_default()
+                .push(name);
+        }
+    }
+    // The GOT, and the targets of its slots (`R_X86_64_RELATIVE`: the
+    // addend is the address).
+    let sections = tool_output("readelf", &["-SW"], &exe);
+    let (got, size) = sections
+        .lines()
+        .find_map(|l| {
+            let f: Vec<&str> = l.split_whitespace().collect();
+            let i = f.iter().position(|w| *w == ".got")?;
+            let hex = |w: &str| u64::from_str_radix(w, 16).ok();
+            Some((hex(f.get(i + 2)?)?, hex(f.get(i + 4)?)?))
+        })
+        .unwrap_or_else(|| panic!("no .got:\n{sections}"));
+    let relocs = tool_output("readelf", &["-rW"], &exe);
+    let mut through_got = Vec::new();
+    for l in relocs.lines() {
+        let f: Vec<&str> = l.split_whitespace().collect();
+        if f.len() != 4 || f[2] != "R_X86_64_RELATIVE" {
+            continue;
+        }
+        let (Ok(off), Ok(target)) = (u64::from_str_radix(f[0], 16), u64::from_str_radix(f[3], 16))
+        else {
+            continue;
+        };
+        if (got..got + size).contains(&off) {
+            for name in at.get(&target).into_iter().flatten() {
+                if own.contains(name) {
+                    through_got.push(*name);
+                }
+            }
+        }
+    }
+    assert!(
+        through_got.is_empty(),
+        "reached through the GOT: {through_got:?}"
+    );
+}
+
 /// The runtime functions that run for each operation of a program are
 /// linked next to each other, with the program's closure calls
 /// (`.text.hot.*`, FEAT-1023): between the first and the last of those a
@@ -169,7 +268,14 @@ fn hot_runtime_functions_are_linked_together() {
     let exe = work.join("net_recv_empty");
     let src = repo_root().join("tests/cirkalang/run/v007/net_recv_empty.cirka");
     let bd = format!("--build-dir={}", work.display());
-    let args = ["build", "-O2", &bd, "-o", exe.to_str().unwrap(), src.to_str().unwrap()];
+    let args = [
+        "build",
+        "-O2",
+        &bd,
+        "-o",
+        exe.to_str().unwrap(),
+        src.to_str().unwrap(),
+    ];
     let out = run(cirka, &args, &work);
     assert_eq!(out.code, 0, "{}{}", out.stdout, out.stderr);
     let nm = Command::new("nm")
@@ -232,5 +338,8 @@ fn hot_runtime_functions_are_linked_together() {
             .contains(&s)
     };
     let others: Vec<&str> = syms[lo..=hi].iter().copied().filter(|s| !hot(s)).collect();
-    assert!(others.is_empty(), "{others:?} among the hot functions:\n{text}");
+    assert!(
+        others.is_empty(),
+        "{others:?} among the hot functions:\n{text}"
+    );
 }

@@ -62,6 +62,13 @@ $CIRKA_CLANG -O3 --target=$CIRKA_TARGET -Wno-override-module out.ll -lm <runtime
   弱いシンボルとして入っており、後ろに置くとプログラムの呼び出しがそちらに解決されて C ライブラリの関数と結果や性能が変わる (BUG-0028)。
 - FFI で指定されたライブラリ (`extern` の `link` 属性、`achc.toml` の `[link]`) を追加する。
 - コードの配置 (FEAT-1023): プログラムの演算ごとに動くランタイムの関数 (確保と解放・RC の遅い経路・`force`・部分適用・イベントループとそれが動かすソケットの I/O・`errno`) は `.text.hot.<名前>` の節に置き、生成コードのクロージャの呼び出し (`cirka_apply_N`・`cirka_call_1`) には `hot` 属性を付ける (LLVM は `.text.hot.` の節に置く)。GNU ld の既定のリンカスクリプトは `.text.hot.*` をテキストの先頭にまとめるので、プログラムが実行するランタイムのコードは数ページに収まる (ランタイムの 40 KiB ほどのコードに散らばると、システムコールの後に冷えた TLB とキャッシュをページごとに引き直す)。初期化・遅い経路・エラーの処理は既定の節のまま。
+- ランタイムの作り方 (FEAT-1026、ADR-120): `libcirka_rt.a` は実行ファイルの位置独立コード (`-C relocation-model=pie`) として、
+  1 つのコード生成単位 (`[profile.release.package.cirka-runtime] codegen-units = 1`) で作り、staticlib だけを出力する。ランタイム
+  自身の関数と静的な変数は PC 相対で直接参照される。rustc の既定 (共有ライブラリ向けの PIC、複数の単位、rlib も出力) では、
+  別の単位の関数の呼び出しと外から見える静的な変数の読み出しが GOT の項を通り (再配置できない `GOTPCREL` なのでリンカも直さない)、
+  GOT は専用のページにある。`scripts/build-runtime.sh` とドライバ (`native.rs`) は同じ `RUSTFLAGS` で作る (違うと cargo が
+  たがいに作り直す)。生成コードの関数 (`cirka_call_1`) はランタイムからは外部の名前なので GOT を通る: イベントループは
+  そのアドレスをスレッドの状態に一度だけ置いて呼ぶ。
 - 将来: LTO で `libcirka_rt` の高速経路も含めてインライン化(ランタイムを LLVM bitcode でも出力)。
 
 ## 5. デバッグ情報

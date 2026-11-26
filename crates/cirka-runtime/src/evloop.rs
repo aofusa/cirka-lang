@@ -284,7 +284,7 @@ unsafe fn call_action(cb: Obj) {
     // SAFETY: guaranteed by the caller; this thread's block.
     unsafe {
         (*tls::tls()).io_spent = 0;
-        let r = cirka_call_1(cb, io_token());
+        let r = tls::call_1()(cb, io_token());
         cirka_drop(r);
     }
 }
@@ -312,7 +312,7 @@ pub(crate) fn spend() {
 /// `cb` must be an owned function returning an IO action; `arg` owned.
 unsafe fn call_with(cb: Obj, arg: Obj) {
     // SAFETY: guaranteed by the caller.
-    unsafe { call_action(cirka_call_1(cb, arg)) }
+    unsafe { call_action(tls::call_1()(cb, arg)) }
 }
 
 /// The loop state of `o`, which must be a loop owned by this thread.

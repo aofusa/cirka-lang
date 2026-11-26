@@ -165,6 +165,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-1023](features/FEAT-1023-hot-runtime-sections.md) | 演算ごとに動くランタイムの関数をテキストの先頭にまとめる | done | P1 | 1019, 1022, 0091 |
 | [FEAT-1024](features/FEAT-1024-lighter-loop-turns.md) | イベントループの 1 回りで、使わない受け箱・タイマーの処理を飛ばす | done | P1 | 1014, 0091 |
 | [FEAT-1025](features/FEAT-1025-compact-byte-search.md) | インラインのバイトの探索の熱い経路を短くまとめる | done | P1 | 1019, 0091 |
+| [FEAT-1026](features/FEAT-1026-runtime-data-without-got.md) | ランタイムの関数と静的な変数を GOT を通さずに参照し、熱いデータをまとめる | done | P1 | 1023, 0091 |
 
 
 ## aCHC

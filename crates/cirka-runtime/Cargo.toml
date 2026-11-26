@@ -6,7 +6,10 @@ license.workspace = true
 
 [lib]
 name = "cirka_rt"
-crate-type = ["staticlib", "rlib"]
+# Only linked into executables as `libcirka_rt.a`. Without an rlib, the
+# runtime exports only its C entry points: its statics are internal, which
+# it reaches directly (FEAT-1026).
+crate-type = ["staticlib"]
 doctest = false
 
 [features]

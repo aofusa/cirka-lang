@@ -73,15 +73,38 @@ impl<T> Global<T> {
     }
 }
 
-/// The empty string: a static immortal BYTES object (`rc` 0, like the
-/// string literals of the generated code), returned for every empty result
-/// instead of a new object (FEAT-1002). Nothing writes to an immortal
-/// object: reference counting skips it and in-place updates copy it.
-static EMPTY_BYTES: Global<[u64; 2]> = Global::new([(object::BYTES as u64) << 56, 0]);
+/// The runtime's static immortal objects (`rc` 0, like the static objects
+/// of the generated code). Nothing writes to an immortal object: reference
+/// counting skips it and in-place updates copy it, so they are read-only
+/// data (as the generated ones since FEAT-1020), in one cache line
+/// (FEAT-1026).
+#[repr(C, align(32))]
+struct StaticObjects {
+    /// The empty string: a BYTES object of length 0, returned for every
+    /// empty result instead of a new object (FEAT-1002).
+    empty_bytes: [u64; 2],
+    /// The token an IO action is applied to (a boxed `Unit#`), so that
+    /// running a callback or starting a thread allocates nothing for it,
+    /// and the action's `drop` of it does nothing (FEAT-1014). The header
+    /// word 0 is a `CON` of tag 0 without pointer fields; its one field
+    /// is 0.
+    io_token: [u64; 2],
+}
 
-/// The static empty string (see [`EMPTY_BYTES`]).
+static STATIC_OBJECTS: StaticObjects = StaticObjects {
+    empty_bytes: [(object::BYTES as u64) << 56, 0],
+    io_token: [0, 0],
+};
+
+/// The static empty string (see [`StaticObjects::empty_bytes`]).
 pub fn empty_bytes() -> object::Obj {
-    EMPTY_BYTES.ptr() as object::Obj
+    (&raw const STATIC_OBJECTS.empty_bytes).cast_mut().cast()
+}
+
+/// The IO token (see [`StaticObjects::io_token`]): an owned reference,
+/// which costs nothing.
+pub fn io_token() -> object::Obj {
+    (&raw const STATIC_OBJECTS.io_token).cast_mut().cast()
 }
 
 /// A BYTES object holding a copy of the `len` bytes at `p`: the static

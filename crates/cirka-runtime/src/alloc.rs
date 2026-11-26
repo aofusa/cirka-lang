@@ -42,6 +42,11 @@ const REGION: usize = 64 << 30;
 const MIN_REGION: usize = 1 << 30;
 const PAGES: usize = REGION / PAGE;
 
+/// The region and the size class of each of its pages, in one static with
+/// the table last: what an allocation or a free reads (`mode`, `base`,
+/// `size`, the class of a page of a small heap) lies in one cache line
+/// whatever order the linker gives the statics (FEAT-1026).
+#[repr(C, align(64))]
 struct Region {
     base: usize,
     /// Bytes reserved (at most `REGION`); 0 unless the region is in use
@@ -50,6 +55,8 @@ struct Region {
     next_page: usize,
     /// 0 = not initialized, 1 = cirka allocator, 2 = system allocator.
     mode: u8,
+    /// The size class of each page handed out (`refill`).
+    class: [u8; PAGES],
 }
 
 static REGION_STATE: Global<Region> = Global::new(Region {
@@ -57,14 +64,14 @@ static REGION_STATE: Global<Region> = Global::new(Region {
     size: 0,
     next_page: 0,
     mode: 0,
+    class: [0; PAGES],
 });
-static PAGE_CLASS: Global<[u8; PAGES]> = Global::new([0; PAGES]);
 
 /// Free lists given back by threads that exited, per size class.
 static POOL: Global<[*mut u8; CLASSES]> = Global::new([core::ptr::null_mut(); CLASSES]);
 
-/// Guards `REGION_STATE.next_page`, `PAGE_CLASS` writes, `POOL` and
-/// `TOTALS`.
+/// Guards `REGION_STATE.next_page`, writes of `REGION_STATE.class`,
+/// `POOL` and `TOTALS`.
 static HEAP_LOCK: SpinLock = SpinLock::new();
 
 /// Allocation statistics (printed with `CIRKA_STATS=1`), counted per thread.
@@ -72,7 +79,6 @@ static HEAP_LOCK: SpinLock = SpinLock::new();
 pub struct Stats {
     pub allocs: u64,
     pub frees: u64,
-    pub live: u64,
     pub max_live: u64,
     /// Thunks evaluated (`cirka_force`).
     pub forced: u64,
@@ -84,11 +90,18 @@ impl Stats {
     pub const ZERO: Stats = Stats {
         allocs: 0,
         frees: 0,
-        live: 0,
         max_live: 0,
         forced: 0,
         array_copies: 0,
     };
+
+    /// Objects allocated and not freed: kept as the difference, so that a
+    /// free counts with one increment (FEAT-1026). A thread that frees
+    /// objects of other threads may have freed more than it allocated:
+    /// the value is then "negative" (wrapped).
+    pub fn live(&self) -> u64 {
+        self.allocs.wrapping_sub(self.frees)
+    }
 }
 
 /// The statistics of threads that exited.
@@ -120,31 +133,27 @@ pub fn total_stats() -> Stats {
 fn add_stats(t: &mut Stats, s: &Stats) {
     t.allocs += s.allocs;
     t.frees += s.frees;
-    t.live = t.live.wrapping_add(s.live);
     t.max_live += s.max_live;
     t.forced += s.forced;
     t.array_copies += s.array_copies;
 }
 
-/// Counts an allocation. A thread that frees objects of other threads may
-/// have freed more than it allocated: `live` is then "negative" (wrapped).
+/// Counts an allocation (see [`Stats::live`]).
 #[inline(always)]
 pub(crate) fn stat_alloc() {
     // SAFETY: this thread's statistics.
     let s = unsafe { stats() };
     s.allocs += 1;
-    s.live = s.live.wrapping_add(1);
-    if s.live as i64 > s.max_live as i64 {
-        s.max_live = s.live;
+    let live = s.live();
+    if live as i64 > s.max_live as i64 {
+        s.max_live = live;
     }
 }
 
 #[inline(always)]
 pub fn stat_free() {
     // SAFETY: this thread's statistics.
-    let s = unsafe { stats() };
-    s.frees += 1;
-    s.live = s.live.wrapping_sub(1);
+    unsafe { stats().frees += 1 };
 }
 
 /// Called by a thread that is about to exit: gives its free lists to the
@@ -442,7 +451,7 @@ unsafe fn refill(class: usize) {
         }
         let page = r.next_page;
         r.next_page += 1;
-        PAGE_CLASS.get()[page] = class as u8;
+        r.class[page] = class as u8;
         let size = 8 * (class + 1);
         let start = r.base + page * PAGE;
         let n = PAGE / size;
@@ -482,7 +491,7 @@ pub unsafe fn dealloc(o: Obj) {
         if in_region(a, r.base, r.size) {
             // a - base < size <= REGION: the page is in the table, and a
             // page of the region has a class below CLASSES (`refill`).
-            let class = *PAGE_CLASS.get().get_unchecked((a - r.base) >> PAGE_SHIFT) as usize;
+            let class = *r.class.get_unchecked((a - r.base) >> PAGE_SHIFT) as usize;
             let head = (*tls::heap()).free_lists.get_unchecked_mut(class);
             *(o as *mut *mut u8) = *head;
             *head = o as *mut u8;

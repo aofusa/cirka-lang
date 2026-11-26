@@ -42,6 +42,25 @@ unsafe extern "C" {
     pub(crate) fn cirka_call_1(f: Obj, a: Obj) -> Obj;
 }
 
+/// `cirka_call_1` as a function pointer (see `tls::call_1`).
+pub(crate) type Call1 = unsafe extern "C" fn(Obj, Obj) -> Obj;
+
+/// The address of `cirka_call_1`.
+#[cfg(not(test))]
+pub(crate) fn call_1_entry() -> Call1 {
+    cirka_call_1
+}
+
+/// The address of `cirka_call_1` (the test convention below).
+#[cfg(test)]
+pub(crate) fn call_1_entry() -> Call1 {
+    unsafe extern "C" fn entry(f: Obj, a: Obj) -> Obj {
+        // SAFETY: forwarded.
+        unsafe { cirka_call_1(f, a) }
+    }
+    entry
+}
+
 /// Without generated code (unit tests), a "closure" is a BYTES object
 /// whose word 1 holds an `extern "C" fn(Obj) -> Obj`, applied to the
 /// argument.
@@ -80,18 +99,7 @@ pub(crate) fn become_mt() {
     }
 }
 
-/// The token an IO action is applied to (a boxed `Unit#`): one static
-/// immortal object (`rc` 0, like the static empty string), so that
-/// running a callback or starting a thread allocates nothing for it, and
-/// the action's `drop` of it does nothing (FEAT-1014). The header word 0
-/// is a `CON` of tag 0 without pointer fields; its one field is 0.
-static IO_TOKEN: crate::Global<[u64; 2]> = crate::Global::new([0, 0]);
-
-/// The token an IO action is applied to (see [`IO_TOKEN`]): an owned
-/// reference, which costs nothing.
-pub fn io_token() -> Obj {
-    IO_TOKEN.ptr() as Obj
-}
+pub use crate::io_token;
 
 /// Runs the IO action `f` (borrowed) on a new thread. Returns its handle,
 /// which `cirka_thread_join` waits on.

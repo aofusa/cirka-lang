@@ -56,3 +56,10 @@ opt-level = 1
 [profile.release]
 panic = "abort"
 debug = 1
+
+# The runtime is one LLVM module, built as position-independent code of an
+# executable (`-C relocation-model=pie`, scripts/build-runtime.sh): its
+# functions and statics reach each other directly instead of through the
+# GOT, whose entries lie on a page of their own (FEAT-1026).
+[profile.release.package.cirka-runtime]
+codegen-units = 1

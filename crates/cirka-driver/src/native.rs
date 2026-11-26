@@ -153,10 +153,20 @@ pub fn tsan_usable(cfg: &Config) -> bool {
     })
 }
 
-/// Builds one flavour of the runtime as `scripts/build-runtime.sh` does.
-/// Stable Rust has no sanitizers: the ThreadSanitizer flavour is built with
-/// `RUSTC_BOOTSTRAP=1`, and `core` (not instrumented) is accepted with
-/// `-Cunsafe-allow-abi-mismatch=sanitizer` (05-runtime.md §9.7).
+/// The `RUSTFLAGS` of every flavour of the runtime: code of an executable,
+/// whose own calls and statics need no GOT (FEAT-1026).
+const RUNTIME_RUSTFLAGS: &str = "-C relocation-model=pie";
+
+/// The further `RUSTFLAGS` of the ThreadSanitizer flavour: stable Rust has
+/// no sanitizers (built with `RUSTC_BOOTSTRAP=1`), `core` (not
+/// instrumented) is accepted with `-Cunsafe-allow-abi-mismatch=sanitizer`
+/// (05-runtime.md §9.7), and the runtime calls libc's I/O functions
+/// (`--cfg cirka_tsan`, FEAT-1007).
+const TSAN_RUSTFLAGS: &str =
+    "-Zsanitizer=thread -Cunsafe-allow-abi-mismatch=sanitizer --cfg cirka_tsan";
+
+/// Builds one flavour of the runtime as `scripts/build-runtime.sh` does
+/// (the same flags: cargo rebuilds the runtime when they change).
 fn build_runtime(kind: RuntimeKind) -> Result<(), String> {
     let mut cmd = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()));
     cmd.current_dir(workspace_root()).args([
@@ -169,15 +179,16 @@ fn build_runtime(kind: RuntimeKind) -> Result<(), String> {
         kind.dirs().0,
     ]);
     match kind {
-        RuntimeKind::Release => {}
+        RuntimeKind::Release => {
+            cmd.env("RUSTFLAGS", RUNTIME_RUSTFLAGS);
+        }
         RuntimeKind::Debug => {
-            cmd.args(["--features", "debug-rt"]);
+            cmd.env("RUSTFLAGS", RUNTIME_RUSTFLAGS)
+                .args(["--features", "debug-rt"]);
         }
         RuntimeKind::Tsan => {
-            cmd.env("RUSTC_BOOTSTRAP", "1").env(
-                "RUSTFLAGS",
-                "-Zsanitizer=thread -Cunsafe-allow-abi-mismatch=sanitizer",
-            );
+            cmd.env("RUSTC_BOOTSTRAP", "1")
+                .env("RUSTFLAGS", format!("{RUNTIME_RUSTFLAGS} {TSAN_RUSTFLAGS}"));
         }
     }
     match cmd.output() {
@@ -304,7 +315,25 @@ pub fn verify_ir(cfg: &Config, ir_path: &Path) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{llvm_opt_args, llvm_opt_level};
+    use super::{RUNTIME_RUSTFLAGS, TSAN_RUSTFLAGS, llvm_opt_args, llvm_opt_level, workspace_root};
+
+    /// The driver builds the runtime with the flags of
+    /// scripts/build-runtime.sh: otherwise each would rebuild the runtime
+    /// the other built, with other code (FEAT-1026).
+    #[test]
+    fn runtime_flags_are_those_of_the_build_script() {
+        let script =
+            std::fs::read_to_string(workspace_root().join("scripts/build-runtime.sh")).unwrap();
+        assert!(
+            script.contains(&format!("pie=\"{RUNTIME_RUSTFLAGS}\"")),
+            "{script}"
+        );
+        assert!(
+            script.contains(&format!("RUSTFLAGS=\"$pie {TSAN_RUSTFLAGS}\"")),
+            "{script}"
+        );
+        assert_eq!(script.matches("RUSTFLAGS=\"$pie").count(), 3, "{script}");
+    }
 
     #[test]
     fn release_builds_use_llvm_o3() {

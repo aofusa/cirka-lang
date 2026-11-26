@@ -55,6 +55,10 @@ pub struct Tls {
     /// keeps it, as it keeps its free lists (`alloc::thread_exit`).
     /// Next to `cur_loop` and `errno_at`: a receive uses the three.
     pub recv_buf: *mut u8,
+    /// `cirka_call_1` (generated code), asked on first use (None until
+    /// then): see [`call_1`]. Next to `io_spent`: the loop runs a callback
+    /// with the two.
+    pub call1: Option<crate::thread::Call1>,
     /// Operations of the running callback that completed at once
     /// (`evloop::spend`).
     pub io_spent: u32,
@@ -126,6 +130,30 @@ fn assign_id() -> u64 {
     // SAFETY: as for thread_id.
     unsafe { (*tls()).id = id };
     id
+}
+
+/// The C ABI entry through which the runtime applies a closure
+/// (`cirka_call_1`, generated). The runtime reaches a function of the
+/// generated code through the GOT, which lies on a page of its own, so the
+/// address is asked once per thread and kept in the block: the loop calls
+/// a callback with a load from the block (FEAT-1026).
+#[inline(always)]
+pub fn call_1() -> crate::thread::Call1 {
+    let t = tls();
+    // SAFETY: the block of the current thread, used by this thread only.
+    match unsafe { (*t).call1 } {
+        Some(f) => f,
+        None => call_1_init(t),
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn call_1_init(t: *mut Tls) -> crate::thread::Call1 {
+    let f = crate::thread::call_1_entry();
+    // SAFETY: as for call_1.
+    unsafe { (*t).call1 = Some(f) };
+    f
 }
 
 /// The address of this thread's `errno`. The C library's `errno` is a
