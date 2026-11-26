@@ -5,7 +5,7 @@
 //! values of evaluated CAFs are shared, the standard I/O buffers are
 //! locked and thunks shared between threads are evaluated by one thread.
 
-use crate::object::{self, IND, Obj, cirka_drop, cirka_dup, cirka_mark_shared, word};
+use crate::object::{IND, Obj, cirka_drop, cirka_dup, cirka_mark_shared, word};
 use crate::sync::{self, TAG_THREAD};
 use crate::{alloc, sys, tls};
 use core::ffi::c_void;
@@ -80,21 +80,17 @@ pub(crate) fn become_mt() {
     }
 }
 
-/// The token an IO action is applied to (a boxed `Unit#`).
-///
-/// # Safety
-/// Allocates; the caller owns the result.
-pub unsafe fn io_token() -> Obj {
-    // SAFETY: a fresh object of header + one non-pointer word.
-    unsafe {
-        let t = alloc::cirka_alloc(16) as Obj;
-        (*t).rc = 1;
-        (*t).tag = 0;
-        (*t).nptr = 0;
-        (*t).kind = object::CON;
-        *word(t, 0) = 0;
-        t
-    }
+/// The token an IO action is applied to (a boxed `Unit#`): one static
+/// immortal object (`rc` 0, like the static empty string), so that
+/// running a callback or starting a thread allocates nothing for it, and
+/// the action's `drop` of it does nothing (FEAT-1014). The header word 0
+/// is a `CON` of tag 0 without pointer fields; its one field is 0.
+static IO_TOKEN: crate::Global<[u64; 2]> = crate::Global::new([0, 0]);
+
+/// The token an IO action is applied to (see [`IO_TOKEN`]): an owned
+/// reference, which costs nothing.
+pub fn io_token() -> Obj {
+    IO_TOKEN.ptr() as Obj
 }
 
 /// Runs the IO action `f` (borrowed) on a new thread. Returns its handle,

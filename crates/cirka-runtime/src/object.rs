@@ -125,16 +125,37 @@ pub(crate) unsafe fn dec_dies(c: Obj) -> bool {
 }
 
 /// Frees an object whose count has reached zero, and (iteratively) every
-/// object that dies as a consequence.
+/// object that dies as a consequence. An object without pointer fields (a
+/// string, a constructor of unboxed fields, a closure that captured
+/// nothing) is released at once (FEAT-1014): the walk, which needs more
+/// registers, is out of line.
 ///
 /// # Safety
 /// `o` must be a heap object that is no longer referenced.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn cirka_free_object(o: Obj) {
-    // SAFETY: every object on the list is dead and owned by this routine.
+    // SAFETY: `o` is dead and owned by this routine.
     unsafe {
         crate::debug::check_live(o, "free");
-        *(o as *mut u64) = pack(core::ptr::null_mut(), (*o).kind, (*o).nptr);
+        let (kind, nptr) = ((*o).kind, (*o).nptr);
+        if ptr_fields(o, kind, nptr).1 == 0 {
+            release(o, kind);
+        } else {
+            free_walk(o, kind, nptr);
+        }
+    }
+}
+
+/// `cirka_free_object` of an object with pointer fields: the dead objects
+/// are linked through their headers until their fields are dealt with.
+///
+/// # Safety
+/// As for `cirka_free_object`; `kind` and `nptr` are those of `o`.
+#[inline(never)]
+unsafe fn free_walk(o: Obj, kind: u8, nptr: u8) {
+    // SAFETY: every object on the list is dead and owned by this routine.
+    unsafe {
+        *(o as *mut u64) = pack(core::ptr::null_mut(), kind, nptr);
         let mut head = o;
         while !head.is_null() {
             let x = head;

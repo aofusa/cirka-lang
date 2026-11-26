@@ -520,9 +520,44 @@ pub unsafe extern "C" fn cirka_loop_watch(o: Obj, fd: i64, events: i64, cb: Obj)
 /// budget, or is not one of those that tell the loop (`drain`). Otherwise
 /// the watch makes no system call: the kernel reports the next change.
 ///
+/// The common watch (FEAT-1014: a callback that waits again for its
+/// descriptor) is a short path without system calls: a descriptor object
+/// registered already, not known to be ready for `events`, no callback or
+/// timer in its slot, and no timeout. Everything else takes `watch_slow`.
+///
 /// # Safety
 /// As for `cirka_loop_watch`.
+#[inline(always)]
 unsafe fn watch(l: &mut Loop, fd: i64, ident: u32, events: i64, ms: i64, cb: Obj) -> i64 {
+    // SAFETY: the loop's own state, on its thread; `cb` is live; the slot
+    // is within the slots' length (an `fd` below 0 is a large unsigned).
+    unsafe {
+        let want = (events & (EV_READ | EV_WRITE)) as u8;
+        if ms < 0 && ident != 0 && want != 0 && (fd as u64) < l.slots.len as u64 {
+            let slot = l.slots.at(fd as usize);
+            if slot.registered
+                && slot.ident == ident
+                && slot.ready & want == 0
+                && slot.cb.is_null()
+                && slot.timer == NO_TIMER
+            {
+                slot.want = want;
+                cirka_dup(cb);
+                slot.cb = cb;
+                l.watches += 1;
+                return 0;
+            }
+        }
+        watch_slow(l, fd, ident, events, ms, cb)
+    }
+}
+
+/// Every other watch (see `watch`).
+///
+/// # Safety
+/// As for `cirka_loop_watch`.
+#[inline(never)]
+unsafe fn watch_slow(l: &mut Loop, fd: i64, ident: u32, events: i64, ms: i64, cb: Obj) -> i64 {
     // SAFETY: the loop's own state, on its thread; `cb` is live.
     unsafe {
         if !(0..=i64::from(i32::MAX)).contains(&fd) {
@@ -1560,6 +1595,44 @@ mod tests {
     extern "C" fn tick_x(t: Obj) -> Obj {
         log(b'x');
         t
+    }
+
+    static TOKEN_RC: AtomicI64 = AtomicI64::new(-1);
+
+    extern "C" fn tick_token(t: Obj) -> Obj {
+        // SAFETY: the token is a live object.
+        TOKEN_RC.store(i64::from(unsafe { (*t).rc }), Ordering::Relaxed);
+        let ok = t == crate::thread::io_token();
+        log(if ok { b't' } else { b'?' });
+        t
+    }
+
+    #[test]
+    fn callbacks_get_the_static_token() {
+        // FEAT-1014: the loop applies callbacks to one static immortal
+        // token; running them allocates nothing for it.
+        let _g = crate::test_lock();
+        let b0 = balance();
+        // SAFETY: a loop of this thread and a live closure.
+        unsafe {
+            let l = cirka_loop_new();
+            for _ in 0..3 {
+                let c = closure(tick_token);
+                cirka_loop_timer(l, 0, c);
+                cirka_drop(c);
+            }
+            let a0 = alloc::stats().allocs;
+            assert_eq!(cirka_loop_run(l), 0);
+            assert_eq!(
+                alloc::stats().allocs,
+                a0,
+                "no allocation to run the callbacks"
+            );
+            cirka_drop(l);
+        }
+        assert_eq!(take_log(), b"ttt");
+        assert_eq!(TOKEN_RC.load(Ordering::Relaxed), 0);
+        assert_eq!(balance(), b0);
     }
 
     #[test]

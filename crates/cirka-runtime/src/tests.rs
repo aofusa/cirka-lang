@@ -45,6 +45,36 @@ fn free_long_list_iteratively() {
 }
 
 #[test]
+fn leaves_and_their_parents_are_freed() {
+    // FEAT-1014: an object without pointer fields is released at once, one
+    // with pointer fields through the walk (which frees the children that
+    // die with it).
+    let _g = crate::test_lock();
+    let (a0, f0) = stats();
+    // SAFETY: objects of this test, each dropped once; `kept` is read
+    // while it still holds a reference.
+    unsafe {
+        let s = crate::cirka_bytes_from(b"leaf".as_ptr(), 4);
+        cirka_drop(s);
+        let c = con(0, &[1, 2], 0);
+        cirka_drop(c);
+        let leaf = con(0, &[3], 0);
+        let p = con(1, &[leaf as usize, 4], 1);
+        cirka_drop(p);
+        let kept = con(0, &[5], 0);
+        cirka_dup(kept);
+        let q = con(1, &[kept as usize], 1);
+        cirka_drop(q);
+        assert_eq!((*kept).rc, 1);
+        assert_eq!(*word(kept, 0), 5);
+        cirka_drop(kept);
+    }
+    let (a1, f1) = stats();
+    assert_eq!(a1 - a0, 6);
+    assert_eq!(f1 - f0, 6);
+}
+
+#[test]
 fn shared_child_survives() {
     let _g = crate::test_lock();
     unsafe {
