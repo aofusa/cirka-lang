@@ -10,6 +10,10 @@
 //!   page. Larger objects use `malloc`.
 //! - `CIRKA_ALLOC=system`: `malloc`/`free` for everything (valgrind/ASan).
 //!
+//! In both modes, objects of 2 MiB or more go on transparent huge pages
+//! where the system has them (`advise_huge`, FEAT-1011; `CIRKA_THP=0`
+//! keeps them on ordinary pages).
+//!
 //! The debug runtime (feature `debug-rt`) always uses `malloc` with a
 //! prefix (see `debug.rs`).
 
@@ -21,6 +25,7 @@ use crate::sync::SpinLock;
 use crate::sys;
 use crate::tls;
 use core::ffi::c_void;
+use core::sync::atomic::{AtomicU8, Ordering};
 
 pub const CLASSES: usize = 32;
 /// The largest object served from the region (larger ones come from
@@ -289,6 +294,7 @@ unsafe fn raw_alloc_zeroed(size: usize) -> *mut u8 {
         if p.is_null() {
             crate::io::fatal(b"out of memory", 2);
         }
+        advise_huge(p, size);
         p
     }
 }
@@ -346,8 +352,65 @@ unsafe fn raw_alloc_slow(size: usize) -> *mut u8 {
         if p.is_null() {
             crate::io::fatal(b"out of memory", 2);
         }
+        advise_huge(p, size);
         p
     }
+}
+
+/// The size of a transparent huge page (a PMD on x86-64).
+const HUGE: usize = 2 << 20;
+
+/// Whether objects of `HUGE` bytes or more go on transparent huge pages:
+/// 0 = `CIRKA_THP` not read yet, 1 = yes, 2 = no (`CIRKA_THP=0`).
+static THP: AtomicU8 = AtomicU8::new(0);
+
+/// The part of the `size` bytes at `p` that whole huge pages cover: from
+/// `p` rounded up to `HUGE` to `p + size` rounded down, as (start, length);
+/// `None` when no huge page fits.
+fn huge_range(p: usize, size: usize) -> Option<(usize, usize)> {
+    let start = p.checked_add(HUGE - 1)? & !(HUGE - 1);
+    let end = p.checked_add(size)? & !(HUGE - 1);
+    (start < end).then(|| (start, end - start))
+}
+
+/// Asks the kernel to back the huge pages inside a large object just
+/// allocated (or resized) by `malloc` at `p` with transparent huge pages
+/// (FEAT-1011, 05-runtime.md §3): a page fault per 2 MiB instead of per
+/// 4 KiB, and fewer TLB misses in loops over the object. The first block
+/// of a block from `mmap` keeps small pages (glibc wrote the header of the
+/// block there). Without transparent huge pages (the system setting
+/// `never`, an old kernel) `madvise` fails or does nothing, which is fine.
+#[cfg_attr(feature = "debug-rt", allow(dead_code))]
+fn advise_huge(p: *mut u8, size: usize) {
+    if size < HUGE || !thp_enabled() {
+        return;
+    }
+    if let Some((start, len)) = huge_range(p as usize, size) {
+        // SAFETY: the range lies inside the `size` bytes at `p`, which the
+        // caller owns; the advice changes no contents.
+        unsafe {
+            sys::madvise(start as *mut c_void, len, sys::MADV_HUGEPAGE);
+        }
+    }
+}
+
+/// `CIRKA_THP` (read at the first large object): huge pages unless `0`.
+fn thp_enabled() -> bool {
+    match THP.load(Ordering::Relaxed) {
+        1 => true,
+        2 => false,
+        _ => {
+            let on = thp_wanted(sys::env(c"CIRKA_THP"));
+            THP.store(if on { 1 } else { 2 }, Ordering::Relaxed);
+            on
+        }
+    }
+}
+
+/// The meaning of the value of `CIRKA_THP`: anything but `0` (unset,
+/// empty, `1`) wants huge pages.
+fn thp_wanted(v: Option<&[u8]>) -> bool {
+    v != Some(b"0")
 }
 
 /// Refills this thread's empty free list of `class`: from the pool when
@@ -459,6 +522,7 @@ pub unsafe fn resize_system(o: Obj, size: usize) -> Option<Obj> {
         if p.is_null() {
             crate::io::fatal(b"out of memory", 2);
         }
+        advise_huge(p as *mut u8, size);
         Some(p as Obj)
     }
 }
@@ -482,6 +546,104 @@ mod tests {
         assert!(!in_region(usize::MAX, base, size));
         assert!(!in_region(base, base, 0));
         assert!(!in_region(0x1000, 0, 0));
+    }
+
+    /// The part of an object that whole huge pages cover (FEAT-1011).
+    #[test]
+    fn huge_range_is_the_aligned_interior() {
+        let m = HUGE;
+        // Smaller than a huge page, or no whole block inside.
+        assert_eq!(huge_range(16 * m, m - 1), None);
+        assert_eq!(huge_range(16 * m + 16, m), None);
+        // An aligned start: every whole block.
+        assert_eq!(huge_range(16 * m, m), Some((16 * m, m)));
+        assert_eq!(huge_range(16 * m, 3 * m + 5), Some((16 * m, 3 * m)));
+        // The block of a `malloc` header (16 bytes in) is left out.
+        assert_eq!(huge_range(16 * m + 16, 4 * m), Some((17 * m, 3 * m)));
+        // No overflow at the top of the address space.
+        assert_eq!(huge_range(usize::MAX - 8, 4 * m), None);
+    }
+
+    #[test]
+    fn cirka_thp_turns_huge_pages_off_with_0() {
+        assert!(thp_wanted(None));
+        assert!(thp_wanted(Some(b"")));
+        assert!(thp_wanted(Some(b"1")));
+        assert!(!thp_wanted(Some(b"0")));
+    }
+
+    /// The flags (`VmFlags`) of the mapping of this process that contains
+    /// address `a`.
+    fn vm_flags(a: usize) -> Vec<String> {
+        let smaps = std::fs::read_to_string("/proc/self/smaps").unwrap();
+        let mut inside = false;
+        for line in smaps.lines() {
+            let range = line.split(' ').next().unwrap_or("");
+            if let Some((lo, hi)) = range.split_once('-')
+                && let (Ok(lo), Ok(hi)) =
+                    (usize::from_str_radix(lo, 16), usize::from_str_radix(hi, 16))
+            {
+                inside = lo <= a && a < hi;
+            } else if inside && let Some(flags) = line.strip_prefix("VmFlags:") {
+                return flags.split_whitespace().map(String::from).collect();
+            }
+        }
+        panic!("no mapping contains {a:#x}");
+    }
+
+    /// Whether the whole blocks of a fresh object of 8 huge pages carry
+    /// the huge-page advice (`hg`).
+    fn large_object_is_advised() -> bool {
+        // SAFETY: test of allocator internals; the object is freed.
+        unsafe {
+            let size = 8 * HUGE;
+            let p = alloc_zeroed(size);
+            let (start, _) = huge_range(p as usize, size).unwrap();
+            let advised = vm_flags(start).iter().any(|f| f == "hg");
+            dealloc(p as Obj);
+            advised
+        }
+    }
+
+    /// Objects of 2 MiB or more are advised to use transparent huge pages,
+    /// and not with `CIRKA_THP=0` (FEAT-1011): the latter in a child
+    /// process, since the setting is read once.
+    #[test]
+    fn large_objects_get_huge_pages_unless_turned_off() {
+        let _g = crate::test_lock();
+        if cfg!(feature = "debug-rt")
+            || !std::path::Path::new("/sys/kernel/mm/transparent_hugepage").exists()
+        {
+            return;
+        }
+        assert_eq!(large_object_is_advised(), thp_enabled());
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "alloc::tests::thp_child",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("CIRKA_THP", "0")
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success() && text.contains("1 passed"), "{text}");
+    }
+
+    /// Run by `large_objects_get_huge_pages_unless_turned_off` with
+    /// `CIRKA_THP=0`: no advice. Alone, it checks the setting of the
+    /// environment it is given.
+    #[test]
+    #[ignore]
+    fn thp_child() {
+        let _g = crate::test_lock();
+        if cfg!(feature = "debug-rt") {
+            return;
+        }
+        let off = std::env::var("CIRKA_THP").as_deref() == Ok("0");
+        assert_eq!(thp_enabled(), !off);
+        assert_eq!(large_object_is_advised(), !off);
     }
 
     #[test]

@@ -1,0 +1,20 @@
+-- max-allocs: 20
+-- Arrays of several MiB (FEAT-1011): the runtime advises the kernel to
+-- put the whole 2 MiB blocks of objects of 2 MiB or more on transparent
+-- huge pages. The values do not change: a generated array, a copy of it
+-- (`thawS` of an array still used) with one element written, and their
+-- sums in order.
+import Data.Array.Unboxed as U
+
+sumFrom : (k : Int) -> (u : U.UArray Float) -> Float -> Float
+  requires 0 <= k
+sumFrom k u s = if k >= U.size u then s else sumFrom (k + 1) u (s +. U.index u k)
+
+main : IO ()
+main = do
+  let n = 700000
+  let a = U.generate n (\i => toFloat (i % 1000))
+  let b = U.freezeS (U.writeS (U.thawS n a) 5 1.5)
+  printFloat (sumFrom 0 a 0.0)
+  printFloat (sumFrom 0 b 0.0)
+  printInt (U.size b)

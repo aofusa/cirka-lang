@@ -13,6 +13,7 @@ pub const PROT_WRITE: c_int = 2;
 pub const MAP_PRIVATE: c_int = 0x02;
 pub const MAP_ANONYMOUS: c_int = 0x20;
 pub const MAP_NORESERVE: c_int = 0x4000;
+pub const MADV_HUGEPAGE: c_int = 14;
 pub const MAP_FAILED: *mut c_void = !0usize as *mut c_void;
 
 pub const SIGSEGV: c_int = 11;
@@ -182,6 +183,7 @@ unsafe extern "C" {
         fd: c_int,
         off: c_long,
     ) -> *mut c_void;
+    pub fn madvise(addr: *mut c_void, len: size_t, advice: c_int) -> c_int;
     pub fn open(path: *const c_char, flags: c_int, ...) -> c_int;
     pub fn close(fd: c_int) -> c_int;
     pub fn unlink(path: *const c_char) -> c_int;
