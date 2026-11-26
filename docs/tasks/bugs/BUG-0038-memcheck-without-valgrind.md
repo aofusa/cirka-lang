@@ -1,6 +1,6 @@
 # BUG-0038: `scripts/memcheck.sh` が実行テストを valgrind の下で走らせていない
 
-- 状態: in-progress
+- 状態: done
 - 重大度: major
 - 発見箇所: FEAT-0096 (新しいランタイムの経路を valgrind で確かめようとしたとき)
 - 関連: FEAT-0004, FEAT-0013, FEAT-0096
@@ -40,7 +40,12 @@ FEAT-0004 で `memcheck.sh` の雛形に環境変数を置いたが、テスト�
   その読み込みをしない実行は通ること (valgrind か C コンパイラがなければ飛ばす)
 - [x] valgrind の下では意味の変わるテストは、ヘッダの `-- memcheck: skip` (続く注釈に理由) で valgrind を通さない
   (`tests/lib.rs` の `memcheck_run`。ユニットテスト `memcheck_skips_tsan_and_opted_out_tests`)
-- [ ] `scripts/memcheck.sh` を Docker 内で全テストに対して走らせ、見つかった誤りを直す (範囲外のものは別のバグチケットに)
+- [x] `scripts/memcheck.sh` を Docker 内で全テストに対して走らせ、見つかった誤りを直す (範囲外のものは別のバグチケットに)
+- [x] valgrind は開ける記述子の上限 (ソフトとハード) を起動時のソフトな上限に固定し、それより上を自分のために取っておく。
+  プログラムはハードな上限まで上げられなくなる (`echo_10k` は 2 万の記述子が要る) ので、`valgrind_command` はシェルで
+  ソフトな上限をハードな上限まで上げてから valgrind を起動する (ネイティブでもランタイムの `cirka_fd_limit_raise` が同じことをする)。
+  回帰テスト `valgrind_wrapper_keeps_the_descriptor_limit` (`tests/harness_selftest.rs`): 包む処理の下のプログラムが、
+  テストのプロセスのソフトな上限より大きい上限を見ること
 
 ## メモ
 
@@ -52,4 +57,8 @@ FEAT-0004 で `memcheck.sh` の雛形に環境変数を置いたが、テスト�
   - `v005/os_tool.cirka`: valgrind は glibc の `posix_spawn` の `vfork` を通常の `fork` で動かすので、ない実行ファイルの起動が
     「起動できない」の誤りではなく終了コード 127 になる。
 - 同じ実行で、終わらないケース (BUG-0039) がテストのプロセスのメモリを使い切った。ケースごとの時間とメモリの上限は BUG-0041。
-
+- 2026-11-26 の全テストの実行 (Docker、`CIRKA_ALLOC=system`・`CIRKA_VALGRIND=1`、`--no-fail-fast`、1 時間 49 分): valgrind の誤りの報告は
+  0 件。achc_run 68 件・achc_diff 57 件・cirkalang_run 105 件・core_run 18 件・mir_run_native 36 件・bindgen_run 5 件・ベンチの題材と
+  HTTP サーバのテストがすべて valgrind の下で通った。失敗は `echo_10k` の 1 件だけで、valgrind の下で記述子の上限が 1024 に
+  固定されたため (`too few file descriptors: 1024`)。直した後、`mir_run_native` の 36 件が valgrind の下で通る (7 分)。
+  同じ探りのプログラムが見る上限: ネイティブ 1024 (ソフト)、valgrind を直接 1024、新しい包む処理 524276 (ハード 524288 から valgrind の 12)。

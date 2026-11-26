@@ -24,7 +24,7 @@
 | ゼロコスト | 抽象版と手書き版の組 | 共通基盤 | 確保回数と最適化後の IR の大きさが一致 (16-performance.md §2、FEAT-0061) |
 | CirkaLang 検証 | `tests/cirkalang/verify/{pass,fail}/**/*.cirka` | CirkaLang (v0.0.4〜) | 証明が通る / 反例付きで失敗する (`CIRKA_Z3` 未設定ならスキップ) |
 | 契約の実行時検査 | `tests/cirkalang/run/contracts/` | CirkaLang | `--contracts=check` で違反時に期待どおり停止 |
-| メモリ | 実行テスト全体 | 全部 | `CIRKA_ALLOC=system` + valgrind でエラー 0 |
+| メモリ | 実行テスト全体 | 全部 | `CIRKA_ALLOC=system` + valgrind でエラー 0 (`scripts/memcheck.sh`。valgrind は開ける記述子の上限を起動時のソフトな上限に固定するので、起動の前にソフトな上限をハードな上限まで上げる。BUG-0038) |
 | 並行性 | `tests/mir/run/` (`tsan: 1`)、`tests/mir/tsan/`、`tests/cirkalang/run/v005/` (`tsan: 1`)、`tests/cirkalang/fail/thread/` | 共通基盤 (FEAT-0045)、CirkaLang (v0.0.5〜、FEAT-0240) | ThreadSanitizer でエラーなし (TSan が動く環境で。下記)、`Send` の診断が一致 |
 | 非同期 I/O | `tests/mir/run/evloop.mir` (`tsan: 1`)・`tests/mir/run/echo_10k.mir`、ランタイムの単体テスト、`tests/cirkalang/run/v005/` の `async`・`async_task`・`net_tcp`・`net_udp`・`http_echo`、`tests/cirkalang/fail/net/` | 共通基盤 (FEAT-0046)、CirkaLang (v0.0.5〜、FEAT-0241) | 1 つのループで 1 万の接続を同時に開いてエコーし、リーク 0。ループバックだけを使い、外の名前解決はしない (05-runtime.md §10.4)。ソケットの誤用 (2 度使う、何度も実行される関数に捕捉させる) と `extern "C"` への `Handle` の診断が一致 |
 | OS 層 | ランタイムの単体テスト (`os.rs`、ヘッダの宣言)、`tests/cirkalang/run/v005/os_tool.cirka` | CirkaLang (v0.0.5〜、FEAT-0242) | 子プロセス (パイプ・終了コード・シグナルでの終了・ないプログラム)、シグナル (ブロックと待ち、プロセスへ送ったシグナルをループで受け取る)、メモリマップ、ディレクトリの操作が期待どおりで、リーク 0。作業は `/tmp` の新しいディレクトリで行い後片付けする (05-runtime.md §11.6) |

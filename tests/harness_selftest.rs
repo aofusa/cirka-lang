@@ -81,19 +81,9 @@ fn limits_child() {
 /// valgrind or the C compiler cannot run.
 #[test]
 fn valgrind_wrapper_reports_memory_errors() {
-    cirka_testkit::init();
-    let probe = cirka_testkit::valgrind_command(std::path::Path::new("--version")).output();
-    if !probe.is_ok_and(|o| o.status.success()) {
-        eprintln!("skipped: valgrind cannot run here");
-        return;
-    }
-    let clang = std::env::var("CIRKA_CLANG").unwrap_or_else(|_| "clang".into());
-    let dir = cirka_testkit::work_dir("harness-valgrind", "use_after_free");
-    let src = dir.join("uaf.c");
-    let exe = dir.join("uaf");
     // Unoptimized, so that the read after `free` stays.
-    std::fs::write(
-        &src,
+    let Some(exe) = valgrind_probe(
+        "use_after_free",
         "#include <stdlib.h>\n\
          int main(int argc, char **argv) {\n\
            (void)argv;\n\
@@ -104,17 +94,9 @@ fn valgrind_wrapper_reports_memory_errors() {
            if (argc > 1) x = p[1];\n\
            return x == 7 ? 0 : 0;\n\
          }\n",
-    )
-    .unwrap();
-    let built = std::process::Command::new(&clang)
-        .args(["-O0", "-g", "-o"])
-        .arg(&exe)
-        .arg(&src)
-        .status();
-    if !built.is_ok_and(|s| s.success()) {
-        eprintln!("skipped: {clang} cannot build the probe");
+    ) else {
         return;
-    }
+    };
     let run = |bad: bool| {
         let mut cmd = cirka_testkit::valgrind_command(&exe);
         if bad {
@@ -138,4 +120,83 @@ fn valgrind_wrapper_reports_memory_errors() {
     );
     let report = cirka_testkit::valgrind_errors(&bad).expect("no valgrind report");
     assert!(report.contains("Invalid read"), "{report}");
+}
+
+/// Valgrind fixes a program's limit of open descriptors at the soft limit
+/// it starts with; the wrapper raises that to the hard limit first, so a
+/// program can open as many descriptors as natively (`echo_10k`: BUG-0038).
+/// Skipped where valgrind or the C compiler cannot run, or the hard limit
+/// leaves no room above the soft one.
+#[test]
+fn valgrind_wrapper_keeps_the_descriptor_limit() {
+    let Some(exe) = valgrind_probe(
+        "fd_limit",
+        "#include <stdio.h>\n\
+         #include <sys/resource.h>\n\
+         int main(void) {\n\
+           struct rlimit rl;\n\
+           if (getrlimit(RLIMIT_NOFILE, &rl) != 0) return 2;\n\
+           printf(\"%llu\\n\", (unsigned long long)rl.rlim_cur);\n\
+           return 0;\n\
+         }\n",
+    ) else {
+        return;
+    };
+    // This process's limits: the soft one valgrind would fix, the hard one.
+    let limits = std::fs::read_to_string("/proc/self/limits").unwrap();
+    let parsed = limits
+        .lines()
+        .find(|l| l.starts_with("Max open files"))
+        .map(|l| {
+            l.split_whitespace()
+                .skip(3)
+                .take(2)
+                .map(str::parse::<u64>)
+                .collect::<Vec<_>>()
+        });
+    let (soft, hard) = match parsed.as_deref() {
+        Some([Ok(s), Ok(h)]) => (*s, *h),
+        _ => {
+            eprintln!("skipped: no numeric limit of open files");
+            return;
+        }
+    };
+    if hard < soft + 64 {
+        eprintln!("skipped: the hard limit {hard} leaves no room above {soft}");
+        return;
+    }
+    let out = cirka_testkit::run_with_stdin(cirka_testkit::valgrind_command(&exe), None).unwrap();
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    let seen: u64 = out.stdout.trim().parse().unwrap();
+    assert!(
+        seen > soft,
+        "limit under valgrind {seen}, soft {soft}, hard {hard}"
+    );
+}
+
+/// Builds the C program `src` (unoptimized) for a test of the memcheck
+/// wrapper: `None`, after saying why, when valgrind or the C compiler
+/// cannot run here.
+fn valgrind_probe(case: &str, src: &str) -> Option<std::path::PathBuf> {
+    cirka_testkit::init();
+    let probe = cirka_testkit::valgrind_command(std::path::Path::new("--version")).output();
+    if !probe.is_ok_and(|o| o.status.success()) {
+        eprintln!("skipped: valgrind cannot run here");
+        return None;
+    }
+    let clang = std::env::var("CIRKA_CLANG").unwrap_or_else(|_| "clang".into());
+    let dir = cirka_testkit::work_dir("harness-valgrind", case);
+    let c = dir.join(format!("{case}.c"));
+    let exe = dir.join(case);
+    std::fs::write(&c, src).unwrap();
+    let built = std::process::Command::new(&clang)
+        .args(["-O0", "-g", "-o"])
+        .arg(&exe)
+        .arg(&c)
+        .status();
+    if !built.is_ok_and(|s| s.success()) {
+        eprintln!("skipped: {clang} cannot build the probe");
+        return None;
+    }
+    Some(exe)
 }

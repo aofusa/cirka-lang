@@ -535,13 +535,23 @@ pub fn under_valgrind() -> bool {
 /// errors (invalid reads and writes, uses of uninitialized values, bad
 /// frees) make it exit with [`VALGRIND_ERROR_CODE`]. Leaks are left to
 /// the runtime's own check (`CIRKA_LEAK_CHECK=1`).
+///
+/// Valgrind fixes the program's limit of open descriptors (soft and hard)
+/// at the soft limit it starts with, keeping the ones above for itself, so
+/// a program could no longer raise it to the hard limit as it does natively
+/// (`cirka_fd_limit_raise`). A shell raises the soft limit to the hard one
+/// before starting valgrind (BUG-0038).
 pub fn valgrind_command(exe: &Path) -> Command {
     let bin = std::env::var("CIRKA_VALGRIND_BIN")
         .ok()
         .filter(|b| !b.is_empty())
         .unwrap_or_else(|| "valgrind".into());
-    let mut cmd = Command::new(bin);
+    let mut cmd = Command::new("sh");
     cmd.args([
+        "-c",
+        r#"ulimit -S -n "$(ulimit -H -n)" 2>/dev/null; exec "$@""#,
+        "sh",
+        &bin,
         "-q",
         &format!("--error-exitcode={VALGRIND_ERROR_CODE}"),
         "--leak-check=no",
