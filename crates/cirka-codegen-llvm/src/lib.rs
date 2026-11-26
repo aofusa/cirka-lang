@@ -69,6 +69,14 @@ fn header_word(rc: i32, tag: u32, nptr: usize, kind: u8) -> u64 {
         | ((kind as u64) << 56)
 }
 
+/// The alignment of a static object of `size` bytes: the smallest power of
+/// two that holds it, from a word to a cache line. An object of up to 64
+/// bytes then never spans two cache lines (a 16-byte object at an address
+/// of 8 mod 16 may), and a larger one spans the fewest (FEAT-1030).
+fn static_align(size: usize) -> usize {
+    size.next_power_of_two().clamp(8, 64)
+}
+
 fn esc_bytes(b: &[u8]) -> String {
     let mut s = String::new();
     for &c in b {
@@ -332,9 +340,10 @@ impl<'m> Gen<'m> {
         let len = b.len();
         let _ = writeln!(
             self.globals,
-            "{name} = private constant {{ i64, i64, [{len} x i8] }} {{ i64 {}, i64 {len}, [{len} x i8] c\"{}\" }}, align 8",
+            "{name} = private constant {{ i64, i64, [{len} x i8] }} {{ i64 {}, i64 {len}, [{len} x i8] c\"{}\" }}, align {}",
             header_word(0, 0, 0, kind::BYTES),
-            esc_bytes(b)
+            esc_bytes(b),
+            static_align(16 + len)
         );
         self.strings.insert(b.to_vec(), name.clone());
         name
@@ -2485,10 +2494,11 @@ impl<'m> Gen<'m> {
         let vals: Vec<String> = slots.iter().map(|(t, v)| format!("{t} {v}")).collect();
         let _ = writeln!(
             self.globals,
-            "@\"g.{name}\" = internal constant {{ i64, {} }} {{ i64 {}, {} }}, align 8",
+            "@\"g.{name}\" = internal constant {{ i64, {} }} {{ i64 {}, {} }}, align {}",
             tys.join(", "),
             header_word(0, def.tag, def.nptr(), kind::CON),
-            vals.join(", ")
+            vals.join(", "),
+            static_align(8 + 8 * slots.len())
         );
     }
 
@@ -2503,7 +2513,7 @@ impl<'m> Gen<'m> {
             let stub = format!("@\"{}$thk\"", &mn[2..mn.len() - 1]);
             let _ = writeln!(
                 self.globals,
-                "@\"g.{}\" = internal global {{ i64, ptr }} {{ i64 {}, ptr {stub} }}, align 8",
+                "@\"g.{}\" = internal global {{ i64, ptr }} {{ i64 {}, ptr {stub} }}, align 16",
                 gl.name,
                 header_word(0, 0, 0, kind::THUNK)
             );
@@ -3412,6 +3422,26 @@ entry:
         }
         let caf = def("@\"g.noisy\" = ");
         assert!(caf.starts_with("@\"g.noisy\" = internal global "), "{caf}");
+        // "hi\n" is a 19-byte object, `k` a 16-byte one (FEAT-1030).
+        assert!(def("@str.0 = ").ends_with(", align 32"), "{ir}");
+        assert!(def("@\"g.k\" = ").ends_with(", align 16"), "{ir}");
+        assert!(caf.ends_with(", align 16"), "{caf}");
+    }
+
+    /// A static object is aligned to the smallest power of two that holds
+    /// it, from a word to a cache line: one of up to 64 bytes lies within
+    /// one cache line wherever it is placed (FEAT-1030).
+    #[test]
+    fn static_objects_stay_within_a_line() {
+        for size in 1..=64 {
+            let a = static_align(size);
+            assert!(a.is_power_of_two() && (8..=64).contains(&a), "{size}");
+            assert!(size <= a, "{size} bytes in {a}");
+        }
+        assert_eq!(static_align(8), 8);
+        assert_eq!(static_align(16), 16);
+        assert_eq!(static_align(17), 32);
+        assert_eq!(static_align(94), 64);
     }
 
     /// A thread-sanitized build instruments every generated function;
@@ -3632,7 +3662,7 @@ entry:
         let m = cirka_mir::parse::parse(cirka_diagnostics::FileId(0), src).unwrap();
         let ir = emit(&m, Options::default());
         let k = format!(
-            "@\"g.k\" = internal constant {{ i64, i64 }} {{ i64 {}, i64 -1 }}, align 8",
+            "@\"g.k\" = internal constant {{ i64, i64 }} {{ i64 {}, i64 -1 }}, align 16",
             header_word(0, 0, 0, kind::CON)
         );
         assert!(ir.contains(&k), "{ir}");
@@ -3644,7 +3674,7 @@ entry:
         );
         assert!(ir.contains(&rec), "{ir}");
         assert!(
-            ir.contains("ptr @\"g.rec\", i64 4294967293, double 0x3FE0000000000000 }, align 8"),
+            ir.contains("ptr @\"g.rec\", i64 4294967293, double 0x3FE0000000000000 }, align 64"),
             "{ir}"
         );
         assert!(
