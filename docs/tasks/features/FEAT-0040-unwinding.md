@@ -16,22 +16,22 @@ aCHC の `Control.Exception` (`catch`/`bracket`/`finally`/`throwIO`) と W0305 �
 
 ## 作業内容
 
-- [ ] MIR: 終端命令 `raise x`、`let (st, v) = catch apply c(args)`、テキスト形式、検証器、様式 (`Module::catches`)
-- [ ] MIR: 投げうる関数 (`unwind::may_raise`) と後始末の集合 (`unwind::cleanups`、最終の MIR の所有の数)
-- [ ] MIR インタプリタ: `Exit::Raise`、後始末、`catch apply`、例外を覚えるサンク、捕まらない例外の表示と `RunResult::orderly`
-- [ ] ランタイム: パーソナリティ関数、例外の枠と保留の枠、`cirka_exception_*`・`cirka_uncaught*`、様式の印、例外を覚えるサンク、
+- [x] MIR: 終端命令 `raise x`、`let (st, v) = catch apply c(args)`、テキスト形式、検証器、様式 (`Module::catches`)
+- [x] MIR: 投げうる関数 (`unwind::may_raise`) と後始末の集合 (`unwind::cleanups`、最終の MIR の所有の数)
+- [x] MIR インタプリタ: `Exit::Raise`、後始末、`catch apply`、例外を覚えるサンク、捕まらない例外の表示と `RunResult::orderly`
+- [x] ランタイム: パーソナリティ関数、例外の枠と保留の枠、`cirka_exception_*`・`cirka_uncaught*`、様式の印、例外を覚えるサンク、
       `<<loop>>`・`cirka_panic_bytes`・ファイルの誤り・バイト列の範囲外を保留の枠で返す
-- [ ] コード生成: `nounwind` の除去、`invoke` と landing pad、冷たいブロックでの後始末と投げ直し、`catch apply`、入口 (`cirka_main`・
+- [x] コード生成: `nounwind` の除去、`invoke` と landing pad、冷たいブロックでの後始末と投げ直し、`catch apply`、入口 (`cirka_main`・
       サンクのスタブ・`cirka_call_1`・C のコールバック)、`apply` の汎用の関数、24 バイトのサンク
-- [ ] Core: プリミティブ `raise`・`catch`、Core Lint、簡約器・正格性解析での扱い、MIR への変換
-- [ ] テスト: MIR の実行テスト (捕まえる・捕まらない・後始末・サンク・CAF、インタプリタとネイティブの一致)、Core の実行テスト
+- [x] Core: プリミティブ `raise`・`catch`、Core Lint、簡約器・正格性解析での扱い、MIR への変換
+- [x] テスト: MIR の実行テスト (捕まえる・捕まらない・後始末・サンク・CAF、インタプリタとネイティブの一致)、Core の実行テスト
       (`catch` で作った解放処理が例外の経路で動くことを出力で確認)、コード生成の単体テスト、ランタイムの単体テスト
 - [ ] 性能: 全ベンチで中止の様式の生成コードが変わらないことを確かめ、アンワインドの様式の費用を計測する
 
 ## 受け入れ条件
 
-- [ ] 例外発生時に解放処理が実行されることを出力で確認 (Core の `catch` で作った解放処理)
-- [ ] 例外経路でもリーク 0 (捕まえた例外・捕まらなかった例外の両方、インタプリタとネイティブの確保・解放の回数が一致)
+- [x] 例外発生時に解放処理が実行されることを出力で確認 (Core の `catch` で作った解放処理)
+- [x] 例外経路でもリーク 0 (捕まえた例外・捕まらなかった例外の両方、インタプリタとネイティブの確保・解放の回数が一致)
 - [ ] `catch` を含まないプログラムの生成コードと性能が変わらない
 - [ ] テストを追加し `scripts/ci.sh` が通る
 

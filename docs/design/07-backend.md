@@ -37,7 +37,8 @@
 - 呼び出し規約 `tailcc` はすべて x86_64 で `musttail` を保証する。aCHC / CirkaLang から生成した関数どうしの呼び出しはすべて `tailcc`。
 - 例外 (FEAT-0040、05-runtime.md §6、06-ir.md §2.5): 中止の様式 (`catch apply` のないプログラム) では段階1と同じコードを作る
   (`raise x` は `cirka_raise_abort(x)`、`panic` は `cirka_panic`)。アンワインドの様式では次のとおり。
-  - 投げうる関数 (`unwind::may_raise`) から `nounwind` を外す (LLVM が `.eh_frame` の CFI を出す)。landing pad を持つ関数に
+  - 投げうる関数 (`unwind::may_raise`) から `nounwind` を外し、`uwtable` を付ける (属性の組 `#4`〜`#7`。LLVM が `.eh_frame` の
+    CFI を出す)。landing pad を持つ関数に
     `personality ptr @cirka_personality`。投げない関数・ランタイムの関数の呼び出しは今と同じ。
   - 投げうる関数の `call`・`apply` は、後始末の集合 (`unwind::cleanups`) が空でなければ `invoke` にし、landing pad
     (`landingpad { ptr, i32 } cleanup`) で集合の参照を drop し (トークンは `cirka_free_raw`)、`resume` する。集合が同じ位置は
