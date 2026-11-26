@@ -16,7 +16,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | 共通基盤 | M1 バックエンド基盤 | 7 / 7 |
 | 共通基盤 | M2 Perceus | 3 / 3 |
 | 共通基盤 | M3 共通 Core と Core→MIR | 4 / 4 |
-| 共通基盤 | SX 共通基盤の拡張 (各トラックの必要に応じて) | 58 / 75 |
+| 共通基盤 | SX 共通基盤の拡張 (各トラックの必要に応じて) | 59 / 76 |
 | aCHC | H1 Haskell 最小フロントエンド | 6 / 6 |
 | aCHC | H2 Haskell 実用化 (スコープ縮小版) | 10 / 10 |
 | aCHC | H3 所有権拡張 (.chs) | 9 / 9 |
@@ -154,6 +154,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-1012](features/FEAT-1012-boxed-sum-results.md) | 和型の構築子を返す関数は、箱のフィールドもそのまま返す | done | P1 | 1008, 0091 |
 | [FEAT-1013](features/FEAT-1013-recv-stream-sockets.md) | ストリームソケットの受信は `recv` で行う | done | P1 | 1005, 0091 |
 | [FEAT-1014](features/FEAT-1014-lighter-callbacks.md) | イベントループのコールバックごとのランタイムの処理を減らす | done | P1 | 1005, 0091 |
+| [FEAT-1015](features/FEAT-1015-short-apply-entry.md) | クロージャの呼び出しの、引数の数が合う場合を短い入口にする | done | P1 | 0091 |
 
 
 ## aCHC

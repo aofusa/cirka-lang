@@ -1833,7 +1833,11 @@ impl<'m> Gen<'m> {
         );
     }
 
-    /// Generic eval/apply for `n` arguments.
+    /// Generic eval/apply for `n` arguments. The exact call of a function
+    /// of arity `n`, the common case, is a short entry that saves no
+    /// registers (FEAT-1015); everything else (a partial application, an
+    /// over-application, a PAP, a thunk) is `cirka_apply_{n}_slow`, which
+    /// is not inlined into it.
     fn apply_helper(&mut self, n: usize) {
         let mut s = String::new();
         let args: Vec<String> = (1..=n).map(|i| format!("%a{i}")).collect();
@@ -1843,10 +1847,34 @@ impl<'m> Gen<'m> {
                 .collect::<Vec<_>>()
                 .join(", ")
         };
+        let all = targs(&args);
         let _ = writeln!(
             s,
-            "define internal tailcc ptr @cirka_apply_{n}(ptr %f, {}) #0 {{",
-            targs(&args)
+            "define internal tailcc ptr @cirka_apply_{n}(ptr %f, {all}) #0 {{"
+        );
+        s.push_str(
+            "entry:\n  %kp = getelementptr inbounds i8, ptr %f, i64 7\n  %k = load atomic i8, ptr %kp unordered, align 1\n",
+        );
+        let _ = writeln!(
+            s,
+            "  %isfun = icmp eq i8 %k, {}\n  br i1 %isfun, label %fun, label %slow",
+            kind::FUN
+        );
+        let _ = writeln!(
+            s,
+            "fun:\n  %arp = getelementptr inbounds i8, ptr %f, i64 4\n  %ar = load i16, ptr %arp, align 4\n  %ex = icmp eq i16 %ar, {n}\n  br i1 %ex, label %exact, label %slow"
+        );
+        let _ = writeln!(
+            s,
+            "exact:\n  %cp = getelementptr inbounds i8, ptr %f, i64 8\n  %code = load ptr, ptr %cp, align 8\n  %re = musttail call tailcc ptr %code(ptr %f, {all})\n  ret ptr %re"
+        );
+        let _ = writeln!(
+            s,
+            "slow:\n  %rs = musttail call tailcc ptr @cirka_apply_{n}_slow(ptr %f, {all})\n  ret ptr %rs\n}}\n"
+        );
+        let _ = writeln!(
+            s,
+            "define internal tailcc ptr @cirka_apply_{n}_slow(ptr %f, {all}) noinline #0 {{"
         );
         s.push_str("entry:\n");
         s.push_str(
@@ -2500,6 +2528,36 @@ entry:
             ],
             "{ir}"
         );
+    }
+
+    /// The exact call of the generic apply is a short entry, the rest a
+    /// helper that is not inlined into it (FEAT-1015).
+    #[test]
+    fn apply_has_a_short_entry_for_the_exact_call() {
+        let src = r"
+fn main() -> i64 {
+entry:
+  ret 0
+}
+";
+        let m = cirka_mir::parse::parse(cirka_diagnostics::FileId(0), src).unwrap();
+        let ir = emit(&m, Options::default());
+        let body = |name: &str| -> String {
+            let start = ir
+                .find(&format!("define internal tailcc ptr @{name}("))
+                .unwrap_or_else(|| panic!("no {name}\n{ir}"));
+            let rest = &ir[start..];
+            rest[..rest.find("\n}").unwrap()].to_string()
+        };
+        let fast = body("cirka_apply_2");
+        let exact = "%re = musttail call tailcc ptr %code(ptr %f, ptr %a1, ptr %a2)";
+        assert!(fast.contains(exact), "{fast}");
+        let slow_call = "musttail call tailcc ptr @cirka_apply_2_slow(ptr %f, ptr %a1, ptr %a2)";
+        assert!(fast.contains(slow_call), "{fast}");
+        assert!(!fast.contains("cirka_mk_pap"), "{fast}");
+        let slow = body("cirka_apply_2_slow");
+        assert!(slow.contains("noinline"), "{slow}");
+        assert!(slow.contains("cirka_mk_pap"), "{slow}");
     }
 
     /// A thread-sanitized build instruments every generated function;
