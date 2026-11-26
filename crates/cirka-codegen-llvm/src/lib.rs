@@ -295,6 +295,12 @@ impl<'m> Gen<'m> {
         format!("{hint}{}", self.label_counter)
     }
 
+    /// The static BYTES object of a string literal. Static objects (string
+    /// literals, fieldless constructors, static globals) have reference
+    /// count 0 and nothing writes them (`dup` / `drop` and the runtime
+    /// leave count 0 alone, the cycle checker never colors them), so they
+    /// are LLVM constants: their lengths, bytes and tags fold into the
+    /// code that reads them (FEAT-1020).
     fn string_obj(&mut self, b: &[u8]) -> String {
         if let Some(n) = self.strings.get(b) {
             return n.clone();
@@ -303,7 +309,7 @@ impl<'m> Gen<'m> {
         let len = b.len();
         let _ = writeln!(
             self.globals,
-            "{name} = private global {{ i64, i64, [{len} x i8] }} {{ i64 {}, i64 {len}, [{len} x i8] c\"{}\" }}, align 8",
+            "{name} = private constant {{ i64, i64, [{len} x i8] }} {{ i64 {}, i64 {len}, [{len} x i8] c\"{}\" }}, align 8",
             header_word(0, 0, 0, kind::BYTES),
             esc_bytes(b)
         );
@@ -333,7 +339,7 @@ impl<'m> Gen<'m> {
         let name = format!("@con.{}.{}", c.ty, c.ctor);
         let _ = writeln!(
             self.globals,
-            "{name} = private global i64 {}, align 8",
+            "{name} = private constant i64 {}, align 8",
             header_word(0, self.m.ctor(c).tag, 0, kind::CON)
         );
         self.statics.insert((c.ty, c.ctor), name.clone());
@@ -2234,9 +2240,9 @@ impl<'m> Gen<'m> {
     }
 
     /// A static global (FEAT-1006): the constructor object itself, with
-    /// reference count 0 (immortal) and its fields in slot order. A field
-    /// narrower than a word holds its value in the low bytes, as a `store`
-    /// of that width writes it.
+    /// reference count 0 (immortal, a constant: FEAT-1020) and its fields
+    /// in slot order. A field narrower than a word holds its value in the
+    /// low bytes, as a `store` of that width writes it.
     fn static_global(&mut self, name: &str, sc: &StaticCon) {
         let def = self.m.ctor(sc.ctor);
         let mut slots = vec![(String::new(), String::new()); def.fields.len()];
@@ -2263,7 +2269,7 @@ impl<'m> Gen<'m> {
         let vals: Vec<String> = slots.iter().map(|(t, v)| format!("{t} {v}")).collect();
         let _ = writeln!(
             self.globals,
-            "@\"g.{name}\" = internal global {{ i64, {} }} {{ i64 {}, {} }}, align 8",
+            "@\"g.{name}\" = internal constant {{ i64, {} }} {{ i64 {}, {} }}, align 8",
             tys.join(", "),
             header_word(0, def.tag, def.nptr(), kind::CON),
             vals.join(", ")
@@ -2849,6 +2855,62 @@ entry:
         assert!(!body.contains("drop.other"), "{body}");
     }
 
+    /// String literals, fieldless constructors and static globals are LLVM
+    /// constants: nothing writes an object with count 0, and LLVM folds the
+    /// lengths, bytes and tags read from them (FEAT-1020). A CAF, which its
+    /// evaluation overwrites, stays a mutable global.
+    #[test]
+    fn static_objects_are_constants() {
+        let src = r#"
+type Int { I = 0 { v: i64 } }
+type Bool { False = 0 {}, True = 1 {} }
+extern fn cirka_write_bytes(ptr) -> void
+extern fn cirka_write_i64(i64) -> void
+global k = k_init
+global noisy = noisy_init
+
+fn k_init() -> ptr {
+entry:
+  let r = alloc Int.I(7)
+  ret r
+}
+
+fn noisy_init() -> ptr {
+entry:
+  let _ = extern cirka_write_i64(1)
+  let r = alloc Int.I(5)
+  ret r
+}
+
+fn main() -> i64 {
+entry:
+  let _ = extern cirka_write_bytes("hi\n")
+  let t = alloc Bool.True()
+  drop t
+  let g = global k
+  let a = force g
+  drop a
+  let h = global noisy
+  let b = force h
+  drop b
+  ret 0
+}
+"#;
+        let m = cirka_mir::parse::parse(cirka_diagnostics::FileId(0), src).unwrap();
+        let ir = emit(&m, Options::default());
+        let def = |name: &str| {
+            ir.lines()
+                .find(|l| l.starts_with(name))
+                .unwrap_or_else(|| panic!("no {name}\n{ir}"))
+                .to_string()
+        };
+        for d in [def("@str.0 = "), def("@con.1.1 = "), def("@\"g.k\" = ")] {
+            assert!(d.contains(" constant ") && !d.contains(" global "), "{d}");
+        }
+        let caf = def("@\"g.noisy\" = ");
+        assert!(caf.starts_with("@\"g.noisy\" = internal global "), "{caf}");
+    }
+
     /// A thread-sanitized build instruments every generated function;
     /// stores through a mutable borrow mark the value shared when the
     /// array is (05-runtime.md §9.3, §9.7).
@@ -3067,14 +3129,14 @@ entry:
         let m = cirka_mir::parse::parse(cirka_diagnostics::FileId(0), src).unwrap();
         let ir = emit(&m, Options::default());
         let k = format!(
-            "@\"g.k\" = internal global {{ i64, i64 }} {{ i64 {}, i64 -1 }}, align 8",
+            "@\"g.k\" = internal constant {{ i64, i64 }} {{ i64 {}, i64 -1 }}, align 8",
             header_word(0, 0, 0, kind::CON)
         );
         assert!(ir.contains(&k), "{ir}");
         // Pointer fields first (the string, `True`, itself), then `small`
         // (an i32 in the low bytes of its word) and `x`.
         let rec = format!(
-            "@\"g.rec\" = internal global {{ i64, ptr, ptr, ptr, i64, double }} {{ i64 {}, ptr @",
+            "@\"g.rec\" = internal constant {{ i64, ptr, ptr, ptr, i64, double }} {{ i64 {}, ptr @",
             header_word(0, 0, 3, kind::CON)
         );
         assert!(ir.contains(&rec), "{ir}");
