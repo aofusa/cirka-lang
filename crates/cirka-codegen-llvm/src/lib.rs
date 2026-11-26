@@ -81,6 +81,20 @@ fn esc_bytes(b: &[u8]) -> String {
     s
 }
 
+/// The runtime's block of thread-local state (`cirka_tls_block`,
+/// 05-runtime.md §9.2) as the generated code reads it (FEAT-1027): the free
+/// list of each size class (8 bytes per class of 8 bytes, from offset 0),
+/// the counters of allocations and frees, the most live objects, the flag
+/// of inline frees and the address of `errno`. The runtime's unit test
+/// `tls::tests::generated_code_offsets` checks the same numbers.
+const TLS_ALLOCS: usize = 256;
+const TLS_FREES: usize = 264;
+const TLS_MAX_LIVE: usize = 272;
+const TLS_FREE_FAST: usize = 296;
+const TLS_ERRNO_AT: usize = 336;
+/// The largest object of the free lists (`alloc::MAX_SMALL`).
+const MAX_SMALL: usize = 256;
+
 /// Runtime functions and their LLVM signatures.
 const RUNTIME_DECLS: &[(&str, &str)] = &[
     (
@@ -128,6 +142,11 @@ const RUNTIME_DECLS: &[(&str, &str)] = &[
     // The lane of the first match of the inline byte search (FEAT-1019).
     ("llvm.cttz.i16", "i16 @llvm.cttz.i16(i16, i1)"),
     ("llvm.cttz.i32", "i32 @llvm.cttz.i32(i32, i1)"),
+    // The thread's runtime block (FEAT-1027).
+    (
+        "llvm.threadlocal.address.p0",
+        "ptr @llvm.threadlocal.address.p0(ptr)",
+    ),
 ];
 
 struct Gen<'m> {
@@ -240,6 +259,10 @@ pub fn emit(m: &Module, opts: Options) -> String {
     for d in g.externs.values() {
         let _ = writeln!(s, "{d}");
     }
+    // Defined by the runtime in the executable's TLS segment (local-exec).
+    s.push_str(
+        "@cirka_tls_block = external hidden thread_local(localexec) global [0 x i8], align 64\n",
+    );
     s.push('\n');
     s.push_str(&g.globals);
     s.push('\n');
@@ -427,6 +450,150 @@ impl<'m> Gen<'m> {
         c.label(&done);
     }
 
+    /// A fresh object of `size` bytes (the caller writes the header). A
+    /// small object is popped from this thread's free list of its size
+    /// class inline, counting the allocation as `cirka_alloc` does; an
+    /// empty list (the first object of a class, the system allocator: its
+    /// lists stay empty) calls `cirka_alloc` (FEAT-1027, 05-runtime.md §3).
+    fn alloc_obj(&mut self, c: &mut FnCtx<'_>, size: usize) -> String {
+        if self.opts.debug_rt || size > MAX_SMALL {
+            let p = c.t();
+            c.line(&format!("{p} = call ptr @cirka_alloc(i64 {size})"));
+            return p;
+        }
+        let class = size.max(8).div_ceil(8) - 1;
+        let tls = Self::tls(c);
+        let (hp, h, empty, next, ap, a, a1, q, p) = (
+            c.t(),
+            c.t(),
+            c.t(),
+            c.t(),
+            c.t(),
+            c.t(),
+            c.t(),
+            c.t(),
+            c.t(),
+        );
+        let (pop, call, done) = (
+            self.fresh_label("alloc.pop"),
+            self.fresh_label("alloc.call"),
+            self.fresh_label("alloc.done"),
+        );
+        c.line(&format!(
+            "{hp} = getelementptr inbounds i8, ptr {tls}, i64 {}",
+            8 * class
+        ));
+        c.line(&format!("{h} = load ptr, ptr {hp}, align 8"));
+        c.line(&format!("{empty} = icmp eq ptr {h}, null"));
+        c.line(&format!(
+            "br i1 {empty}, label %{call}, label %{pop}, !prof !1"
+        ));
+        c.label(&pop);
+        c.line(&format!("{next} = load ptr, ptr {h}, align 8"));
+        c.line(&format!("store ptr {next}, ptr {hp}, align 8"));
+        c.line(&format!(
+            "{ap} = getelementptr inbounds i8, ptr {tls}, i64 {TLS_ALLOCS}"
+        ));
+        c.line(&format!("{a} = load i64, ptr {ap}, align 8"));
+        c.line(&format!("{a1} = add i64 {a}, 1"));
+        c.line(&format!("store i64 {a1}, ptr {ap}, align 8"));
+        c.line(&format!("br label %{done}"));
+        c.label(&call);
+        c.line(&format!("{q} = call ptr @cirka_alloc(i64 {size})"));
+        c.line(&format!("br label %{done}"));
+        c.label(&done);
+        c.line(&format!("{p} = phi ptr [ {h}, %{pop} ], [ {q}, %{call} ]"));
+        p
+    }
+
+    /// Frees the dead object `o` (not null) of `size` bytes, whose fields
+    /// were dropped. A small object goes onto this thread's free list of
+    /// its size class inline once the runtime has found the region in use
+    /// on this thread (`free_fast`), counting the free as `cirka_free_raw`
+    /// does: the frees, and the most live objects before it. Otherwise
+    /// `cirka_free_raw` (FEAT-1027, 05-runtime.md §3). The size must be the
+    /// one the object was allocated with: a cell of a constructor is
+    /// reused only for one of the same size (06-ir.md), and the region
+    /// serves every small object while it is in use.
+    fn free_obj(&mut self, c: &mut FnCtx<'_>, o: &str, size: usize) {
+        if self.opts.debug_rt || size > MAX_SMALL {
+            c.line(&format!("call void @cirka_free_raw(ptr {o})"));
+            return;
+        }
+        let class = size.max(8).div_ceil(8) - 1;
+        let tls = Self::tls(c);
+        let (fp, f, on, hp, h, ap, a, np, n, mp, m, live, gt, m1, n1) = (
+            c.t(),
+            c.t(),
+            c.t(),
+            c.t(),
+            c.t(),
+            c.t(),
+            c.t(),
+            c.t(),
+            c.t(),
+            c.t(),
+            c.t(),
+            c.t(),
+            c.t(),
+            c.t(),
+            c.t(),
+        );
+        let (push, call, done) = (
+            self.fresh_label("free.push"),
+            self.fresh_label("free.call"),
+            self.fresh_label("free.done"),
+        );
+        c.line(&format!(
+            "{fp} = getelementptr inbounds i8, ptr {tls}, i64 {TLS_FREE_FAST}"
+        ));
+        c.line(&format!("{f} = load i64, ptr {fp}, align 8"));
+        c.line(&format!("{on} = icmp ne i64 {f}, 0"));
+        c.line(&format!(
+            "br i1 {on}, label %{push}, label %{call}, !prof !0"
+        ));
+        c.label(&push);
+        c.line(&format!(
+            "{hp} = getelementptr inbounds i8, ptr {tls}, i64 {}",
+            8 * class
+        ));
+        c.line(&format!("{h} = load ptr, ptr {hp}, align 8"));
+        c.line(&format!("store ptr {h}, ptr {o}, align 8"));
+        c.line(&format!("store ptr {o}, ptr {hp}, align 8"));
+        c.line(&format!(
+            "{ap} = getelementptr inbounds i8, ptr {tls}, i64 {TLS_ALLOCS}"
+        ));
+        c.line(&format!("{a} = load i64, ptr {ap}, align 8"));
+        c.line(&format!(
+            "{np} = getelementptr inbounds i8, ptr {tls}, i64 {TLS_FREES}"
+        ));
+        c.line(&format!("{n} = load i64, ptr {np}, align 8"));
+        c.line(&format!(
+            "{mp} = getelementptr inbounds i8, ptr {tls}, i64 {TLS_MAX_LIVE}"
+        ));
+        c.line(&format!("{m} = load i64, ptr {mp}, align 8"));
+        c.line(&format!("{live} = sub i64 {a}, {n}"));
+        c.line(&format!("{gt} = icmp sgt i64 {live}, {m}"));
+        c.line(&format!("{m1} = select i1 {gt}, i64 {live}, i64 {m}"));
+        c.line(&format!("store i64 {m1}, ptr {mp}, align 8"));
+        c.line(&format!("{n1} = add i64 {n}, 1"));
+        c.line(&format!("store i64 {n1}, ptr {np}, align 8"));
+        c.line(&format!("br label %{done}"));
+        c.label(&call);
+        c.line(&format!("call void @cirka_free_raw(ptr {o})"));
+        c.line(&format!("br label %{done}"));
+        c.label(&done);
+    }
+
+    /// The address of this thread's runtime block (FEAT-1027).
+    fn tls(c: &mut FnCtx<'_>) -> String {
+        let t = c.t();
+        c.line(&format!(
+            "{t} = call ptr @llvm.threadlocal.address.p0(ptr @cirka_tls_block)"
+        ));
+        t
+    }
+
     fn emit_drop(&mut self, c: &mut FnCtx<'_>, o: &str) {
         if self.opts.debug_rt {
             c.line(&format!("call void @cirka_drop(ptr {o})"));
@@ -492,6 +659,49 @@ impl<'m> Gen<'m> {
             llty(ty)
         ));
         r
+    }
+
+    /// `cirka_errno` inline (FEAT-1027): the C library's `errno` of this
+    /// thread through its address, which the runtime keeps in its thread
+    /// block from the first system call that set it (FEAT-1021); the call
+    /// when the address is not known yet. `false` for any other extern.
+    fn errno_op(&mut self, c: &mut FnCtx<'_>, dst: &str, d: &cirka_mir::ExternDecl) -> bool {
+        if d.symbol() != "cirka_errno"
+            || self.opts.debug_rt
+            || d.kind != ExternKind::Call
+            || d.c_sig.is_some()
+            || !d.params.is_empty()
+            || d.ret != Some(Ty::I64)
+        {
+            return false;
+        }
+        let tls = Self::tls(c);
+        let (ap, at, known, e, e64, called) = (c.t(), c.t(), c.t(), c.t(), c.t(), c.t());
+        let (read, call, done) = (
+            self.fresh_label("errno.read"),
+            self.fresh_label("errno.call"),
+            self.fresh_label("errno.done"),
+        );
+        c.line(&format!(
+            "{ap} = getelementptr inbounds i8, ptr {tls}, i64 {TLS_ERRNO_AT}"
+        ));
+        c.line(&format!("{at} = load ptr, ptr {ap}, align 8"));
+        c.line(&format!("{known} = icmp ne ptr {at}, null"));
+        c.line(&format!(
+            "br i1 {known}, label %{read}, label %{call}, !prof !0"
+        ));
+        c.label(&read);
+        c.line(&format!("{e} = load i32, ptr {at}, align 4"));
+        c.line(&format!("{e64} = sext i32 {e} to i64"));
+        c.line(&format!("br label %{done}"));
+        c.label(&call);
+        c.line(&format!("{called} = call i64 @cirka_errno()"));
+        c.line(&format!("br label %{done}"));
+        c.label(&done);
+        c.line(&format!(
+            "{dst} = phi i64 [ {e64}, %{read} ], [ {called}, %{call} ]"
+        ));
+        true
     }
 
     /// The byte operations of the support library (`cirka_bytes_copy`,
@@ -1253,7 +1463,7 @@ impl<'m> Gen<'m> {
             }
         }
         if tok.is_none() {
-            c.line(&format!("call void @cirka_free_raw(ptr {xo})"));
+            self.free_obj(c, &xo, def.size());
         }
         let uniq_end = c.cur.clone();
         c.line(&format!("br label %{done}"));
@@ -1389,11 +1599,7 @@ impl<'m> Gen<'m> {
                 }
                 let size = def.size();
                 let obj = match reuse {
-                    None => {
-                        let p = c.t();
-                        c.line(&format!("{p} = call ptr @cirka_alloc(i64 {size})"));
-                        p
-                    }
+                    None => self.alloc_obj(c, size),
                     Some(tok) => {
                         let tok = var(*tok);
                         let isnull = c.t();
@@ -1403,15 +1609,15 @@ impl<'m> Gen<'m> {
                         c.line(&format!("{isnull} = icmp eq ptr {tok}, null"));
                         c.line(&format!("br i1 {isnull}, label %{fresh}, label %{reuse_l}"));
                         c.label(&fresh);
-                        let p1 = c.t();
-                        c.line(&format!("{p1} = call ptr @cirka_alloc(i64 {size})"));
+                        let p1 = self.alloc_obj(c, size);
+                        let fresh_end = c.cur.clone();
                         c.line(&format!("br label %{join}"));
                         c.label(&reuse_l);
                         c.line(&format!("br label %{join}"));
                         c.label(&join);
                         let p = c.t();
                         c.line(&format!(
-                            "{p} = phi ptr [ {p1}, %{fresh} ], [ {tok}, %{reuse_l} ]"
+                            "{p} = phi ptr [ {p1}, %{fresh_end} ], [ {tok}, %{reuse_l} ]"
                         ));
                         p
                     }
@@ -1462,8 +1668,7 @@ impl<'m> Gen<'m> {
                 let arity = g.params.len() - args.len();
                 let nptr = tys[..args.len()].iter().filter(|t| t.is_ptr()).count();
                 let size = 16 + 8 * args.len();
-                let obj = c.t();
-                c.line(&format!("{obj} = call ptr @cirka_alloc(i64 {size})"));
+                let obj = self.alloc_obj(c, size);
                 let (k, tag, stub) = if is_clo {
                     self.clo_stubs.insert((func.clone(), args.len()));
                     (kind::FUN, arity as u32, clo_stub_name(func, args.len()))
@@ -1522,7 +1727,7 @@ impl<'m> Gen<'m> {
             }
             Rhs::Extern { func, args } => {
                 let d = m.extern_decl(func).expect("ICE: undeclared extern");
-                if self.bytes_op(c, dst, d, args) {
+                if self.bytes_op(c, dst, d, args) || self.errno_op(c, dst, d) {
                     return;
                 }
                 match (&d.kind, &d.c_sig) {
@@ -2001,7 +2206,7 @@ impl<'m> Gen<'m> {
             c.line(&format!("{u} = icmp eq i32 {rc}, 1"));
             c.line(&format!("br i1 {u}, label %unique, label %shared"));
             c.label("unique");
-            c.line("call void @cirka_free_raw(ptr %env)");
+            self.free_obj(&mut c, "%env", 16 + 8 * ncap);
             c.line("br label %go");
             c.label("shared");
             for (i, v) in caps.iter().enumerate() {
@@ -2558,6 +2763,196 @@ entry:
             .take_while(|l| *l != "}")
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// A small object is popped from this thread's free list of its size
+    /// class inline (FEAT-1027): the list of 24-byte objects (class 2) at
+    /// offset 16 of the runtime's thread block and the counter of
+    /// allocations at `TLS_ALLOCS`, with `cirka_alloc` only when the list
+    /// is empty. An object over `MAX_SMALL` bytes and the debug runtime
+    /// call `cirka_alloc`.
+    #[test]
+    fn allocates_small_objects_inline() {
+        let fields: Vec<String> = (0..33).map(|i| format!("f{i}: i64")).collect();
+        let args: Vec<String> = (0..33).map(|i| i.to_string()).collect();
+        let src = format!(
+            "type Pair {{ P = 0 {{ a: i64, b: i64 }} }}
+type Big {{ B = 0 {{ {} }} }}
+
+fn main() -> i64 {{
+entry:
+  let p = alloc Pair.P(1, 2)
+  let q = alloc Big.B({})
+  drop p
+  drop q
+  ret 0
+}}
+",
+            fields.join(", "),
+            args.join(", ")
+        );
+        let m = cirka_mir::parse::parse(cirka_diagnostics::FileId(0), &src).unwrap();
+        let ir = emit(&m, Options::default());
+        assert!(
+            ir.contains(
+                "@cirka_tls_block = external hidden thread_local(localexec) global [0 x i8], align 64"
+            ),
+            "{ir}"
+        );
+        let main = function_ir(&ir, "main");
+        let lines: Vec<&str> = main.lines().map(str::trim).collect();
+        let tls = lines
+            .iter()
+            .find(|l| l.ends_with("= call ptr @llvm.threadlocal.address.p0(ptr @cirka_tls_block)"))
+            .map(|l| l.split(" = ").next().unwrap())
+            .unwrap_or_else(|| panic!("{main}"));
+        let head = format!("getelementptr inbounds i8, ptr {tls}, i64 16");
+        let i = lines
+            .iter()
+            .position(|l| l.ends_with(&head))
+            .unwrap_or_else(|| panic!("{main}"));
+        assert!(lines[i + 1].contains("= load ptr, ptr"), "{main}");
+        assert!(
+            lines[i + 3].starts_with("br i1 ") && lines[i + 3].ends_with("!prof !1"),
+            "{main}"
+        );
+        assert!(
+            main.contains(&format!(
+                "getelementptr inbounds i8, ptr {tls}, i64 {TLS_ALLOCS}"
+            )),
+            "{main}"
+        );
+        assert!(main.contains("call ptr @cirka_alloc(i64 24)"), "{main}");
+        assert!(main.contains("call ptr @cirka_alloc(i64 272)"), "{main}");
+        assert_eq!(main.matches("@cirka_tls_block").count(), 1, "{main}");
+
+        let debug = emit(
+            &m,
+            Options {
+                debug_rt: true,
+                ..Options::default()
+            },
+        );
+        let main = function_ir(&debug, "main");
+        assert!(!main.contains("@cirka_tls_block"), "{main}");
+        assert!(main.contains("call ptr @cirka_alloc(i64 24)"), "{main}");
+    }
+
+    /// A dead cell of a known constructor (drop specialization) and the
+    /// environment of a closure called once (its stub) go onto this
+    /// thread's free list of their size class inline once the runtime set
+    /// `free_fast`, counting the free (FEAT-1027); `cirka_free_raw` before
+    /// that and with the debug runtime.
+    #[test]
+    fn frees_known_sizes_inline() {
+        let src = "type L { Nil = 0 {}, Cons = 1 { h: i64, t: ptr } }
+
+fn tail(l: ptr @owned) -> ptr {
+entry:
+  let t = proj l L.Cons.t
+  dup t
+  drop l
+  ret t
+}
+
+fn add(x: i64, l: ptr @owned) -> ptr {
+entry:
+  let r = alloc L.Cons(x, l)
+  ret r
+}
+
+fn main() -> i64 {
+entry:
+  let n = alloc L.Nil()
+  let c = mkclosure add(5)
+  let l = apply c(n)
+  let t = call tail(l)
+  drop t
+  ret 0
+}
+";
+        let m = cirka_mir::parse::parse(cirka_diagnostics::FileId(0), src).unwrap();
+        let ir = emit(&m, Options::default());
+        // The cell of `L.Cons` (24 bytes: class 2, offset 16) in `tail`, and
+        // the closure of one capture (24 bytes) in the stub of `add`.
+        let stub = ir
+            .split("\n\n")
+            .find(|f| f.starts_with("define internal tailcc ptr") && f.contains("add"))
+            .unwrap_or_else(|| panic!("{ir}"))
+            .to_string();
+        for (name, body) in [("tail", function_ir(&ir, "tail")), ("stub", stub)] {
+            let lines: Vec<&str> = body.lines().map(str::trim).collect();
+            let tls = lines
+                .iter()
+                .find(|l| {
+                    l.ends_with("= call ptr @llvm.threadlocal.address.p0(ptr @cirka_tls_block)")
+                })
+                .map(|l| l.split(" = ").next().unwrap())
+                .unwrap_or_else(|| panic!("{name}: {body}"));
+            let flag = format!("getelementptr inbounds i8, ptr {tls}, i64 {TLS_FREE_FAST}");
+            let i = lines
+                .iter()
+                .position(|l| l.ends_with(&flag))
+                .unwrap_or_else(|| panic!("{name}: {body}"));
+            assert!(
+                lines[i + 3].starts_with("br i1 ") && lines[i + 3].ends_with("!prof !0"),
+                "{name}: {body}"
+            );
+            for off in [16, TLS_ALLOCS, TLS_FREES, TLS_MAX_LIVE] {
+                let g = format!("getelementptr inbounds i8, ptr {tls}, i64 {off}");
+                assert!(body.contains(&g), "{name}: {g}: {body}");
+            }
+            assert!(body.contains("select i1"), "{name}: {body}");
+            assert_eq!(
+                body.matches("call void @cirka_free_raw(ptr").count(),
+                1,
+                "{name}: only the path before `free_fast`: {body}"
+            );
+        }
+        let debug = emit(
+            &m,
+            Options {
+                debug_rt: true,
+                ..Options::default()
+            },
+        );
+        let tail = function_ir(&debug, "tail");
+        assert!(!tail.contains("@cirka_tls_block"), "{tail}");
+        assert!(tail.contains("call void @cirka_free_raw(ptr"), "{tail}");
+    }
+
+    /// `cirka_errno` reads the C library's `errno` inline through the
+    /// address in the runtime's thread block (FEAT-1027), and calls the
+    /// runtime function only while that is not known.
+    #[test]
+    fn reads_errno_inline() {
+        let src = "extern fn cirka_errno() -> i64
+
+fn main() -> i64 {
+entry:
+  let e = extern cirka_errno()
+  ret e
+}
+";
+        let m = cirka_mir::parse::parse(cirka_diagnostics::FileId(0), src).unwrap();
+        let ir = emit(&m, Options::default());
+        let main = function_ir(&ir, "main");
+        assert!(main.contains(&format!("i64 {TLS_ERRNO_AT}")), "{main}");
+        assert!(main.contains("= load i32, ptr"), "{main}");
+        assert_eq!(main.matches("call i64 @cirka_errno()").count(), 1, "{main}");
+        let call = main.find("call i64 @cirka_errno()").unwrap();
+        let read = main.find("= load i32, ptr").unwrap();
+        assert!(read < call, "the read comes first: {main}");
+        let debug = emit(
+            &m,
+            Options {
+                debug_rt: true,
+                ..Options::default()
+            },
+        );
+        let main = function_ir(&debug, "main");
+        assert!(!main.contains("@cirka_tls_block"), "{main}");
+        assert!(main.contains("call i64 @cirka_errno()"), "{main}");
     }
 
     /// The byte operations of the support library are emitted inline

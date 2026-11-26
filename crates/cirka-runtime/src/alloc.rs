@@ -102,6 +102,18 @@ impl Stats {
     pub fn live(&self) -> u64 {
         self.allocs.wrapping_sub(self.frees)
     }
+
+    /// The highest number of live objects so far: `max_live` is recorded
+    /// when an object is freed ([`stat_free`]), which follows every peak
+    /// unless the objects are still live now.
+    pub fn peak(&self) -> u64 {
+        let live = self.live();
+        if live as i64 > self.max_live as i64 {
+            live
+        } else {
+            self.max_live
+        }
+    }
 }
 
 /// The statistics of threads that exited.
@@ -133,27 +145,32 @@ pub fn total_stats() -> Stats {
 fn add_stats(t: &mut Stats, s: &Stats) {
     t.allocs += s.allocs;
     t.frees += s.frees;
-    t.max_live += s.max_live;
+    t.max_live += s.peak();
     t.forced += s.forced;
     t.array_copies += s.array_copies;
 }
 
-/// Counts an allocation (see [`Stats::live`]).
+/// Counts an allocation: one increment, as the generated code's inline
+/// allocation does (FEAT-1027). The number of live objects only falls at
+/// a free, so its highest value is recorded there ([`stat_free`], and
+/// [`Stats::peak`] for the objects still live).
 #[inline(always)]
 pub(crate) fn stat_alloc() {
     // SAFETY: this thread's statistics.
+    unsafe { stats().allocs += 1 };
+}
+
+/// Counts a free, recording the number of live objects before it when it
+/// is the highest so far.
+#[inline(always)]
+pub fn stat_free() {
+    // SAFETY: this thread's statistics.
     let s = unsafe { stats() };
-    s.allocs += 1;
     let live = s.live();
     if live as i64 > s.max_live as i64 {
         s.max_live = live;
     }
-}
-
-#[inline(always)]
-pub fn stat_free() {
-    // SAFETY: this thread's statistics.
-    unsafe { stats().frees += 1 };
+    s.frees += 1;
 }
 
 /// Called by a thread that is about to exit: gives its free lists to the
@@ -318,14 +335,17 @@ unsafe fn raw_alloc(size: usize) -> *mut u8 {
     unsafe { crate::debug::debug_alloc(size) }
 }
 
-/// The fast path: a small object popped from this thread's free list.
+/// The fast path: a small object popped from this thread's free list. The
+/// lists hold objects only while the region is in use (mode 1: `refill`
+/// and `dealloc` fill them with objects of the region, the system
+/// allocator never), so an empty one covers the other modes: the
+/// generated code's inline allocation is the same (FEAT-1027).
 #[cfg(not(feature = "debug-rt"))]
 #[inline(always)]
 unsafe fn raw_alloc(size: usize) -> *mut u8 {
-    // SAFETY: allocator internals; the free lists are this thread's, and
-    // `mode` is written once before any other thread exists.
+    // SAFETY: allocator internals; the free lists are this thread's.
     unsafe {
-        if REGION_STATE.get().mode == 1 && size <= MAX_SMALL {
+        if size <= MAX_SMALL {
             // 8 <= max(size, 8) <= MAX_SMALL, so class < CLASSES.
             let class = size.max(8).div_ceil(8) - 1;
             let head = (*tls::heap()).free_lists.get_unchecked_mut(class);
@@ -492,9 +512,13 @@ pub unsafe fn dealloc(o: Obj) {
             // a - base < size <= REGION: the page is in the table, and a
             // page of the region has a class below CLASSES (`refill`).
             let class = *r.class.get_unchecked((a - r.base) >> PAGE_SHIFT) as usize;
-            let head = (*tls::heap()).free_lists.get_unchecked_mut(class);
+            let heap = tls::heap();
+            let head = (*heap).free_lists.get_unchecked_mut(class);
             *(o as *mut *mut u8) = *head;
             *head = o as *mut u8;
+            // The region is in use: the generated code may free objects of
+            // sizes it knows onto this thread's lists itself (FEAT-1027).
+            (*heap).free_fast = 1;
         } else {
             sys::free(o as *mut c_void);
         }

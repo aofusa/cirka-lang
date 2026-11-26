@@ -166,6 +166,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-1024](features/FEAT-1024-lighter-loop-turns.md) | イベントループの 1 回りで、使わない受け箱・タイマーの処理を飛ばす | done | P1 | 1014, 0091 |
 | [FEAT-1025](features/FEAT-1025-compact-byte-search.md) | インラインのバイトの探索の熱い経路を短くまとめる | done | P1 | 1019, 0091 |
 | [FEAT-1026](features/FEAT-1026-runtime-data-without-got.md) | ランタイムの関数と静的な変数を GOT を通さずに参照し、熱いデータをまとめる | done | P1 | 1023, 0091 |
+| [FEAT-1027](features/FEAT-1027-inline-alloc-and-free.md) | 生成コードで小さなオブジェクトの確保・大きさのわかる解放・`errno` の読み出しをインラインで行う | done | P1 | 1026, 1021, 0091 |
 
 
 ## aCHC

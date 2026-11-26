@@ -29,6 +29,11 @@ pub struct Heap {
     pub free_lists: [*mut u8; CLASSES],
     /// Allocation statistics of this thread (`CIRKA_STATS`).
     pub stats: Stats,
+    /// 1 once a free on this thread found the region in use (mode 1 of
+    /// `alloc.rs`): the generated code then pushes a dead object of a
+    /// size known to it onto its free list itself (FEAT-1027); 0 before,
+    /// and always with the system allocator, whose objects go to `free`.
+    pub free_fast: u64,
 }
 
 /// The runtime state of one thread.
@@ -242,5 +247,24 @@ mod tests {
         assert_eq!((other, mine), (5, 5));
         assert_eq!(errno(), 23, "the other thread's errno is its own");
         assert_eq!(errno_ptr(), unsafe { crate::sys::__errno_location() });
+    }
+
+    /// The generated code reads the block at fixed offsets (FEAT-1027,
+    /// `cirka-codegen-llvm`: `TLS_ALLOCS` .. `TLS_ERRNO_AT`, `MAX_SMALL`):
+    /// the free list of the class of `n` bytes at `8 * (max(n, 8) / 8 - 1)`
+    /// (rounded up), the counters of allocations and frees, the most live
+    /// objects, the flag of inline frees, the address of `errno`.
+    #[test]
+    fn generated_code_offsets() {
+        use core::mem::offset_of;
+        assert_eq!(offset_of!(Tls, heap) + offset_of!(Heap, free_lists), 0);
+        assert_eq!(crate::alloc::CLASSES, 32);
+        assert_eq!(crate::alloc::MAX_SMALL, 256);
+        let stats = offset_of!(Tls, heap) + offset_of!(Heap, stats);
+        assert_eq!(stats + offset_of!(Stats, allocs), 256);
+        assert_eq!(stats + offset_of!(Stats, frees), 264);
+        assert_eq!(stats + offset_of!(Stats, max_live), 272);
+        assert_eq!(offset_of!(Tls, heap) + offset_of!(Heap, free_fast), 296);
+        assert_eq!(offset_of!(Tls, errno_at), 336);
     }
 }
