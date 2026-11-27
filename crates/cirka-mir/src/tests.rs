@@ -3269,8 +3269,13 @@ fn evaluated_tuple_results_are_not_forced() {
 /// Lowers a program that binds `(con B () field)` lazily and uses it in one
 /// branch only, and tells whether it builds a thunk for the constructor.
 fn lazy_con_makes_thunk(field: &str) -> bool {
+    lazy_con_of_makes_thunk("(! Int#)", field)
+}
+
+/// [`lazy_con_makes_thunk`] with the field of `B` declared as `decl`.
+fn lazy_con_of_makes_thunk(decl: &str, field: &str) -> bool {
     let src = format!(
-        "(data Box () (B (! Int#)))
+        "(data Box () (B {decl}))
          (def pick (-> Int# Int#)
            (lam ((n Int#))
              (let ((a Box (con B () {field})))
@@ -3290,6 +3295,14 @@ fn lazy_constructors_wait_only_for_unsafe_strict_fields() {
     assert!(!lazy_con_makes_thunk("(prim add n 1)"));
     // Dividing can: it has to wait until something demands the box.
     assert!(lazy_con_makes_thunk("(prim quot 7 n)"));
+}
+
+/// An unboxed field declared without `!` is computed when the constructor
+/// is built all the same (BUG-0046).
+#[test]
+fn lazy_constructors_wait_for_unsafe_unboxed_fields() {
+    assert!(!lazy_con_of_makes_thunk("Int#", "(prim add n 1)"));
+    assert!(lazy_con_of_makes_thunk("Int#", "(prim quot 7 n)"));
 }
 
 // ---- BUG-0020: unevaluated variables in strict fields ----

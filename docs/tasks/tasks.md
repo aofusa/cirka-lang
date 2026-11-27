@@ -400,5 +400,6 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [BUG-0043](bugs/BUG-0043-region-check-cost.md) | BUG-0042 の修正で解放ごとの領域の判定が重くなり、binary-trees が 4% 遅くなった | done | minor | BUG-0042 |
 | [BUG-0044](bugs/BUG-0044-unused-tls-declaration.md) | デバッグ用ランタイムでの -O0 のビルドが、使わないスレッドのブロックの宣言のためにリンクできない | done | major | FEAT-1027 |
 | [BUG-0045](bugs/BUG-0045-mir-text-operator-names.md) | 演算子の名前を持つ関数・構築子の MIR のテキストが読み戻せない | todo | minor | FEAT-0014 |
+| [BUG-0046](bugs/BUG-0046-lazy-con-unboxed-field.md) | 遅延束縛の構築子の unboxed フィールドが、`!` がないと束縛の時点で計算される | done | minor | BUG-0014 |
 
 新しいチケットは `features/_TEMPLATE.md` / `bugs/_TEMPLATE.md` をコピーして作成する。

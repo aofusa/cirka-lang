@@ -270,7 +270,9 @@ impl<'p> Lowerer<'p> {
                             ty: ti,
                             ctor: ci as u32,
                         },
-                        c.strict.clone(),
+                        // A field the constructor computes (strict or
+                        // unboxed, BUG-0046).
+                        (0..c.fields.len()).map(|i| c.computes(i)).collect(),
                     ),
                 );
             }

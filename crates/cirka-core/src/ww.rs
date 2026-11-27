@@ -133,14 +133,21 @@ impl Analysis<'_> {
                 }
             }
             Expr::Con(k, _, args) => {
-                // A newtype is its field: evaluating one evaluates the other.
-                let (strict, newtype) = self
+                // A newtype is its field: evaluating one evaluates the
+                // other; a strict or unboxed field is computed (BUG-0046).
+                let (computes, newtype) = self
                     .p
                     .ctor(k)
-                    .map(|(d, i)| (d.ctors[i].strict.clone(), d.newtype))
-                    .unwrap_or_default();
+                    .map(|(d, i)| {
+                        let k = &d.ctors[i];
+                        (
+                            (0..k.fields.len()).map(|j| k.computes(j)).collect(),
+                            d.newtype,
+                        )
+                    })
+                    .unwrap_or_else(|| (Vec::new(), false));
                 let mut s = Some(HashSet::new());
-                for (a, st) in args.iter().zip(strict) {
+                for (a, st) in args.iter().zip(computes) {
                     if st || newtype {
                         s = union(s, self.expr(a));
                     }
@@ -580,8 +587,8 @@ fn is_value(p: &Program, e: &Expr, env: &HashSet<u32>) -> bool {
             Some((d, _)) if d.newtype => args.first().is_some_and(|a| is_value(p, a, env)),
             Some((d, i)) => args
                 .iter()
-                .zip(&d.ctors[i].strict)
-                .all(|(a, st)| !*st || safe(p, a, env)),
+                .enumerate()
+                .all(|(j, a)| !d.ctors[i].computes(j) || safe(p, a, env)),
             None => false,
         },
         _ => false,

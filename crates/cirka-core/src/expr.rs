@@ -482,6 +482,15 @@ pub struct CtorDecl {
     pub strict: Vec<bool>,
 }
 
+impl CtorDecl {
+    /// Whether building the constructor computes field `i`: a strict field,
+    /// or one of an unboxed type, which cannot hold a thunk (BUG-0046).
+    pub fn computes(&self, i: usize) -> bool {
+        self.strict.get(i).copied().unwrap_or(false)
+            || self.fields.get(i).is_some_and(|t| t.is_unboxed())
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct DataDecl {
     pub name: String,
