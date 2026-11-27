@@ -41,6 +41,7 @@ fn main() -> ExitCode {
             "--runtime=release" => opts.runtime = RuntimeKind::Release,
             "--runtime=tsan" => opts.runtime = RuntimeKind::Tsan,
             "--perceus" => perceus = true,
+            "--unwind" => opts.unwind = true,
             s if s.starts_with("-O") => opts.opt_level = s[2..].parse().unwrap_or(2),
             "-o" => output = it.next().cloned(),
             "--" => {
@@ -122,10 +123,7 @@ fn main() -> ExitCode {
             }
         },
         "emit-llvm" => {
-            print!(
-                "{}",
-                cirka_codegen_llvm::emit(&m, opts.runtime.codegen_options())
-            );
+            print!("{}", cirka_codegen_llvm::emit(&m, opts.codegen_options()));
             ExitCode::SUCCESS
         }
         "build" => {

@@ -137,6 +137,7 @@ cirka --version                             # 例: CirkaLang v0.0.1
 `--time-passes` (段階ごとの時間を標準エラーに表示する)。
 
 両 CLI に共通: `--time-passes` は CLI の引数処理 (`cirka-driver`) が受け取り、フロントエンドと Core 以降の各段階の時間を表示する。
+`--unwind` (`cirka-mir` にもある) は、`catch` のないプログラムにもアンワインドの様式のコードを作る (その費用の計測と試験のため。07-backend.md §2、FEAT-0040)。
 `check` はコード生成しないので、`-O` を明示しなければ Core を最適化しない (Core から LLVM IR までは作り、検証器を通す。FEAT-0255)。
 C のライブラリは `-l<名前>`・`-L<ディレクトリ>`・`-Wl,<引数>` (例: `-Wl,-rpath,<ディレクトリ>`) でリンクする。これらは順にリンカ (clang) へ渡る (FEAT-0047)。
 

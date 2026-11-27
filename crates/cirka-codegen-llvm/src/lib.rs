@@ -23,6 +23,9 @@ pub struct Options {
     /// Instrument the functions for ThreadSanitizer (`sanitize_thread`,
     /// 05-runtime.md §9.7).
     pub tsan: bool,
+    /// Generate the unwinding mode's code also without a `catch apply`
+    /// (`--unwind`: measuring its cost and testing it, 07-backend.md §2).
+    pub unwind: bool,
 }
 
 /// Mangles a MIR function name into an LLVM global name.
@@ -229,7 +232,7 @@ pub fn emit(m: &Module, opts: Options) -> String {
         externs: BTreeMap::new(),
         label_counter: 0,
         uses_tls: false,
-        unwinding: m.catches(),
+        unwinding: m.catches() || opts.unwind,
         raising: HashSet::new(),
     };
     if g.unwinding {
@@ -4379,5 +4382,41 @@ entry:
             def(&debug, "lazy").contains("@cirka_alloc(i64 24)"),
             "{debug}"
         );
+    }
+
+    /// `--unwind` generates the unwinding mode's code without a `catch`.
+    #[test]
+    fn unwind_option_forces_the_unwinding_mode() {
+        let src = format!(
+            "{EXC_SRC}
+fn main() -> i64 {{
+entry:
+  let u = alloc Int.I(0)
+  let r = call quot(5, u)
+  let x = proj r Int.I.v
+  drop r
+  ret x
+}}
+"
+        );
+        let m = cirka_mir::parse::parse(cirka_diagnostics::FileId(0), &src).unwrap();
+        assert!(!m.catches());
+        let ir = emit(
+            &m,
+            Options {
+                unwind: true,
+                ..Options::default()
+            },
+        );
+        assert!(ir.contains("call void @cirka_exception_enable()"), "{ir}");
+        assert!(
+            def(&ir, "sum").contains("invoke tailcc ptr @\"_C5check\"("),
+            "{ir}"
+        );
+        assert!(
+            def(&ir, "check").contains("call void @cirka.raise(ptr %v"),
+            "{ir}"
+        );
+        assert!(!ir.contains("@cirka_raise_abort"), "{ir}");
     }
 }

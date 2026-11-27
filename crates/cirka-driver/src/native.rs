@@ -24,6 +24,7 @@ impl RuntimeKind {
         cirka_codegen_llvm::Options {
             debug_rt: self == RuntimeKind::Debug,
             tsan: self == RuntimeKind::Tsan,
+            unwind: false,
         }
     }
 
@@ -45,6 +46,8 @@ pub struct NativeOptions {
     pub runtime: RuntimeKind,
     /// Extra libraries / linker arguments (FFI).
     pub link_args: Vec<String>,
+    /// The unwinding mode's code also without a `catch` (`--unwind`).
+    pub unwind: bool,
 }
 
 impl Default for NativeOptions {
@@ -53,6 +56,17 @@ impl Default for NativeOptions {
             opt_level: 2,
             runtime: RuntimeKind::Release,
             link_args: Vec::new(),
+            unwind: false,
+        }
+    }
+}
+
+impl NativeOptions {
+    /// The code generator's options.
+    pub fn codegen_options(&self) -> cirka_codegen_llvm::Options {
+        cirka_codegen_llvm::Options {
+            unwind: self.unwind,
+            ..self.runtime.codegen_options()
         }
     }
 }
@@ -287,7 +301,7 @@ pub fn build_mir(
             cirka_mir::verify::render_errors(&errs)
         ));
     }
-    let ir = cirka_codegen_llvm::emit(m, opts.runtime.codegen_options());
+    let ir = cirka_codegen_llvm::emit(m, opts.codegen_options());
     let mut opts = opts.clone();
     opts.link_args.extend(lib_args(&m.libs));
     link_ir(cfg, &ir, work, exe, &opts)?;

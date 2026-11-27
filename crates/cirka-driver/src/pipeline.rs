@@ -85,6 +85,9 @@ pub struct Options {
     pub link_args: Vec<String>,
     /// `--time-passes`: print how long each stage takes (stderr).
     pub time_passes: bool,
+    /// `--unwind`: the unwinding mode's code also without a `catch`
+    /// (measuring its cost and testing it, 07-backend.md §2).
+    pub unwind: bool,
 }
 
 impl Options {
@@ -99,6 +102,7 @@ impl Options {
             build_dir: PathBuf::from("_build").join(name),
             link_args: Vec::new(),
             time_passes: false,
+            unwind: false,
         }
     }
 }
@@ -213,7 +217,13 @@ pub fn compile_core(
         return Err(errs.into_iter().map(to_ice).collect());
     }
     let llvm = timed(opts, "LLVM IR", || {
-        cirka_codegen_llvm::emit(&m, opts.runtime.codegen_options())
+        cirka_codegen_llvm::emit(
+            &m,
+            cirka_codegen_llvm::Options {
+                unwind: opts.unwind,
+                ..opts.runtime.codegen_options()
+            },
+        )
     });
     dump(opts, Stage::Llvm, name, || llvm.clone())?;
     Ok(Output { mir: m, llvm })
@@ -230,6 +240,7 @@ pub fn link(cfg: &Config, out: &Output, opts: &Options, exe: &Path) -> Result<()
             .cloned()
             .chain(crate::native::lib_args(&out.mir.libs))
             .collect(),
+        unwind: opts.unwind,
     };
     timed(opts, "LLVM and linking", || {
         link_ir(cfg, &out.llvm, &opts.build_dir, exe, &nopts)

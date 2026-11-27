@@ -9,6 +9,7 @@
 //! flags: -O0|-O1|-O2  --release (= -O2)  --runtime=release|debug|tsan
 //!        --dump=core,core-opt,mir,mir-opt,llvm (+ frontend stages)  --build-dir=DIR
 //!        --emit=llvm|exe  -l<lib> / -L<dir> / -Wl,<args> (passed to the linker)
+//!        --unwind (the unwinding mode's code without a `catch`: measurements)
 //!        --NAME=VALUE (other options, checked by the frontend)
 //! ```
 
@@ -92,6 +93,7 @@ pub fn parse_args(args: &[String]) -> Result<Args, String> {
                 filter = Some(s["--filter=".len()..].to_string())
             }
             "--time-passes" => opts.time_passes = true,
+            "--unwind" => opts.unwind = true,
             "--emit=llvm" => emit_llvm = true,
             "--emit=exe" => emit_llvm = false,
             "-o" => output = Some(PathBuf::from(it.next().ok_or("`-o` needs a file name")?)),
