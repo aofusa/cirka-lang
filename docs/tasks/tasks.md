@@ -16,7 +16,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | 共通基盤 | M1 バックエンド基盤 | 7 / 7 |
 | 共通基盤 | M2 Perceus | 3 / 3 |
 | 共通基盤 | M3 共通 Core と Core→MIR | 4 / 4 |
-| 共通基盤 | SX 共通基盤の拡張 (各トラックの必要に応じて) | 76 / 92 |
+| 共通基盤 | SX 共通基盤の拡張 (各トラックの必要に応じて) | 77 / 93 |
 | aCHC | H1 Haskell 最小フロントエンド | 6 / 6 |
 | aCHC | H2 Haskell 実用化 (スコープ縮小版) | 10 / 10 |
 | aCHC | H3 所有権拡張 (.chs) | 9 / 9 |
@@ -79,7 +79,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 
 | ID | タイトル | 状態 | 優先度 | 依存 |
 |---|---|---|---|---|
-| [FEAT-0040](features/FEAT-0040-unwinding.md) | 例外/パニックのアンワインド | in-progress | P1 | 0031 |
+| [FEAT-0040](features/FEAT-0040-unwinding.md) | 例外/パニックのアンワインド | done | P1 | 0031 |
 | [FEAT-0041](features/FEAT-0041-core-optimizations.md) | Core 最適化の強化 | done | P0 | 0033 |
 | [FEAT-0042](features/FEAT-0042-escape-analysis.md) | エスケープ解析とスタック割り当て | todo | P2 | 0041 |
 | [FEAT-0043](features/FEAT-0043-benchmarks.md) | ベンチマーク集と性能レポート | done | P1 | 0016 |
@@ -171,6 +171,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [FEAT-1029](features/FEAT-1029-case-of-case-nested-returns.md) | case-of-case を、内側の返り値が入れ子の case の中まで既知の構築子で、複製される外側の選択肢が小さいときにも行う | done | P1 | 0074, 0091 |
 | [FEAT-1030](features/FEAT-1030-static-object-alignment.md) | 静的なオブジェクトを、大きさを収める 2 の冪 (8〜64 バイト) に揃える | done | P1 | 1020, 0091 |
 | [FEAT-1031](features/FEAT-1031-unweighted-static-object-test.md) | `dup` / `drop` の静的なオブジェクトの検査 (RC 0) に分岐の重みを付けない | done | P1 | 1017, 0091 |
+| [FEAT-1032](features/FEAT-1032-unwinding-mode-cost.md) | アンワインドの様式の費用 (サンクの入口のフレーム、`invoke` と landing pad) を減らす | todo | P2 | 0040 |
 
 
 ## aCHC
