@@ -1,0 +1,11 @@
+; a linear variable consumed in one branch only; the other branch passes a
+; lambda whose body diverges: making the lambda does not diverge, so the
+; branch does not either (BUG-0047)
+(data Handle () :linear (MkHandle Int#))
+(def close (-> 1 Handle Int#) (lam ((h 1 Handle)) (case h (s 1 Handle) Int# ((MkHandle fd) fd))))
+(def apply_never (-> (-> Int# Int#) Int#) (lam ((f (-> Int# Int#))) 0))
+(def bad (-> Int# (-> 1 Handle Int#)) (lam ((k Int#) (h 1 Handle))
+  (case k (s Int#) Int#
+    (0 (close h))
+    (_ (apply_never (lam ((x Int#)) (panic "no" Int#)))))))
+(def main Int# 0)

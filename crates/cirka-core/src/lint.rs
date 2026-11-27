@@ -767,6 +767,9 @@ impl<'p> Linter<'p> {
                 let (tb, mut ub) = self.expr(body)?;
                 let used = ub.remove(&b.id);
                 self.check_usage(b, used)?;
+                // Making the closure does not run the body: a body that
+                // diverges does not make the lambda diverge (BUG-0047).
+                ub.bottom = false;
                 Ok((Type::fun(b.mult, b.ty.clone(), tb), ub))
             }
             Expr::TyLam(v, k, body) => {
