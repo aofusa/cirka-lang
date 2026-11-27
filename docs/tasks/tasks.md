@@ -401,5 +401,6 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 | [BUG-0044](bugs/BUG-0044-unused-tls-declaration.md) | デバッグ用ランタイムでの -O0 のビルドが、使わないスレッドのブロックの宣言のためにリンクできない | done | major | FEAT-1027 |
 | [BUG-0045](bugs/BUG-0045-mir-text-operator-names.md) | 演算子の名前を持つ関数・構築子の MIR のテキストが読み戻せない | todo | minor | FEAT-0014 |
 | [BUG-0046](bugs/BUG-0046-lazy-con-unboxed-field.md) | 遅延束縛の構築子の unboxed フィールドが、`!` がないと束縛の時点で計算される | done | minor | BUG-0014 |
+| [BUG-0047](bugs/BUG-0047-lint-lambda-bottom.md) | Core Lint が、本体の発散するラムダを含む式を発散とみなし、その枝の線形性を検査しない | todo | minor | FEAT-0030 |
 
 新しいチケットは `features/_TEMPLATE.md` / `bugs/_TEMPLATE.md` をコピーして作成する。
