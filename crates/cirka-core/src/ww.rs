@@ -98,9 +98,137 @@ pub(crate) struct Analysis<'a> {
     pub(crate) p: &'a Program,
     /// Strict parameter positions of the top-level functions.
     pub(crate) strict: HashMap<String, (usize, Vec<bool>)>,
+    /// What may run a `catch`, when the program has one.
+    pub(crate) catching: Option<Catching>,
+}
+
+/// What may run a `catch` (06-ir.md §1.8). What is evaluated after it must
+/// not move before it, where an exception it raises would escape the
+/// `catch`: the strictness analysis does not take the demands that follow
+/// such an evaluation (the value of a `let!`, the scrutinee of a `case`, an
+/// operand) across it. A thunk or a closure that runs a `catch` when the
+/// code that forces or calls it was built elsewhere (an argument, a field)
+/// is not seen; an action is run with the state token, so a call of an
+/// unknown function with the token counts.
+pub(crate) struct Catching {
+    /// Top-level bindings whose evaluation or call may run a `catch`.
+    globals: HashSet<String>,
+    /// Local lazy bindings, likewise (a thunk forced, a function called).
+    locals: HashSet<u32>,
+    /// Binders of type `Unit#` (the state token).
+    tokens: HashSet<u32>,
+}
+
+impl Catching {
+    /// `None` when the program has no `catch`: nothing changes.
+    pub(crate) fn of(p: &Program) -> Option<Catching> {
+        let mut any = false;
+        for b in &p.binds {
+            crate::opt::walk(&b.expr, &mut |e| {
+                any |= matches!(e, Expr::Prim(PrimOp::Catch, ..));
+            });
+        }
+        if !any {
+            return None;
+        }
+        let unit = Type::unit();
+        let mut c = Catching {
+            globals: HashSet::new(),
+            locals: HashSet::new(),
+            tokens: HashSet::new(),
+        };
+        for b in &p.binds {
+            for (id, x) in crate::strict::binder_types(&b.expr) {
+                if x.ty.alpha_eq(&unit) {
+                    c.tokens.insert(id);
+                }
+            }
+        }
+        // Least fixed point: a binding may run a `catch` when its value
+        // mentions what may.
+        loop {
+            let mut globals = Vec::new();
+            let mut locals = Vec::new();
+            for b in &p.binds {
+                if !c.globals.contains(&b.name) && c.runs(&b.expr) {
+                    globals.push(b.name.clone());
+                }
+                crate::opt::walk(&b.expr, &mut |e| {
+                    let bs: Vec<(&Binder, &Expr)> = match e {
+                        Expr::Let(Bind::NonRec(x, r), _) => vec![(x, &**r)],
+                        Expr::Let(Bind::Rec(bs), _) => bs.iter().map(|(x, r)| (x, r)).collect(),
+                        _ => Vec::new(),
+                    };
+                    for (x, r) in bs {
+                        if !c.locals.contains(&x.id.id) && c.runs(r) {
+                            locals.push(x.id.id);
+                        }
+                    }
+                });
+            }
+            if globals.is_empty() && locals.is_empty() {
+                return Some(c);
+            }
+            c.globals.extend(globals);
+            c.locals.extend(locals);
+        }
+    }
+
+    /// Whether evaluating `e`, or calling the functions and forcing the
+    /// thunks it builds, may run a `catch`.
+    pub(crate) fn runs(&self, e: &Expr) -> bool {
+        let mut hit = false;
+        crate::opt::walk(e, &mut |s| {
+            hit |= match s {
+                Expr::Prim(PrimOp::Catch, ..) => true,
+                Expr::Global(g) => self.globals.contains(g),
+                Expr::Var(v) => self.locals.contains(&v.id),
+                // An unknown function run with the state token.
+                Expr::App(..) => {
+                    let (mut h, args) = s.collect_args();
+                    while let Expr::TyApp(x, _) | Expr::Cast(x, _) = h {
+                        h = x;
+                    }
+                    !matches!(h, Expr::Global(_) | Expr::Lam(..))
+                        && args.iter().any(|a| self.token(a))
+                }
+                _ => false,
+            };
+        });
+        hit
+    }
+
+    fn token(&self, a: &Expr) -> bool {
+        match a {
+            Expr::Lit(Lit::Unit) => true,
+            Expr::Var(v) => self.tokens.contains(&v.id),
+            Expr::Cast(x, _) => self.token(x),
+            _ => false,
+        }
+    }
 }
 
 impl Analysis<'_> {
+    /// Whether what follows the evaluation of `e` must not move before it
+    /// ([`Catching`]).
+    fn barrier(&self, e: &Expr) -> bool {
+        self.catching.as_ref().is_some_and(|c| c.runs(e))
+    }
+
+    /// The operands `args`, evaluated in order (strict where `strict`).
+    fn operands<'e>(&self, args: impl Iterator<Item = (&'e Expr, bool)>) -> Strict {
+        let mut s = Some(HashSet::new());
+        for (a, strict) in args {
+            if strict {
+                s = union(s, self.expr(a));
+                if self.barrier(a) {
+                    break;
+                }
+            }
+        }
+        s
+    }
+
     pub(crate) fn expr(&self, e: &Expr) -> Strict {
         match e {
             Expr::Var(x) => Some(HashSet::from([x.id])),
@@ -146,34 +274,20 @@ impl Analysis<'_> {
                         )
                     })
                     .unwrap_or_else(|| (Vec::new(), false));
-                let mut s = Some(HashSet::new());
-                for (a, st) in args.iter().zip(computes) {
-                    if st || newtype {
-                        s = union(s, self.expr(a));
-                    }
-                }
-                s
+                self.operands(args.iter().zip(computes).map(|(a, st)| (a, st || newtype)))
             }
             // `raise` diverges; `catch` evaluates its closures inside,
             // where their exceptions are caught (06-ir.md §1.8).
             Expr::Prim(PrimOp::Raise, ..) => None,
             Expr::Prim(op, ..) if !op.evaluates_args() => Some(HashSet::new()),
-            Expr::Prim(op, _, args) => {
-                let mut s = Some(HashSet::new());
-                for (i, a) in args.iter().enumerate() {
-                    let lazy = matches!(
-                        (op, i),
-                        (PrimOp::ArrayNew, 1) | (PrimOp::ArraySet | PrimOp::ArraySetShared, 2)
-                    );
-                    if !lazy {
-                        s = union(s, self.expr(a));
-                    }
-                }
-                s
-            }
-            Expr::Extern(_, args) => args
-                .iter()
-                .try_fold(HashSet::new(), |s, a| union(Some(s), self.expr(a))),
+            Expr::Prim(op, _, args) => self.operands(args.iter().enumerate().map(|(i, a)| {
+                let lazy = matches!(
+                    (op, i),
+                    (PrimOp::ArrayNew, 1) | (PrimOp::ArraySet | PrimOp::ArraySetShared, 2)
+                );
+                (a, !lazy)
+            })),
+            Expr::Extern(_, args) => self.operands(args.iter().map(|a| (a, true))),
             Expr::Let(Bind::NonRec(b, r), body) => {
                 let sb = self.expr(body);
                 let forced = sb.as_ref().is_none_or(|s| s.contains(&b.id.id));
@@ -185,9 +299,15 @@ impl Analysis<'_> {
                 without(self.expr(body), &ids)
             }
             Expr::LetStrict(b, r, body) => {
+                if self.barrier(r) {
+                    return self.expr(r);
+                }
                 union(self.expr(r), without(self.expr(body), &[b.id.id]))
             }
             Expr::Case(s, b, _, alts) => {
+                if self.barrier(s) {
+                    return self.expr(s);
+                }
                 let mut acc: Strict = None;
                 for a in alts {
                     let mut bound = vec![b.id.id];
@@ -207,6 +327,7 @@ pub(crate) fn strictness(p: &Program) -> HashMap<String, (usize, Vec<bool>)> {
     let mut a = Analysis {
         p,
         strict: HashMap::new(),
+        catching: Catching::of(p),
     };
     for b in &p.binds {
         let (_, xs, _) = split_fun(&b.expr);

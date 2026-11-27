@@ -565,6 +565,7 @@ pub fn strictify(p: &mut Program, next: &mut u32) -> usize {
     let a = Analysis {
         p,
         strict: strictness(p),
+        catching: crate::ww::Catching::of(p),
     };
     let mut out = Vec::new();
     let mut n = 0;

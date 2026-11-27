@@ -1,0 +1,99 @@
+; What is evaluated after a `catch` is not evaluated before it (FEAT-0040,
+; 06-ir.md §1.8). In each case `x`, a division by zero, is first forced
+; inside the action of a `catch`, whose handler prints the number of the
+; case, and again after the `catch`, where the exception (the thunk raises
+; it again) reaches `guard`, which prints 9. Evaluating `x` before the
+; `catch` because it is needed after it would lose the number of the case:
+; the optimized program must print the same.
+(data Int () (I# Int#))
+(extern cirka_write_i64 (Int#) Unit#)
+(extern cirka_write_char (Int#) Unit#)
+
+(def say (-> Int# Unit#)
+  (lam ((n Int#))
+    (let! (u Unit# (extern cirka_write_i64 n))
+      (extern cirka_write_char 10))))
+
+(def div (-> Int# Int# Int)
+  (lam ((a Int#) (b Int#)) (con I# () (prim quot a b))))
+
+; Runs a case: prints its result, or 9 when it raises.
+(def guard (-> (-> Unit# Int#) Unit# Unit#)
+  (lam ((c (-> Unit# Int#)) (w Unit#))
+    (let! (r Int
+            (prim catch (Int) (lam ((w1 Unit#)) (con I# () (c w1)))
+              (lam ((e Any) (w2 Unit#)) (con I# () 9))
+              w))
+      (case r (s Int) Unit# ((I# v) (say v))))))
+
+; 1: a lazy binding needed after a `catch`.
+(def case1 (-> Unit# Int#)
+  (lam ((w Unit#))
+    (let ((x Int (div 7 (prim sub 3 3))))
+      (let! (r Int
+              (prim catch (Int) (lam ((w1 Unit#)) (case x (s Int) Int ((I# v) (con I# () v))))
+                (lam ((e Any) (w2 Unit#)) (let! (u Unit# (say 1)) (con I# () 0)))
+                w))
+        (case x (s2 Int) Int# ((I# v2) v2))))))
+
+; 2: a parameter needed after a `catch`.
+(def case2 (-> Int Unit# Int#)
+  (lam ((x Int) (w Unit#))
+    (let! (r Int
+            (prim catch (Int) (lam ((w1 Unit#)) (case x (s Int) Int ((I# v) (con I# () v))))
+              (lam ((e Any) (w2 Unit#)) (let! (u Unit# (say 2)) (con I# () 0)))
+              w))
+      (case x (s2 Int) Int# ((I# v2) v2)))))
+
+; Runs `act` (after n rounds), then needs x.
+(def run (-> (-> Unit# Int) Int Int# Unit# Int#)
+  (lam ((act (-> Unit# Int)) (x Int) (n Int#) (w Unit#))
+    (case n (k Int#) Int#
+      (0 (let! (r Int (act w))
+           (case x (s Int) Int# ((I# v) v))))
+      (_ (run act x (prim sub n 1) w)))))
+
+; 3: an unknown action that catches, run with the token.
+(def case3 (-> Unit# Int#)
+  (lam ((w Unit#))
+    (let ((x Int (div 7 (prim sub 3 3))))
+      (run (lam ((w1 Unit#))
+             (prim catch (Int) (lam ((w2 Unit#)) (case x (s Int) Int ((I# v) (con I# () v))))
+               (lam ((e Any) (w3 Unit#)) (let! (u Unit# (say 3)) (con I# () 0)))
+               w1))
+           x 1 w))))
+
+; Forces x inside a `catch` (after n rounds): on an exception prints 4.
+(def protect (-> Int Int# Unit# Int)
+  (lam ((x Int) (n Int#) (w Unit#))
+    (case n (k Int#) Int
+      (0 (prim catch (Int) (lam ((w1 Unit#)) (case x (s Int) Int ((I# v) (con I# () v))))
+           (lam ((e Any) (w2 Unit#)) (let! (u Unit# (say 4)) (con I# () 0)))
+           w))
+      (_ (protect x (prim sub n 1) w)))))
+
+; 4: a call of a function that catches.
+(def case4 (-> Unit# Int#)
+  (lam ((w Unit#))
+    (let ((x Int (div 7 (prim sub 3 3))))
+      (let! (r Int (protect x 1 w))
+        (case x (s Int) Int# ((I# v) v))))))
+
+; 5: a lazy binding whose value catches, forced before x is needed.
+(def case5 (-> Unit# Int#)
+  (lam ((w Unit#))
+    (let ((x Int (div 7 (prim sub 3 3))))
+      (let ((y Int
+              (prim catch (Int) (lam ((w1 Unit#)) (case x (s Int) Int ((I# v) (con I# () v))))
+                (lam ((e Any) (w2 Unit#)) (let! (u Unit# (say 5)) (con I# () 0)))
+                w)))
+        (case y (s2 Int) Int#
+          ((I# v2) (case x (s3 Int) Int# ((I# v3) (prim add v2 v3)))))))))
+
+(def main Int#
+  (let! (a Unit# (guard case1 unit))
+  (let! (b Unit# (guard (lam ((w Unit#)) (case2 (div 7 (prim sub 3 3)) w)) unit))
+  (let! (c Unit# (guard case3 unit))
+  (let! (d Unit# (guard case4 unit))
+  (let! (e Unit# (guard case5 unit))
+    0))))))

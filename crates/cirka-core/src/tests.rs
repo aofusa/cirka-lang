@@ -762,6 +762,68 @@ fn strictify_sees_through_newtype_constructors() {
     assert_eq!(strict::strictify(&mut p, &mut next), 0);
 }
 
+/// A function that forces `x` inside a `catch` (`protect`), one that runs
+/// an action and then needs `x` (`run`), and `f`, which binds `x` lazily
+/// and evaluates `shape`.
+fn catch_shape(shape: &str) -> String {
+    format!(
+        "{PRELUDE}(def div (-> Int# Int# Int) (lam ((a Int#) (b Int#)) (con I# () (prim quot a b))))
+         (def protect (-> Int Unit# Int)
+           (lam ((x Int) (w Unit#))
+             (prim catch (Int) (lam ((w1 Unit#)) (case x (s Int) Int ((I# v) (con I# () v))))
+               (lam ((e Any) (w2 Unit#)) (con I# () 0)) w)))
+         (def run (-> (-> Unit# Int) Int Unit# Int#)
+           (lam ((act (-> Unit# Int)) (x Int) (w Unit#))
+             (let! (r Int (act w)) (case x (s Int) Int# ((I# v) v)))))
+         (def f (-> Unit# Int#)
+           (lam ((w Unit#)) (let ((x Int (div 7 0))) {shape})))
+         (def main Int# (f unit))"
+    )
+}
+
+/// What follows a `catch` is not evaluated before it (FEAT-0040, 06-ir.md
+/// §1.8): `x`, forced inside a `catch` and needed after it, stays lazy,
+/// whether the `catch` is in the function, in a function it calls, in a
+/// lazy binding or in an unknown action run with the state token.
+#[test]
+fn strictify_does_not_move_evaluation_before_a_catch() {
+    let after = "(case x (s2 Int) Int# ((I# v2) v2))";
+    let action = "(lam ((w1 Unit#)) (protect x w1))";
+    let shapes = [
+        format!(
+            "(let! (r Int (prim catch (Int) (lam ((w1 Unit#)) (case x (s Int) Int ((I# v) (con I# () v)))) \
+             (lam ((e Any) (w2 Unit#)) (con I# () 0)) w)) {after})"
+        ),
+        format!("(let! (r Int (protect x w)) {after})"),
+        format!("(let ((y Int (protect x w))) (case y (s3 Int) Int# ((I# v3) {after})))"),
+        format!("(let ((k (-> Unit# Int) {action})) (let! (r Int (k w)) {after}))"),
+        format!("(run {action} x w)"),
+        // Forced on one path only, the lazy binding stays lazy: what
+        // follows its `case` must not count.
+        format!(
+            "(let ((y Int (protect x w))) (case (prim add 0 0) (k Int#) Int# \
+             (0 (case y (s3 Int) Int# ((I# v3) {after}))) (_ {after})))"
+        ),
+    ];
+    for shape in &shapes {
+        let mut p = parse_program(FileId(0), &catch_shape(shape)).unwrap();
+        assert!(lint::lint_program(&p).is_empty(), "{}", print_program(&p));
+        let st = ww::strictness(&p);
+        assert!(!st["run"].1[1], "`run` is strict in x: {:?}", st["run"]);
+        let mut next = p.max_id() + 1;
+        strict::strictify(&mut p, &mut next);
+        let m = print::print_expr(&p.bind("f").unwrap().expr);
+        assert!(!m.contains("(let! (x"), "{m}");
+    }
+    // Without the `catch`, `x` is evaluated first.
+    let shape = format!("(let! (r Int (con I# () 1)) {after})");
+    let mut p = parse_program(FileId(0), &catch_shape(&shape)).unwrap();
+    let mut next = p.max_id() + 1;
+    strict::strictify(&mut p, &mut next);
+    let m = print::print_expr(&p.bind("f").unwrap().expr);
+    assert!(m.contains("(let! (x"), "{m}");
+}
+
 #[test]
 fn float_in_moves_lets_into_their_only_alternative() {
     let src = format!(
