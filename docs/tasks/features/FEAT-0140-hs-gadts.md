@@ -1,11 +1,11 @@
 # FEAT-0140: GADTs と存在型
 
-- 状態: todo
+- 状態: in-progress
 - トラック: aCHC
 - マイルストーン: H5 高度な型システム (CirkaLang v0.0.4 の後)
 - 優先度: P1
 - 依存: FEAT-0132, FEAT-0235
-- 設計: [14-achc-advanced.md](../../design/14-achc-advanced.md)
+- 設計: [14-achc-advanced.md](../../design/14-achc-advanced.md) §2.1, [03-type-system.md](../../design/03-type-system.md) §7.3, ADR-129
 
 ## 概要
 

@@ -63,6 +63,7 @@ Cirka モードのモジュールは常に `strict`。
 **後期 (H5、CirkaLang v0.0.4 の後)** に追加する高度な型拡張 ([14-achc-advanced.md](14-achc-advanced.md) §2):
 `GADTs`, `ExistentialQuantification`, `TypeFamilies`, `DataKinds`, `PolyKinds`, `FunctionalDependencies`, `TypeOperators`,
 `ConstraintKinds`, `RankNTypes` (完全), `GHC.TypeLits` 互換の型レベル `Nat` / `Symbol` (FEAT-0140〜0144)。H6 以降の依存型・検証・効果の拡張は同書 §3, §4。
+このうち `GADTs`・`GADTSyntax`・`ExistentialQuantification`・`ExplicitForAll` は FEAT-0140 で対応した (同書 §2.1)。
 
 サポートしない拡張を使うと、エラー `E0001 unsupported extension` を出す(黙って無視しない)。
 
@@ -323,7 +324,8 @@ Haskell としてはコメントなので、`.hs` に書いても意味は変わ
 | `System.Mem.performGC`, `System.Mem.Weak` のファイナライザ | `performGC` は no-op。Weak は RC ベースで、最後の強参照消滅時にファイナライザを実行 |
 | 非同期例外 (`throwTo`, `timeout`) | 非対応 |
 | Template Haskell / GHCi | 非対応 |
-| GADTs・型族・DataKinds 等 | 前期は非対応。後期 H5 で対応 (ADR-027、[14-achc-advanced.md](14-achc-advanced.md)) |
+| GADTs・存在型 | 対応 (FEAT-0140、[14-achc-advanced.md](14-achc-advanced.md) §2.1)。GADT の照合には型シグネチャが要る (含意制約を遅延しないので、GHC が受け付ける一部のプログラムが E0620 になる)。パターンガード・遅延パターン・パターン束縛の中では使えない。`~` は構築子の文脈だけ。高階の種の存在型の変数と、vanilla でない構築子のレコードは非対応。網羅性の検査は列をまたぐ精密化を使わない |
+| 型族・DataKinds 等 | 後期 H5 で対応 (FEAT-0141〜0144、ADR-027) |
 | Hackage パッケージ | 対象外。`cirka-base` (縮小版) のみ |
 | `GHC.*` 内部モジュール・primop | 一部のみ (`GHC.Exts` の公開 API の一部) |
 | `unsafePerformIO` | 対応。ただし `NOINLINE` グローバル `IORef` パターンは静的初期化で実装 |

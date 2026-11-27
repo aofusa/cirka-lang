@@ -227,7 +227,7 @@ aCHC / CirkaLang のチケット一覧。運用ルールは [AGENTS.md](../../AG
 
 | ID | タイトル | 状態 | 優先度 | 依存 |
 |---|---|---|---|---|
-| [FEAT-0140](features/FEAT-0140-hs-gadts.md) | GADTs と存在型 | todo | P1 | 0132, 0235 |
+| [FEAT-0140](features/FEAT-0140-hs-gadts.md) | GADTs と存在型 | in-progress | P1 | 0132, 0235 |
 | [FEAT-0141](features/FEAT-0141-hs-type-families.md) | 型族 (TypeFamilies) | todo | P1 | 0140 |
 | [FEAT-0142](features/FEAT-0142-hs-datakinds-polykinds.md) | DataKinds・PolyKinds・型演算子 | todo | P1 | 0140 |
 | [FEAT-0143](features/FEAT-0143-hs-fundeps.md) | FunctionalDependencies と制約ソルバの改良 | todo | P1 | 0110 |
