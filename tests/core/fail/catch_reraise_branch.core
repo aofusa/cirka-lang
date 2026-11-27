@@ -1,0 +1,13 @@
+; a linear variable consumed in one branch only; the other branch has a
+; `catch` whose handler raises again: the `catch` returns when its action
+; does, so the branch does not diverge (FEAT-0040, 06-ir.md §1.8)
+(data Handle () :linear (MkHandle Int#))
+(data Int () (I# Int#))
+(def close (-> 1 Handle Int#) (lam ((h 1 Handle)) (case h (s 1 Handle) Int# ((MkHandle fd) fd))))
+(def bad (-> Int# (-> 1 Handle Int#)) (lam ((k Int#) (h 1 Handle))
+  (case k (s Int#) Int#
+    (0 (close h))
+    (_ (case (prim catch (Int) (lam ((u Unit#)) (con I# () 1))
+               (lam ((e Any) (u2 Unit#)) (prim raise (Int) e)) unit)
+         (r Int) Int# ((I# v) v))))))
+(def main Int# 0)

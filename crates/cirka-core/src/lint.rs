@@ -885,9 +885,14 @@ impl<'p> Linter<'p> {
                     self.expect(&format!("argument {i} of `{}`", op.name()), &t, p)?;
                     // The action and the handler of `catch` may run any
                     // number of times (the handler maybe never): they
-                    // cannot capture linear values (06-ir.md §1.8).
+                    // cannot capture linear values (06-ir.md §1.8). That
+                    // they diverge (a handler that raises again) does not
+                    // make the `catch` diverge: it returns when the action
+                    // does.
                     let ua = if *op == PrimOp::Catch && i < 2 {
-                        ua.scale(Mult::Many)
+                        let mut ua = ua.scale(Mult::Many);
+                        ua.bottom = false;
+                        ua
                     } else {
                         ua
                     };
