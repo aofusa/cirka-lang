@@ -65,6 +65,66 @@ fn both_clis_agree_on_core_input() {
     });
 }
 
+/// The final MIR (`--dump=mir-opt`) of aCHC and CirkaLang programs reads
+/// back (BUG-0045): it has operator names (`Cirka.Base.++`) and names with
+/// dots (`Prelude.Nil`). The parsed module verifies, and printing it gives
+/// the same text.
+#[test]
+fn optimized_mir_of_both_frontends_reads_back() {
+    cirka_testkit::init();
+    let (achc, cirka) = cirka_integration::cli_bins();
+    let mut quoted = 0;
+    for (bin, src) in [
+        (achc, "bench/spectral-norm/plain.hs"),
+        (achc, "bench/fannkuch-redux/plain.hs"),
+        (cirka, "bench/spectral-norm/main.cirka"),
+        (cirka, "bench/cli-grep/main.cirka"),
+    ] {
+        let path = repo_root().join(src);
+        let work = cirka_testkit::work_dir("driver-mir-text", &src.replace('/', "-"));
+        let bd = format!("--build-dir={}", work.display());
+        let ll = work.join("out.ll");
+        let out = run(
+            bin,
+            &[
+                "build",
+                "-O2",
+                "--emit=llvm",
+                "--dump=mir-opt",
+                &bd,
+                "-o",
+                ll.to_str().unwrap(),
+                path.to_str().unwrap(),
+            ],
+            &work,
+        );
+        assert_eq!(out.code, 0, "{src}: {}", out.stderr);
+        let stem = path.file_stem().unwrap().to_str().unwrap();
+        let dump = work.join(format!("{stem}.opt.mir"));
+        let text = std::fs::read_to_string(&dump)
+            .unwrap_or_else(|e| panic!("{src}: {}: {e}", dump.display()));
+        quoted += text.matches('`').count();
+        let m = cirka_mir::parse(cirka_diagnostics::FileId(0), &text)
+            .unwrap_or_else(|e| panic!("{src}: {}", e.message));
+        let errs = cirka_mir::verify::verify_module(&m);
+        assert!(
+            errs.is_empty(),
+            "{src}: {}",
+            cirka_mir::verify::render_errors(&errs)
+        );
+        let again = cirka_mir::print_module(&m);
+        assert!(
+            text == again,
+            "{src}:\n{}",
+            cirka_testkit::line_diff(&text, &again)
+        );
+    }
+    assert!(
+        quoted > 0,
+        "no quoted name: the programs no longer cover BUG-0045"
+    );
+}
+
 /// `check` reports Lint errors of a `.core` file as diagnostics (exit 1)
 /// identically from both CLIs, and `--dump` writes every stage.
 #[test]

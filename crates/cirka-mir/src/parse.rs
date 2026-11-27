@@ -35,11 +35,11 @@ struct Lexer<'a> {
     file: FileId,
 }
 
-fn is_ident_start(c: u8) -> bool {
+pub(crate) fn is_ident_start(c: u8) -> bool {
     c.is_ascii_alphabetic() || matches!(c, b'_' | b'$' | b'%' | b'\'' | b'#')
 }
 
-fn is_ident_char(c: u8) -> bool {
+pub(crate) fn is_ident_char(c: u8) -> bool {
     is_ident_start(c) || c.is_ascii_digit() || c == b'.'
 }
 
@@ -81,6 +81,37 @@ impl<'a> Lexer<'a> {
                 }
                 // do not swallow a trailing '.' (not used, but be strict)
                 Tok::Ident(String::from_utf8_lossy(&self.src[start..self.pos]).into_owned())
+            } else if c == b'`' {
+                // A quoted name (`print::name`): any text, with `` ` ``
+                // and `\` escaped by `\` (BUG-0045).
+                self.pos += 1;
+                let mut bytes = Vec::new();
+                loop {
+                    match self.src.get(self.pos) {
+                        None | Some(b'\n') => {
+                            return Err(self.err("unterminated quoted name", start));
+                        }
+                        Some(b'`') => {
+                            self.pos += 1;
+                            break;
+                        }
+                        Some(b'\\') if self.src.get(self.pos + 1).is_some() => {
+                            bytes.push(self.src[self.pos + 1]);
+                            self.pos += 2;
+                        }
+                        Some(&d) => {
+                            bytes.push(d);
+                            self.pos += 1;
+                        }
+                    }
+                }
+                if bytes.is_empty() {
+                    return Err(self.err("empty quoted name", start));
+                }
+                Tok::Ident(
+                    String::from_utf8(bytes)
+                        .map_err(|_| self.err("quoted name is not UTF-8", start))?,
+                )
             } else if c == b'@' {
                 self.pos += 1;
                 while self.pos < self.src.len() && is_ident_char(self.src[self.pos]) {
@@ -822,28 +853,56 @@ struct Sigs<'a> {
 }
 
 impl Sigs<'_> {
+    /// The constructors that `path` (`Type.Ctor`) can name: the names of
+    /// types and constructors may contain `.` themselves (`Prelude.List`,
+    /// `Prelude.Nil`), so every split point is tried (BUG-0045).
+    fn ctors(&self, path: &str) -> Vec<CtorRef> {
+        path.match_indices('.')
+            .filter_map(|(i, _)| self.m.find_ctor(&path[..i], &path[i + 1..]))
+            .collect()
+    }
     fn ctor_path(&self, path: &str, sp: Span) -> PResult<CtorRef> {
-        let mut it = path.rsplitn(2, '.');
-        let c = it.next().unwrap_or("");
-        let t = it.next().unwrap_or("");
-        self.m.find_ctor(t, c).ok_or_else(|| {
-            Diagnostic::error(format!("unknown constructor `{path}`"))
+        match self.ctors(path)[..] {
+            [c] => Ok(c),
+            [] => Err(Diagnostic::error(format!("unknown constructor `{path}`"))
                 .with_code("M0003")
-                .with_label(sp, "")
-        })
+                .with_label(sp, "")),
+            _ => Err(Diagnostic::error(format!("ambiguous constructor `{path}`"))
+                .with_code("M0003")
+                .with_label(sp, "")),
+        }
     }
     fn field_path(&self, path: &str, sp: Span) -> PResult<(CtorRef, u32)> {
-        let (cpath, field) = path.rsplit_once('.').ok_or_else(|| {
-            Diagnostic::error(format!("expected `Type.Ctor.field`, found `{path}`"))
-                .with_label(sp, "")
-        })?;
-        let c = self.ctor_path(cpath, sp)?;
-        let fi = self.m.ctor(c).field_index(field).ok_or_else(|| {
-            Diagnostic::error(format!("constructor `{cpath}` has no field `{field}`"))
+        if !path.contains('.') {
+            return Err(
+                Diagnostic::error(format!("expected `Type.Ctor.field`, found `{path}`"))
+                    .with_label(sp, ""),
+            );
+        }
+        let mut found = Vec::new();
+        let mut ctor_found = false;
+        for (j, _) in path.match_indices('.') {
+            for c in self.ctors(&path[..j]) {
+                ctor_found = true;
+                if let Some(fi) = self.m.ctor(c).field_index(&path[j + 1..]) {
+                    found.push((c, fi as u32));
+                }
+            }
+        }
+        match found[..] {
+            [f] => Ok(f),
+            [] if ctor_found => Err(Diagnostic::error(format!("no such field: `{path}`"))
                 .with_code("M0003")
-                .with_label(sp, "")
-        })?;
-        Ok((c, fi as u32))
+                .with_label(sp, "")),
+            [] => Err(
+                Diagnostic::error(format!("unknown constructor in `{path}`"))
+                    .with_code("M0003")
+                    .with_label(sp, ""),
+            ),
+            _ => Err(Diagnostic::error(format!("ambiguous field `{path}`"))
+                .with_code("M0003")
+                .with_label(sp, "")),
+        }
     }
 }
 

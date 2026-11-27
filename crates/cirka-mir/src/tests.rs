@@ -301,6 +301,67 @@ fn roundtrip_property() {
     }
 }
 
+/// Names that are not identifiers are written between backquotes, and the
+/// paths of constructors and fields whose names have dots resolve
+/// (BUG-0045): the MIR of aCHC and CirkaLang programs reads back.
+#[test]
+fn operator_and_dotted_names_round_trip() {
+    let src = r#"type Prelude.List { Prelude.Nil = 0 {}, `Prelude.::` = 1 { head: ptr, tail: ptr } }
+
+fn `Cirka.Base.++`(xs: ptr @owned, ys: ptr @owned) -> ptr {
+entry:
+  switch xs { Prelude.List.Prelude.Nil => nil, `Prelude.List.Prelude.::` => cons }
+nil:
+  drop xs
+  ret ys
+cons:
+  let h = proj xs `Prelude.List.Prelude.::.head`
+  let t = proj xs `Prelude.List.Prelude.::.tail`
+  dup h
+  dup t
+  drop xs
+  let r = call `Cirka.Base.++`(t, ys)
+  let c = alloc `Prelude.List.Prelude.::`(h, r)
+  ret c
+}
+"#;
+    let m = parse(FileId(0), src).unwrap_or_else(|e| panic!("{}", e.message));
+    let errs = verify::verify_module(&m);
+    assert!(errs.is_empty(), "{}", verify::render_errors(&errs));
+    assert_eq!(print_module(&m), src);
+    assert_eq!(print::name("List.Cons"), "List.Cons");
+    assert_eq!(print::name("a`b\\c"), "`a\\`b\\\\c`");
+    // An escaped name reads back.
+    let odd = src.replace("`Cirka.Base.++`", "`a\\`b\\\\c`");
+    let m = parse(FileId(0), &odd).unwrap_or_else(|e| panic!("{}", e.message));
+    assert_eq!(m.funcs[0].name, "a`b\\c");
+    assert_eq!(print_module(&m), odd);
+    let e = parse(FileId(0), "fn `f(x: i64) -> i64 {\nentry:\n  ret x\n}\n").unwrap_err();
+    assert!(
+        e.message.contains("unterminated quoted name"),
+        "{}",
+        e.message
+    );
+    // Variables and blocks that share a name (as the frontends make them)
+    // are told apart.
+    let mut m = parse(FileId(0), src).unwrap();
+    let f = &mut m.funcs[0];
+    let ys = f.params[1].var;
+    f.var_names[ys.0 as usize] = "xs".into();
+    f.blocks[2].label = "nil".into();
+    let text = print_module(&m);
+    assert!(
+        text.contains("(xs: ptr @owned, xs%1: ptr @owned)"),
+        "{text}"
+    );
+    assert!(
+        text.contains("=> nil%1 }") && text.contains("\nnil%1:\n"),
+        "{text}"
+    );
+    let m2 = parse(FileId(0), &text).unwrap_or_else(|e| panic!("{}\n{text}", e.message));
+    assert_eq!(print_module(&m2), text);
+}
+
 #[test]
 fn verifier_accepts_design_example() {
     let m = parse(FileId(0), MAP_EXAMPLE).unwrap();

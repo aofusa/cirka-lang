@@ -14,7 +14,7 @@ entry:
 fn Main.main$init$thk21() -> ptr {
 entry:
   let caf%0 = global Cirka.Base.$fNum34
-  let r%1 = call Cirka.Base.+(caf%0)
+  let r%1 = call `Cirka.Base.+`(caf%0)
   let thk%2 = mkthunk Main.main$init$thk21$thk22()
   let thk%3 = mkthunk Main.main$init$thk21$thk23()
   let ap%4 = apply r%1(thk%2, thk%3)
@@ -52,7 +52,7 @@ entry:
 fn Main.shared(a: ptr @owned) -> ptr {
 entry:
   let caf%1 = global Cirka.Base.$fNum34
-  let r%2 = call Cirka.Base.+(caf%1)
+  let r%2 = call `Cirka.Base.+`(caf%1)
   dup a
   let thk%3 = mkthunk Main.shared$thk24(a)
   let thk%4 = mkthunk Main.shared$thk25(a)

@@ -13,16 +13,16 @@ entry:
   tailcall Main.pick(con%2, r%1)
 }
 
-fn Main.pick(a: ptr @owned, a: ptr @owned) -> ptr {
+fn Main.pick(a: ptr @owned, a%1: ptr @owned) -> ptr {
 entry:
   switch a { Bool.True => alt1, Bool.False => alt2 }
 alt1:
   drop a
-  tailcall Cirka.Ownership.freeze(a)
+  tailcall Cirka.Ownership.freeze(a%1)
 alt2:
   drop a
   let caf%2 = global Cirka.Ownership.$fDrop174
   let con%3 = alloc Int.I#(0)
-  tailcall Cirka.Ownership.dropThen(caf%2, a, con%3)
+  tailcall Cirka.Ownership.dropThen(caf%2, a%1, con%3)
 }
 
