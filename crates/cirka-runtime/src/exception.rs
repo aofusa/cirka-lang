@@ -618,6 +618,38 @@ mod tests {
         assert_eq!(live(), before);
     }
 
+    /// A CAF (an immortal thunk) whose evaluation raised before the first
+    /// thread keeps an exception that nothing has shared; making the
+    /// process multithreaded shares it, as the value of an evaluated CAF
+    /// (05-runtime.md §6.4). The state is built by hand: another test may
+    /// have made the process multithreaded already, and then the raise
+    /// itself shares the exception.
+    #[test]
+    fn a_raised_caf_shares_its_exception() {
+        let _g = crate::test_lock();
+        let before = live();
+        // SAFETY: objects of this test, each reference consumed once; the
+        // CAF is freed by hand (it is immortal).
+        unsafe {
+            let e = con(7);
+            cirka_dup(e);
+            let caf = thunk(cirka_thunk_reraise, e);
+            (*caf).rc = 0;
+            assert!(rc(e) > 0, "not shared yet");
+            crate::thread::share_caf(caf);
+            assert!(rc(e) < 0, "shared");
+            // Forced again, it raises the same (shared) exception.
+            assert!(cirka_force(caf).is_null());
+            let e2 = cirka_exception_take_pending();
+            assert_eq!(e2, e);
+            cirka_drop(e2);
+            cirka_drop(e);
+            cirka_drop(*word(caf, 1) as Obj);
+            cirka_free_object(caf);
+        }
+        assert_eq!(live(), before);
+    }
+
     /// The code of a thunk that forces itself.
     unsafe extern "C" fn self_forcing(t: Obj) -> Obj {
         // SAFETY: the thunk being evaluated, with a new reference.

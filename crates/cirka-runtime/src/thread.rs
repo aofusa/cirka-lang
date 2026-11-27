@@ -5,7 +5,7 @@
 //! values of evaluated CAFs are shared, the standard I/O buffers are
 //! locked and thunks shared between threads are evaluated by one thread.
 
-use crate::object::{IND, Obj, cirka_drop, cirka_dup, cirka_mark_shared, word};
+use crate::object::{IND, Obj, THUNK, cirka_drop, cirka_dup, cirka_mark_shared, word};
 use crate::sync::{self, TAG_THREAD};
 use crate::{alloc, sys, tls};
 use core::ffi::c_void;
@@ -84,17 +84,34 @@ struct Start {
 }
 
 /// Makes the process multithreaded: the values of the CAFs evaluated so
-/// far become shared (any thread can reach them). Called before the first
-/// thread is created, by the only thread.
+/// far become shared (any thread can reach them), and so do the exceptions
+/// kept by the CAFs whose evaluation raised (05-runtime.md §6.4). Called
+/// before the first thread is created, by the only thread.
 pub(crate) fn become_mt() {
     sync::set_mt();
-    // SAFETY: the CAF objects; an evaluated CAF is an IND whose word 0 is
-    // its value. No other thread exists yet.
+    // SAFETY: the CAF objects; no other thread exists yet.
     unsafe {
         for &c in crate::start::caf_roots() {
-            if (*c).kind == IND {
-                cirka_mark_shared(*word(c, 0) as Obj);
-            }
+            share_caf(c);
+        }
+    }
+}
+
+/// Shares what the CAF `c` holds: the value of an evaluated CAF (an IND
+/// whose word 0 is the value), or the exception of one whose evaluation
+/// raised (a THUNK whose code is `cirka_thunk_reraise` and whose word 1 is
+/// the exception).
+///
+/// # Safety
+/// `c` must be a CAF object that no other thread is using.
+pub(crate) unsafe fn share_caf(c: Obj) {
+    let reraise: unsafe extern "C" fn(Obj) -> Obj = crate::exception::cirka_thunk_reraise;
+    // SAFETY: as documented; the words read are those of the kind.
+    unsafe {
+        match (*c).kind {
+            IND => cirka_mark_shared(*word(c, 0) as Obj),
+            THUNK if *word(c, 0) == reraise as usize => cirka_mark_shared(*word(c, 1) as Obj),
+            _ => {}
         }
     }
 }

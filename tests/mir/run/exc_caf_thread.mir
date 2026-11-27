@@ -1,0 +1,100 @@
+// skip-backend: interp
+// tsan: 1
+// A CAF whose evaluation raised before the first thread keeps the exception
+// (FEAT-0040, 05-runtime.md §6.4). Making the process multithreaded shares
+// it, as it shares the value of an evaluated CAF: two threads that force the
+// CAF again and the main thread, which still holds the exception it caught,
+// count its references atomically (ThreadSanitizer finds no race).
+type Int { I = 0 { v: i64 } }
+type Unit { U = 0 {} }
+type Box { B = 0 { x: ptr } }
+extern fn cirka_write_i64(i64) -> void
+extern fn cirka_write_char(i64) -> void
+extern fn cirka_thread_spawn(ptr) -> ptr
+extern fn cirka_thread_join(ptr) -> ptr
+global bad = bad_caf
+
+fn say(n: i64) -> i64 {
+entry:
+  let _ = extern cirka_write_i64(n)
+  let _ = extern cirka_write_char(10)
+  ret 0
+}
+
+fn bad_caf() -> ptr {
+entry:
+  let e = alloc Int.I(7)
+  raise e
+}
+
+fn force_caf(w: ptr @owned) -> ptr {
+entry:
+  drop w
+  let g = global bad
+  let v = force g
+  ret v
+}
+
+// Forces the CAF `k` times, each inside a `catch`; the sum of the values.
+fn worker(k: i64, tok: ptr @owned) -> ptr {
+entry:
+  jump loop(k, 0)
+loop(i: i64, acc: i64):
+  switch i { 0 => done, default => step }
+done:
+  drop tok
+  let r = alloc Int.I(acc)
+  ret r
+step:
+  let f = mkclosure force_caf()
+  dup tok
+  let (st, v) = catch apply f(tok)
+  let x = proj v Int.I.v
+  drop v
+  let acc1 = prim add(acc, x)
+  let i1 = prim sub(i, 1)
+  jump loop(i1, acc1)
+}
+
+fn join_value(h: ptr @owned) -> i64 {
+entry:
+  let r = extern cirka_thread_join(h)
+  drop h
+  let v = proj r Int.I.v
+  drop r
+  ret v
+}
+
+fn main() -> i64 {
+entry:
+  // The CAF raises while the process is single-threaded.
+  let u = alloc Unit.U()
+  let f = mkclosure force_caf()
+  let (st, e) = catch apply f(u)
+  let _ = call say(st)
+  let w1 = mkclosure worker(1000)
+  let h1 = extern cirka_thread_spawn(w1)
+  drop w1
+  let w2 = mkclosure worker(1000)
+  let h2 = extern cirka_thread_spawn(w2)
+  drop w2
+  jump churn(1000)
+churn(i: i64):
+  switch i { 0 => joined, default => again }
+again:
+  // References to the exception made and dropped while the threads run.
+  dup e
+  let b = alloc Box.B(e)
+  drop b
+  let i1 = prim sub(i, 1)
+  jump churn(i1)
+joined:
+  let s1 = call join_value(h1)
+  let _ = call say(s1)
+  let s2 = call join_value(h2)
+  let _ = call say(s2)
+  let x = proj e Int.I.v
+  drop e
+  let _ = call say(x)
+  ret 0
+}
